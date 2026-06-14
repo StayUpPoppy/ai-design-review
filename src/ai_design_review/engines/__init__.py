@@ -1,0 +1,2 @@
+"""Recognition engine adapters."""
+

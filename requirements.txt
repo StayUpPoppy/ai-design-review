@@ -1,0 +1,15 @@
+# Runtime used by the MVP core is Python standard library only.
+# Production integrations can install the following packages as needed.
+pydantic>=2.7
+langgraph>=0.2
+langchain>=0.3
+openai>=1.0
+werk24>=2.0
+paddleocr>=2.7
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+Pillow>=10.0
+pypdf>=4.0
+pdf2image>=1.17
+

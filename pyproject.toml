@@ -1,0 +1,9 @@
+[project]
+name = "ai-design-review"
+version = "0.1.0"
+description = "MVP for AI-assisted spring drawing review"
+requires-python = ">=3.11"
+
+[tool.ai_design_review]
+default_rules = "config/factory_rules.json"
+

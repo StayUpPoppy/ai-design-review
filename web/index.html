@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>弹簧图纸 AI 审查工作台</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <h1>弹簧图纸 AI 审查工作台</h1>
+          <p id="summary">等待加载审查结果。</p>
+        </div>
+        <div class="actions">
+          <button id="demoButton" type="button">加载样例</button>
+          <label class="file-control">
+            图纸图片
+            <input id="imageInput" type="file" accept="image/*">
+          </label>
+          <label class="file-control">
+            审查 JSON
+            <input id="jsonInput" type="file" accept="application/json,.json">
+          </label>
+          <button id="exportButton" type="button" disabled>导出确认版</button>
+        </div>
+      </header>
+
+      <section class="upload-panel">
+        <div>
+          <h2>后端自动审查</h2>
+          <p>上传图纸后由后端生成预览、合并识别候选并执行规则审查。</p>
+        </div>
+        <div class="backend-form">
+          <label class="file-control">
+            PDF/图片
+            <input id="backendDrawingInput" type="file" accept=".pdf,image/*">
+          </label>
+          <label class="file-control">
+            OCR JSON
+            <input id="backendOcrInput" type="file" accept="application/json,.json">
+          </label>
+          <label class="file-control">
+            候选 JSON
+            <input id="backendCandidateInput" type="file" accept="application/json,.json">
+          </label>
+          <label class="check-control">
+            <input id="useSampleOcrInput" type="checkbox">
+            使用样例 OCR
+          </label>
+          <label class="check-control">
+            <input id="useCachedWerk24Input" type="checkbox">
+            使用缓存 Werk24
+          </label>
+          <label class="check-control">
+            <input id="useWerk24Input" type="checkbox">
+            调用 Werk24
+          </label>
+          <label class="check-control">
+            <input id="confirmWerk24Input" type="checkbox">
+            确认上传到 Werk24
+          </label>
+          <button id="processButton" type="button">提交审查</button>
+        </div>
+        <p id="backendStatus" class="backend-status">后端未运行时，仍可使用“加载样例”。</p>
+      </section>
+
+      <section class="workspace">
+        <section class="viewer" aria-label="图纸气泡视图">
+          <div class="viewer-head">
+            <dl id="statusList" class="status-list"></dl>
+          </div>
+          <div class="canvas-wrap">
+            <div id="canvas" class="canvas">
+              <div class="empty">未加载图纸</div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="side-panel">
+          <section class="panel-section">
+            <div class="section-head">
+              <h2>关键参数</h2>
+              <button id="confirmAllButton" type="button" disabled>全部确认</button>
+            </div>
+            <div id="fieldEditor" class="field-editor"></div>
+          </section>
+
+          <section class="panel-section">
+            <h2>技术要求</h2>
+            <div id="requirementEditor" class="requirement-editor"></div>
+          </section>
+
+          <section class="panel-section">
+            <h2>气泡列表</h2>
+            <div id="bubbleList" class="bubble-list"></div>
+          </section>
+
+          <section class="panel-section">
+            <h2>规则结果</h2>
+            <div id="ruleList" class="rule-list"></div>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

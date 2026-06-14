@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Local secrets / licenses
+.env
+.env.*
+!.env.example
+.werk24
+
+# IDE / local editor
+.idea/
+.vscode/
+
+# Codex / local agent workspace files
+.codex/
+.agents/
+
+# Logs
+*.log
+outputs/*.log
+
+# Generated review outputs
+outputs/
+!outputs/.gitkeep
+
+# Uploaded drawings and generated previews
+tmp_pdf_pages/
+*.pdf
+*.dwg
+*.dxf
+*.step
+*.stp
+*.iges
+*.igs
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini

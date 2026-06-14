@@ -1,0 +1,16 @@
+{
+  "process_capability": {
+    "wire_diameter_range_mm": [0.1, 8.0],
+    "outer_diameter_range_mm": [1.0, 120.0],
+    "min_stable_tolerance_band_mm": 0.05,
+    "require_human_review_for_scanned_input": true
+  },
+  "materials": {
+    "allowed": ["SUS304", "SUS301", "65Mn", "SWP-B", "SUS316"]
+  },
+  "erp_policy": {
+    "block_if_human_review_required": true,
+    "block_on_status": ["fail", "missing", "need_review"]
+  }
+}
+

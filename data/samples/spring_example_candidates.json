@@ -1,0 +1,173 @@
+{
+  "source_file_note": "候选值来自用户提供的扫描版弹簧图样例，后续应由 Werk24/OCR/视觉模型自动产生。",
+  "candidates": [
+    {
+      "field": "drawing_name",
+      "value": "UQD06外弹簧(钢珠型)",
+      "source": "manual_sample_ocr",
+      "evidence": "标题栏：UQD06外弹簧(钢珠型)",
+      "confidence": 0.98,
+      "page": 1,
+      "suggested_region": "标题栏中部"
+    },
+    {
+      "field": "drawing_no",
+      "value": "YD4765020175",
+      "source": "manual_sample_ocr",
+      "evidence": "公司图号：YD4765020175",
+      "confidence": 0.96,
+      "page": 1,
+      "suggested_region": "标题栏右上角"
+    },
+    {
+      "field": "version",
+      "value": "A0",
+      "source": "manual_sample_ocr",
+      "evidence": "版本 A0",
+      "confidence": 0.96,
+      "page": 1,
+      "suggested_region": "标题栏右上角"
+    },
+    {
+      "field": "material",
+      "value": "SUS304",
+      "source": "manual_sample_ocr",
+      "evidence": "材质：SUS304；标题栏：SUS304",
+      "confidence": 0.98,
+      "page": 1,
+      "suggested_region": "技术要求第1行/标题栏"
+    },
+    {
+      "field": "wire_diameter",
+      "value": 1.5,
+      "unit": "mm",
+      "tolerance_upper": 0.05,
+      "tolerance_lower": -0.05,
+      "source": "manual_sample_ocr",
+      "evidence": "线径Φ1.5±0.05",
+      "confidence": 0.97,
+      "page": 1,
+      "suggested_region": "技术要求第1行"
+    },
+    {
+      "field": "total_coils",
+      "value": 4,
+      "unit": "turns",
+      "source": "manual_sample_ocr",
+      "evidence": "总圈数：4",
+      "confidence": 0.96,
+      "page": 1,
+      "suggested_region": "技术要求第2行"
+    },
+    {
+      "field": "handedness",
+      "value": "右旋",
+      "source": "manual_sample_ocr",
+      "evidence": "旋向：右旋",
+      "confidence": 0.96,
+      "page": 1,
+      "suggested_region": "技术要求第2行"
+    },
+    {
+      "field": "free_length",
+      "value": 15,
+      "unit": "mm",
+      "source": "manual_sample_dimension",
+      "evidence": "主视图水平尺寸 15",
+      "confidence": 0.92,
+      "page": 1,
+      "suggested_region": "主视图弹簧上方水平尺寸线"
+    },
+    {
+      "field": "outer_diameter",
+      "value": 25,
+      "unit": "mm",
+      "tolerance_upper": 0,
+      "tolerance_lower": -0.02,
+      "source": "manual_sample_dimension",
+      "evidence": "主视图右侧垂直尺寸 25 0/-0.02",
+      "confidence": 0.9,
+      "page": 1,
+      "suggested_region": "主视图右侧垂直尺寸线"
+    },
+    {
+      "field": "load_point",
+      "value": {
+        "label": "F1",
+        "height": 11.414,
+        "height_unit": "mm",
+        "force": 11.9,
+        "force_unit": "N",
+        "force_tolerance_percent": 10
+      },
+      "source": "manual_sample_ocr",
+      "evidence": "H1压缩到11.414mm/F1=11.9N±10%",
+      "confidence": 0.95,
+      "page": 1,
+      "suggested_region": "主视图上方载荷曲线/技术要求第4行"
+    },
+    {
+      "field": "load_point",
+      "value": {
+        "label": "F2",
+        "height": 9.474,
+        "height_unit": "mm",
+        "force": 15.3,
+        "force_unit": "N",
+        "force_tolerance_percent": 10,
+        "reference_only": true
+      },
+      "source": "manual_sample_ocr",
+      "evidence": "H2压缩到9.474mm/F2=15.3N±10%（参考）",
+      "confidence": 0.95,
+      "page": 1,
+      "suggested_region": "主视图上方载荷曲线/技术要求第4行"
+    },
+    {
+      "field": "heat_treatment",
+      "value": "300°C +10°C / 20min +1min",
+      "source": "manual_sample_ocr",
+      "evidence": "热处理要求：300°C+10°C/20min+1min",
+      "confidence": 0.93,
+      "page": 1,
+      "suggested_region": "技术要求第3行"
+    },
+    {
+      "field": "surface_requirement",
+      "value": "产品不可有油污、研磨粉尘，表面毛刺小于线径的10%",
+      "source": "manual_sample_ocr",
+      "evidence": "外观要求：产品不可有油污、研磨粉尘，表面毛刺小于线径的10%",
+      "confidence": 0.91,
+      "page": 1,
+      "suggested_region": "技术要求第4行"
+    },
+    {
+      "field": "lifetime_test",
+      "value": "L1-L2-L1一秒钟一次，4万次内不可失效，力衰保证10%之内",
+      "source": "manual_sample_ocr",
+      "evidence": "寿命测试：L1-L2-L1一秒钟一次,4万次内不可失效力衰保证10%之内",
+      "confidence": 0.88,
+      "page": 1,
+      "suggested_region": "技术要求第5行"
+    },
+    {
+      "field": "salt_spray",
+      "value": "720h无红锈",
+      "source": "manual_sample_ocr",
+      "evidence": "盐雾要求720h无红锈",
+      "confidence": 0.93,
+      "page": 1,
+      "suggested_region": "技术要求第6行"
+    },
+    {
+      "field": "environmental",
+      "value": "GB/T 30512-2014《汽车禁用物质要求》",
+      "source": "manual_sample_ocr",
+      "evidence": "禁用物质符合GB/T 30512-2014《汽车禁用物质要求》",
+      "confidence": 0.92,
+      "page": 1,
+      "suggested_region": "技术要求第8行"
+    }
+  ]
+}
+

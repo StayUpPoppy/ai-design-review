@@ -1,0 +1,32 @@
+{
+  "texts": [
+    {
+      "text": "技术要求\n1.材质: SUS304，线径Φ1.5±0.05\n2.总圈数:4，旋向：右旋\n2.热处理要求: 300°C+10°C/20min+1min\n3.外观要求:产品不可有油污、研磨粉尘，表面毛刺小于线径的10%\n4.力值要求: H1压缩到11.414mm/F1=11.9N±10%，H2压缩到9.474mm/F2=15.3N±10%（参考）\n5.寿命测试: L1-L2-L1一秒钟一次，4万次内不可失效，力衰保证10%之内\n6.盐雾要求720h无红锈。\n8.禁用物质符合GB/T 30512-2014《汽车禁用物质要求》",
+      "confidence": 0.96,
+      "page": 1,
+      "source": "sample_ocr_json",
+      "suggested_region": "技术要求区域"
+    },
+    {
+      "text": "UQD06外弹簧(钢珠型)",
+      "confidence": 0.96,
+      "page": 1,
+      "source": "sample_ocr_json",
+      "suggested_region": "标题栏中部"
+    },
+    {
+      "text": "YD4765020175",
+      "confidence": 0.96,
+      "page": 1,
+      "source": "sample_ocr_json",
+      "suggested_region": "标题栏右上角"
+    },
+    {
+      "text": "A0",
+      "confidence": 0.95,
+      "page": 1,
+      "source": "sample_ocr_json",
+      "suggested_region": "标题栏右上角"
+    }
+  ]
+}
