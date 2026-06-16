@@ -34,6 +34,10 @@ def main() -> None:
     ocr_json_parser.add_argument("--ocr-json", required=True, help="OCR text blocks JSON")
     ocr_json_parser.add_argument("--out", default=str(project_path("outputs", "ocr_candidates.json")))
 
+    paddleocr_parser = subparsers.add_parser("extract-paddleocr", help="Extract OCR candidates with local PaddleOCR")
+    paddleocr_parser.add_argument("--file", required=True, help="Source drawing path")
+    paddleocr_parser.add_argument("--out", default=str(project_path("outputs", "paddleocr_candidates.json")))
+
     extract_werk24_parser = subparsers.add_parser("extract-werk24", help="Extract candidates with Werk24")
     extract_werk24_parser.add_argument("--file", required=True, help="Source drawing path")
     extract_werk24_parser.add_argument("--out", default=str(project_path("outputs", "werk24_candidates.json")))
@@ -63,6 +67,8 @@ def main() -> None:
         _run_review(args.file, args.candidates, args.rules, args.out)
     elif args.command == "extract-ocr-json":
         _run_ocr_json_extract(args.ocr_json, args.out)
+    elif args.command == "extract-paddleocr":
+        _run_paddleocr_extract(args.file, args.out)
     elif args.command == "extract-werk24":
         _require_werk24_upload_confirmation(args.confirm_upload_to_werk24)
         _run_werk24_extract(args.file, args.out)
@@ -108,6 +114,16 @@ def _run_ocr_json_extract(ocr_json_path: str | Path, out_path: str | Path) -> No
     write_json(out_path, payload)
     print(f"ocr candidates written: {out_path}")
     print(f"candidate_count: {len(candidates)}")
+
+
+def _run_paddleocr_extract(file_path: str | Path, out_path: str | Path) -> None:
+    from .engines.ocr_adapter import OcrEngine
+
+    payload = OcrEngine().extract_with_raw(file_path)
+    write_json(out_path, payload)
+    print(f"paddleocr candidates written: {out_path}")
+    print(f"text_block_count: {len(payload.get('texts', []))}")
+    print(f"candidate_count: {len(payload.get('candidates', []))}")
 
 
 def _run_werk24_extract(file_path: str | Path, out_path: str | Path) -> None:

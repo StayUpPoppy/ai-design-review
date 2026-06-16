@@ -9,10 +9,10 @@ from typing import Any
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .engines.ocr_adapter import OcrJsonEngine
+from .engines.ocr_adapter import OcrEngine, OcrExtractionError, OcrJsonEngine
 from .engines.werk24_adapter import Werk24Engine
 from .io_utils import project_path, read_json, write_json
 from .preprocessing import IMAGE_EXTENSIONS, probe_file, render_pdf_with_pdftoppm
@@ -20,22 +20,32 @@ from .workflow import DrawingReviewWorkflow
 
 
 PROJECT_ROOT = project_path()
-WEB_ROOT = PROJECT_ROOT / "web"
 OUTPUT_ROOT = PROJECT_ROOT / "outputs"
 API_RUN_ROOT = OUTPUT_ROOT / "api_runs"
 TMP_PDF_ROOT = PROJECT_ROOT / "tmp_pdf_pages"
+DEFAULT_FRONTEND_ORIGINS = (
+    "http://127.0.0.1:5173,"
+    "http://localhost:5173,"
+    "http://127.0.0.1:8765,"
+    "http://localhost:8765"
+)
+FRONTEND_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("AI_REVIEW_FRONTEND_ORIGINS", DEFAULT_FRONTEND_ORIGINS).split(",")
+    if origin.strip()
+]
 
 app = FastAPI(title="AI Spring Drawing Review API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:8770", "http://localhost:8770"],
+    allow_origins=FRONTEND_ORIGINS,
+    allow_origin_regex=r"https?://(127\.0\.0\.1|localhost):\d+",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 API_RUN_ROOT.mkdir(parents=True, exist_ok=True)
-app.mount("/web", StaticFiles(directory=str(WEB_ROOT)), name="web")
 app.mount("/outputs", StaticFiles(directory=str(OUTPUT_ROOT)), name="outputs")
 if TMP_PDF_ROOT.exists():
     app.mount("/tmp_pdf_pages", StaticFiles(directory=str(TMP_PDF_ROOT)), name="tmp_pdf_pages")
@@ -43,8 +53,13 @@ app.mount("/artifacts", StaticFiles(directory=str(API_RUN_ROOT)), name="artifact
 
 
 @app.get("/")
-def root() -> RedirectResponse:
-    return RedirectResponse(url="/web/index.html")
+def root() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "service": "ai-design-review-api",
+        "health": "/api/health",
+        "docs": "/docs",
+    }
 
 
 @app.get("/api/health")
@@ -55,7 +70,9 @@ def health() -> dict[str, Any]:
         "pid": os.getpid(),
         "project_root": str(PROJECT_ROOT),
         "api_runs": str(API_RUN_ROOT),
+        "frontend_origins": FRONTEND_ORIGINS,
         "werk24_license": _werk24_license_status(),
+        "paddleocr_runtime": _paddleocr_runtime_status(),
     }
 
 
@@ -67,6 +84,7 @@ async def create_review(
     use_werk24: bool = Form(False),
     confirm_upload_to_werk24: bool = Form(False),
     use_cached_werk24: bool = Form(False),
+    use_paddleocr: bool = Form(False),
     use_sample_ocr: bool = Form(False),
 ) -> dict[str, Any]:
     if use_werk24 and not confirm_upload_to_werk24:
@@ -119,6 +137,24 @@ async def create_review(
             candidate_sources.append("werk24")
         except Exception as exc:
             warnings.append(f"Werk24 extraction failed: {exc}")
+
+    if use_paddleocr:
+        try:
+            paddle_payload = await run_in_threadpool(
+                OcrEngine(
+                    work_dir=job_dir / "paddleocr_pages",
+                    diagnostics_path=job_dir / "ocr_diagnostics.json",
+                ).extract_with_raw,
+                drawing_path,
+            )
+            candidates.extend(paddle_payload.get("candidates", []))
+            raw_payloads["paddleocr"] = paddle_payload
+            candidate_sources.append("paddleocr")
+        except OcrExtractionError as exc:
+            diagnostics_url = _artifact_url(job_id, Path("ocr_diagnostics.json"))
+            warnings.append(f"{exc}; diagnostics_url={diagnostics_url}")
+        except Exception as exc:
+            warnings.append(f"PaddleOCR extraction failed: {exc}")
 
     if ocr_json is not None and ocr_json.filename:
         ocr_json_path = input_dir / _safe_filename(ocr_json.filename)
@@ -239,6 +275,18 @@ def _werk24_license_status() -> dict[str, str]:
         return {"status": "sdk_missing"}
     except Exception as exc:
         return {"status": "not_found", "detail": f"{type(exc).__name__}: {exc}"}
+
+
+def _paddleocr_runtime_status() -> dict[str, str]:
+    import importlib.util
+
+    has_paddleocr = importlib.util.find_spec("paddleocr") is not None
+    has_paddle = importlib.util.find_spec("paddle") is not None
+    if has_paddleocr and has_paddle:
+        return {"status": "ready"}
+    if has_paddleocr:
+        return {"status": "missing_paddlepaddle"}
+    return {"status": "missing_paddleocr"}
 
 
 def _artifact_url(job_id: str, relative: Path) -> str:

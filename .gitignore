@@ -28,6 +28,11 @@ env/
 *.log
 outputs/*.log
 
+# Frontend dependencies / builds
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
 # Generated review outputs
 outputs/
 !outputs/.gitkeep

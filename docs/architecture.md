@@ -15,6 +15,26 @@
 → ERP 放行判断
 ```
 
+## 前后端边界
+
+当前项目采用前后端分离的本地 MVP 结构：
+
+```text
+frontend/
+  index.html
+  app.js
+  styles.css
+
+src/ai_design_review/
+  api.py
+  workflow.py
+  engines/
+```
+
+前端独立运行在 `http://127.0.0.1:5173`，只通过 HTTP 调用后端 API。后端独立运行在 `http://127.0.0.1:8770`，负责上传文件、预览图生成、PaddleOCR/Werk24 调用、规则审查和审查结果存储。
+
+后端需要保留 `/outputs`、`/tmp_pdf_pages`、`/artifacts` 这类静态结果目录，用于前端展示样例图和单次审查产生的预览图；这些目录不是前端应用代码托管入口。
+
 ## 推荐 LangGraph 节点
 
 当前 `DrawingReviewWorkflow` 是纯 Python 同步实现，节点边界按未来 LangGraph 迁移设计：

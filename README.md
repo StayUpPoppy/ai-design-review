@@ -10,7 +10,49 @@
 - 气泡图数据生成：输出前端可叠加的 bubble JSON
 - ERP 放行判断：默认扫描图纸必须人工确认后才允许进入 ERP
 
-当前 MVP 已提供纯 Python 命令行流程、Werk24 适配器、OCR JSON 适配器、FastAPI 上传接口和本地审查工作台。LangGraph / OpenAI Vision / ERP 推送节点可以在当前接口边界上继续接入。
+当前 MVP 已提供纯 Python 命令行流程、Werk24 适配器、PaddleOCR/OCR JSON 适配器、FastAPI 上传接口和前后端分离的本地审查工作台。LangGraph / OpenAI Vision / ERP 推送节点可以在当前接口边界上继续接入。
+
+## 前后端分离运行
+
+当前运行方式已经拆成两个独立服务：
+
+```text
+frontend/                 独立浏览器工作台，默认请求 http://127.0.0.1:8770
+src/ai_design_review/      FastAPI 后端和识别/审查流水线
+```
+
+在第一个 CMD 终端启动后端：
+
+```cmd
+scripts\run_backend.cmd
+```
+
+在第二个 CMD 终端启动前端：
+
+```cmd
+scripts\run_frontend.cmd
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:5173/index.html
+```
+
+页面里的 `后端地址` 默认是 `http://127.0.0.1:8770`。如果你改了后端端口，只需要在页面输入框里改地址并点击 `检查后端`。
+
+后端健康检查地址：
+
+```text
+http://127.0.0.1:8770/api/health
+```
+
+页面支持：
+
+- 点击 `加载样例`：从后端加载 `outputs/mixed_review.json` 和样例图。
+- 上传 PDF/图片并勾选 `调用 PaddleOCR`：本地 OCR 抽取扫描图文字，不上传外部服务。
+- 勾选 `调用 Werk24` + `确认上传到 Werk24`：把当前图纸上传到 Werk24 API 抽取尺寸/气泡候选。
+- 同时勾选 `调用 PaddleOCR`、`调用 Werk24`、`确认上传到 Werk24`：运行混合识别方案。
 
 ## 快速运行
 
@@ -25,11 +67,7 @@ $env:PYTHONPATH="D:\YingKe\ai-design-review\src"
 outputs/spring_example_review.json
 ```
 
-查看气泡图：
-
-1. 启动静态服务，例如：`python -m http.server 8765 --bind 127.0.0.1`
-2. 浏览器打开 `http://127.0.0.1:8765/web/index.html`
-3. 点击 `加载样例`，或手动选择图纸图片和审查 JSON
+查看气泡图请使用上面的前后端分离工作台：先启动后端，再启动前端，打开 `http://127.0.0.1:5173/index.html`。
 
 工作台支持：
 
@@ -40,28 +78,21 @@ outputs/spring_example_review.json
 - ERP 放行预览
 - 导出人工确认版 JSON
 
-## 本地 API 工作台
+## 后端 API
 
 启动 FastAPI 服务：
 
-```powershell
-& ".\.venv\Scripts\python.exe" -m uvicorn ai_design_review.api:app `
-  --app-dir src `
-  --host 127.0.0.1 `
-  --port 8770
+```cmd
+scripts\run_backend.cmd
 ```
 
-浏览器打开：
+如果 `/api/health` 中 `paddleocr_runtime.status` 显示 `missing_paddlepaddle`，先安装 Paddle 推理引擎并重启服务：
 
-```text
-http://127.0.0.1:8770/web/index.html
+```cmd
+python -m pip install "paddlepaddle>=3.2,<3.3"
 ```
 
-页面支持三种本地验证方式：
-
-- 点击 `加载样例`：直接加载 `outputs/mixed_review.json` 和样例图。
-- 上传 PDF/图片并勾选 `使用缓存 Werk24` + `使用样例 OCR`：不再次调用外部服务，用 `outputs/werk24_candidates.json` 与 `data/samples/ocr_example.json` 跑完整后端审查。
-- 勾选 `调用 Werk24` + `确认上传到 Werk24`：把当前图纸上传到 Werk24 API 抽取尺寸/气泡候选。
+当前 Windows CPU 环境已验证 `paddlepaddle 3.2.2 + PaddleOCR PP-OCRv4 mobile` 可运行；`paddlepaddle 3.3.1 + PP-OCRv6` 在本机触发过 oneDNN/PIR 推理错误。
 
 也可以显式传入候选识别结果：
 
@@ -76,7 +107,7 @@ $env:PYTHONPATH="D:\YingKe\ai-design-review\src"
 
 ## OCR 与混合审查
 
-当前本地 `.venv` 有 `paddleocr` 包，但缺少 `paddle` 推理引擎；PaddleOCR 3.x 还需要新版模型配置。因此项目先提供 OCR JSON 适配器，后续可接 PaddleOCR、Azure OCR、百度 OCR 或阿里 OCR，只要输出 `texts` 文本块即可。
+当前本地 `.venv` 已接入 PaddleOCR；也保留了 OCR JSON 适配器，后续可接 Azure OCR、百度 OCR 或阿里 OCR，只要输出 `texts` 文本块即可。
 
 把 OCR 文本块转为候选：
 
@@ -173,3 +204,13 @@ scripts/
   test_mixed_review.py   Werk24 + OCR 混合审查测试
 ```
 "# ai-design-review" 
+
+```
+后端启动：
+scripts\run_backend.cmd
+前端启动：
+scripts\run_frontend.cmd
+```
+
+传入文件格式DWG PDF 图片
+

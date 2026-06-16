@@ -46,6 +46,7 @@ const backendOcrInput = document.getElementById("backendOcrInput");
 const backendCandidateInput = document.getElementById("backendCandidateInput");
 const useSampleOcrInput = document.getElementById("useSampleOcrInput");
 const useCachedWerk24Input = document.getElementById("useCachedWerk24Input");
+const usePaddleOcrInput = document.getElementById("usePaddleOcrInput");
 const useWerk24Input = document.getElementById("useWerk24Input");
 const confirmWerk24Input = document.getElementById("confirmWerk24Input");
 const processButton = document.getElementById("processButton");
@@ -119,6 +120,7 @@ processButton.addEventListener("click", async () => {
   form.append("use_werk24", useWerk24Input.checked ? "true" : "false");
   form.append("confirm_upload_to_werk24", confirmWerk24Input.checked ? "true" : "false");
   form.append("use_cached_werk24", useCachedWerk24Input.checked ? "true" : "false");
+  form.append("use_paddleocr", usePaddleOcrInput.checked ? "true" : "false");
   form.append("use_sample_ocr", useSampleOcrInput.checked ? "true" : "false");
 
   processButton.disabled = true;
