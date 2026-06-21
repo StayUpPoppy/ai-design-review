@@ -72,6 +72,7 @@ const loadReviewJsonButton = document.getElementById("loadReviewJsonButton");
 const submitButton = document.getElementById("submitButton");
 const selectedFileName = document.getElementById("selectedFileName");
 const dropZone = document.getElementById("dropZone");
+const advancedOptions = document.getElementById("advancedOptions");
 const usePaddleOcrInput = document.getElementById("usePaddleOcrInput");
 const useWerk24Input = document.getElementById("useWerk24Input");
 const confirmWerk24Input = document.getElementById("confirmWerk24Input");
@@ -106,6 +107,7 @@ drawingInput.addEventListener("change", (event) => {
 reviewJsonInput.addEventListener("change", async (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
+  advancedOptions.open = false;
   const review = normalizeReview(JSON.parse(await file.text()));
   setReview(review, null);
   appendUserMessage(`导入审查 JSON：${file.name}`);
@@ -141,6 +143,14 @@ window.addEventListener("drop", (event) => {
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.compareOpen) {
     closeCompareOverlay();
+  } else if (event.key === "Escape" && advancedOptions.open) {
+    advancedOptions.open = false;
+  }
+});
+
+window.addEventListener("click", (event) => {
+  if (advancedOptions.open && !advancedOptions.contains(event.target)) {
+    advancedOptions.open = false;
   }
 });
 
@@ -161,6 +171,7 @@ async function submitSelectedFile() {
     return;
   }
 
+  advancedOptions.open = false;
   setBusy(true);
   appendUserMessage(`上传图纸：${state.selectedFile.name}`);
   const thinkingId = appendAssistantText("正在识别图纸，PaddleOCR 可能需要几十秒...");
@@ -182,6 +193,7 @@ async function submitSelectedFile() {
     state.lastJob = payload;
     setReview(normalizeReview(payload.review), toBackendAssetUrl(payload.image_url));
     appendReviewMessage(makeCompletionText(payload));
+    openCompareOverlay();
   } catch (error) {
     replaceMessage(thinkingId, error.message || String(error), true);
   } finally {
@@ -238,8 +250,6 @@ function renderReviewBody(body, title) {
     <p>${escapeHtml(title)}</p>
     ${renderSummaryHtml(review)}
     ${renderPreviewHtml()}
-    ${renderParameterTableHtml(review)}
-    ${renderRequirementsHtml(review)}
     <div class="review-actions">
       <button type="button" data-action="fullscreen">全屏对比</button>
       <button type="button" data-action="confirm-all">全部确认</button>
@@ -304,18 +314,40 @@ function renderDrawingCanvasHtml(className) {
 
 function renderParameterTableHtml(review) {
   const params = review.spring_parameters || {};
-  const rows = [
-    ...getParameterFields(params).map((field) => parameterRowHtml(field, params[field] || blankParam())),
-    ...(params.load_points || []).map((point, index) => loadPointRowHtml(point, index)),
-  ];
+  const parameterRows = getParameterFields(params).map((field) => parameterRowHtml(field, params[field] || blankParam()));
+  const loadPointRows = (params.load_points || []).map((point, index) => loadPointRowHtml(point, index));
+  const totalRows = parameterRows.length + loadPointRows.length;
   return `
     <section class="review-block">
       <div class="block-head">
         <h2>结构化尺寸数据</h2>
-        <span>${rows.length} 项</span>
+        <span>${totalRows} 项</span>
       </div>
-      <div class="data-table">${rows.join("")}</div>
+      <div class="data-table">
+        ${dataTableHeadHtml("参数", "数值", "公差")}
+        ${parameterRows.join("")}
+      </div>
+      ${loadPointRows.length ? `
+        <div class="data-subsection">
+          <div class="data-subsection-head">载荷点</div>
+          <div class="data-table">
+            ${dataTableHeadHtml("载荷点", "高度", "力值")}
+            ${loadPointRows.join("")}
+          </div>
+        </div>
+      ` : ""}
     </section>
+  `;
+}
+
+function dataTableHeadHtml(nameLabel, primaryLabel, secondaryLabel) {
+  return `
+    <div class="data-table-head" aria-hidden="true">
+      <span>${escapeHtml(nameLabel)}</span>
+      <span>${escapeHtml(primaryLabel)}</span>
+      <span>${escapeHtml(secondaryLabel)}</span>
+      <span>操作</span>
+    </div>
   `;
 }
 
@@ -328,45 +360,45 @@ function getParameterFields(params) {
 }
 
 function parameterRowHtml(field, param) {
-  const confidence = Math.round((Number(param.confidence) || 0) * 100);
+  const evidence = param.evidence || param.suggested_region || "";
+  const label = FIELD_LABELS[field] || field;
   return `
     <div class="data-row" data-kind="param" data-field="${escapeHtml(field)}">
-      <div>
-        <strong>${escapeHtml(FIELD_LABELS[field] || field)}</strong>
-        <span>${escapeHtml((param.source || []).join(" / ") || "-")} · ${confidence}%</span>
+      <div class="data-label">
+        <strong title="${escapeHtml(label)}">${escapeHtml(label)}</strong>
+        ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
       </div>
-      <label>
-        数值
-        <input data-role="value" value="${escapeHtml(formatFieldInput(param))}">
+      <label class="data-input-cell data-primary">
+        <span class="sr-only">${escapeHtml(label)}数值</span>
+        <input data-role="value" aria-label="${escapeHtml(label)}数值" value="${escapeHtml(formatFieldInput(param))}">
       </label>
-      <label>
-        公差
-        <input data-role="tolerance" value="${escapeHtml(formatTolerance(param))}">
+      <label class="data-input-cell data-secondary">
+        <span class="sr-only">${escapeHtml(label)}公差</span>
+        <input data-role="tolerance" aria-label="${escapeHtml(label)}公差" value="${escapeHtml(formatTolerance(param))}">
       </label>
-      <button type="button" data-role="confirm">${param.need_human_review ? "确认" : "已确认"}</button>
-      <p>${escapeHtml(param.evidence || param.suggested_region || "")}</p>
+      <button class="confirm-button${param.need_human_review ? "" : " confirmed"}" type="button" data-role="confirm">${param.need_human_review ? "确认" : "已确认"}</button>
     </div>
   `;
 }
 
 function loadPointRowHtml(point, index) {
-  const confidence = Math.round((Number(point.confidence) || 0) * 100);
+  const evidence = point.evidence || "";
+  const label = point.label || `F${index + 1}`;
   return `
     <div class="data-row load-point" data-kind="load_point" data-index="${index}">
-      <div>
-        <strong>${escapeHtml(point.label || `F${index + 1}`)}</strong>
-        <span>${escapeHtml((point.source || []).join(" / ") || "-")} · ${confidence}%</span>
+      <div class="data-label">
+        <strong title="${escapeHtml(label)}">${escapeHtml(label)}</strong>
+        ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
       </div>
-      <label>
-        高度 mm
-        <input data-role="height" value="${escapeHtml(point.height ?? "")}">
+      <label class="data-input-cell data-primary">
+        <span class="sr-only">${escapeHtml(label)}高度 mm</span>
+        <input data-role="height" aria-label="${escapeHtml(label)}高度 mm" value="${escapeHtml(point.height ?? "")}">
       </label>
-      <label>
-        力值 N
-        <input data-role="force" value="${escapeHtml(point.force ?? "")}">
+      <label class="data-input-cell data-secondary">
+        <span class="sr-only">${escapeHtml(label)}力值 N</span>
+        <input data-role="force" aria-label="${escapeHtml(label)}力值 N" value="${escapeHtml(point.force ?? "")}">
       </label>
-      <button type="button" data-role="confirm">${point.need_human_review ? "确认" : "已确认"}</button>
-      <p>${escapeHtml(point.evidence || "")}</p>
+      <button class="confirm-button${point.need_human_review ? "" : " confirmed"}" type="button" data-role="confirm">${point.need_human_review ? "确认" : "已确认"}</button>
     </div>
   `;
 }
@@ -738,7 +770,9 @@ function setBusy(busy) {
   submitButton.disabled = busy || !state.selectedFile;
   chooseFileButton.disabled = busy;
   demoButton.disabled = busy;
-  submitButton.textContent = busy ? "审查中..." : "开始审查";
+  submitButton.classList.toggle("busy", busy);
+  submitButton.textContent = busy ? "审查中..." : "↑";
+  submitButton.setAttribute("aria-label", busy ? "正在审查" : "开始审查");
 }
 
 function setBackendStatus(text, isError = false) {

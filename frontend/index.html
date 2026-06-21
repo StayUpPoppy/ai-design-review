@@ -5,80 +5,97 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>弹簧图纸 AI 审查助手</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="./styles.css">
+    <link rel="stylesheet" href="./styles.css?v=20260618-review-table">
   </head>
   <body>
     <main class="app-shell">
       <header class="app-topbar">
-        <div>
+        <div class="topbar-spacer" aria-hidden="true"></div>
+        <div class="topbar-brand">
           <h1>弹簧图纸 AI 审查助手</h1>
           <p id="backendStatus">正在检查后端...</p>
         </div>
         <div class="topbar-actions">
           <button id="demoButton" type="button">加载样例</button>
           <button id="checkApiButton" type="button">检查后端</button>
-          <button id="exportButton" type="button" disabled>导出确认版</button>
+          <button id="exportButton" type="button" disabled>导出</button>
         </div>
       </header>
 
-      <section id="conversation" class="conversation" aria-label="审图对话">
-        <article class="message assistant">
-          <div class="avatar">AI</div>
-          <div class="message-body">
-            <div class="message-meta">助手 · 图纸审查</div>
-            <p>上传 PDF 或图片后，我会提取弹簧图纸里的结构化尺寸数据，并在这里等待你确认或修改。</p>
-          </div>
-        </article>
-      </section>
+      <div class="chat-stage">
+        <section id="conversation" class="conversation" aria-label="审图对话">
+          <article class="message assistant">
+            <div class="avatar">AI</div>
+            <div class="message-body">
+              <div class="message-meta">助手 · 图纸审查</div>
+              <p>上传 PDF 或图片后，我会提取弹簧图纸里的结构化尺寸数据，并在这里等待你确认或修改。</p>
+            </div>
+          </article>
+        </section>
 
-      <footer class="composer">
-        <div id="dropZone" class="drop-zone">
-          <input id="drawingInput" type="file" accept=".pdf,image/*" hidden>
-          <input id="reviewJsonInput" type="file" accept="application/json,.json" hidden>
-          <div class="upload-icon">↑</div>
-          <div class="upload-copy">
-            <strong id="selectedFileName">选择 PDF 或图片，或拖拽到窗口上传</strong>
-            <span>支持 PDF、PNG、JPG、TIFF、BMP、WEBP</span>
-          </div>
-          <div class="composer-actions">
-            <button id="chooseFileButton" type="button">选择文件</button>
-            <button id="submitButton" type="button" disabled>开始审查</button>
+        <div class="composer" aria-label="图纸上传">
+          <div id="dropZone" class="drop-zone">
+            <input id="drawingInput" type="file" accept=".pdf,image/*" hidden>
+            <input id="reviewJsonInput" type="file" accept="application/json,.json" hidden>
+            <div class="upload-copy">
+              <strong id="selectedFileName">上传 PDF 或图片开始审查</strong>
+              <span>支持拖拽上传 · PDF、PNG、JPG、TIFF、BMP、WEBP</span>
+            </div>
+            <div class="composer-toolbar">
+              <div class="composer-tools">
+                <button id="chooseFileButton" class="tool-button" type="button">
+                  <span class="tool-icon" aria-hidden="true">＋</span>
+                  选择文件
+                </button>
+                <details id="advancedOptions" class="advanced-options">
+                  <summary>
+                    <span class="tool-icon sliders-icon" aria-hidden="true">☷</span>
+                    高级选项
+                  </summary>
+                  <div class="advanced-popover">
+                    <div class="advanced-head">
+                      <div>
+                        <strong>高级选项</strong>
+                        <span>配置识别来源与后端连接</span>
+                      </div>
+                    </div>
+                    <div class="advanced-grid">
+                      <label class="api-field">
+                        后端地址
+                        <input id="apiBaseInput" type="url" value="http://127.0.0.1:8770">
+                      </label>
+                      <label class="check-control">
+                        <input id="usePaddleOcrInput" type="checkbox" checked>
+                        调用 PaddleOCR
+                      </label>
+                      <label class="check-control">
+                        <input id="useWerk24Input" type="checkbox">
+                        调用 Werk24
+                      </label>
+                      <label class="check-control">
+                        <input id="confirmWerk24Input" type="checkbox">
+                        确认上传到 Werk24
+                      </label>
+                      <label class="check-control">
+                        <input id="useCachedWerk24Input" type="checkbox">
+                        使用缓存 Werk24
+                      </label>
+                      <label class="check-control">
+                        <input id="useSampleOcrInput" type="checkbox">
+                        使用样例 OCR
+                      </label>
+                      <button id="loadReviewJsonButton" type="button">导入审查 JSON</button>
+                    </div>
+                  </div>
+                </details>
+              </div>
+              <button id="submitButton" class="submit-button" type="button" aria-label="开始审查" disabled>↑</button>
+            </div>
           </div>
         </div>
-
-        <details class="advanced-options">
-          <summary>高级选项</summary>
-          <div class="advanced-grid">
-            <label>
-              后端地址
-              <input id="apiBaseInput" type="url" value="http://127.0.0.1:8770">
-            </label>
-            <label class="check-control">
-              <input id="usePaddleOcrInput" type="checkbox" checked>
-              调用 PaddleOCR
-            </label>
-            <label class="check-control">
-              <input id="useWerk24Input" type="checkbox">
-              调用 Werk24
-            </label>
-            <label class="check-control">
-              <input id="confirmWerk24Input" type="checkbox">
-              确认上传到 Werk24
-            </label>
-            <label class="check-control">
-              <input id="useCachedWerk24Input" type="checkbox">
-              使用缓存 Werk24
-            </label>
-            <label class="check-control">
-              <input id="useSampleOcrInput" type="checkbox">
-              使用样例 OCR
-            </label>
-            <button id="loadReviewJsonButton" type="button">导入审查 JSON</button>
-          </div>
-        </details>
-      </footer>
+      </div>
     </main>
 
-    <script src="./app.js"></script>
+    <script src="./app.js?v=20260618-review-table"></script>
   </body>
 </html>
