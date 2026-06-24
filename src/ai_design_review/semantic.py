@@ -213,6 +213,15 @@ def _parse_technical_requirements(text: str, note_anchor: dict[str, Any] | None)
     if heat:
         mapped.append(_from_note("heat_treatment", heat.group(0), note_anchor, heat.group(0), confidence=0.74))
 
+    surface = _parse_surface_requirement(text)
+    if surface:
+        value, evidence, confidence = surface
+        mapped.append(_from_note("surface_requirement", value, note_anchor, evidence, confidence=confidence))
+
+    hardness = re.search(r"HRC\s*\d+(?:\s*[-~～]\s*\d+)?", text, re.IGNORECASE)
+    if hardness:
+        mapped.append(_from_note("hardness", re.sub(r"\s+", "", hardness.group(0).upper()), note_anchor, hardness.group(0), confidence=0.76))
+
     salt = re.search(r"720\s*h", text, re.IGNORECASE)
     if salt:
         mapped.append(_from_note("salt_spray", "720h", note_anchor, salt.group(0), confidence=0.72))
@@ -229,6 +238,17 @@ def _parse_technical_requirements(text: str, note_anchor: dict[str, Any] | None)
             )
         )
     return mapped
+
+
+def _parse_surface_requirement(text: str) -> tuple[str, str, float] | None:
+    labeled = re.search(r"(表面处理|表面處理|表面要求|外观要求|外觀要求)\s*[:：]?\s*([^\n\r|;；]*)", text)
+    if labeled:
+        value = labeled.group(2).strip()
+        return value, labeled.group(0).strip(), 0.74 if value else 0.6
+    for treatment in ("镀锌五彩", "镀锌", "镀镍", "镀铬", "镀锡", "钝化", "发黑", "磷化", "达克罗", "电泳", "喷塑", "防锈油"):
+        if treatment in text:
+            return treatment, treatment, 0.78
+    return None
 
 
 def _normalize_material_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:

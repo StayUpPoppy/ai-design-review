@@ -18,13 +18,16 @@ def run_rule_checks(
     technical_requirements: list[dict[str, Any]],
     file_info: dict[str, Any],
     factory_rules: dict[str, Any],
+    spring_type: str = "compression_spring",
+    required_fields: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    results.extend(_check_required_fields(spring_parameters))
+    results.extend(_check_required_fields(spring_parameters, required_fields or REQUIRED_FIELDS))
     results.append(_check_material(spring_parameters, factory_rules))
     results.append(_check_process_ranges(spring_parameters, factory_rules))
-    results.append(_check_free_length_vs_load_heights(spring_parameters))
-    results.append(_check_load_monotonicity(spring_parameters))
+    if spring_type == "compression_spring":
+        results.append(_check_free_length_vs_load_heights(spring_parameters))
+        results.append(_check_load_monotonicity(spring_parameters))
     results.append(_check_tolerance_band(spring_parameters, factory_rules))
     results.append(_check_technical_requirements(technical_requirements))
     results.append(_check_scanned_policy(file_info, factory_rules))
@@ -38,6 +41,14 @@ def should_require_human_review(
     if any(item.get("status") in {"fail", "missing", "need_review"} for item in review_results):
         return True
     if any(param.get("need_human_review") for param in spring_parameters.values() if isinstance(param, dict)):
+        return True
+    if any(
+        item.get("need_human_review")
+        for param in spring_parameters.values()
+        if isinstance(param, list)
+        for item in param
+        if isinstance(item, dict)
+    ):
         return True
     return False
 
@@ -68,9 +79,9 @@ def overall_status(review_results: list[dict[str, Any]]) -> str:
     return "pass"
 
 
-def _check_required_fields(spring_parameters: dict[str, Any]) -> list[dict[str, Any]]:
+def _check_required_fields(spring_parameters: dict[str, Any], required_fields: list[str]) -> list[dict[str, Any]]:
     results = []
-    for field in REQUIRED_FIELDS:
+    for field in required_fields:
         value = spring_parameters.get(field, {}).get("value")
         if value in (None, ""):
             results.append(
@@ -162,11 +173,9 @@ def _check_tolerance_band(spring_parameters: dict[str, Any], factory_rules: dict
 
 def _check_technical_requirements(technical_requirements: list[dict[str, Any]]) -> dict[str, Any]:
     types = {item.get("type") for item in technical_requirements}
-    expected = {"heat_treatment", "surface", "salt_spray", "environmental"}
-    missing = sorted(expected - types)
-    if missing:
-        return _result("TECH-001", "技术要求完整性", "warning", f"未识别到以下技术要求：{', '.join(missing)}。", ["technical_requirements"], "medium")
-    return _result("TECH-000", "技术要求完整性", "pass", "已识别主要技术要求。", ["technical_requirements"], "low")
+    if not types:
+        return _result("TECH-001", "技术要求完整性", "warning", "未识别到技术/工艺要求，需人工确认。", ["technical_requirements"], "medium")
+    return _result("TECH-000", "技术要求完整性", "pass", "已识别技术/工艺要求。", ["technical_requirements"], "low")
 
 
 def _check_scanned_policy(file_info: dict[str, Any], factory_rules: dict[str, Any]) -> dict[str, Any]:
@@ -185,4 +194,3 @@ def _result(rule_id: str, name: str, status: str, message: str, fields: list[str
         "related_fields": fields,
         "severity": severity,
     }
-

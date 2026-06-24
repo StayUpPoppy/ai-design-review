@@ -20,6 +20,11 @@
   box-sizing: border-box;
 }
 
+[hidden],
+.legacy-werk24-option[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: #fff;
@@ -32,6 +37,7 @@ body.compare-open {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -213,9 +219,39 @@ button:disabled {
 
 .summary-strip {
   display: grid;
-  grid-template-columns: repeat(5, minmax(112px, 1fr));
+  grid-template-columns: repeat(6, minmax(112px, 1fr));
   gap: 8px;
   margin-top: 16px;
+}
+
+.spring-type-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 260px);
+  gap: 12px;
+  align-items: end;
+  margin-top: 16px;
+  border: 1px solid #c9defb;
+  border-radius: 10px;
+  background: #f7fbff;
+  padding: 12px;
+}
+
+.spring-type-panel span,
+.spring-type-panel small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.spring-type-panel strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.spring-type-panel small {
+  margin-top: 3px;
 }
 
 .metric {
@@ -295,6 +331,56 @@ button:disabled {
 .requirement-list {
   display: grid;
   gap: 8px;
+}
+
+.geometry-evidence-block {
+  color: var(--ink);
+}
+
+.evidence-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.evidence-chip-list span {
+  border: 1px solid #d7e4f4;
+  border-radius: 999px;
+  background: #f7fbff;
+  color: #2d4f73;
+  font-size: 12px;
+  padding: 4px 9px;
+}
+
+.evidence-list {
+  display: grid;
+  gap: 7px;
+}
+
+.evidence-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) minmax(150px, 1.5fr) 54px;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid #e8eef6;
+  border-radius: 8px;
+  background: #fbfdff;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.evidence-row strong,
+.evidence-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evidence-row small {
+  color: var(--muted);
+  text-align: right;
 }
 
 .data-table {
@@ -414,6 +500,7 @@ label {
 }
 
 input,
+select,
 textarea {
   width: 100%;
   min-height: 36px;
@@ -843,6 +930,10 @@ textarea {
   grid-row: span 2;
 }
 
+.advanced-grid .provider-field {
+  grid-row: auto;
+}
+
 .advanced-grid > button {
   justify-self: start;
 }
@@ -987,6 +1078,10 @@ textarea {
 
   .advanced-grid .api-field {
     grid-column: auto;
+  }
+
+  .spring-type-panel {
+    grid-template-columns: 1fr;
   }
 }
 

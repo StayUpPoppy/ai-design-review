@@ -7,10 +7,11 @@
 → 文件探测
 → PDF/图片预处理
 → 多引擎识别
+→ 几何证据提取
 → 候选结果融合
 → 弹簧参数标准化
 → 规则审查
-→ 气泡数据生成
+→ 审图证据/确认数据生成
 → 人工确认
 → ERP 放行判断
 ```
@@ -31,7 +32,7 @@ src/ai_design_review/
   engines/
 ```
 
-前端独立运行在 `http://127.0.0.1:5173`，只通过 HTTP 调用后端 API。后端独立运行在 `http://127.0.0.1:8770`，负责上传文件、预览图生成、PaddleOCR/Werk24 调用、规则审查和审查结果存储。
+前端独立运行在 `http://127.0.0.1:5173`，只通过 HTTP 调用后端 API。后端独立运行在 `http://127.0.0.1:8770`，负责上传文件、预览图生成、百度 OCR / RapidOCR 调用、几何分析、规则审查和审查结果存储。
 
 后端需要保留 `/outputs`、`/tmp_pdf_pages`、`/artifacts` 这类静态结果目录，用于前端展示样例图和单次审查产生的预览图；这些目录不是前端应用代码托管入口。
 
@@ -44,13 +45,13 @@ src/ai_design_review/
 | `classify_file` | `preprocessing.probe_file` | 判断 PDF/图片/CAD，以及是否扫描件 |
 | `render_pages` | `preprocessing.render_pdf_with_pdftoppm` | PDF 渲染为图片 |
 | `cad_extract` | `engines.cad_adapter` | DXF/DWG 尺寸对象解析 |
-| `werk24_extract` | `engines.werk24_adapter` | Werk24 尺寸、公差、气泡候选 |
-| `ocr_extract` | `engines.ocr_adapter` | 中文技术要求和标题栏识别 |
-| `vision_extract` | `engines.vision_adapter` | 视觉模型做弹簧语义映射 |
+| `ocr_extract` | `engines.ocr_providers` | 百度 OCR 优先、RapidOCR 本地降级，并统一输出文本块 |
+| `geometry_extract` | `engines.geometry_adapter` | 线段、箭头、圆/弧、轮廓、标题栏、矢量 PDF 绘图对象 |
+| `vision_review` | `engines.vision_adapter` | VLM/LLM 只复核低置信度字段、孤立尺寸和字段冲突 |
 | `spring_semantic_map` | `semantic.apply_spring_semantic_mapping` | 将通用尺寸候选映射成弹簧业务字段 |
 | `fuse_candidates` | `fusion.fuse_candidates` | 多来源融合、冲突识别 |
 | `rule_check` | `rules.run_rule_checks` | 工艺、标准、ERP 放行规则 |
-| `generate_balloons` | `balloons.generate_balloons` | 生成前端气泡 JSON |
+| `generate_balloons` | `balloons.generate_balloons` | 生成历史兼容的定位 JSON |
 | `human_review` | 待实现 | 工程师确认和修正 |
 | `erp_push` | 待实现 | 推送 ERP 工单/图纸/审查报告 |
 
@@ -80,29 +81,41 @@ src/ai_design_review/
 }
 ```
 
-如果 Werk24 返回气泡坐标，应尽量填入 `position`。如果 OCR 只有文本块坐标，也可以填入文本块区域。
+如果 OCR 或几何分析有坐标，应尽量填入 `position`。几何证据不直接覆盖尺寸字段，而是作为字段归属、低置信度复核和人工确认的依据。
 
-## Werk24 适配器
+## 几何分析适配器
 
-`Werk24Engine` 当前请求：
+`GeometryEngine` 当前默认输出：
 
-- `AskMetaData`
-- `AskFeatures`
-- `AskBalloons`
+- `dimension_evidence`：低层几何证据列表。
+- `candidates`：以 `feature_type=dimension_evidence` 进入统一候选池。
+- `diagnostics`：页面、运行时、降级原因和处理统计。
 
-输出：
+图片和扫描 PDF 的处理路径：
 
-- `outputs/werk24_candidates.json`：统一候选字段和 Werk24 原始返回
-- `outputs/werk24_review.json`：候选字段进入审查流程后的结果
+- PIL/NumPy 基础阈值：检测图纸内容区域和标题栏候选。
+- OpenCV 可用时：检测线段、轮廓、箭头候选、圆/弧候选。
+- OpenCV 不可用时：退化为水平/垂直暗线段扫描。
 
-必需环境变量：
+矢量 PDF 的处理路径：
 
-```text
-W24TECHREAD_AUTH_TOKEN
-W24TECHREAD_AUTH_REGION
-```
+- PyMuPDF 可用时读取 `page.get_drawings()` 和文本块坐标。
+- PyMuPDF 不可用时跳过矢量几何，继续使用渲染图片做几何分析。
 
-Werk24 尺寸会先以 `werk24_dimension_{reference_id}` 形式进入候选池。下一层语义映射负责判断它是 `wire_diameter`、`outer_diameter`、`free_length` 还是载荷相关高度。
+## 历史可选 Werk24 适配器
+
+Werk24 不再作为默认产品方案。`Werk24Engine` 代码保留用于历史兼容和对比评估；CLI 命令仍要求显式 `--confirm-upload-to-werk24`，避免误传生产图纸。
+
+Werk24 尺寸会先以 `werk24_dimension_{reference_id}` 形式进入候选池。下一层语义映射负责结合 OCR、几何证据和规则判断它是 `wire_diameter`、`outer_diameter`、`free_length` 还是载荷相关高度。
+
+## VLM/LLM 复核约束
+
+VLM/LLM 不作为 OCR 或几何分析的替代品，只处理低置信度字段、孤立尺寸、字段冲突和模板归属。模型输出必须满足：
+
+- 不凭空补尺寸。
+- 必须引用 OCR 文本块或 `dimension_evidence`。
+- 只返回结构化 JSON。
+- 低置信度结果必须标记 `need_human_review=true`。
 
 当前语义映射已支持：
 
@@ -115,11 +128,17 @@ Werk24 尺寸会先以 `werk24_dimension_{reference_id}` 形式进入候选池�
 
 中文 OCR 失败时，例如 `右旋` 被识别成乱码，系统会保留 `handedness` 为缺失并要求人工确认。
 
-## OCR JSON 适配器
+## OCR Provider 与 OCR JSON 适配器
 
-当前本地 PaddleOCR 运行条件不完整：安装了 `paddleocr`，但缺少 `paddle` 推理引擎，且本地缓存是旧版 `pdmodel/pdiparams`，不能直接供 PaddleOCR 3.x 新管线使用。
+当前 OCR 路由支持：
 
-因此先提供 `OcrJsonEngine`，用统一文本块格式接入任意 OCR 服务：
+- `auto`：百度高精度含位置 OCR 优先，异常时降级到 RapidOCR。
+- `baidu_ocr`：仅调用百度云 OCR。
+- `rapidocr`：仅使用本地 ONNX Runtime，不上传图纸。
+
+PDF 会先按页渲染，图片会统一归一化为 PNG。所有 Provider 输出 `text`、`confidence`、`page`、`position`、`source`，再复用 `ocr_adapter` 中的弹簧字段映射。
+
+同时保留 `OcrJsonEngine`，用统一文本块格式接入其他 OCR 服务：
 
 ```json
 {
@@ -157,7 +176,7 @@ Werk24 尺寸会先以 `werk24_dimension_{reference_id}` 形式进入候选池�
 
 混合审查时，CLI 的 `review --candidates` 支持多个候选文件，按顺序合并。
 
-为了避免误传生产图纸，CLI 的 Werk24 命令必须显式带上：
+历史可选 Werk24 命令不在默认产品路径中。为了避免误传生产图纸，相关 CLI 命令必须显式带上：
 
 ```text
 --confirm-upload-to-werk24

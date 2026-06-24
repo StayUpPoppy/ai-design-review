@@ -55,8 +55,114 @@ const TECH_LABELS = {
   salt_spray: "盐雾",
   lifetime: "寿命",
   environmental: "环保",
+  hardness: "硬度",
   process: "工艺",
   other: "其他",
+};
+
+const VLM_AVAILABLE = false;
+
+const SPRING_TYPE_LABELS = {
+  compression_spring: "压缩弹簧",
+  torsion_spring: "扭转弹簧",
+  extension_spring: "拉伸弹簧",
+  retaining_ring: "卡簧/挡圈",
+  unknown_spring: "未知弹簧",
+};
+
+const LOCAL_SPRING_TEMPLATES = {
+  compression_spring: {
+    spring_type: "compression_spring",
+    label: "压缩弹簧",
+    fields: [
+      { key: "material", label: "材料", required: true },
+      { key: "wire_diameter", label: "线径", unit: "mm", required: true },
+      { key: "outer_diameter", label: "外径", unit: "mm", required: true },
+      { key: "inner_diameter", label: "内径", unit: "mm" },
+      { key: "mean_diameter", label: "中径", unit: "mm" },
+      { key: "free_length", label: "自由长度", unit: "mm", required: true },
+      { key: "total_coils", label: "总圈数", unit: "turns", required: true },
+      { key: "active_coils", label: "有效圈数", unit: "turns" },
+      { key: "handedness", label: "旋向", required: true },
+      { key: "pitch", label: "节距", unit: "mm" },
+      { key: "end_type", label: "端部形式" },
+    ],
+    collections: [{ key: "load_points", label: "载荷点" }],
+  },
+  torsion_spring: {
+    spring_type: "torsion_spring",
+    label: "扭转弹簧",
+    fields: [
+      { key: "material", label: "材料", required: true },
+      { key: "wire_diameter", label: "线径", unit: "mm", required: true },
+      { key: "outer_diameter", label: "外径", unit: "mm" },
+      { key: "inner_diameter", label: "内径", unit: "mm" },
+      { key: "mean_diameter", label: "中径", unit: "mm", required: true },
+      { key: "total_coils", label: "总圈数", unit: "turns", required: true },
+      { key: "active_coils", label: "有效圈数", unit: "turns" },
+      { key: "handedness", label: "旋向", required: true },
+      { key: "arm_length", label: "臂长", unit: "mm" },
+      { key: "short_arm_length", label: "短臂长", unit: "mm" },
+      { key: "long_arm_length", label: "长臂长", unit: "mm" },
+      { key: "free_angle", label: "自由角", unit: "deg" },
+      { key: "working_angle", label: "工作角", unit: "deg" },
+      { key: "torque", label: "扭矩", unit: "Nmm" },
+    ],
+    collections: [{ key: "torque_points", label: "扭矩点" }],
+  },
+  extension_spring: {
+    spring_type: "extension_spring",
+    label: "拉伸弹簧",
+    fields: [
+      { key: "material", label: "材料", required: true },
+      { key: "wire_diameter", label: "线径", unit: "mm", required: true },
+      { key: "outer_diameter", label: "外径", unit: "mm" },
+      { key: "inner_diameter", label: "内径", unit: "mm" },
+      { key: "mean_diameter", label: "中径", unit: "mm", required: true },
+      { key: "free_length", label: "自由长度", unit: "mm", required: true },
+      { key: "body_length", label: "弹体长度", unit: "mm" },
+      { key: "total_coils", label: "总圈数", unit: "turns", required: true },
+      { key: "active_coils", label: "有效圈数", unit: "turns" },
+      { key: "hook_type", label: "钩型" },
+      { key: "hook_outer_diameter", label: "钩环外径", unit: "mm" },
+      { key: "hook_inner_diameter", label: "钩环内径", unit: "mm" },
+      { key: "hook_gap", label: "钩口间隙", unit: "mm" },
+      { key: "initial_tension", label: "初拉力", unit: "N" },
+    ],
+    collections: [{ key: "load_points", label: "拉力点" }],
+  },
+  retaining_ring: {
+    spring_type: "retaining_ring",
+    label: "卡簧/挡圈",
+    fields: [
+      { key: "material", label: "材料", required: true },
+      { key: "wire_diameter", label: "线径", unit: "mm" },
+      { key: "thickness", label: "厚度", unit: "mm" },
+      { key: "outer_diameter", label: "外径", unit: "mm" },
+      { key: "inner_diameter", label: "内径", unit: "mm", required: true },
+      { key: "opening_width", label: "开口宽度", unit: "mm" },
+      { key: "gap_width", label: "缺口宽度", unit: "mm" },
+      { key: "notch_depth", label: "缺口深度", unit: "mm" },
+      { key: "section_width", label: "剖面宽度", unit: "mm" },
+      { key: "section_height", label: "剖面高度", unit: "mm" },
+    ],
+    collections: [],
+  },
+  unknown_spring: {
+    spring_type: "unknown_spring",
+    label: "未知弹簧",
+    fields: [
+      { key: "material", label: "材料" },
+      { key: "wire_diameter", label: "线径", unit: "mm" },
+      { key: "outer_diameter", label: "外径", unit: "mm" },
+      { key: "inner_diameter", label: "内径", unit: "mm" },
+      { key: "mean_diameter", label: "中径", unit: "mm" },
+      { key: "free_length", label: "自由长度", unit: "mm" },
+      { key: "total_coils", label: "总圈数", unit: "turns" },
+      { key: "handedness", label: "旋向" },
+    ],
+    collections: [{ key: "load_points", label: "载荷点" }],
+  },
 };
 
 const conversation = document.getElementById("conversation");
@@ -73,7 +179,11 @@ const submitButton = document.getElementById("submitButton");
 const selectedFileName = document.getElementById("selectedFileName");
 const dropZone = document.getElementById("dropZone");
 const advancedOptions = document.getElementById("advancedOptions");
-const usePaddleOcrInput = document.getElementById("usePaddleOcrInput");
+const useOcrInput = document.getElementById("useOcrInput");
+const ocrProviderInput = document.getElementById("ocrProviderInput");
+const useGeometryInput = document.getElementById("useGeometryInput");
+const useVlmInput = document.getElementById("useVlmInput");
+const visionProviderInput = document.getElementById("visionProviderInput");
 const useWerk24Input = document.getElementById("useWerk24Input");
 const confirmWerk24Input = document.getElementById("confirmWerk24Input");
 const useCachedWerk24Input = document.getElementById("useCachedWerk24Input");
@@ -93,11 +203,33 @@ checkApiButton.addEventListener("click", checkApiHealth);
 chooseFileButton.addEventListener("click", () => drawingInput.click());
 loadReviewJsonButton.addEventListener("click", () => reviewJsonInput.click());
 submitButton.addEventListener("click", () => submitSelectedFile());
+useOcrInput.addEventListener("change", syncOcrProviderState);
+useVlmInput?.addEventListener("change", syncVlmProviderState);
 demoButton.addEventListener("click", loadDemoReview);
 exportButton.addEventListener("click", () => {
   if (!state.review) return;
   downloadJson(makeExportReview(), "spring_review_confirmed.json");
 });
+
+syncOcrProviderState();
+syncVlmProviderState();
+
+function syncOcrProviderState() {
+  ocrProviderInput.disabled = !useOcrInput.checked;
+}
+
+function syncVlmProviderState() {
+  if (!visionProviderInput || !useVlmInput) return;
+  if (!VLM_AVAILABLE) {
+    useVlmInput.checked = false;
+    useVlmInput.disabled = true;
+    visionProviderInput.value = "none";
+    visionProviderInput.disabled = true;
+    return;
+  }
+  useVlmInput.disabled = false;
+  visionProviderInput.disabled = !useVlmInput.checked;
+}
 
 drawingInput.addEventListener("change", (event) => {
   const file = event.target.files?.[0];
@@ -166,7 +298,7 @@ function selectDrawingFile(file) {
 
 async function submitSelectedFile() {
   if (!state.selectedFile || state.busy) return;
-  if (useWerk24Input.checked && !confirmWerk24Input.checked) {
+  if (useWerk24Input?.checked && !confirmWerk24Input?.checked) {
     appendAssistantText("调用 Werk24 前必须勾选“确认上传到 Werk24”。");
     return;
   }
@@ -174,15 +306,20 @@ async function submitSelectedFile() {
   advancedOptions.open = false;
   setBusy(true);
   appendUserMessage(`上传图纸：${state.selectedFile.name}`);
-  const thinkingId = appendAssistantText("正在识别图纸，PaddleOCR 可能需要几十秒...");
+  const providerLabel = ocrProviderInput.selectedOptions[0]?.textContent || "OCR";
+  const thinkingId = appendAssistantText(`正在识别图纸，当前引擎：${providerLabel}...`);
 
   try {
     const form = new FormData();
     form.append("drawing", state.selectedFile);
-    form.append("use_paddleocr", usePaddleOcrInput.checked ? "true" : "false");
-    form.append("use_werk24", useWerk24Input.checked ? "true" : "false");
-    form.append("confirm_upload_to_werk24", confirmWerk24Input.checked ? "true" : "false");
-    form.append("use_cached_werk24", useCachedWerk24Input.checked ? "true" : "false");
+    form.append("use_ocr", useOcrInput.checked ? "true" : "false");
+    if (useOcrInput.checked) form.append("ocr_provider", ocrProviderInput.value);
+    form.append("use_geometry", useGeometryInput?.checked ? "true" : "false");
+    form.append("use_vlm", useVlmInput?.checked ? "true" : "false");
+    form.append("vision_provider", visionProviderInput?.value || "none");
+    form.append("use_werk24", useWerk24Input?.checked ? "true" : "false");
+    form.append("confirm_upload_to_werk24", confirmWerk24Input?.checked ? "true" : "false");
+    form.append("use_cached_werk24", useCachedWerk24Input?.checked ? "true" : "false");
     form.append("use_sample_ocr", useSampleOcrInput.checked ? "true" : "false");
 
     const response = await fetch(apiUrl("/api/reviews"), { method: "POST", body: form });
@@ -225,9 +362,16 @@ async function checkApiHealth() {
     const response = await fetch(apiUrl("/api/health"));
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || "后端健康检查失败");
-    const paddleStatus = payload.paddleocr_runtime?.status || "unknown";
-    const werk24Status = payload.werk24_license?.status || "unknown";
-    setBackendStatus(`后端正常 · PaddleOCR ${paddleStatus} · Werk24 ${werk24Status}`);
+    const ocrRuntime = payload.ocr_runtime || {};
+    const defaultProvider = ocrRuntime.default_provider || "unknown";
+    const baiduStatus = ocrRuntime.baidu_ocr?.status || "unknown";
+    const baiduVlStatus = ocrRuntime.baidu_paddleocr_vl?.status || "unknown";
+    const rapidStatus = ocrRuntime.rapidocr?.status || "unknown";
+    const geometryStatus = payload.geometry_runtime?.status || "unknown";
+    const vlmStatus = payload.vlm_runtime?.status || "unknown";
+    setBackendStatus(
+      `后端正常 · OCR ${defaultProvider} · 百度 ${baiduStatus} · 百度VL ${baiduVlStatus} · RapidOCR ${rapidStatus} · 几何 ${geometryStatus} · VLM ${vlmStatus}`,
+    );
   } catch (error) {
     setBackendStatus(`后端不可用：${error.message || String(error)}`, true);
   }
@@ -248,6 +392,7 @@ function renderReviewBody(body, title) {
   body.innerHTML = `
     <div class="message-meta">助手 · 结构化审查</div>
     <p>${escapeHtml(title)}</p>
+    ${renderTypeSelectorHtml(review)}
     ${renderSummaryHtml(review)}
     ${renderPreviewHtml()}
     <div class="review-actions">
@@ -268,16 +413,44 @@ function renderReviewBody(body, title) {
   bindReviewEditors(body);
 }
 
+function renderTypeSelectorHtml(review) {
+  const detection = review.spring_type_detection || {};
+  const type = currentSpringType(review);
+  const label = SPRING_TYPE_LABELS[type] || type || "未知弹簧";
+  const confidence = Number(detection.confidence ?? review.drawing_summary?.spring_type_confidence ?? 0);
+  const confidenceText = confidence ? `${Math.round(confidence * 100)}%` : "待确认";
+  const needReview = detection.need_human_review || type === "unknown_spring";
+  return `
+    <section class="spring-type-panel">
+      <div>
+        <span>识别类型</span>
+        <strong>${escapeHtml(label)}</strong>
+        <small>${needReview ? "需要人工确认" : "自动识别"} · 置信度 ${escapeHtml(confidenceText)}</small>
+      </div>
+      <label>
+        <span class="sr-only">切换弹簧类型模板</span>
+        <select data-action="spring-type">
+          ${Object.entries(SPRING_TYPE_LABELS).map(([value, optionLabel]) => `
+            <option value="${escapeHtml(value)}" ${value === type ? "selected" : ""}>${escapeHtml(optionLabel)}</option>
+          `).join("")}
+        </select>
+      </label>
+    </section>
+  `;
+}
+
 function renderSummaryHtml(review) {
   const info = review.drawing_summary || {};
   const missing = review.missing_fields || [];
+  const springType = currentSpringType(review);
   return `
     <section class="summary-strip">
+      ${metricHtml("类型", SPRING_TYPE_LABELS[springType] || springType || "-")}
       ${metricHtml("图纸", info.drawing_name || "-")}
       ${metricHtml("图号", info.drawing_no || "-")}
       ${metricHtml("状态", info.overall_status || "-")}
       ${metricHtml("ERP", review.erp_ready ? "允许" : "阻断")}
-      ${metricHtml("缺失字段", missing.length ? missing.map((field) => FIELD_LABELS[field] || field).join("、") : "无")}
+      ${metricHtml("缺失字段", missing.length ? missing.map((field) => getFieldMeta(field, review).label || field).join("、") : "无")}
     </section>
   `;
 }
@@ -314,7 +487,10 @@ function renderDrawingCanvasHtml(className) {
 
 function renderParameterTableHtml(review) {
   const params = review.spring_parameters || {};
-  const parameterRows = getParameterFields(params).map((field) => parameterRowHtml(field, params[field] || blankParam()));
+  const parameterRows = getParameterFields(params, review).map((field) => {
+    const meta = getFieldMeta(field, review);
+    return parameterRowHtml(field, params[field] || blankParam(meta.unit), meta);
+  });
   const loadPointRows = (params.load_points || []).map((point, index) => loadPointRowHtml(point, index));
   const totalRows = parameterRows.length + loadPointRows.length;
   return `
@@ -340,6 +516,71 @@ function renderParameterTableHtml(review) {
   `;
 }
 
+function renderGeometryEvidenceHtml(review) {
+  const items = Array.isArray(review.dimension_evidence) ? review.dimension_evidence : [];
+  if (!items.length) {
+    return `
+      <section class="review-block geometry-evidence-block">
+        <div class="block-head"><h2>几何证据</h2><span>0 项</span></div>
+        <div class="empty-line">未生成线段、箭头、圆弧或标题栏证据。</div>
+      </section>
+    `;
+  }
+  const counts = items.reduce((acc, item) => {
+    const kind = item.kind || "unknown";
+    acc[kind] = (acc[kind] || 0) + 1;
+    return acc;
+  }, {});
+  const chips = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([kind, count]) => `<span>${escapeHtml(geometryKindLabel(kind))} ${count}</span>`)
+    .join("");
+  const rows = items.slice(0, 12).map((item) => `
+    <div class="evidence-row">
+      <strong>${escapeHtml(geometryKindLabel(item.kind || "unknown"))}</strong>
+      <span>${escapeHtml(formatEvidencePosition(item))}</span>
+      <small>${Math.round(Number(item.confidence || 0) * 100)}%</small>
+    </div>
+  `).join("");
+  return `
+    <section class="review-block geometry-evidence-block">
+      <div class="block-head"><h2>几何证据</h2><span>${items.length} 项</span></div>
+      <div class="evidence-chip-list">${chips}</div>
+      <div class="evidence-list">${rows}</div>
+    </section>
+  `;
+}
+
+function geometryKindLabel(kind) {
+  const labels = {
+    arrowhead_candidate: "箭头候选",
+    circle_candidate: "圆/弧候选",
+    contour: "轮廓",
+    drawing_content_bbox: "图纸内容区",
+    horizontal_line_candidate: "水平线",
+    vertical_line_candidate: "垂直线",
+    raster_line: "线段",
+    title_block_candidate: "标题栏",
+    vector_line: "PDF 矢量线",
+    vector_rect: "PDF 矢量框",
+    vector_text: "PDF 文本",
+  };
+  return labels[kind] || kind;
+}
+
+function formatEvidencePosition(item) {
+  const pos = item.position || {};
+  const page = item.page ? `P${item.page}` : "P?";
+  const x = Number(pos.x);
+  const y = Number(pos.y);
+  const w = Number(pos.width);
+  const h = Number(pos.height);
+  if (![x, y, w, h].every(Number.isFinite)) {
+    return item.suggested_region || page;
+  }
+  return `${page} · x${Math.round(x)} y${Math.round(y)} · ${Math.round(w)}×${Math.round(h)}`;
+}
+
 function dataTableHeadHtml(nameLabel, primaryLabel, secondaryLabel) {
   return `
     <div class="data-table-head" aria-hidden="true">
@@ -351,21 +592,23 @@ function dataTableHeadHtml(nameLabel, primaryLabel, secondaryLabel) {
   `;
 }
 
-function getParameterFields(params) {
+function getParameterFields(params, review) {
+  const templateFields = getSpringTemplate(review).fields.map((field) => field.key);
   const returnedFields = Object.keys(params).filter((field) => {
     const value = params[field];
-    return field !== "load_points" && value && typeof value === "object" && !Array.isArray(value);
+    return !["load_points", "torque_points"].includes(field) && value && typeof value === "object" && !Array.isArray(value);
   });
-  return Array.from(new Set([...REQUIRED_FIELDS, ...returnedFields]));
+  return Array.from(new Set([...templateFields, ...returnedFields]));
 }
 
-function parameterRowHtml(field, param) {
+function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)) {
   const evidence = param.evidence || param.suggested_region || "";
-  const label = FIELD_LABELS[field] || field;
+  const label = meta.label || FIELD_LABELS[field] || field;
+  const requiredMark = meta.required ? " *" : "";
   return `
     <div class="data-row" data-kind="param" data-field="${escapeHtml(field)}">
       <div class="data-label">
-        <strong title="${escapeHtml(label)}">${escapeHtml(label)}</strong>
+        <strong title="${escapeHtml(label)}">${escapeHtml(label + requiredMark)}</strong>
         ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
       </div>
       <label class="data-input-cell data-primary">
@@ -431,9 +674,16 @@ function renderRequirementsHtml(review) {
 }
 
 function bindReviewEditors(root) {
+  root.querySelectorAll('[data-action="spring-type"]').forEach((select) => {
+    select.addEventListener("change", (event) => {
+      switchSpringType(event.target.value);
+    });
+  });
+
   root.querySelectorAll('[data-kind="param"]').forEach((row) => {
     const field = row.dataset.field;
-    const param = state.review.spring_parameters[field] || blankParam();
+    const fieldMeta = getFieldMeta(field, state.review);
+    const param = state.review.spring_parameters[field] || blankParam(fieldMeta.unit);
     state.review.spring_parameters[field] = param;
     row.querySelector('[data-role="value"]').addEventListener("change", (event) => {
       param.value = parseValue(event.target.value, param.value);
@@ -482,6 +732,33 @@ function bindReviewEditors(root) {
       updateLatestReviewMessage();
     });
   });
+}
+
+function switchSpringType(type) {
+  const template = getLocalTemplate(type);
+  state.review.drawing_summary ||= {};
+  state.review.drawing_summary.spring_type = template.spring_type;
+  state.review.drawing_summary.spring_type_label = template.label;
+  state.review.drawing_summary.spring_type_confidence = 1;
+  state.review.spring_type_detection = {
+    spring_type: template.spring_type,
+    label: template.label,
+    confidence: 1,
+    need_human_review: false,
+    source: "manual",
+  };
+  state.review.spring_template = structuredClone(template);
+  state.review.spring_parameters ||= {};
+  for (const field of template.fields || []) {
+    state.review.spring_parameters[field.key] ||= blankParam(field.unit);
+    if (!state.review.spring_parameters[field.key].unit && field.unit) {
+      state.review.spring_parameters[field.key].unit = field.unit;
+    }
+  }
+  for (const collection of template.collections || []) {
+    state.review.spring_parameters[collection.key] ||= [];
+  }
+  updateLatestReviewMessage("已切换弹簧模板，请继续确认结构化尺寸数据。");
 }
 
 function updateLatestReviewMessage(title = "已更新结构化尺寸数据，请继续确认。") {
@@ -548,9 +825,11 @@ function renderCompareOverlay() {
           </div>
           ${renderCompareViewerHtml()}
         </section>
-        <section class="compare-data-panel">
+      <section class="compare-data-panel">
+          ${renderTypeSelectorHtml(state.review)}
           ${renderSummaryHtml(state.review)}
           ${renderParameterTableHtml(state.review)}
+          ${renderGeometryEvidenceHtml(state.review)}
           ${renderRequirementsHtml(state.review)}
         </section>
       </div>
@@ -710,7 +989,9 @@ function setReview(review, imageUrl) {
 function makeCompletionText(payload) {
   const warnings = payload.warnings?.length ? `警告：${payload.warnings.join("；")}` : "";
   const sources = payload.candidate_sources?.join(" / ") || "无";
-  return `审查完成：${payload.candidate_count} 个候选，来源 ${sources}。${warnings}`;
+  const businessCount = payload.business_candidate_count ?? payload.candidate_count ?? 0;
+  const evidenceCount = payload.geometry_evidence_count ?? 0;
+  return `审查完成：${businessCount} 个结构化候选，${evidenceCount} 项几何证据，来源 ${sources}。${warnings}`;
 }
 
 function appendUserMessage(text) {
@@ -798,17 +1079,51 @@ function normalizeBaseUrl(url) {
 function normalizeReview(review) {
   const cloned = structuredClone(review);
   cloned.drawing_summary ||= {};
+  cloned.drawing_summary.spring_type ||= "compression_spring";
+  cloned.spring_template ||= getLocalTemplate(cloned.drawing_summary.spring_type);
   cloned.spring_parameters ||= {};
   cloned.spring_parameters.load_points ||= [];
   cloned.technical_requirements ||= [];
+  cloned.dimension_evidence ||= [];
   cloned.review_results ||= [];
   cloned.balloons ||= [];
   cloned.manual_confirmations ||= {};
   return cloned;
 }
 
+function currentSpringType(review) {
+  return review?.drawing_summary?.spring_type
+    || review?.spring_template?.spring_type
+    || review?.spring_type_detection?.spring_type
+    || "unknown_spring";
+}
+
+function getLocalTemplate(type) {
+  return structuredClone(LOCAL_SPRING_TEMPLATES[type] || LOCAL_SPRING_TEMPLATES.unknown_spring);
+}
+
+function getSpringTemplate(review) {
+  const currentType = currentSpringType(review);
+  const backendTemplate = review?.spring_template;
+  if (backendTemplate?.spring_type === currentType && Array.isArray(backendTemplate.fields)) {
+    return backendTemplate;
+  }
+  return getLocalTemplate(currentType);
+}
+
+function getFieldMeta(field, review) {
+  return getSpringTemplate(review).fields.find((item) => item.key === field) || {
+    key: field,
+    label: FIELD_LABELS[field] || field,
+  };
+}
+
+function requiredFieldsForReview(review) {
+  return getSpringTemplate(review).fields.filter((field) => field.required).map((field) => field.key);
+}
+
 function refreshDerivedStatus(review) {
-  const requiredMissing = REQUIRED_FIELDS.filter((field) => {
+  const requiredMissing = requiredFieldsForReview(review).filter((field) => {
     const value = review.spring_parameters?.[field]?.value;
     return value == null || value === "";
   });
@@ -898,9 +1213,10 @@ function downloadJson(data, filename) {
   URL.revokeObjectURL(url);
 }
 
-function blankParam() {
+function blankParam(unit = null) {
   return {
     value: "",
+    unit,
     source: [],
     evidence: "",
     confidence: 0,

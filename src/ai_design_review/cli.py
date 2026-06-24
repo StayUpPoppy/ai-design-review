@@ -34,7 +34,16 @@ def main() -> None:
     ocr_json_parser.add_argument("--ocr-json", required=True, help="OCR text blocks JSON")
     ocr_json_parser.add_argument("--out", default=str(project_path("outputs", "ocr_candidates.json")))
 
-    paddleocr_parser = subparsers.add_parser("extract-paddleocr", help="Extract OCR candidates with local PaddleOCR")
+    ocr_parser = subparsers.add_parser("extract-ocr", help="Extract OCR candidates with the configured provider")
+    ocr_parser.add_argument("--file", required=True, help="Source drawing path")
+    ocr_parser.add_argument(
+        "--provider",
+        choices=["auto", "baidu_ocr", "baidu_paddleocr_vl", "rapidocr"],
+        default="auto",
+    )
+    ocr_parser.add_argument("--out", default=str(project_path("outputs", "ocr_provider_candidates.json")))
+
+    paddleocr_parser = subparsers.add_parser("extract-paddleocr", help="Deprecated alias for extract-ocr --provider auto")
     paddleocr_parser.add_argument("--file", required=True, help="Source drawing path")
     paddleocr_parser.add_argument("--out", default=str(project_path("outputs", "paddleocr_candidates.json")))
 
@@ -67,8 +76,10 @@ def main() -> None:
         _run_review(args.file, args.candidates, args.rules, args.out)
     elif args.command == "extract-ocr-json":
         _run_ocr_json_extract(args.ocr_json, args.out)
+    elif args.command == "extract-ocr":
+        _run_provider_ocr_extract(args.file, args.out, args.provider)
     elif args.command == "extract-paddleocr":
-        _run_paddleocr_extract(args.file, args.out)
+        _run_provider_ocr_extract(args.file, args.out, "auto")
     elif args.command == "extract-werk24":
         _require_werk24_upload_confirmation(args.confirm_upload_to_werk24)
         _run_werk24_extract(args.file, args.out)
@@ -116,12 +127,13 @@ def _run_ocr_json_extract(ocr_json_path: str | Path, out_path: str | Path) -> No
     print(f"candidate_count: {len(candidates)}")
 
 
-def _run_paddleocr_extract(file_path: str | Path, out_path: str | Path) -> None:
-    from .engines.ocr_adapter import OcrEngine
+def _run_provider_ocr_extract(file_path: str | Path, out_path: str | Path, provider: str) -> None:
+    from .engines.ocr_providers import UnifiedOcrEngine
 
-    payload = OcrEngine().extract_with_raw(file_path)
+    payload = UnifiedOcrEngine(provider=provider).extract_with_raw(file_path)
     write_json(out_path, payload)
-    print(f"paddleocr candidates written: {out_path}")
+    print(f"ocr candidates written: {out_path}")
+    print(f"provider: {payload.get('provider')}")
     print(f"text_block_count: {len(payload.get('texts', []))}")
     print(f"candidate_count: {len(payload.get('candidates', []))}")
 

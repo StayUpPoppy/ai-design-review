@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import math
 import os
+import re
 import subprocess
 import sys
 import traceback
@@ -373,6 +374,7 @@ def ocr_payload_to_candidates(payload: dict[str, Any] | list[dict[str, Any]]) ->
 
     candidates.extend(_extract_title_fields(blocks))
     candidates.extend(_extract_material(full_text, anchor))
+    candidates.extend(_extract_labeled_numeric_fields(full_text, anchor))
     candidates.extend(_extract_wire_diameter(full_text, anchor))
     candidates.extend(_extract_outer_diameter(full_text, anchor, blocks))
     candidates.extend(_extract_free_length(full_text, anchor, blocks))
@@ -380,6 +382,38 @@ def ocr_payload_to_candidates(payload: dict[str, Any] | list[dict[str, Any]]) ->
     candidates.extend(_extract_handedness(full_text, anchor))
     candidates.extend(_extract_load_points(full_text, anchor))
     candidates.extend(_extract_technical_requirements(full_text, anchor))
+    candidates.extend(_document_text_candidates(blocks))
+    return candidates
+
+
+def _document_text_candidates(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for block in blocks:
+        text = str(block.get("text", "")).strip()
+        if not text:
+            continue
+        page = int(block.get("page", 1) or 1)
+        grouped.setdefault(page, []).append(block)
+
+    candidates = []
+    for page, page_blocks in grouped.items():
+        text = "\n".join(str(block.get("text", "")).strip() for block in page_blocks if block.get("text"))
+        if not text:
+            continue
+        anchor = page_blocks[0]
+        candidates.append(
+            {
+                "field": f"document_text_{page}",
+                "feature_type": "note",
+                "value": text[:12000],
+                "source": anchor.get("source", "ocr_json"),
+                "evidence": text[:12000],
+                "confidence": min(float(anchor.get("confidence", 0.7) or 0.7), 0.74),
+                "page": page,
+                "position": anchor.get("position"),
+                "suggested_region": "OCR full page text",
+            }
+        )
     return candidates
 
 
@@ -404,6 +438,52 @@ def _extract_material(text: str, anchor: dict[str, Any] | None) -> list[dict[str
         return []
     value = match.group(0).replace(" ", "").upper()
     return [_candidate("material", value, anchor, match.group(0), 0.92)]
+
+
+def _extract_labeled_numeric_fields(text: str, anchor: dict[str, Any] | None) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    numeric_rules = [
+        ("wire_diameter", r"(?:线径|线经|WIRE\s*DIA|WIRE|wire)\s*[:：]?\s*[φΦØø]?\s*(\d+(?:\.\d+)?)", "mm", 0.82),
+        ("outer_diameter", r"(?:外径|外徑|OD|O\.D\.)\s*[:：]?\s*[φΦØø]?\s*(\d+(?:\.\d+)?)", "mm", 0.8),
+        ("inner_diameter", r"(?:内径|內徑|ID|I\.D\.)\s*[:：]?\s*[φΦØø]?\s*(\d+(?:\.\d+)?)", "mm", 0.8),
+        ("mean_diameter", r"(?:中径|中徑|平均径|MEAN\s*DIA)\s*[:：]?\s*[φΦØø]?\s*(\d+(?:\.\d+)?)", "mm", 0.8),
+        ("free_length", r"(?:自由长|自由长度|自由長度|FREE\s*LENGTH|L0|Lf)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.8),
+        ("body_length", r"(?:弹体长|弹体长度|BODY\s*LENGTH)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.72),
+        ("total_coils", r"(?:总圈数|總圈數|圈数|圈數|TOTAL\s*COILS)\s*[:：]?\s*(\d+(?:\.\d+)?)", "turns", 0.82),
+        ("active_coils", r"(?:有效圈数|有效圈數|ACTIVE\s*COILS)\s*[:：]?\s*(\d+(?:\.\d+)?)", "turns", 0.78),
+        ("pitch", r"(?:节距|節距|PITCH)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.78),
+        ("arm_length", r"(?:臂长|臂長|ARM\s*LENGTH)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.72),
+        ("free_angle", r"(?:自由角|FREE\s*ANGLE)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:°|deg)?", "deg", 0.72),
+        ("working_angle", r"(?:工作角|WORKING\s*ANGLE)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:°|deg)?", "deg", 0.72),
+        ("opening_width", r"(?:开口|開口|OPENING)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.7),
+        ("gap_width", r"(?:缺口宽|缺口寬|缺口|GAP)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.7),
+        ("thickness", r"(?:厚度|板厚|THICKNESS)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.72),
+    ]
+    seen: set[str] = set()
+    for field, pattern, unit, confidence in numeric_rules:
+        match = _search(pattern, text)
+        if not match or field in seen:
+            continue
+        value = float(match.group(1))
+        if value.is_integer():
+            value = int(value)
+        candidates.append(_candidate(field, value, anchor, match.group(0), confidence, unit=unit))
+        seen.add(field)
+
+    handedness = _search(r"(左旋|右旋)", text)
+    if handedness:
+        candidates.append(_candidate("handedness", handedness.group(1), anchor, handedness.group(0), 0.84))
+
+    hardness = _search(r"HRC\s*\d+(?:\s*[-~～]\s*\d+)?", text)
+    if hardness:
+        candidates.append(_candidate("hardness", re.sub(r"\s+", "", hardness.group(0).upper()), anchor, hardness.group(0), 0.84))
+
+    surface = _extract_surface_requirement(text)
+    if surface is not None:
+        value, evidence, confidence = surface
+        candidates.append(_candidate("surface_requirement", value, anchor, evidence, confidence))
+
+    return candidates
 
 
 def _extract_wire_diameter(text: str, anchor: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -566,6 +646,13 @@ def _extract_technical_requirements(text: str, anchor: dict[str, Any] | None) ->
     surface = _search(r"产品不可有油污[，,、\s]*研磨粉尘[，,、\s]*表面毛刺小于线径的?10%", text)
     if surface:
         candidates.append(_candidate("surface_requirement", surface.group(0), anchor, surface.group(0), 0.86))
+    elif (surface_requirement := _extract_surface_requirement(text)) is not None:
+        value, evidence, confidence = surface_requirement
+        candidates.append(_candidate("surface_requirement", value, anchor, evidence, confidence))
+
+    hardness = _search(r"HRC\s*\d+(?:\s*[-~～]\s*\d+)?", text)
+    if hardness:
+        candidates.append(_candidate("hardness", re.sub(r"\s+", "", hardness.group(0).upper()), anchor, hardness.group(0), 0.86))
 
     salt = _search(r"720\s*h\s*无红锈", text)
     if salt:
@@ -575,6 +662,32 @@ def _extract_technical_requirements(text: str, anchor: dict[str, Any] | None) ->
     if environmental:
         candidates.append(_candidate("environmental", "GB/T 30512-2014", anchor, environmental.group(0), 0.9))
     return candidates
+
+
+def _extract_surface_requirement(text: str) -> tuple[str, str, float] | None:
+    labeled = _search(r"(表面处理|表面處理|表面要求|外观要求|外觀要求)\s*[:：]?\s*([^\n\r|;；]*)", text)
+    if labeled:
+        value = labeled.group(2).strip()
+        return value, labeled.group(0).strip(), 0.84 if value else 0.62
+
+    treatments = (
+        "镀锌五彩",
+        "镀锌",
+        "镀镍",
+        "镀铬",
+        "镀锡",
+        "钝化",
+        "发黑",
+        "磷化",
+        "达克罗",
+        "电泳",
+        "喷塑",
+        "防锈油",
+    )
+    for treatment in treatments:
+        if treatment in text:
+            return treatment, treatment, 0.86
+    return None
 
 
 def _result_payload(raw: Any) -> Any:

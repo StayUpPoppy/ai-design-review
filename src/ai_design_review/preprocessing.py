@@ -20,14 +20,17 @@ def probe_file(file_path: str | Path) -> dict[str, Any]:
         "size_bytes": path.stat().st_size if path.exists() else None,
         "kind": "unknown",
         "pdf_text_chars": None,
+        "pdf_text": None,
         "has_text_layer": None,
         "is_scanned_like": None,
     }
 
     if suffix == ".pdf":
         result["kind"] = "pdf"
-        chars = _extract_pdf_text_chars(path)
+        pdf_text = extract_pdf_text(path)
+        chars = len(pdf_text)
         result["pdf_text_chars"] = chars
+        result["pdf_text"] = pdf_text[:12000]
         result["has_text_layer"] = chars > 0
         result["is_scanned_like"] = chars == 0
     elif suffix in CAD_EXTENSIONS:
@@ -38,6 +41,19 @@ def probe_file(file_path: str | Path) -> dict[str, Any]:
         result["is_scanned_like"] = True
 
     return result
+
+
+def extract_pdf_text(path: str | Path) -> str:
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        return ""
+
+    try:
+        reader = PdfReader(str(path))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    except Exception:
+        return ""
 
 
 def render_pdf_with_pdftoppm(
@@ -67,14 +83,4 @@ def render_pdf_with_pdftoppm(
 
 
 def _extract_pdf_text_chars(path: Path) -> int:
-    try:
-        from pypdf import PdfReader
-    except Exception:
-        return 0
-
-    try:
-        reader = PdfReader(str(path))
-        return sum(len(page.extract_text() or "") for page in reader.pages)
-    except Exception:
-        return 0
-
+    return len(extract_pdf_text(path))

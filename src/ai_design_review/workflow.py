@@ -7,11 +7,19 @@ from .fusion import fuse_candidates
 from .preprocessing import probe_file
 from .rules import REQUIRED_FIELDS, determine_erp_ready, overall_status, run_rule_checks, should_require_human_review
 from .semantic import apply_spring_semantic_mapping
+from .spring_templates import (
+    classify_spring_type,
+    field_default_unit,
+    required_field_keys,
+    template_field_keys,
+    template_for,
+)
 
 
 TECHNICAL_FIELD_TYPES = {
     "heat_treatment": "heat_treatment",
     "surface_requirement": "surface",
+    "hardness": "hardness",
     "salt_spray": "salt_spray",
     "lifetime_test": "lifetime",
     "environmental": "environmental",
@@ -26,17 +34,26 @@ class DrawingReviewWorkflow:
 
     def run(self, file_path: str | None, candidates: list[dict[str, Any]]) -> dict[str, Any]:
         file_info = probe_file(file_path) if file_path else {"path": None, "kind": "unknown", "is_scanned_like": None}
+        candidates = [*_file_text_candidates(file_info), *candidates]
+        dimension_evidence = _dimension_evidence(candidates)
         candidates = apply_spring_semantic_mapping(candidates)
         fused = fuse_candidates(candidates)
-        spring_parameters = self._build_spring_parameters(fused["fields"], fused["load_points"])
+        classification = classify_spring_type(candidates, file_info)
+        spring_type = classification["spring_type"]
+        spring_template = template_for(spring_type)
+        spring_parameters = self._build_spring_parameters(fused["fields"], fused["load_points"], spring_type)
         technical_requirements = self._build_technical_requirements(fused["fields"])
         review_results = run_rule_checks(
             spring_parameters,
             technical_requirements,
             file_info,
             self.factory_rules,
+            spring_type=spring_type,
+            required_fields=required_field_keys(spring_type),
         )
         human_review_required = should_require_human_review(spring_parameters, review_results)
+        if classification.get("need_human_review"):
+            human_review_required = True
         erp_ready, erp_block_reason = determine_erp_ready(
             review_results,
             human_review_required,
@@ -50,19 +67,24 @@ class DrawingReviewWorkflow:
                 "drawing_name": _value(fused["fields"], "drawing_name", ""),
                 "drawing_no": _value(fused["fields"], "drawing_no", ""),
                 "version": _value(fused["fields"], "version", ""),
-                "spring_type": "compression_spring",
+                "spring_type": spring_type,
+                "spring_type_label": spring_template["label"],
+                "spring_type_confidence": classification["confidence"],
                 "material": _value(fused["fields"], "material", ""),
                 "unit": "mm",
                 "overall_status": status,
                 "summary": _summary(status, human_review_required, erp_ready),
             },
+            "spring_type_detection": classification,
+            "spring_template": spring_template,
             "file_info": file_info,
             "spring_parameters": spring_parameters,
             "technical_requirements": technical_requirements,
+            "dimension_evidence": dimension_evidence,
             "review_results": review_results,
             "balloons": balloons,
             "conflicts": fused["conflicts"],
-            "missing_fields": _missing_fields(spring_parameters),
+            "missing_fields": _missing_fields(spring_parameters, required_field_keys(spring_type)),
             "human_review_required": human_review_required,
             "erp_ready": erp_ready,
             "erp_block_reason": erp_block_reason,
@@ -72,21 +94,15 @@ class DrawingReviewWorkflow:
         self,
         fields: dict[str, dict[str, Any]],
         load_points: list[dict[str, Any]],
+        spring_type: str,
     ) -> dict[str, Any]:
-        return {
-            "material": self._param(fields, "material"),
-            "wire_diameter": self._param(fields, "wire_diameter", "mm"),
-            "outer_diameter": self._param(fields, "outer_diameter", "mm"),
-            "inner_diameter": self._param(fields, "inner_diameter", "mm"),
-            "mean_diameter": self._param(fields, "mean_diameter", "mm"),
-            "free_length": self._param(fields, "free_length", "mm"),
-            "total_coils": self._param(fields, "total_coils", "turns"),
-            "active_coils": self._param(fields, "active_coils", "turns"),
-            "handedness": self._param(fields, "handedness"),
-            "pitch": self._param(fields, "pitch", "mm"),
-            "end_type": self._param(fields, "end_type"),
-            "load_points": [self._load_point(item) for item in load_points],
+        parameters = {
+            field: self._param(fields, field, field_default_unit(spring_type, field))
+            for field in template_field_keys(spring_type)
         }
+        parameters["load_points"] = [self._load_point(item) for item in load_points]
+        parameters["torque_points"] = []
+        return parameters
 
     def _build_technical_requirements(self, fields: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         requirements = []
@@ -149,13 +165,54 @@ def _value(fields: dict[str, dict[str, Any]], field: str, default: Any = None) -
     return fields.get(field, {}).get("value", default)
 
 
-def _missing_fields(spring_parameters: dict[str, Any]) -> list[str]:
+def _file_text_candidates(file_info: dict[str, Any]) -> list[dict[str, Any]]:
+    text = str(file_info.get("pdf_text") or "").strip()
+    if not text:
+        return []
+    return [
+        {
+            "field": "document_text_pdf",
+            "feature_type": "note",
+            "value": text[:12000],
+            "source": "pdf_text_layer",
+            "evidence": text[:12000],
+            "confidence": 0.74,
+            "page": 1,
+            "position": None,
+            "suggested_region": "PDF text layer",
+        }
+    ]
+
+
+def _dimension_evidence(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    evidence = []
+    for candidate in candidates:
+        if candidate.get("feature_type") != "dimension_evidence":
+            continue
+        value = candidate.get("value")
+        if isinstance(value, dict):
+            item = dict(value)
+        else:
+            item = {
+                "kind": candidate.get("field", "dimension_evidence"),
+                "value": value,
+            }
+        item.setdefault("source", candidate.get("source", "geometry"))
+        item.setdefault("page", candidate.get("page", 1))
+        item.setdefault("position", candidate.get("position"))
+        item.setdefault("confidence", candidate.get("confidence", 0))
+        item.setdefault("suggested_region", candidate.get("suggested_region", "Geometry evidence"))
+        evidence.append(item)
+    return evidence
+
+
+def _missing_fields(spring_parameters: dict[str, Any], required_fields: list[str] | None = None) -> list[str]:
     missing = []
-    for field in REQUIRED_FIELDS:
+    for field in required_fields or REQUIRED_FIELDS:
         value = spring_parameters.get(field, {})
         if isinstance(value, dict) and value.get("value") in (None, ""):
             missing.append(field)
-    if not spring_parameters.get("load_points"):
+    if "load_points" in (required_fields or []) and not spring_parameters.get("load_points"):
         missing.append("load_points")
     return missing
 

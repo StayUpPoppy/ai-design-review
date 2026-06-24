@@ -12,7 +12,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .engines.ocr_adapter import OcrEngine, OcrExtractionError, OcrJsonEngine
+from .engines.geometry_adapter import GeometryEngine
+from .engines.ocr_adapter import OcrJsonEngine
+from .engines.ocr_providers import (
+    OcrProviderError,
+    UnifiedOcrEngine,
+    normalize_ocr_provider,
+    ocr_runtime_status,
+)
 from .engines.werk24_adapter import Werk24Engine
 from .io_utils import project_path, read_json, write_json
 from .preprocessing import IMAGE_EXTENSIONS, probe_file, render_pdf_with_pdftoppm
@@ -71,8 +78,10 @@ def health() -> dict[str, Any]:
         "project_root": str(PROJECT_ROOT),
         "api_runs": str(API_RUN_ROOT),
         "frontend_origins": FRONTEND_ORIGINS,
-        "werk24_license": _werk24_license_status(),
-        "paddleocr_runtime": _paddleocr_runtime_status(),
+        "ocr_runtime": ocr_runtime_status(),
+        "geometry_runtime": {"status": "ready", "engine": "geometry"},
+        "vlm_runtime": {"status": "not_configured", "mode": "optional_review_only"},
+        "paddleocr_runtime": {"status": "deprecated", "replacement": "ocr_runtime"},
     }
 
 
@@ -84,6 +93,11 @@ async def create_review(
     use_werk24: bool = Form(False),
     confirm_upload_to_werk24: bool = Form(False),
     use_cached_werk24: bool = Form(False),
+    use_ocr: bool = Form(False),
+    ocr_provider: str | None = Form(None),
+    use_geometry: bool = Form(True),
+    use_vlm: bool = Form(False),
+    vision_provider: str | None = Form("none"),
     use_paddleocr: bool = Form(False),
     use_sample_ocr: bool = Form(False),
 ) -> dict[str, Any]:
@@ -138,23 +152,47 @@ async def create_review(
         except Exception as exc:
             warnings.append(f"Werk24 extraction failed: {exc}")
 
-    if use_paddleocr:
+    if use_geometry:
         try:
-            paddle_payload = await run_in_threadpool(
-                OcrEngine(
-                    work_dir=job_dir / "paddleocr_pages",
+            geometry_payload = await run_in_threadpool(
+                GeometryEngine(work_dir=job_dir / "geometry_pages").extract_with_raw,
+                drawing_path,
+                [Path(item) for item in images] if images else None,
+            )
+            candidates.extend(geometry_payload.get("candidates", []))
+            raw_payloads["geometry"] = geometry_payload
+            candidate_sources.append("geometry")
+            warnings.extend(str(item) for item in geometry_payload.get("warnings", []))
+            write_json(job_dir / "geometry_evidence.json", geometry_payload)
+        except Exception as exc:
+            warnings.append(f"Geometry analysis failed: {type(exc).__name__}: {exc}")
+
+    should_use_ocr = use_ocr or use_paddleocr or ocr_provider is not None
+    if should_use_ocr:
+        try:
+            requested_provider = normalize_ocr_provider(
+                ocr_provider or ("auto" if use_paddleocr else os.getenv("OCR_PROVIDER", "auto"))
+            )
+            ocr_payload = await run_in_threadpool(
+                UnifiedOcrEngine(
+                    provider=requested_provider,
+                    work_dir=job_dir / "ocr_pages",
                     diagnostics_path=job_dir / "ocr_diagnostics.json",
                 ).extract_with_raw,
                 drawing_path,
             )
-            candidates.extend(paddle_payload.get("candidates", []))
-            raw_payloads["paddleocr"] = paddle_payload
-            candidate_sources.append("paddleocr")
-        except OcrExtractionError as exc:
+            candidates.extend(ocr_payload.get("candidates", []))
+            selected_provider = str(ocr_payload.get("provider") or "ocr")
+            raw_payloads[selected_provider] = ocr_payload
+            candidate_sources.append(selected_provider)
+            warnings.extend(str(item) for item in ocr_payload.get("warnings", []))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OcrProviderError as exc:
             diagnostics_url = _artifact_url(job_id, Path("ocr_diagnostics.json"))
             warnings.append(f"{exc}; diagnostics_url={diagnostics_url}")
         except Exception as exc:
-            warnings.append(f"PaddleOCR extraction failed: {exc}")
+            warnings.append(f"OCR extraction failed: {type(exc).__name__}: {exc}")
 
     if ocr_json is not None and ocr_json.filename:
         ocr_json_path = input_dir / _safe_filename(ocr_json.filename)
@@ -171,10 +209,28 @@ async def create_review(
         raw_payloads["sample_ocr_json"] = read_json(sample_ocr_path)
         candidate_sources.append("sample_ocr_json")
 
-    if not candidates:
+    if use_vlm:
+        provider = str(vision_provider or "none").strip().lower()
+        raw_payloads["vlm"] = {
+            "status": "skipped",
+            "provider": provider,
+            "policy": "review_only_requires_ocr_or_geometry_evidence",
+            "reason": "VLM adapter is not configured in this local MVP.",
+        }
         warnings.append(
-            "No recognition candidates were produced. For scanned PDFs, enable Werk24, "
-            "upload OCR JSON, or select a cached/sample recognition source."
+            "VLM review skipped: no vision provider is configured. VLM may only cite OCR/geometry evidence "
+            "and must not invent dimensions."
+        )
+
+    business_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.get("feature_type") != "dimension_evidence"
+    ]
+    if not business_candidates:
+        warnings.append(
+            "No structured OCR candidates were produced. Geometry evidence may still be available, but "
+            "dimension fields need OCR, imported OCR JSON, or manual confirmation."
         )
 
     rules = read_json(project_path("config", "factory_rules.json"))
@@ -184,6 +240,7 @@ async def create_review(
         "job_id": job_id,
         "sources": candidate_sources,
         "candidates": candidates,
+        "dimension_evidence": raw_payloads.get("geometry", {}).get("dimension_evidence", []),
         "raw_payloads": raw_payloads,
     }
     write_json(job_dir / "candidates.json", candidates_payload)
@@ -194,9 +251,12 @@ async def create_review(
         "job_id": job_id,
         "candidate_sources": candidate_sources,
         "candidate_count": len(candidates),
+        "business_candidate_count": len(business_candidates),
+        "geometry_evidence_count": len(raw_payloads.get("geometry", {}).get("dimension_evidence", [])),
         "image_url": image_url,
         "review_url": _artifact_url(job_id, Path("review.json")),
         "candidates_url": _artifact_url(job_id, Path("candidates.json")),
+        "geometry_url": _artifact_url(job_id, Path("geometry_evidence.json")) if "geometry" in raw_payloads else None,
         "warnings": warnings,
         "review": review,
     }
@@ -275,18 +335,6 @@ def _werk24_license_status() -> dict[str, str]:
         return {"status": "sdk_missing"}
     except Exception as exc:
         return {"status": "not_found", "detail": f"{type(exc).__name__}: {exc}"}
-
-
-def _paddleocr_runtime_status() -> dict[str, str]:
-    import importlib.util
-
-    has_paddleocr = importlib.util.find_spec("paddleocr") is not None
-    has_paddle = importlib.util.find_spec("paddle") is not None
-    if has_paddleocr and has_paddle:
-        return {"status": "ready"}
-    if has_paddleocr:
-        return {"status": "missing_paddlepaddle"}
-    return {"status": "missing_paddleocr"}
 
 
 def _artifact_url(job_id: str, relative: Path) -> str:

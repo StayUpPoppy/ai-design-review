@@ -11,6 +11,10 @@ SOURCE_PRIORITY = {
     "dxf": 0.95,
     "dwg": 0.95,
     "werk24": 0.86,
+    "baidu_paddleocr_vl": 0.84,
+    "baidu_ocr": 0.82,
+    "pdf_text_layer": 0.8,
+    "rapidocr": 0.78,
     "ocr": 0.78,
     "azure": 0.78,
     "paddle": 0.78,
@@ -153,4 +157,3 @@ def _values_close(left: Any, right: Any) -> bool:
     if isinstance(left, (int, float)) and isinstance(right, (int, float)):
         return abs(float(left) - float(right)) <= 1e-6
     return str(left).strip() == str(right).strip()
-

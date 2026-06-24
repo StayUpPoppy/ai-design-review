@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+*.pyc
+.env
+.werk24
+outputs
+tmp_pdf_pages
+node_modules

@@ -3,14 +3,14 @@
 这是一个从 0 到 1 的弹簧图纸 AI 审查 MVP。当前版本重点实现：
 
 - 图纸文件探测：区分扫描 PDF、矢量 PDF、图片、CAD 文件
-- 多来源识别结果融合：CAD / Werk24 / OCR / 视觉模型 / 人工确认
+- 多来源识别结果融合：OCR / 几何分析 / 可选 VLM / 人工确认
 - 弹簧参数标准化：线径、外径、自由长度、圈数、旋向、载荷点等
-- 弹簧语义映射：把 Werk24 通用尺寸候选映射成弹簧业务字段
+- 弹簧语义映射：把 OCR 文本、几何证据和模板字段映射成弹簧业务字段
 - 基础规则审查：缺失字段、载荷关系、公差风险、工艺能力风险
-- 气泡图数据生成：输出前端可叠加的 bubble JSON
+- 审图证据生成：输出尺寸字段、几何证据和人工确认所需 JSON
 - ERP 放行判断：默认扫描图纸必须人工确认后才允许进入 ERP
 
-当前 MVP 已提供纯 Python 命令行流程、Werk24 适配器、PaddleOCR/OCR JSON 适配器、FastAPI 上传接口和前后端分离的本地审查工作台。LangGraph / OpenAI Vision / ERP 推送节点可以在当前接口边界上继续接入。
+当前 MVP 已提供纯 Python 命令行流程、百度 OCR / RapidOCR / OCR JSON 适配器、几何分析适配器、FastAPI 上传接口和前后端分离的本地审查工作台。Werk24 代码仅作为历史可选适配器保留；LangGraph / VLM 复核 / ERP 推送节点可以在当前接口边界上继续接入。
 
 ## 前后端分离运行
 
@@ -50,9 +50,9 @@ http://127.0.0.1:8770/api/health
 页面支持：
 
 - 点击 `加载样例`：从后端加载 `outputs/mixed_review.json` 和样例图。
-- 上传 PDF/图片并勾选 `调用 PaddleOCR`：本地 OCR 抽取扫描图文字，不上传外部服务。
-- 勾选 `调用 Werk24` + `确认上传到 Werk24`：把当前图纸上传到 Werk24 API 抽取尺寸/气泡候选。
-- 同时勾选 `调用 PaddleOCR`、`调用 Werk24`、`确认上传到 Werk24`：运行混合识别方案。
+- 上传 PDF/图片并勾选 `调用 OCR`：默认先调用百度高精度含位置 OCR，失败或未配置时自动降级到本地 RapidOCR。
+- 勾选 `调用几何分析`：对 PDF/图片预览页检测线段、圆/弧、箭头候选、标题栏和图纸内容区域，输出 `dimension_evidence`。
+- 勾选 `VLM 低置信度复核`：保留低置信度字段复核入口；当前只作为受控可选节点，不允许凭空补尺寸。
 
 ## 快速运行
 
@@ -71,7 +71,7 @@ outputs/spring_example_review.json
 
 工作台支持：
 
-- 图纸气泡展示
+- 图纸预览和全屏数据对比
 - 关键弹簧参数编辑
 - 技术要求确认
 - 扫描图纸人工确认
@@ -86,13 +86,13 @@ outputs/spring_example_review.json
 scripts\run_backend.cmd
 ```
 
-如果 `/api/health` 中 `paddleocr_runtime.status` 显示 `missing_paddlepaddle`，先安装 Paddle 推理引擎并重启服务：
+安装 OCR 运行依赖：
 
 ```cmd
-python -m pip install "paddlepaddle>=3.2,<3.3"
+python -m pip install -r requirements.txt
 ```
 
-当前 Windows CPU 环境已验证 `paddlepaddle 3.2.2 + PaddleOCR PP-OCRv4 mobile` 可运行；`paddlepaddle 3.3.1 + PP-OCRv6` 在本机触发过 oneDNN/PIR 推理错误。
+`/api/health` 的 `ocr_runtime` 会分别显示百度凭据状态与 RapidOCR/ONNX Runtime 状态。当前 Windows CPU 环境已验证 `rapidocr 3.8.4 + onnxruntime 1.20.1` 可运行。
 
 也可以显式传入候选识别结果：
 
@@ -107,7 +107,29 @@ $env:PYTHONPATH="D:\YingKe\ai-design-review\src"
 
 ## OCR 与混合审查
 
-当前本地 `.venv` 已接入 PaddleOCR；也保留了 OCR JSON 适配器，后续可接 Azure OCR、百度 OCR 或阿里 OCR，只要输出 `texts` 文本块即可。
+当前默认 OCR Provider 为 `auto`：百度高精度含位置 OCR 优先，失败时自动降级到 RapidOCR。两种 Provider 都会输出统一的 `texts` 文本块，后续尺寸、载荷点和技术要求映射保持不变。
+
+配置百度 OCR：
+
+```powershell
+Copy-Item .env.example .env
+$env:OCR_PROVIDER="auto"
+$env:BAIDU_OCR_API_KEY="你的 API Key"
+$env:BAIDU_OCR_SECRET_KEY="你的 Secret Key"
+```
+
+也可以直接把真实密钥写入本地 `.env`；`scripts\run_backend.cmd` 检测到该文件后会自动加载。`.env` 已加入 `.gitignore`。
+
+直接运行 OCR：
+
+```powershell
+& ".\.venv\Scripts\python.exe" -m ai_design_review.cli extract-ocr `
+  --file "C:\path\drawing.pdf" `
+  --provider auto `
+  --out "outputs/ocr_provider_candidates.json"
+```
+
+可选 Provider 为 `auto`、`baidu_ocr`、`rapidocr`。旧命令 `extract-paddleocr` 暂时保留为 `auto` 的兼容别名。
 
 把 OCR 文本块转为候选：
 
@@ -118,23 +140,43 @@ $env:PYTHONPATH="D:\YingKe\ai-design-review\src"
   --out "outputs/ocr_candidates.json"
 ```
 
-Werk24 + OCR 混合审查：
+默认增强审查链路：
 
 ```powershell
 & ".\.venv\Scripts\python.exe" -m ai_design_review.cli review `
   --file "C:\Users\29580\Desktop\扫描全能王 2026-06-01 15.54(2).pdf" `
-  --candidates "outputs/werk24_candidates.json" "outputs/ocr_candidates.json" `
+  --candidates "outputs/ocr_candidates.json" `
   --rules "config/factory_rules.json" `
   --out "outputs/mixed_review.json"
 ```
 
-这条链路会让 Werk24 负责尺寸/气泡，OCR 负责中文字段，例如 `右旋`、图号、版本、标题栏和表面要求。
+API 上传时默认会运行 OCR + 几何分析：OCR 负责文字、尺寸数字、标题栏和表面处理；几何分析负责线段、箭头候选、圆/弧、标题栏和图纸内容区域，输出 `dimension_evidence` 供模板归属、LLM/VLM 复核和人工确认引用。
 
-## Werk24 接入
+每次 OCR 都会在 job 目录生成 `ocr_diagnostics.json`，记录页面、Provider、耗时、HTTP 状态、重试与降级原因，但不会记录百度密钥或访问令牌。
 
-项目已实现 `Werk24Engine`，会调用 Werk24 的 `AskMetaData`、`AskFeatures`、`AskBalloons`，并映射为本项目统一 candidate JSON。
+每次启用几何分析都会在 job 目录生成 `geometry_evidence.json`，记录低层几何证据和诊断信息。几何证据不会直接覆盖尺寸字段，只作为“为什么这个数字可能属于这个字段”的依据。
 
-先配置环境变量：
+## CentOS 7 Docker 部署
+
+生产服务器使用 Docker 运行 Python 3.11，避免 CentOS 7 宿主机旧版系统库影响 ONNX Runtime：
+
+```bash
+docker build -t ai-design-review:latest .
+docker run -d --name ai-design-review \
+  --restart unless-stopped \
+  -p 8770:8770 \
+  --env-file .env \
+  -v "$PWD/outputs:/app/outputs" \
+  ai-design-review:latest
+```
+
+`.env` 至少配置 `OCR_PROVIDER`。使用百度 OCR 时再配置 `BAIDU_OCR_API_KEY` 和 `BAIDU_OCR_SECRET_KEY`；缺少百度凭据时 `auto` 会自动使用 RapidOCR。
+
+## 历史可选 Werk24 接入
+
+Werk24 不再作为默认产品方案。项目仍保留 `Werk24Engine`，仅用于历史兼容或单独对比评估；新流程默认走 OCR + 几何分析 + 可选 VLM 复核。
+
+如果确实要单独评估 Werk24，可以配置环境变量：
 
 ```powershell
 $env:W24TECHREAD_AUTH_TOKEN="你的 Werk24 token"
@@ -161,7 +203,7 @@ $env:PYTHONPATH="D:\YingKe\ai-design-review\src"
   --confirm-upload-to-werk24
 ```
 
-注意：Werk24 会输出通用尺寸候选，例如 `werk24_dimension_12345`。这些候选还需要后续的 OCR/视觉模型/规则节点映射成弹簧语义字段，比如线径、外径、自由长度和载荷点。
+注意：Werk24 会输出通用尺寸候选，例如 `werk24_dimension_12345`。这些候选仍需要后续 OCR/几何证据/视觉模型/规则节点映射成弹簧语义字段，比如线径、外径、自由长度和载荷点。
 
 `--confirm-upload-to-werk24` 是有意设计的安全开关。使用它表示你确认该图纸允许上传到 Werk24 外部 API。
 
@@ -169,9 +211,9 @@ $env:PYTHONPATH="D:\YingKe\ai-design-review\src"
 
 推荐逐步接入：
 
-1. `Werk24`：尺寸、公差、GD&T、气泡候选坐标。
-2. `PaddleOCR / Azure Document Intelligence`：中文技术要求、标题栏。
-3. `OpenAI Vision + Structured Outputs`：弹簧语义映射和冲突解释。
+1. `百度 OCR / 百度 PaddleOCR-VL + RapidOCR`：中文技术要求、标题栏、尺寸数字、坐标与本地降级。
+2. `OpenCV + PyMuPDF 几何分析`：线段、箭头、圆/弧、轮廓、标题栏和矢量 PDF 绘图对象，输出 `dimension_evidence`。
+3. `VLM/LLM Structured JSON`：只处理低置信度字段、孤立尺寸、字段冲突和模板归属，必须引用 OCR 或几何证据。
 4. `LangGraph`：把识别、融合、规则审查、人工确认、ERP 推送编排成可恢复流程。
 5. `Postgres + MinIO/S3`：保存结构化参数、审查记录、原图和气泡图。
 
@@ -199,9 +241,11 @@ prompts/
 
 scripts/
   smoke_test.py          本地冒烟测试
-  test_werk24_mapping.py Werk24 返回结构映射测试
+  test_geometry_adapter.py 几何证据提取测试
+  test_werk24_mapping.py 历史可选 Werk24 返回结构映射测试
   test_ocr_json_mapping.py OCR JSON 映射测试
-  test_mixed_review.py   Werk24 + OCR 混合审查测试
+  test_ocr_providers.py  OCR Provider、坐标解析与自动降级测试
+  test_mixed_review.py   多来源候选融合审查测试
 ```
 "# ai-design-review" 
 
@@ -213,4 +257,3 @@ scripts\run_frontend.cmd
 ```
 
 传入文件格式DWG PDF 图片
-

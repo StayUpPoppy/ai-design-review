@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>弹簧图纸 AI 审查助手</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="./styles.css?v=20260618-review-table">
+    <link rel="stylesheet" href="./styles.css?v=20260623-no-werk24-geometry">
   </head>
   <body>
     <main class="app-shell">
@@ -65,18 +65,45 @@
                         <input id="apiBaseInput" type="url" value="http://127.0.0.1:8770">
                       </label>
                       <label class="check-control">
-                        <input id="usePaddleOcrInput" type="checkbox" checked>
-                        调用 PaddleOCR
+                        <input id="useOcrInput" type="checkbox" checked>
+                        调用 OCR
                       </label>
                       <label class="check-control">
+                        <input id="useGeometryInput" type="checkbox" checked>
+                        调用几何分析
+                      </label>
+                      <label class="api-field provider-field">
+                        OCR 引擎
+                        <select id="ocrProviderInput">
+                          <option value="baidu_paddleocr_vl">百度 PaddleOCR-VL 文档解析（消耗页数）</option>
+                          <option value="auto" selected>自动：百度优先 / RapidOCR 兜底</option>
+                          <option value="baidu_ocr">百度高精度含位置</option>
+                          <option value="rapidocr">RapidOCR 本地识别</option>
+                        </select>
+                      </label>
+                      <label class="check-control">
+                        <input id="useVlmInput" type="checkbox" disabled>
+                        VLM 低置信度复核（待接入）
+                      </label>
+                      <label class="api-field provider-field">
+                        VLM 引擎
+                        <select id="visionProviderInput" disabled>
+                          <option value="none" selected>暂未接入</option>
+                          <option value="local">本地/私有模型</option>
+                          <option value="baidu">国内云视觉模型</option>
+                          <option value="openai">OpenAI 视觉模型</option>
+                          <option value="azure">Azure 视觉模型</option>
+                        </select>
+                      </label>
+                      <label class="check-control legacy-werk24-option" hidden>
                         <input id="useWerk24Input" type="checkbox">
                         调用 Werk24
                       </label>
-                      <label class="check-control">
+                      <label class="check-control legacy-werk24-option" hidden>
                         <input id="confirmWerk24Input" type="checkbox">
                         确认上传到 Werk24
                       </label>
-                      <label class="check-control">
+                      <label class="check-control legacy-werk24-option" hidden>
                         <input id="useCachedWerk24Input" type="checkbox">
                         使用缓存 Werk24
                       </label>
@@ -96,6 +123,6 @@
       </div>
     </main>
 
-    <script src="./app.js?v=20260618-review-table"></script>
+    <script src="./app.js?v=20260623-no-werk24-geometry"></script>
   </body>
 </html>
