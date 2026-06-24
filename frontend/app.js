@@ -180,6 +180,7 @@ const selectedFileName = document.getElementById("selectedFileName");
 const dropZone = document.getElementById("dropZone");
 const advancedOptions = document.getElementById("advancedOptions");
 const useOcrInput = document.getElementById("useOcrInput");
+const useQwenInput = document.getElementById("useQwenInput");
 const ocrProviderInput = document.getElementById("ocrProviderInput");
 const useGeometryInput = document.getElementById("useGeometryInput");
 const useVlmInput = document.getElementById("useVlmInput");
@@ -307,11 +308,13 @@ async function submitSelectedFile() {
   setBusy(true);
   appendUserMessage(`上传图纸：${state.selectedFile.name}`);
   const providerLabel = ocrProviderInput.selectedOptions[0]?.textContent || "OCR";
-  const thinkingId = appendAssistantText(`正在识别图纸，当前引擎：${providerLabel}...`);
+  const activeEngineLabel = useQwenInput?.checked ? "Qwen3.7 视觉识别" : providerLabel;
+  const thinkingId = appendAssistantText(`正在识别图纸，当前引擎：${activeEngineLabel}...`);
 
   try {
     const form = new FormData();
     form.append("drawing", state.selectedFile);
+    form.append("use_qwen", useQwenInput?.checked ? "true" : "false");
     form.append("use_ocr", useOcrInput.checked ? "true" : "false");
     if (useOcrInput.checked) form.append("ocr_provider", ocrProviderInput.value);
     form.append("use_geometry", useGeometryInput?.checked ? "true" : "false");
@@ -362,6 +365,8 @@ async function checkApiHealth() {
     const response = await fetch(apiUrl("/api/health"));
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || "后端健康检查失败");
+    const qwenStatus = payload.qwen_runtime?.status || "unknown";
+    const qwenModel = payload.qwen_runtime?.model || "qwen3.7-plus";
     const ocrRuntime = payload.ocr_runtime || {};
     const defaultProvider = ocrRuntime.default_provider || "unknown";
     const baiduStatus = ocrRuntime.baidu_ocr?.status || "unknown";
@@ -370,7 +375,7 @@ async function checkApiHealth() {
     const geometryStatus = payload.geometry_runtime?.status || "unknown";
     const vlmStatus = payload.vlm_runtime?.status || "unknown";
     setBackendStatus(
-      `后端正常 · OCR ${defaultProvider} · 百度 ${baiduStatus} · 百度VL ${baiduVlStatus} · RapidOCR ${rapidStatus} · 几何 ${geometryStatus} · VLM ${vlmStatus}`,
+      `后端正常 · Qwen ${qwenModel} ${qwenStatus} · OCR ${defaultProvider} · 百度 ${baiduStatus} · 百度VL ${baiduVlStatus} · RapidOCR ${rapidStatus} · 几何 ${geometryStatus} · VLM ${vlmStatus}`,
     );
   } catch (error) {
     setBackendStatus(`后端不可用：${error.message || String(error)}`, true);

@@ -11,6 +11,7 @@ SOURCE_PRIORITY = {
     "dxf": 0.95,
     "dwg": 0.95,
     "werk24": 0.86,
+    "qwen_vision": 0.88,
     "baidu_paddleocr_vl": 0.84,
     "baidu_ocr": 0.82,
     "pdf_text_layer": 0.8,

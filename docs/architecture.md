@@ -6,8 +6,8 @@
 图纸上传
 → 文件探测
 → PDF/图片预处理
-→ 多引擎识别
-→ 几何证据提取
+→ Qwen3.7 视觉主识别
+→ 可选 OCR/几何证据提取
 → 候选结果融合
 → 弹簧参数标准化
 → 规则审查
@@ -32,7 +32,7 @@ src/ai_design_review/
   engines/
 ```
 
-前端独立运行在 `http://127.0.0.1:5173`，只通过 HTTP 调用后端 API。后端独立运行在 `http://127.0.0.1:8770`，负责上传文件、预览图生成、百度 OCR / RapidOCR 调用、几何分析、规则审查和审查结果存储。
+前端独立运行在 `http://127.0.0.1:5173`，只通过 HTTP 调用后端 API。后端独立运行在 `http://127.0.0.1:8770`，负责上传文件、预览图生成、Qwen3.7 视觉识别、可选百度 OCR / RapidOCR 调用、几何分析、规则审查和审查结果存储。
 
 后端需要保留 `/outputs`、`/tmp_pdf_pages`、`/artifacts` 这类静态结果目录，用于前端展示样例图和单次审查产生的预览图；这些目录不是前端应用代码托管入口。
 
@@ -45,9 +45,10 @@ src/ai_design_review/
 | `classify_file` | `preprocessing.probe_file` | 判断 PDF/图片/CAD，以及是否扫描件 |
 | `render_pages` | `preprocessing.render_pdf_with_pdftoppm` | PDF 渲染为图片 |
 | `cad_extract` | `engines.cad_adapter` | DXF/DWG 尺寸对象解析 |
-| `ocr_extract` | `engines.ocr_providers` | 百度 OCR 优先、RapidOCR 本地降级，并统一输出文本块 |
-| `geometry_extract` | `engines.geometry_adapter` | 线段、箭头、圆/弧、轮廓、标题栏、矢量 PDF 绘图对象 |
-| `vision_review` | `engines.vision_adapter` | VLM/LLM 只复核低置信度字段、孤立尺寸和字段冲突 |
+| `qwen_vision_extract` | `engines.qwen_vision_adapter` | Qwen3.7-Plus 直接识别弹簧类型、尺寸、材料、表面处理和技术要求 |
+| `ocr_extract` | `engines.ocr_providers` | 可选兜底：百度 OCR 优先、RapidOCR 本地降级，并统一输出文本块 |
+| `geometry_extract` | `engines.geometry_adapter` | 可选证据层：线段、箭头、圆/弧、轮廓、标题栏、矢量 PDF 绘图对象 |
+| `vision_review` | `engines.vision_adapter` | 后续阶段：VLM/LLM 复核低置信度字段、孤立尺寸和字段冲突 |
 | `spring_semantic_map` | `semantic.apply_spring_semantic_mapping` | 将通用尺寸候选映射成弹簧业务字段 |
 | `fuse_candidates` | `fusion.fuse_candidates` | 多来源融合、冲突识别 |
 | `rule_check` | `rules.run_rule_checks` | 工艺、标准、ERP 放行规则 |
@@ -81,7 +82,17 @@ src/ai_design_review/
 }
 ```
 
-如果 OCR 或几何分析有坐标，应尽量填入 `position`。几何证据不直接覆盖尺寸字段，而是作为字段归属、低置信度复核和人工确认的依据。
+Qwen 主识别结果可以没有稳定坐标，但必须给出 `evidence` 和 `confidence`。OCR 或几何分析如有坐标，应尽量填入 `position`。几何证据不直接覆盖尺寸字段，而是作为字段归属、低置信度复核和人工确认的依据。
+
+## Qwen3.7 视觉识别适配器
+
+`QwenVisionEngine` 是当前 MVP 默认主识别器：
+
+- 默认模型：`qwen3.7-plus`。
+- 默认接口：OpenAI 兼容 `chat/completions`。
+- PDF 先渲染成高清图片，图片直接作为 data URL 输入模型。
+- 模型必须返回严格 JSON，再转换为统一 candidates。
+- 原始返回保存为 `qwen_vision_raw.json`，用于人工排查。
 
 ## 几何分析适配器
 

@@ -20,6 +20,7 @@ from .engines.ocr_providers import (
     normalize_ocr_provider,
     ocr_runtime_status,
 )
+from .engines.qwen_vision_adapter import QwenVisionEngine, qwen_runtime_status
 from .engines.werk24_adapter import Werk24Engine
 from .io_utils import project_path, read_json, write_json
 from .preprocessing import IMAGE_EXTENSIONS, probe_file, render_pdf_with_pdftoppm
@@ -78,6 +79,7 @@ def health() -> dict[str, Any]:
         "project_root": str(PROJECT_ROOT),
         "api_runs": str(API_RUN_ROOT),
         "frontend_origins": FRONTEND_ORIGINS,
+        "qwen_runtime": qwen_runtime_status(),
         "ocr_runtime": ocr_runtime_status(),
         "geometry_runtime": {"status": "ready", "engine": "geometry"},
         "vlm_runtime": {"status": "not_configured", "mode": "optional_review_only"},
@@ -95,7 +97,8 @@ async def create_review(
     use_cached_werk24: bool = Form(False),
     use_ocr: bool = Form(False),
     ocr_provider: str | None = Form(None),
-    use_geometry: bool = Form(True),
+    use_qwen: bool = Form(True),
+    use_geometry: bool = Form(False),
     use_vlm: bool = Form(False),
     vision_provider: str | None = Form("none"),
     use_paddleocr: bool = Form(False),
@@ -151,6 +154,20 @@ async def create_review(
             candidate_sources.append("werk24")
         except Exception as exc:
             warnings.append(f"Werk24 extraction failed: {exc}")
+
+    if use_qwen:
+        try:
+            qwen_payload = await run_in_threadpool(
+                QwenVisionEngine(work_dir=job_dir / "qwen_pages").extract_with_raw,
+                drawing_path,
+                [Path(item) for item in images] if images else None,
+            )
+            candidates.extend(qwen_payload.get("candidates", []))
+            raw_payloads["qwen_vision"] = qwen_payload
+            candidate_sources.append("qwen_vision")
+            write_json(job_dir / "qwen_vision_raw.json", qwen_payload)
+        except Exception as exc:
+            warnings.append(f"Qwen vision extraction failed: {type(exc).__name__}: {exc}")
 
     if use_geometry:
         try:
@@ -229,8 +246,8 @@ async def create_review(
     ]
     if not business_candidates:
         warnings.append(
-            "No structured OCR candidates were produced. Geometry evidence may still be available, but "
-            "dimension fields need OCR, imported OCR JSON, or manual confirmation."
+            "No structured recognition candidates were produced. Geometry evidence may still be available, but "
+            "dimension fields need Qwen, OCR, imported OCR JSON, or manual confirmation."
         )
 
     rules = read_json(project_path("config", "factory_rules.json"))
@@ -256,6 +273,7 @@ async def create_review(
         "image_url": image_url,
         "review_url": _artifact_url(job_id, Path("review.json")),
         "candidates_url": _artifact_url(job_id, Path("candidates.json")),
+        "qwen_url": _artifact_url(job_id, Path("qwen_vision_raw.json")) if "qwen_vision" in raw_payloads else None,
         "geometry_url": _artifact_url(job_id, Path("geometry_evidence.json")) if "geometry" in raw_payloads else None,
         "warnings": warnings,
         "review": review,

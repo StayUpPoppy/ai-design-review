@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>弹簧图纸 AI 审查助手</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="./styles.css?v=20260623-no-werk24-geometry">
+    <link rel="stylesheet" href="./styles.css?v=20260624-qwen-vision-mvp">
   </head>
   <body>
     <main class="app-shell">
@@ -65,11 +65,15 @@
                         <input id="apiBaseInput" type="url" value="http://127.0.0.1:8770">
                       </label>
                       <label class="check-control">
-                        <input id="useOcrInput" type="checkbox" checked>
+                        <input id="useQwenInput" type="checkbox" checked>
+                        调用 Qwen3.7 视觉识别
+                      </label>
+                      <label class="check-control">
+                        <input id="useOcrInput" type="checkbox">
                         调用 OCR
                       </label>
                       <label class="check-control">
-                        <input id="useGeometryInput" type="checkbox" checked>
+                        <input id="useGeometryInput" type="checkbox">
                         调用几何分析
                       </label>
                       <label class="api-field provider-field">
@@ -123,6 +127,6 @@
       </div>
     </main>
 
-    <script src="./app.js?v=20260623-no-werk24-geometry"></script>
+    <script src="./app.js?v=20260624-qwen-vision-mvp"></script>
   </body>
 </html>

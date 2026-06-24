@@ -50,9 +50,9 @@ http://127.0.0.1:8770/api/health
 页面支持：
 
 - 点击 `加载样例`：从后端加载 `outputs/mixed_review.json` 和样例图。
-- 上传 PDF/图片并勾选 `调用 OCR`：默认先调用百度高精度含位置 OCR，失败或未配置时自动降级到本地 RapidOCR。
-- 勾选 `调用几何分析`：对 PDF/图片预览页检测线段、圆/弧、箭头候选、标题栏和图纸内容区域，输出 `dimension_evidence`。
-- 勾选 `VLM 低置信度复核`：保留低置信度字段复核入口；当前只作为受控可选节点，不允许凭空补尺寸。
+- 上传 PDF/图片并勾选 `调用 Qwen3.7 视觉识别`：默认主流程，直接输出弹簧类型、尺寸字段、材料、表面处理和技术要求。
+- 勾选 `调用 OCR`：可选兜底，百度高精度含位置 OCR 优先，失败或未配置时自动降级到本地 RapidOCR。
+- 勾选 `调用几何分析`：可选证据层，检测线段、圆/弧、箭头候选、标题栏和图纸内容区域，输出 `dimension_evidence`。
 
 ## 快速运行
 
@@ -92,7 +92,7 @@ scripts\run_backend.cmd
 python -m pip install -r requirements.txt
 ```
 
-`/api/health` 的 `ocr_runtime` 会分别显示百度凭据状态与 RapidOCR/ONNX Runtime 状态。当前 Windows CPU 环境已验证 `rapidocr 3.8.4 + onnxruntime 1.20.1` 可运行。
+`/api/health` 会显示 `qwen_runtime`、`ocr_runtime`、`geometry_runtime` 状态。当前 Windows CPU 环境已验证 `rapidocr 3.8.4 + onnxruntime 1.20.1` 可运行。
 
 也可以显式传入候选识别结果：
 
@@ -105,9 +105,26 @@ $env:PYTHONPATH="D:\YingKe\ai-design-review\src"
   --out "outputs/spring_example_review.json"
 ```
 
-## OCR 与混合审查
+## Qwen3.7 视觉识别
 
-当前默认 OCR Provider 为 `auto`：百度高精度含位置 OCR 优先，失败时自动降级到 RapidOCR。两种 Provider 都会输出统一的 `texts` 文本块，后续尺寸、载荷点和技术要求映射保持不变。
+当前前端默认使用 Qwen3.7-Plus 作为主识别器。PDF 会先渲染成图片，图片文件会直接上传给 Qwen；Qwen 返回严格 JSON 后转换成本项目统一 candidate / review 结构。
+
+配置 Qwen：
+
+```powershell
+Copy-Item .env.example .env
+$env:QWEN_API_KEY="你的百炼或 DashScope API Key"
+$env:QWEN_MODEL="qwen3.7-plus"
+$env:QWEN_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
+```
+
+也可以直接把真实密钥写入本地 `.env`；`scripts\run_backend.cmd` 检测到该文件后会自动加载。`.env` 已加入 `.gitignore`。
+
+每次 Qwen 识别都会在 job 目录生成 `qwen_vision_raw.json`，保存模型原始返回、解析后的 JSON 和转换后的 candidates，便于调试。
+
+## OCR 与几何兜底
+
+OCR Provider 默认为 `auto`：百度高精度含位置 OCR 优先，失败时自动降级到 RapidOCR。两种 Provider 都会输出统一的 `texts` 文本块，后续尺寸、载荷点和技术要求映射保持不变。
 
 配置百度 OCR：
 
@@ -117,8 +134,6 @@ $env:OCR_PROVIDER="auto"
 $env:BAIDU_OCR_API_KEY="你的 API Key"
 $env:BAIDU_OCR_SECRET_KEY="你的 Secret Key"
 ```
-
-也可以直接把真实密钥写入本地 `.env`；`scripts\run_backend.cmd` 检测到该文件后会自动加载。`.env` 已加入 `.gitignore`。
 
 直接运行 OCR：
 
@@ -140,7 +155,7 @@ $env:PYTHONPATH="D:\YingKe\ai-design-review\src"
   --out "outputs/ocr_candidates.json"
 ```
 
-默认增强审查链路：
+OCR 候选审查链路：
 
 ```powershell
 & ".\.venv\Scripts\python.exe" -m ai_design_review.cli review `
@@ -150,7 +165,7 @@ $env:PYTHONPATH="D:\YingKe\ai-design-review\src"
   --out "outputs/mixed_review.json"
 ```
 
-API 上传时默认会运行 OCR + 几何分析：OCR 负责文字、尺寸数字、标题栏和表面处理；几何分析负责线段、箭头候选、圆/弧、标题栏和图纸内容区域，输出 `dimension_evidence` 供模板归属、LLM/VLM 复核和人工确认引用。
+API 上传时默认运行 Qwen3.7 视觉识别。OCR 和几何分析可在高级选项中手动开启，用于补充文字候选和几何证据。
 
 每次 OCR 都会在 job 目录生成 `ocr_diagnostics.json`，记录页面、Provider、耗时、HTTP 状态、重试与降级原因，但不会记录百度密钥或访问令牌。
 

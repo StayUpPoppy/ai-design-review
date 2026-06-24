@@ -23,6 +23,8 @@ TECHNICAL_FIELD_TYPES = {
     "salt_spray": "salt_spray",
     "lifetime_test": "lifetime",
     "environmental": "environmental",
+    "process_requirement": "process",
+    "other_requirement": "other",
 }
 
 
