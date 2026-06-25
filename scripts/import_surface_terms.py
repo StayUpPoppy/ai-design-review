@@ -12,7 +12,7 @@ from xml.etree import ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_design_review.surface_terms import DEFAULT_ALIASES  # noqa: E402
+from ai_design_review.surface_terms import DEFAULT_AUTO_ALIASES  # noqa: E402
 
 
 NS = {
@@ -37,7 +37,8 @@ def main() -> None:
         "source": xlsx_path.name,
         "source_sheet": args.sheet,
         "terms": terms,
-        "aliases": dict(sorted(DEFAULT_ALIASES.items())),
+        "auto_aliases": dict(sorted(DEFAULT_AUTO_ALIASES.items())),
+        "aliases": dict(sorted(DEFAULT_AUTO_ALIASES.items())),
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

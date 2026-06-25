@@ -546,10 +546,18 @@ textarea {
 }
 
 .normalization-status.matched,
-.normalization-status.alias_matched {
+.normalization-status.alias_matched,
+.normalization-status.llm_auto_matched,
+.normalization-status.human_confirmed {
   border-color: #b9efd5;
   background: #effcf6;
   color: #08703e;
+}
+
+.normalization-status.llm_auto_matched {
+  border-color: #b9d7ff;
+  background: #eef6ff;
+  color: #1558a8;
 }
 
 .normalization-status.suggested,

@@ -786,7 +786,9 @@ function renderSurfaceNormalizationHtml(item) {
   if (item.type !== "surface") return "";
   const status = item.normalization_status || "unmatched";
   const raw = item.raw_content || item.evidence || "";
+  const reason = item.normalization_reason || "";
   const candidates = Array.isArray(item.standard_candidates) ? item.standard_candidates : [];
+  const lockedStatuses = new Set(["matched", "alias_matched", "llm_auto_matched", "human_confirmed"]);
   const candidateOptions = candidates
     .filter((candidate) => candidate?.term)
     .map((candidate) => `
@@ -796,7 +798,8 @@ function renderSurfaceNormalizationHtml(item) {
     <div class="requirement-meta">
       <span class="normalization-status ${escapeHtml(status)}">${escapeHtml(surfaceStatusLabel(status))}</span>
       ${raw ? `<small>图纸原文：${escapeHtml(raw)}</small>` : ""}
-      ${candidateOptions && status !== "matched" && status !== "alias_matched" ? `
+      ${reason ? `<small>说明：${escapeHtml(reason)}</small>` : ""}
+      ${candidateOptions && !lockedStatuses.has(status) ? `
         <label class="candidate-select">候选标准术语
           <select data-role="standard-candidate">
             <option value="">选择标准术语</option>
@@ -812,8 +815,10 @@ function surfaceStatusLabel(status) {
   const labels = {
     matched: "已标准化",
     alias_matched: "按别名标准化",
+    llm_auto_matched: "AI自动标准化",
+    human_confirmed: "人工确认",
     suggested: "候选待确认",
-    unmatched: "未匹配，需确认",
+    unmatched: "未标准化，保持原文",
   };
   return labels[status] || "待确认";
 }
@@ -885,8 +890,10 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       if (item.type === "surface") {
         item.raw_content ||= item.evidence || item.content;
         item.standard_content = item.content;
-        item.normalization_status = "matched";
+        item.normalization_status = "human_confirmed";
+        item.normalization_source = "human";
         item.normalization_confidence = 1;
+        item.normalization_reason = "人工修改标准术语";
       }
       confirmParam(item, `technical_${row.dataset.index}`);
       updateLatestReviewMessage();
@@ -898,8 +905,10 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       item.raw_content ||= item.evidence || item.content;
       item.content = value;
       item.standard_content = value;
-      item.normalization_status = "matched";
+      item.normalization_status = "human_confirmed";
+      item.normalization_source = "human";
       item.normalization_confidence = 1;
+      item.normalization_reason = "人工选择候选标准术语";
       contentInput.value = value;
       confirmParam(item, `technical_${row.dataset.index}`);
       updateLatestReviewMessage();
@@ -908,6 +917,11 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       activateReviewContext(messageId);
       if (item.type === "surface" && item.content) {
         item.standard_content ||= item.content;
+        item.raw_content ||= item.evidence || item.content;
+        item.normalization_status = "human_confirmed";
+        item.normalization_source = "human";
+        item.normalization_confidence = 1;
+        item.normalization_reason = "人工确认当前表面处理术语";
       }
       confirmParam(item, `technical_${row.dataset.index}`);
       updateLatestReviewMessage();

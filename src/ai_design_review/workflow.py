@@ -125,10 +125,12 @@ class DrawingReviewWorkflow:
                     "raw_content": normalized["raw_content"],
                     "standard_content": normalized["standard_content"],
                     "normalization_status": normalized["normalization_status"],
+                    "normalization_source": normalized["normalization_source"],
                     "normalization_confidence": normalized["normalization_confidence"],
+                    "normalization_reason": normalized["normalization_reason"],
                     "standard_candidates": normalized["standard_candidates"],
                 }
-                need_human_review = bool(need_human_review or normalized["need_human_review"])
+                need_human_review = bool(normalized["need_human_review"])
             requirements.append(
                 {
                     "type": requirement_type,
