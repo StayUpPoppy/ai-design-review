@@ -68,7 +68,10 @@ def _assert_workflow_templates() -> None:
     assert result["spring_template"]["label"] == "卡簧/挡圈"
     assert "inner_diameter" in required_field_keys("retaining_ring")
     assert "outer_diameter" in result["spring_parameters"]
-    assert any(item["type"] == "surface" and item["content"] == "镀锌五彩" for item in result["technical_requirements"])
+    surface = next(item for item in result["technical_requirements"] if item["type"] == "surface")
+    assert surface["content"] == "电镀-镀彩锌"
+    assert surface["raw_content"] == "镀锌五彩"
+    assert surface["standard_content"] == "电镀-镀彩锌"
 
 
 def _assert_template_field_labels() -> None:

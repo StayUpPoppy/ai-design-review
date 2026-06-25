@@ -14,6 +14,7 @@ from .spring_templates import (
     template_field_keys,
     template_for,
 )
+from .surface_terms import normalize_surface_requirement
 
 
 TECHNICAL_FIELD_TYPES = {
@@ -54,6 +55,8 @@ class DrawingReviewWorkflow:
             required_fields=required_field_keys(spring_type),
         )
         human_review_required = should_require_human_review(spring_parameters, review_results)
+        if any(item.get("need_human_review") for item in technical_requirements):
+            human_review_required = True
         if classification.get("need_human_review"):
             human_review_required = True
         erp_ready, erp_block_reason = determine_erp_ready(
@@ -112,17 +115,32 @@ class DrawingReviewWorkflow:
             item = fields.get(field)
             if not item:
                 continue
+            content = item.get("value", "")
+            extra: dict[str, Any] = {}
+            need_human_review = item.get("need_human_review", True)
+            if requirement_type == "surface":
+                normalized = normalize_surface_requirement(content)
+                content = normalized["content"]
+                extra = {
+                    "raw_content": normalized["raw_content"],
+                    "standard_content": normalized["standard_content"],
+                    "normalization_status": normalized["normalization_status"],
+                    "normalization_confidence": normalized["normalization_confidence"],
+                    "standard_candidates": normalized["standard_candidates"],
+                }
+                need_human_review = bool(need_human_review or normalized["need_human_review"])
             requirements.append(
                 {
                     "type": requirement_type,
-                    "content": item.get("value", ""),
+                    "content": content,
                     "source": item.get("source", []),
                     "evidence": item.get("evidence", ""),
                     "confidence": item.get("confidence", 0),
-                    "need_human_review": item.get("need_human_review", True),
+                    "need_human_review": need_human_review,
                     "page": item.get("page", 1),
                     "position": item.get("position"),
                     "suggested_region": item.get("suggested_region", ""),
+                    **extra,
                 }
             )
         return requirements

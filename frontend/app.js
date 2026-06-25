@@ -773,12 +773,49 @@ function renderRequirementsHtml(review) {
             <label>${escapeHtml(TECH_LABELS[item.type] || item.type || "技术要求")}
               <textarea data-role="content">${escapeHtml(item.content || "")}</textarea>
             </label>
+            ${renderSurfaceNormalizationHtml(item)}
             <button type="button" data-role="confirm">${item.need_human_review ? "确认" : "已确认"}</button>
           </div>
         `).join("")}
       </div>
     </section>
   `;
+}
+
+function renderSurfaceNormalizationHtml(item) {
+  if (item.type !== "surface") return "";
+  const status = item.normalization_status || "unmatched";
+  const raw = item.raw_content || item.evidence || "";
+  const candidates = Array.isArray(item.standard_candidates) ? item.standard_candidates : [];
+  const candidateOptions = candidates
+    .filter((candidate) => candidate?.term)
+    .map((candidate) => `
+      <option value="${escapeHtml(candidate.term)}">${escapeHtml(candidate.term)}${candidate.score ? ` · ${Math.round(Number(candidate.score) * 100)}%` : ""}</option>
+    `).join("");
+  return `
+    <div class="requirement-meta">
+      <span class="normalization-status ${escapeHtml(status)}">${escapeHtml(surfaceStatusLabel(status))}</span>
+      ${raw ? `<small>图纸原文：${escapeHtml(raw)}</small>` : ""}
+      ${candidateOptions && status !== "matched" && status !== "alias_matched" ? `
+        <label class="candidate-select">候选标准术语
+          <select data-role="standard-candidate">
+            <option value="">选择标准术语</option>
+            ${candidateOptions}
+          </select>
+        </label>
+      ` : ""}
+    </div>
+  `;
+}
+
+function surfaceStatusLabel(status) {
+  const labels = {
+    matched: "已标准化",
+    alias_matched: "按别名标准化",
+    suggested: "候选待确认",
+    unmatched: "未匹配，需确认",
+  };
+  return labels[status] || "待确认";
 }
 
 function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
@@ -841,14 +878,37 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
 
   root.querySelectorAll('[data-kind="technical"]').forEach((row) => {
     const item = review.technical_requirements[Number(row.dataset.index)];
-    row.querySelector('[data-role="content"]').addEventListener("change", (event) => {
+    const contentInput = row.querySelector('[data-role="content"]');
+    contentInput.addEventListener("change", (event) => {
       activateReviewContext(messageId);
       item.content = event.target.value.trim();
+      if (item.type === "surface") {
+        item.raw_content ||= item.evidence || item.content;
+        item.standard_content = item.content;
+        item.normalization_status = "matched";
+        item.normalization_confidence = 1;
+      }
+      confirmParam(item, `technical_${row.dataset.index}`);
+      updateLatestReviewMessage();
+    });
+    row.querySelector('[data-role="standard-candidate"]')?.addEventListener("change", (event) => {
+      const value = event.target.value.trim();
+      if (!value) return;
+      activateReviewContext(messageId);
+      item.raw_content ||= item.evidence || item.content;
+      item.content = value;
+      item.standard_content = value;
+      item.normalization_status = "matched";
+      item.normalization_confidence = 1;
+      contentInput.value = value;
       confirmParam(item, `technical_${row.dataset.index}`);
       updateLatestReviewMessage();
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
+      if (item.type === "surface" && item.content) {
+        item.standard_content ||= item.content;
+      }
       confirmParam(item, `technical_${row.dataset.index}`);
       updateLatestReviewMessage();
     });

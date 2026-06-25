@@ -518,13 +518,55 @@ textarea {
 
 .requirement-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 82px;
+  grid-template-columns: minmax(0, 1fr) minmax(170px, 0.55fr) 82px;
   gap: 10px;
   align-items: end;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px;
   background: #fbfdff;
+}
+
+.requirement-meta {
+  display: grid;
+  gap: 6px;
+  align-self: stretch;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.normalization-status {
+  width: fit-content;
+  border: 1px solid #d7e4f4;
+  border-radius: 999px;
+  background: #f7fbff;
+  color: #2d4f73;
+  padding: 3px 8px;
+  font-weight: 650;
+}
+
+.normalization-status.matched,
+.normalization-status.alias_matched {
+  border-color: #b9efd5;
+  background: #effcf6;
+  color: #08703e;
+}
+
+.normalization-status.suggested,
+.normalization-status.unmatched {
+  border-color: #ffd7a8;
+  background: #fff8ed;
+  color: #9a4f00;
+}
+
+.candidate-select {
+  display: grid;
+  gap: 4px;
+}
+
+.candidate-select select {
+  width: 100%;
+  min-height: 34px;
 }
 
 .empty-line {
@@ -990,6 +1032,10 @@ textarea {
   .summary-strip,
   .compare-layout,
   .compare-data-panel .summary-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .requirement-row {
     grid-template-columns: 1fr;
   }
 

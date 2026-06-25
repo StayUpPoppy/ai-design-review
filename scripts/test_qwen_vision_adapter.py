@@ -50,7 +50,11 @@ def main() -> None:
     assert review["spring_parameters"]["wire_diameter"]["value"] == 2
     assert review["spring_parameters"]["bend_radius"]["value"] == 3.5
     assert any(item["key"] == "bend_radius" and item["label"] == "折弯半径" for item in review["spring_template"]["fields"])
-    assert any(item["type"] == "surface" and item["content"] == "镀锌五彩" for item in review["technical_requirements"])
+    surface = next(item for item in review["technical_requirements"] if item["type"] == "surface")
+    assert surface["content"] == "电镀-镀彩锌"
+    assert surface["raw_content"] == "镀锌五彩"
+    assert surface["standard_content"] == "电镀-镀彩锌"
+    assert surface["normalization_status"] == "alias_matched"
     print("qwen vision adapter test passed")
 
 
