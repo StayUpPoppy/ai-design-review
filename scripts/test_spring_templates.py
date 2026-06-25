@@ -6,13 +6,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai_design_review.io_utils import read_json
-from ai_design_review.spring_templates import classify_spring_type, required_field_keys
+from ai_design_review.spring_templates import FIELD_LABELS, classify_spring_type, required_field_keys, template_for
 from ai_design_review.workflow import DrawingReviewWorkflow
 
 
 def main() -> None:
     _assert_classifier_cases()
     _assert_workflow_templates()
+    _assert_template_field_labels()
     print("spring template test passed")
 
 
@@ -68,6 +69,23 @@ def _assert_workflow_templates() -> None:
     assert "inner_diameter" in required_field_keys("retaining_ring")
     assert "outer_diameter" in result["spring_parameters"]
     assert any(item["type"] == "surface" and item["content"] == "镀锌五彩" for item in result["technical_requirements"])
+
+
+def _assert_template_field_labels() -> None:
+    compression = {item["key"]: item for item in template_for("compression_spring")["fields"]}
+    torsion = {item["key"]: item for item in template_for("torsion_spring")["fields"]}
+    extension = {item["key"]: item for item in template_for("extension_spring")["fields"]}
+    retaining = {item["key"]: item for item in template_for("retaining_ring")["fields"]}
+
+    assert compression["solid_height"]["label"] == "压并高度"
+    assert compression["body_length"]["label"] == "弹体长度"
+    assert torsion["leg1_length"]["label"] == "第一臂长度"
+    assert torsion["bend_radius"]["label"] == "折弯半径"
+    assert extension["hook1_opening"]["label"] == "左钩开口"
+    assert extension["center_to_center_length"]["label"] == "中心距"
+    assert retaining["groove_diameter"]["label"] == "槽径"
+    assert retaining["corner_radius"]["label"] == "圆角R"
+    assert FIELD_LABELS["mandrel_diameter"] == "芯轴直径"
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ const state = {
   selectedBubbleId: null,
   lastJob: null,
   activeReviewMessageId: null,
+  reviewContexts: {},
   compareOpen: false,
   compareView: {
     initialized: false,
@@ -41,17 +42,69 @@ const FIELD_LABELS = {
   material: "材料",
   wire_diameter: "线径",
   outer_diameter: "外径",
+  inner_diameter: "内径",
+  mean_diameter: "中径",
   free_length: "自由长度",
+  body_length: "弹体长度",
+  solid_height: "压并高度",
   total_coils: "总圈数",
   active_coils: "有效圈数",
+  end_coils: "端圈数",
+  support_coils: "支承圈数",
   handedness: "旋向",
   pitch: "节距",
   end_type: "端部形式",
+  coil_body_length: "卷绕体长度",
+  arm_length: "臂长",
+  short_arm_length: "短臂长",
+  long_arm_length: "长臂长",
+  leg1_length: "第一臂长度",
+  leg2_length: "第二臂长度",
+  free_angle: "自由角",
+  working_angle: "工作角",
+  leg1_angle: "第一臂角度",
+  leg2_angle: "第二臂角度",
+  bend_radius: "折弯半径",
+  leg_end_type: "臂端形式",
+  mandrel_diameter: "芯轴直径",
+  torque: "扭矩",
+  hook_type: "钩型",
+  hook_outer_diameter: "钩环外径",
+  hook_inner_diameter: "钩环内径",
+  hook_gap: "钩口间隙",
+  hook1_type: "左端钩型",
+  hook2_type: "右端钩型",
+  hook1_length: "左端钩长度",
+  hook2_length: "右端钩长度",
+  hook1_outer_diameter: "左钩外径",
+  hook2_outer_diameter: "右钩外径",
+  hook1_inner_diameter: "左钩内径",
+  hook2_inner_diameter: "右钩内径",
+  hook1_opening: "左钩开口",
+  hook2_opening: "右钩开口",
+  hook_orientation: "钩环方向",
+  center_to_center_length: "中心距",
+  initial_tension: "初拉力",
+  ring_type: "类型",
+  thickness: "厚度",
+  free_diameter: "自由状态直径",
+  opening_width: "开口宽度",
+  gap_width: "缺口宽度",
+  notch_depth: "缺口深度",
+  groove_diameter: "槽径",
+  groove_width: "槽宽",
+  lug_hole_diameter: "耳孔直径",
+  lug_center_distance: "耳孔中心距",
+  opening_angle: "开口角度",
+  section_width: "剖面宽度",
+  section_height: "剖面高度",
+  chamfer: "倒角",
+  corner_radius: "圆角R",
 };
 
 const TECH_LABELS = {
   heat_treatment: "热处理",
-  surface: "表面要求",
+  surface: "表面处理",
   salt_spray: "盐雾",
   lifetime: "寿命",
   environmental: "环保",
@@ -81,8 +134,12 @@ const LOCAL_SPRING_TEMPLATES = {
       { key: "inner_diameter", label: "内径", unit: "mm" },
       { key: "mean_diameter", label: "中径", unit: "mm" },
       { key: "free_length", label: "自由长度", unit: "mm", required: true },
+      { key: "body_length", label: "弹体长度", unit: "mm" },
+      { key: "solid_height", label: "压并高度", unit: "mm" },
       { key: "total_coils", label: "总圈数", unit: "turns", required: true },
       { key: "active_coils", label: "有效圈数", unit: "turns" },
+      { key: "end_coils", label: "端圈数", unit: "turns" },
+      { key: "support_coils", label: "支承圈数", unit: "turns" },
       { key: "handedness", label: "旋向", required: true },
       { key: "pitch", label: "节距", unit: "mm" },
       { key: "end_type", label: "端部形式" },
@@ -101,11 +158,19 @@ const LOCAL_SPRING_TEMPLATES = {
       { key: "total_coils", label: "总圈数", unit: "turns", required: true },
       { key: "active_coils", label: "有效圈数", unit: "turns" },
       { key: "handedness", label: "旋向", required: true },
+      { key: "coil_body_length", label: "卷绕体长度", unit: "mm" },
       { key: "arm_length", label: "臂长", unit: "mm" },
       { key: "short_arm_length", label: "短臂长", unit: "mm" },
       { key: "long_arm_length", label: "长臂长", unit: "mm" },
+      { key: "leg1_length", label: "第一臂长度", unit: "mm" },
+      { key: "leg2_length", label: "第二臂长度", unit: "mm" },
       { key: "free_angle", label: "自由角", unit: "deg" },
       { key: "working_angle", label: "工作角", unit: "deg" },
+      { key: "leg1_angle", label: "第一臂角度", unit: "deg" },
+      { key: "leg2_angle", label: "第二臂角度", unit: "deg" },
+      { key: "bend_radius", label: "折弯半径", unit: "mm" },
+      { key: "leg_end_type", label: "臂端形式" },
+      { key: "mandrel_diameter", label: "芯轴直径", unit: "mm" },
       { key: "torque", label: "扭矩", unit: "Nmm" },
     ],
     collections: [{ key: "torque_points", label: "扭矩点" }],
@@ -127,6 +192,18 @@ const LOCAL_SPRING_TEMPLATES = {
       { key: "hook_outer_diameter", label: "钩环外径", unit: "mm" },
       { key: "hook_inner_diameter", label: "钩环内径", unit: "mm" },
       { key: "hook_gap", label: "钩口间隙", unit: "mm" },
+      { key: "hook1_type", label: "左端钩型" },
+      { key: "hook2_type", label: "右端钩型" },
+      { key: "hook1_length", label: "左端钩长度", unit: "mm" },
+      { key: "hook2_length", label: "右端钩长度", unit: "mm" },
+      { key: "hook1_outer_diameter", label: "左钩外径", unit: "mm" },
+      { key: "hook2_outer_diameter", label: "右钩外径", unit: "mm" },
+      { key: "hook1_inner_diameter", label: "左钩内径", unit: "mm" },
+      { key: "hook2_inner_diameter", label: "右钩内径", unit: "mm" },
+      { key: "hook1_opening", label: "左钩开口", unit: "mm" },
+      { key: "hook2_opening", label: "右钩开口", unit: "mm" },
+      { key: "hook_orientation", label: "钩环方向" },
+      { key: "center_to_center_length", label: "中心距", unit: "mm" },
       { key: "initial_tension", label: "初拉力", unit: "N" },
     ],
     collections: [{ key: "load_points", label: "拉力点" }],
@@ -136,15 +213,24 @@ const LOCAL_SPRING_TEMPLATES = {
     label: "卡簧/挡圈",
     fields: [
       { key: "material", label: "材料", required: true },
+      { key: "ring_type", label: "类型" },
       { key: "wire_diameter", label: "线径", unit: "mm" },
       { key: "thickness", label: "厚度", unit: "mm" },
       { key: "outer_diameter", label: "外径", unit: "mm" },
       { key: "inner_diameter", label: "内径", unit: "mm", required: true },
+      { key: "free_diameter", label: "自由状态直径", unit: "mm" },
       { key: "opening_width", label: "开口宽度", unit: "mm" },
       { key: "gap_width", label: "缺口宽度", unit: "mm" },
       { key: "notch_depth", label: "缺口深度", unit: "mm" },
+      { key: "groove_diameter", label: "槽径", unit: "mm" },
+      { key: "groove_width", label: "槽宽", unit: "mm" },
+      { key: "lug_hole_diameter", label: "耳孔直径", unit: "mm" },
+      { key: "lug_center_distance", label: "耳孔中心距", unit: "mm" },
+      { key: "opening_angle", label: "开口角度", unit: "deg" },
       { key: "section_width", label: "剖面宽度", unit: "mm" },
       { key: "section_height", label: "剖面高度", unit: "mm" },
+      { key: "chamfer", label: "倒角" },
+      { key: "corner_radius", label: "圆角R", unit: "mm" },
     ],
     collections: [],
   },
@@ -158,8 +244,15 @@ const LOCAL_SPRING_TEMPLATES = {
       { key: "inner_diameter", label: "内径", unit: "mm" },
       { key: "mean_diameter", label: "中径", unit: "mm" },
       { key: "free_length", label: "自由长度", unit: "mm" },
+      { key: "body_length", label: "弹体长度", unit: "mm" },
       { key: "total_coils", label: "总圈数", unit: "turns" },
       { key: "handedness", label: "旋向" },
+      { key: "pitch", label: "节距", unit: "mm" },
+      { key: "arm_length", label: "臂长", unit: "mm" },
+      { key: "working_angle", label: "工作角", unit: "deg" },
+      { key: "hook_type", label: "钩型" },
+      { key: "opening_width", label: "开口宽度", unit: "mm" },
+      { key: "thickness", label: "厚度", unit: "mm" },
     ],
     collections: [{ key: "load_points", label: "载荷点" }],
   },
@@ -385,37 +478,47 @@ async function checkApiHealth() {
 function appendReviewMessage(title) {
   const message = createMessage("assistant");
   const body = message.querySelector(".message-body");
-  renderReviewBody(body, title);
+  const messageId = message.dataset.messageId;
+  const context = registerReviewContext(messageId, state.review, state.imageUrl, title);
+  renderReviewBody(body, title, context, messageId);
   conversation.appendChild(message);
-  state.activeReviewMessageId = message.dataset.messageId;
+  state.activeReviewMessageId = messageId;
   scrollMessageIntoView(message);
 }
 
-function renderReviewBody(body, title) {
-  const review = state.review;
+function renderReviewBody(body, title, context = activeReviewContext(), messageId = state.activeReviewMessageId) {
+  const review = context?.review || state.review;
+  if (!review) return;
+  const imageUrl = context?.imageUrl ?? state.imageUrl;
   refreshDerivedStatus(review);
+  body.dataset.reviewMessageId = messageId || "";
   body.innerHTML = `
     <div class="message-meta">助手 · 结构化审查</div>
     <p>${escapeHtml(title)}</p>
     ${renderTypeSelectorHtml(review)}
     ${renderSummaryHtml(review)}
-    ${renderPreviewHtml()}
+    ${renderPreviewHtml(imageUrl)}
     <div class="review-actions">
       <button type="button" data-action="fullscreen">全屏对比</button>
       <button type="button" data-action="confirm-all">全部确认</button>
       <button type="button" data-action="export" ${review ? "" : "disabled"}>导出确认版</button>
     </div>
   `;
-  body.querySelector('[data-action="fullscreen"]').addEventListener("click", openCompareOverlay);
+  body.querySelector('[data-action="fullscreen"]').addEventListener("click", () => {
+    activateReviewContext(messageId);
+    openCompareOverlay();
+  });
   body.querySelector('[data-action="confirm-all"]').addEventListener("click", () => {
+    activateReviewContext(messageId);
     confirmAllFields();
     acknowledgeScannedInput();
     updateLatestReviewMessage("已全部确认，当前审查状态已刷新。");
   });
   body.querySelector('[data-action="export"]').addEventListener("click", () => {
+    activateReviewContext(messageId);
     downloadJson(makeExportReview(), "spring_review_confirmed.json");
   });
-  bindReviewEditors(body);
+  bindReviewEditors(body, messageId);
 }
 
 function renderTypeSelectorHtml(review) {
@@ -469,23 +572,23 @@ function metricHtml(label, value) {
   `;
 }
 
-function renderPreviewHtml() {
-  if (!state.imageUrl) return "";
+function renderPreviewHtml(imageUrl = state.imageUrl) {
+  if (!imageUrl) return "";
   return `
     <details class="drawing-preview" open>
       <summary>图纸预览</summary>
-      ${renderDrawingCanvasHtml("preview-canvas")}
+      ${renderDrawingCanvasHtml("preview-canvas", imageUrl)}
     </details>
   `;
 }
 
-function renderDrawingCanvasHtml(className) {
-  if (!state.imageUrl) {
+function renderDrawingCanvasHtml(className, imageUrl = state.imageUrl) {
+  if (!imageUrl) {
     return `<div class="${escapeHtml(className)} empty-line">未加载图纸预览</div>`;
   }
   return `
     <div class="${escapeHtml(className)}">
-      <img src="${escapeHtml(state.imageUrl)}" alt="drawing">
+      <img src="${escapeHtml(imageUrl)}" alt="drawing">
     </div>
   `;
 }
@@ -678,61 +781,74 @@ function renderRequirementsHtml(review) {
   `;
 }
 
-function bindReviewEditors(root) {
+function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
+  const context = getReviewContext(messageId) || activeReviewContext();
+  const review = context?.review || state.review;
+  if (!review) return;
+
   root.querySelectorAll('[data-action="spring-type"]').forEach((select) => {
     select.addEventListener("change", (event) => {
+      activateReviewContext(messageId);
       switchSpringType(event.target.value);
     });
   });
 
   root.querySelectorAll('[data-kind="param"]').forEach((row) => {
     const field = row.dataset.field;
-    const fieldMeta = getFieldMeta(field, state.review);
-    const param = state.review.spring_parameters[field] || blankParam(fieldMeta.unit);
-    state.review.spring_parameters[field] = param;
+    const fieldMeta = getFieldMeta(field, review);
+    const param = review.spring_parameters[field] || blankParam(fieldMeta.unit);
+    review.spring_parameters[field] = param;
     row.querySelector('[data-role="value"]').addEventListener("change", (event) => {
+      activateReviewContext(messageId);
       param.value = parseValue(event.target.value, param.value);
       markParamEdited(param);
       syncBubbleValue(field, param.value);
       updateLatestReviewMessage();
     });
     row.querySelector('[data-role="tolerance"]').addEventListener("change", (event) => {
+      activateReviewContext(messageId);
       applyTolerance(param, event.target.value);
       markParamEdited(param);
       updateLatestReviewMessage();
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
+      activateReviewContext(messageId);
       confirmParam(param, field);
       updateLatestReviewMessage();
     });
   });
 
   root.querySelectorAll('[data-kind="load_point"]').forEach((row) => {
-    const point = state.review.spring_parameters.load_points[Number(row.dataset.index)];
+    const point = review.spring_parameters.load_points[Number(row.dataset.index)];
     row.querySelector('[data-role="height"]').addEventListener("change", (event) => {
+      activateReviewContext(messageId);
       point.height = parseValue(event.target.value, point.height);
       markParamEdited(point);
       updateLatestReviewMessage();
     });
     row.querySelector('[data-role="force"]').addEventListener("change", (event) => {
+      activateReviewContext(messageId);
       point.force = parseValue(event.target.value, point.force);
       markParamEdited(point);
       updateLatestReviewMessage();
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
+      activateReviewContext(messageId);
       confirmParam(point, `load_point_${row.dataset.index}`);
       updateLatestReviewMessage();
     });
   });
 
   root.querySelectorAll('[data-kind="technical"]').forEach((row) => {
-    const item = state.review.technical_requirements[Number(row.dataset.index)];
+    const item = review.technical_requirements[Number(row.dataset.index)];
     row.querySelector('[data-role="content"]').addEventListener("change", (event) => {
+      activateReviewContext(messageId);
       item.content = event.target.value.trim();
       confirmParam(item, `technical_${row.dataset.index}`);
       updateLatestReviewMessage();
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
+      activateReviewContext(messageId);
       confirmParam(item, `technical_${row.dataset.index}`);
       updateLatestReviewMessage();
     });
@@ -769,19 +885,26 @@ function switchSpringType(type) {
 function updateLatestReviewMessage(title = "已更新结构化尺寸数据，请继续确认。") {
   refreshDerivedStatus(state.review);
   exportButton.disabled = false;
+  const context = getReviewContext(state.activeReviewMessageId);
+  if (context) {
+    context.review = state.review;
+    context.imageUrl = state.imageUrl;
+    context.title = title;
+  }
   const activeMessage = conversation.querySelector(`[data-message-id="${state.activeReviewMessageId}"]`);
   const body = activeMessage?.querySelector(".message-body");
   if (!body) {
     appendReviewMessage(title);
     return;
   }
-  renderReviewBody(body, title);
+  renderReviewBody(body, title, context || activeReviewContext(), state.activeReviewMessageId);
   if (state.compareOpen) {
     renderCompareOverlay();
   }
 }
 
-function openCompareOverlay() {
+function openCompareOverlay(messageId = state.activeReviewMessageId) {
+  if (messageId) activateReviewContext(messageId);
   if (!state.review) return;
   state.compareOpen = true;
   state.compareView.initialized = false;
@@ -983,6 +1106,36 @@ function applyCompareTransform() {
   if (label) {
     label.textContent = `${Math.round(state.compareView.scale * 100)}%`;
   }
+}
+
+function registerReviewContext(messageId, review, imageUrl, title = "") {
+  const context = {
+    review,
+    imageUrl,
+    title,
+  };
+  state.reviewContexts[messageId] = context;
+  return context;
+}
+
+function getReviewContext(messageId = state.activeReviewMessageId) {
+  return messageId ? state.reviewContexts[messageId] : null;
+}
+
+function activeReviewContext() {
+  return getReviewContext() || {
+    review: state.review,
+    imageUrl: state.imageUrl,
+    title: "",
+  };
+}
+
+function activateReviewContext(messageId = state.activeReviewMessageId) {
+  const context = getReviewContext(messageId);
+  if (!context) return null;
+  state.activeReviewMessageId = messageId;
+  setReview(context.review, context.imageUrl);
+  return context;
 }
 
 function setReview(review, imageUrl) {

@@ -146,9 +146,14 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
 任务：
 1. 判断弹簧类型，只能使用 compression_spring、torsion_spring、extension_spring、retaining_ring、unknown_spring。
 2. 提取图纸名称、图号、版本、材料。
-3. 按弹簧类型提取尺寸字段。字段名必须使用英文 key，例如 wire_diameter、outer_diameter、inner_diameter、mean_diameter、free_length、total_coils、active_coils、handedness、pitch、arm_length、short_arm_length、long_arm_length、free_angle、working_angle、body_length、hook_outer_diameter、hook_inner_diameter、hook_gap、initial_tension、thickness、opening_width、gap_width、notch_depth、section_width、section_height。
-4. 提取动态工艺要求：surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process、other。
-5. 不确定或识别不到的字段不要猜；可以留空或省略，并标记 need_human_review=true。
+3. 按弹簧类型提取尺寸字段。字段名必须使用英文 key，前端会用中文标签显示；不要自造 key。
+   - 通用：material、wire_diameter、outer_diameter、inner_diameter、mean_diameter、free_length、body_length、total_coils、active_coils、handedness、pitch。
+   - 压缩弹簧：solid_height、end_coils、support_coils、end_type，可提取 load_points。
+   - 扭转弹簧：coil_body_length、arm_length、short_arm_length、long_arm_length、leg1_length、leg2_length、free_angle、working_angle、leg1_angle、leg2_angle、bend_radius、leg_end_type、mandrel_diameter、torque。
+   - 拉伸弹簧：hook_type、hook_outer_diameter、hook_inner_diameter、hook_gap、hook1_type、hook2_type、hook1_length、hook2_length、hook1_outer_diameter、hook2_outer_diameter、hook1_inner_diameter、hook2_inner_diameter、hook1_opening、hook2_opening、hook_orientation、center_to_center_length、initial_tension，可提取 load_points。
+   - 卡簧/挡圈：ring_type、thickness、free_diameter、opening_width、gap_width、notch_depth、groove_diameter、groove_width、lug_hole_diameter、lug_center_distance、opening_angle、section_width、section_height、chamfer、corner_radius。
+4. 提取动态工艺要求：surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process、other。表面处理、硬度、热处理、盐雾等不要放进 parameters，放进 technical_requirements。
+5. 不确定或识别不到的字段不要猜；可以留空或省略，并标记 need_human_review=true。只根据图纸可见文字、尺寸线和表格内容输出。
 
 JSON 结构：
 {

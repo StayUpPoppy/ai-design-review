@@ -22,7 +22,9 @@ def main() -> None:
             "wire_diameter": {"value": 2, "unit": "mm", "confidence": 0.92, "evidence": "线径 φ2"},
             "total_coils": {"value": 6, "unit": "turns", "confidence": 0.86, "evidence": "总圈数 6"},
             "pitch": {"value": 2.7, "unit": "mm", "confidence": 0.82, "evidence": "节距 2.7"},
-            "working_angle": {"value": 35, "unit": "deg", "confidence": 0.8, "evidence": "35°"}
+            "working_angle": {"value": 35, "unit": "deg", "confidence": 0.8, "evidence": "35°"},
+            "bend_radius": {"value": 3.5, "unit": "mm", "confidence": 0.78, "evidence": "R3.5"},
+            "leg1_length": {"value": 20, "unit": "mm", "confidence": 0.78, "evidence": "20"}
           },
           "technical_requirements": [
             {"type": "surface", "content": "镀锌五彩", "confidence": 0.9, "evidence": "表面处理 镀锌五彩"},
@@ -39,11 +41,15 @@ def main() -> None:
     assert fields["surface_requirement"]["value"] == "镀锌五彩"
     assert fields["hardness"]["value"] == "HRC30-35"
     assert fields["spring_type"]["value"] == "扭转弹簧"
+    assert fields["bend_radius"]["value"] == 3.5
+    assert fields["leg1_length"]["value"] == 20
 
     rules = read_json("config/factory_rules.json")
     review = DrawingReviewWorkflow(rules).run(None, candidates)
     assert review["drawing_summary"]["spring_type"] == "torsion_spring"
     assert review["spring_parameters"]["wire_diameter"]["value"] == 2
+    assert review["spring_parameters"]["bend_radius"]["value"] == 3.5
+    assert any(item["key"] == "bend_radius" and item["label"] == "折弯半径" for item in review["spring_template"]["fields"])
     assert any(item["type"] == "surface" and item["content"] == "镀锌五彩" for item in review["technical_requirements"])
     print("qwen vision adapter test passed")
 
