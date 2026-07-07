@@ -26,6 +26,21 @@ def main() -> None:
             "bend_radius": {"value": 3.5, "unit": "mm", "confidence": 0.78, "evidence": "R3.5"},
             "leg1_length": {"value": 20, "unit": "mm", "confidence": 0.78, "evidence": "20"}
           },
+          "spring_features": {
+            "spring_family": {"value": "helical", "confidence": 0.8, "evidence": "螺旋结构"},
+            "spring_shape": {"value": "cylindrical", "confidence": 0.7, "evidence": "圆柱结构"},
+            "manufacturing_method": {"value": "cold_coiled", "confidence": 0.82, "evidence": "GB/T 1239.2"},
+            "wire_section": {"value": "round", "confidence": 0.76, "evidence": "圆线"},
+            "pitch_type": {"value": "constant", "confidence": 0.68, "evidence": "等节距"}
+          },
+          "standard_selection_inference": {
+            "selected_standard": "GB/T 1239.2-2009",
+            "manufacturing_method": "cold_coiled",
+            "confidence": 0.82,
+            "evidence": ["GB/T 1239.2"],
+            "reason": "标准号指向冷卷",
+            "need_human_review": false
+          },
           "technical_requirements": [
             {"type": "surface", "content": "镀锌五彩", "confidence": 0.9, "evidence": "表面处理 镀锌五彩"},
             {"type": "hardness", "content": "HRC30-35", "confidence": 0.86, "evidence": "硬度 HRC30-35"}
@@ -43,6 +58,9 @@ def main() -> None:
     assert fields["spring_type"]["value"] == "扭转弹簧"
     assert fields["bend_radius"]["value"] == 3.5
     assert fields["leg1_length"]["value"] == 20
+    assert fields["manufacturing_method"]["value"] == "cold_coiled"
+    assert fields["spring_shape"]["value"] == "cylindrical"
+    assert fields["standard_selection_inference"]["value"]["selected_standard"] == "GB/T 1239.2-2009"
 
     rules = read_json("config/factory_rules.json")
     review = DrawingReviewWorkflow(rules).run(None, candidates)

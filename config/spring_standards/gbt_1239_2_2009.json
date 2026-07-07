@@ -1,0 +1,124 @@
+{
+  "standard_no": "GB/T 1239.2-2009",
+  "label": "冷卷圆柱螺旋弹簧技术条件 第2部分：压缩弹簧",
+  "spring_type": "compression_spring",
+  "spring_family": "cold_coiled_cylindrical_compression",
+  "accuracy_grades": ["1", "2", "3"],
+  "diameter_tolerance": [
+    {
+      "spring_index_min": 3,
+      "spring_index_max": 8,
+      "include_min": true,
+      "include_max": true,
+      "grades": {
+        "1": { "factor": 0.01, "minimum": 0.15 },
+        "2": { "factor": 0.015, "minimum": 0.2 },
+        "3": { "factor": 0.025, "minimum": 0.4 }
+      }
+    },
+    {
+      "spring_index_min": 8,
+      "spring_index_max": 15,
+      "include_min": false,
+      "include_max": true,
+      "grades": {
+        "1": { "factor": 0.015, "minimum": 0.2 },
+        "2": { "factor": 0.02, "minimum": 0.3 },
+        "3": { "factor": 0.03, "minimum": 0.5 }
+      }
+    },
+    {
+      "spring_index_min": 15,
+      "spring_index_max": 22,
+      "include_min": false,
+      "include_max": true,
+      "grades": {
+        "1": { "factor": 0.02, "minimum": 0.3 },
+        "2": { "factor": 0.03, "minimum": 0.5 },
+        "3": { "factor": 0.04, "minimum": 0.7 }
+      }
+    }
+  ],
+  "free_length_tolerance": [
+    {
+      "spring_index_min": 3,
+      "spring_index_max": 8,
+      "include_min": true,
+      "include_max": true,
+      "grades": {
+        "1": { "factor": 0.01, "minimum": 0.2 },
+        "2": { "factor": 0.02, "minimum": 0.5 },
+        "3": { "factor": 0.03, "minimum": 0.7 }
+      }
+    },
+    {
+      "spring_index_min": 8,
+      "spring_index_max": 15,
+      "include_min": false,
+      "include_max": true,
+      "grades": {
+        "1": { "factor": 0.015, "minimum": 0.5 },
+        "2": { "factor": 0.03, "minimum": 0.7 },
+        "3": { "factor": 0.04, "minimum": 0.8 }
+      }
+    },
+    {
+      "spring_index_min": 15,
+      "spring_index_max": 22,
+      "include_min": false,
+      "include_max": true,
+      "grades": {
+        "1": { "factor": 0.02, "minimum": 0.6 },
+        "2": { "factor": 0.04, "minimum": 0.8 },
+        "3": { "factor": 0.06, "minimum": 1.0 }
+      }
+    }
+  ],
+  "total_coils_tolerance": [
+    { "max": 10, "tolerance": 0.25 },
+    { "min": 10, "max": 20, "tolerance": 0.5 },
+    { "min": 20, "max": 50, "tolerance": 1.0 }
+  ],
+  "perpendicularity": {
+    "1": { "factor": 0.02, "angle_degree": 1.15 },
+    "2": { "factor": 0.05, "angle_degree": 2.9 },
+    "3": { "factor": 0.08, "angle_degree": 4.6 }
+  },
+  "load_tolerance": {
+    "3_to_10": {
+      "1": 0.05,
+      "2": 0.1,
+      "3": 0.15
+    },
+    "gt_10": {
+      "1": 0.04,
+      "2": 0.08,
+      "3": 0.12
+    }
+  },
+  "stiffness_tolerance": {
+    "3_to_10": {
+      "1": 0.05,
+      "2": 0.1,
+      "3": 0.15
+    },
+    "gt_10": {
+      "1": 0.04,
+      "2": 0.08,
+      "3": 0.12
+    }
+  },
+  "solid_height": {
+    "ground": {
+      "formula": "total_coils * max_wire_diameter",
+      "end_grinding_aliases": ["磨", "磨削", "磨平", "端面磨削", "两端磨平", "并紧磨平"]
+    },
+    "not_ground": {
+      "formula": "(total_coils + 1.5) * max_wire_diameter",
+      "end_grinding_aliases": ["不磨", "未磨", "两端不磨", "不磨削"]
+    }
+  },
+  "permanent_set": {
+    "max_free_length_ratio": 0.003
+  }
+}

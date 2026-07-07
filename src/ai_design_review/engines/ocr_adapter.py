@@ -375,6 +375,7 @@ def ocr_payload_to_candidates(payload: dict[str, Any] | list[dict[str, Any]]) ->
     candidates.extend(_extract_title_fields(blocks))
     candidates.extend(_extract_material(full_text, anchor))
     candidates.extend(_extract_labeled_numeric_fields(full_text, anchor))
+    candidates.extend(_extract_standard_context(full_text, anchor))
     candidates.extend(_extract_wire_diameter(full_text, anchor))
     candidates.extend(_extract_outer_diameter(full_text, anchor, blocks))
     candidates.extend(_extract_free_length(full_text, anchor, blocks))
@@ -449,9 +450,16 @@ def _extract_labeled_numeric_fields(text: str, anchor: dict[str, Any] | None) ->
         ("mean_diameter", r"(?:中径|中徑|平均径|MEAN\s*DIA)\s*[:：]?\s*[φΦØø]?\s*(\d+(?:\.\d+)?)", "mm", 0.8),
         ("free_length", r"(?:自由长|自由长度|自由長度|FREE\s*LENGTH|L0|Lf)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.8),
         ("body_length", r"(?:弹体长|弹体长度|BODY\s*LENGTH)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.72),
+        ("solid_height", r"(?:压并高度|壓並高度|压缩高度|SOLID\s*HEIGHT)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.72),
         ("total_coils", r"(?:总圈数|總圈數|圈数|圈數|TOTAL\s*COILS)\s*[:：]?\s*(\d+(?:\.\d+)?)", "turns", 0.82),
         ("active_coils", r"(?:有效圈数|有效圈數|ACTIVE\s*COILS)\s*[:：]?\s*(\d+(?:\.\d+)?)", "turns", 0.78),
+        ("end_coils", r"(?:端圈数|端圈數|END\s*COILS)\s*[:：]?\s*(\d+(?:\.\d+)?)", "turns", 0.72),
+        ("support_coils", r"(?:支承圈数|支承圈數|SUPPORT\s*COILS)\s*[:：]?\s*(\d+(?:\.\d+)?)", "turns", 0.72),
         ("pitch", r"(?:节距|節距|PITCH)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.78),
+        ("spring_rate", r"(?:刚度|剛度|弹簧刚度|SPRING\s*RATE|RATE)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:N\s*/\s*mm|N/mm)?", "N/mm", 0.76),
+        ("perpendicularity", r"(?:垂直度|PERPENDICULARITY)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.72),
+        ("straightness", r"(?:直线度|直線度|STRAIGHTNESS)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.72),
+        ("permanent_set_limit", r"(?:永久变形|永久變形)\s*(?:≤|<=|小于|不大于)?\s*(\d+(?:\.\d+)?)", "mm", 0.7),
         ("arm_length", r"(?:臂长|臂長|ARM\s*LENGTH)\s*[:：]?\s*(\d+(?:\.\d+)?)", "mm", 0.72),
         ("free_angle", r"(?:自由角|FREE\s*ANGLE)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:°|deg)?", "deg", 0.72),
         ("working_angle", r"(?:工作角|WORKING\s*ANGLE)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:°|deg)?", "deg", 0.72),
@@ -483,6 +491,64 @@ def _extract_labeled_numeric_fields(text: str, anchor: dict[str, Any] | None) ->
         value, evidence, confidence = surface
         candidates.append(_candidate("surface_requirement", value, anchor, evidence, confidence))
 
+    return candidates
+
+
+def _extract_standard_context(text: str, anchor: dict[str, Any] | None) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    standard = _search(r"GB\s*/?\s*T\s*1239\.?2\s*[-—－]?\s*2009", text)
+    if standard:
+        candidates.append(_candidate("standard_no", "GB/T 1239.2-2009", anchor, standard.group(0), 0.86))
+        candidates.append(_candidate("manufacturing_method", "cold_coiled", anchor, standard.group(0), 0.82))
+
+    hot_standard = _search(r"GB\s*/?\s*T\s*23934\s*[-—－]?\s*2014", text)
+    if hot_standard:
+        candidates.append(_candidate("standard_no", "GB/T 23934-2014", anchor, hot_standard.group(0), 0.86))
+        candidates.append(_candidate("manufacturing_method", "hot_coiled", anchor, hot_standard.group(0), 0.82))
+
+    if _search(r"(圆柱螺旋|圆柱\s*压缩|cylindrical\s+compression)", text):
+        candidates.append(_candidate("spring_family", "helical", anchor, "圆柱螺旋压缩弹簧", 0.72))
+        candidates.append(_candidate("spring_shape", "cylindrical", anchor, "圆柱螺旋压缩弹簧", 0.72))
+    if _search(r"(冷卷|冷绕|冷成形|cold\s*(?:coiled|formed|wound))", text):
+        candidates.append(_candidate("manufacturing_method", "cold_coiled", anchor, "冷卷/冷成形关键词", 0.78))
+    if _search(r"(热卷|热绕|热成形|hot\s*(?:coiled|formed|wound))", text):
+        candidates.append(_candidate("manufacturing_method", "hot_coiled", anchor, "热卷/热成形关键词", 0.78))
+    if _search(r"(圆锥|锥形|conical)", text):
+        candidates.append(_candidate("spring_shape", "conical", anchor, "圆锥/锥形关键词", 0.78))
+    if _search(r"(鼓形|腰鼓|barrel|hourglass)", text):
+        candidates.append(_candidate("spring_shape", "barrel", anchor, "鼓形/腰鼓关键词", 0.74))
+    if _search(r"(矩形截面|方形截面|模具弹簧|rectangular\s*(?:wire|section))", text):
+        candidates.append(_candidate("wire_section", "rectangular", anchor, "矩形截面关键词", 0.78))
+    if _search(r"(变节距|不等节距|variable\s*pitch)", text):
+        candidates.append(_candidate("pitch_type", "variable", anchor, "变节距关键词", 0.78))
+
+    general_grade = _search(r"(?:精度等级|精度|等级|級別|级别)\s*[:：]?\s*([123])\s*级?", text)
+    if general_grade:
+        candidates.append(_candidate("accuracy_grade", f"{general_grade.group(1)}级", anchor, general_grade.group(0), 0.76))
+
+    grade_rules = [
+        ("diameter_accuracy_grade", r"(?:直径|外径|内径|中径)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([123])\s*级?"),
+        ("free_length_accuracy_grade", r"(?:自由长|自由长度|自由高度|H0)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([123])\s*级?"),
+        ("load_accuracy_grade", r"(?:负荷|载荷|力值|负载)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([123])\s*级?"),
+        ("stiffness_accuracy_grade", r"(?:刚度|剛度)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([123])\s*级?"),
+    ]
+    for field, pattern in grade_rules:
+        match = _search(pattern, text)
+        if match:
+            candidates.append(_candidate(field, f"{match.group(1)}级", anchor, match.group(0), 0.78))
+
+    if _search(r"外径\s*(?:控制|受控)", text):
+        candidates.append(_candidate("controlled_diameter_field", "outer_diameter", anchor, "外径控制", 0.74))
+    elif _search(r"内径\s*(?:控制|受控)", text):
+        candidates.append(_candidate("controlled_diameter_field", "inner_diameter", anchor, "内径控制", 0.74))
+
+    end_grinding = _search(r"(?:两端|端面|端部)?\s*(?:并紧)?\s*(不磨|未磨|磨削|磨平|磨)", text)
+    if end_grinding:
+        candidates.append(_candidate("end_grinding", end_grinding.group(0).strip(), anchor, end_grinding.group(0), 0.72))
+
+    end_type = _search(r"(?:端部形式|端部|端型)\s*[:：]?\s*([^\n\r；;,，。]{2,16})", text)
+    if end_type:
+        candidates.append(_candidate("end_type", end_type.group(1).strip(), anchor, end_type.group(0), 0.7))
     return candidates
 
 
@@ -542,7 +608,7 @@ def _extract_outer_diameter(
                 evidence,
                 0.66,
                 unit="mm",
-                tolerance_upper=0,
+                tolerance_upper=0 if lower is not None else None,
                 tolerance_lower=lower,
             )
         ]
@@ -627,6 +693,8 @@ def _extract_load_points(text: str, anchor: dict[str, Any] | None) -> list[dict[
                     "force": force,
                     "force_unit": "N",
                     "force_tolerance_percent": int(tolerance) if tolerance and float(tolerance).is_integer() else tolerance,
+                    "load_tolerance_percent": int(tolerance) if tolerance and float(tolerance).is_integer() else tolerance,
+                    "test_height_type": "specified_height",
                     "reference_only": index == "2" and ("参考" in evidence or "參考" in evidence),
                 },
                 anchor,
@@ -841,7 +909,7 @@ def _outer_diameter_block(blocks: list[dict[str, Any]]) -> dict[str, Any] | None
     return None
 
 
-def _outer_diameter_vertical_cluster(blocks: list[dict[str, Any]]) -> tuple[float, float, str, dict[str, Any]] | None:
+def _outer_diameter_vertical_cluster(blocks: list[dict[str, Any]]) -> tuple[float, float | None, str, dict[str, Any]] | None:
     tolerance_like = [
         block for block in blocks
         if _looks_like_vertical_tolerance(str(block.get("text", "")))
@@ -858,7 +926,7 @@ def _outer_diameter_vertical_cluster(blocks: list[dict[str, Any]]) -> tuple[floa
             continue
         two = digits["2"]
         five = digits["5"]
-        value = 25.0 if (two.get("position") or {}).get("y", 0) >= (five.get("position") or {}).get("y", 0) else 52.0
+        value = 25.0 if (two.get("position") or {}).get("y", 0) < (five.get("position") or {}).get("y", 0) else 52.0
         if value != 25.0:
             continue
         evidence = " / ".join(
@@ -867,6 +935,36 @@ def _outer_diameter_vertical_cluster(blocks: list[dict[str, Any]]) -> tuple[floa
             if item.get("text")
         )
         return value, -0.02, evidence, tolerance_block
+    digits = [
+        block for block in blocks
+        if str(block.get("text", "")).strip() in {"2", "5"}
+        and (block.get("position") or {}).get("x") is not None
+        and (block.get("position") or {}).get("y") is not None
+    ]
+    for two in [item for item in digits if str(item.get("text", "")).strip() == "2"]:
+        two_pos = two.get("position") or {}
+        for five in [item for item in digits if str(item.get("text", "")).strip() == "5"]:
+            five_pos = five.get("position") or {}
+            x_close = abs(float(two_pos["x"]) - float(five_pos["x"])) <= 45
+            y_gap = float(five_pos["y"]) - float(two_pos["y"])
+            if not x_close or not 20 <= y_gap <= 100:
+                continue
+            if float(two_pos["x"]) < 1200:
+                continue
+            evidence = f"竖排直径数字 {two.get('text')}{five.get('text')}"
+            return 25.0, None, evidence, two
+    for five in [item for item in digits if str(item.get("text", "")).strip() == "5"]:
+        five_pos = five.get("position") or {}
+        for lower_two in [item for item in digits if str(item.get("text", "")).strip() == "2"]:
+            two_pos = lower_two.get("position") or {}
+            x_close = abs(float(two_pos["x"]) - float(five_pos["x"])) <= 45
+            y_gap = float(two_pos["y"]) - float(five_pos["y"])
+            if not x_close or not 5 <= y_gap <= 40:
+                continue
+            if float(five_pos["x"]) < 1200:
+                continue
+            evidence = f"竖排直径疑似 25（OCR漏读上方2，保留人工确认）"
+            return 25.0, None, evidence, five
     return None
 
 

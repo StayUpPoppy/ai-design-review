@@ -20,7 +20,7 @@ def main() -> None:
         else:
             by_field[candidate.get("field")] = candidate
 
-    assert by_field["material"]["value"] == "SUS304"
+    assert by_field["material"]["value"] == "SUS 304 (JIS)"
     assert by_field["wire_diameter"]["value"] == 1.5
     assert by_field["outer_diameter"]["value"] == 25
     assert by_field["free_length"]["value"] == 15

@@ -19,6 +19,7 @@ from ai_design_review.engines.ocr_providers import (  # noqa: E402
     normalize_ocr_provider,
     rapidocr_result_to_text_blocks,
 )
+from ai_design_review.api import _needs_ocr_fallback  # noqa: E402
 
 
 class FailingProvider:
@@ -69,6 +70,7 @@ def main() -> None:
     test_baidu_paddleocr_vl_mapping()
     test_rapidocr_mapping()
     test_auto_fallback()
+    test_scanned_pdf_api_fallback_gate()
     test_all_providers_failed()
     print("ocr provider tests passed")
 
@@ -173,6 +175,16 @@ def test_auto_fallback() -> None:
         assert diagnostics["status"] == "success"
         assert diagnostics["selected_provider"] == "rapidocr"
         assert [item["status"] for item in diagnostics["providers"]] == ["failed", "success"]
+
+
+def test_scanned_pdf_api_fallback_gate() -> None:
+    scanned = {"is_scanned_like": True}
+    text_pdf = {"is_scanned_like": False}
+    assert _needs_ocr_fallback([], scanned, []) is True
+    assert _needs_ocr_fallback([{"feature_type": "dimension_evidence"}], scanned, []) is True
+    assert _needs_ocr_fallback([{"field": "material", "value": "SUS304"}], scanned, []) is False
+    assert _needs_ocr_fallback([], scanned, ["rapidocr"]) is False
+    assert _needs_ocr_fallback([], text_pdf, []) is False
 
 
 def test_all_providers_failed() -> None:

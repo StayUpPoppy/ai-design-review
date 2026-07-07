@@ -40,10 +40,22 @@ const FIELD_LABELS = {
   drawing_name: "图纸名称",
   version: "版本",
   material: "材料",
+  standard_no: "标准号",
+  spring_family: "弹簧族",
+  spring_shape: "结构形状",
+  manufacturing_method: "成形方式",
+  wire_section: "线材截面",
+  pitch_type: "节距类型",
+  accuracy_grade: "通用精度等级",
+  diameter_accuracy_grade: "直径精度等级",
+  free_length_accuracy_grade: "自由高度精度等级",
+  load_accuracy_grade: "载荷精度等级",
+  stiffness_accuracy_grade: "刚度精度等级",
   wire_diameter: "线径",
   outer_diameter: "外径",
   inner_diameter: "内径",
   mean_diameter: "中径",
+  controlled_diameter_field: "受控直径",
   free_length: "自由长度",
   body_length: "弹体长度",
   solid_height: "压并高度",
@@ -54,6 +66,13 @@ const FIELD_LABELS = {
   handedness: "旋向",
   pitch: "节距",
   end_type: "端部形式",
+  end_grinding: "端面磨削",
+  spring_rate: "刚度",
+  perpendicularity: "垂直度",
+  straightness: "直线度",
+  permanent_set_limit: "永久变形限值",
+  spring_index: "旋绕比",
+  slenderness_ratio: "细长比",
   coil_body_length: "卷绕体长度",
   arm_length: "臂长",
   short_arm_length: "短臂长",
@@ -129,10 +148,17 @@ const LOCAL_SPRING_TEMPLATES = {
     label: "压缩弹簧",
     fields: [
       { key: "material", label: "材料", required: true },
+      { key: "standard_no", label: "标准号" },
+      { key: "accuracy_grade", label: "通用精度等级" },
+      { key: "diameter_accuracy_grade", label: "直径精度等级" },
+      { key: "free_length_accuracy_grade", label: "自由高度精度等级" },
+      { key: "load_accuracy_grade", label: "载荷精度等级" },
+      { key: "stiffness_accuracy_grade", label: "刚度精度等级" },
       { key: "wire_diameter", label: "线径", unit: "mm", required: true },
       { key: "outer_diameter", label: "外径", unit: "mm", required: true },
       { key: "inner_diameter", label: "内径", unit: "mm" },
       { key: "mean_diameter", label: "中径", unit: "mm" },
+      { key: "controlled_diameter_field", label: "受控直径" },
       { key: "free_length", label: "自由长度", unit: "mm", required: true },
       { key: "body_length", label: "弹体长度", unit: "mm" },
       { key: "solid_height", label: "压并高度", unit: "mm" },
@@ -143,6 +169,11 @@ const LOCAL_SPRING_TEMPLATES = {
       { key: "handedness", label: "旋向", required: true },
       { key: "pitch", label: "节距", unit: "mm" },
       { key: "end_type", label: "端部形式" },
+      { key: "end_grinding", label: "端面磨削" },
+      { key: "spring_rate", label: "刚度", unit: "N/mm" },
+      { key: "perpendicularity", label: "垂直度", unit: "mm" },
+      { key: "straightness", label: "直线度", unit: "mm" },
+      { key: "permanent_set_limit", label: "永久变形限值", unit: "mm" },
     ],
     collections: [{ key: "load_points", label: "载荷点" }],
   },
@@ -572,6 +603,75 @@ function metricHtml(label, value) {
   `;
 }
 
+function renderStandardSelectionHtml(review) {
+  const selection = review.standard_selection || {};
+  const features = review.spring_features || {};
+  const status = selection.status || "need_review";
+  const selected = selection.selected_standard || "未选择";
+  const confidence = selection.confidence != null ? `${Math.round(Number(selection.confidence || 0) * 100)}%` : "-";
+  const evidence = Array.isArray(selection.evidence) ? selection.evidence : [];
+  const references = Array.isArray(selection.references) ? selection.references : [];
+  const candidateStandards = Array.isArray(selection.candidate_standards) ? selection.candidate_standards : [];
+  const metadata = selection.metadata || {};
+  const auxiliaryEvidence = Array.isArray(metadata.auxiliary_evidence) ? metadata.auxiliary_evidence : [];
+  const conflicts = Array.isArray(metadata.conflicts) ? metadata.conflicts : [];
+  const thresholdRows = [];
+  if (metadata.wire_diameter_mm != null && metadata.wire_diameter_threshold_mm != null) {
+    thresholdRows.push(`线径 d=${formatCompactNumber(metadata.wire_diameter_mm)}mm / 阈值 ${formatCompactNumber(metadata.wire_diameter_threshold_mm)}mm`);
+  }
+  const featureRows = ["spring_family", "spring_shape", "manufacturing_method", "wire_section", "pitch_type"].map((field) => {
+    const item = features[field] || {};
+    return `
+      <div class="standard-feature">
+        <span>${escapeHtml(FIELD_LABELS[field] || field)}</span>
+        <strong>${escapeHtml(featureValueLabel(field, item.value))}</strong>
+      </div>
+    `;
+  }).join("");
+  const candidateRows = candidateStandards.map((item) => `
+    <span>${escapeHtml(item.standard_no || "")}${item.rules_available ? "" : " · 规则待接入"}</span>
+  `).join("");
+  const referenceRows = references.map((item) => `
+    <small>${escapeHtml(item.standard_no || "")} · ${escapeHtml(item.source || "RAG")} · ${escapeHtml(item.status || "")}</small>
+  `).join("");
+  const thresholdHtml = thresholdRows.map((item) => `<span>${escapeHtml(item)}</span>`).join("");
+  const auxiliaryHtml = auxiliaryEvidence.map((item) => `<small>${escapeHtml(item)}</small>`).join("");
+  const conflictHtml = conflicts.map((item) => `<small>${escapeHtml(item)}</small>`).join("");
+  return `
+    <section class="review-block standard-selection-block">
+      <div class="block-head">
+        <h2>标准选择判断</h2>
+        <span class="normalization-status ${escapeHtml(status)}">${escapeHtml(standardSelectionStatusLabel(status))}</span>
+      </div>
+      <div class="standard-selection-card">
+        <div class="standard-selection-main">
+          <div>
+            <span>推荐标准</span>
+            <strong>${escapeHtml(selected)}</strong>
+            ${selection.standard_label ? `<small>${escapeHtml(selection.standard_label)}</small>` : ""}
+          </div>
+          <div>
+            <span>置信度</span>
+            <strong>${escapeHtml(confidence)}</strong>
+            <small>${escapeHtml(selectionSourceLabel(selection.selection_source))}</small>
+          </div>
+          <button type="button" data-action="confirm-standard-selection" ${selection.need_human_review ? "" : "disabled"}>
+            ${selection.need_human_review ? "确认判断" : "已确认"}
+          </button>
+        </div>
+        <div class="standard-features">${featureRows}</div>
+        ${selection.reason ? `<p>${escapeHtml(selection.reason)}</p>` : ""}
+        ${thresholdHtml ? `<div class="standard-selection-metadata">${thresholdHtml}</div>` : ""}
+        ${evidence.length ? `<div class="standard-selection-evidence">${evidence.map((item) => `<small>${escapeHtml(item)}</small>`).join("")}</div>` : ""}
+        ${auxiliaryHtml ? `<div class="standard-selection-auxiliary">${auxiliaryHtml}</div>` : ""}
+        ${conflictHtml ? `<div class="standard-selection-conflicts">${conflictHtml}</div>` : ""}
+        ${candidateRows ? `<div class="standard-selection-candidates">${candidateRows}</div>` : ""}
+        ${referenceRows ? `<div class="standard-selection-references">${referenceRows}</div>` : ""}
+      </div>
+    </section>
+  `;
+}
+
 function renderPreviewHtml(imageUrl = state.imageUrl) {
   if (!imageUrl) return "";
   return `
@@ -713,11 +813,16 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
   const evidence = param.evidence || param.suggested_region || "";
   const label = meta.label || FIELD_LABELS[field] || field;
   const requiredMark = meta.required ? " *" : "";
+  const badges = [];
+  if (param.default_source === "company_default") {
+    badges.push("公司默认 / 待确认");
+  }
   return `
     <div class="data-row" data-kind="param" data-field="${escapeHtml(field)}">
       <div class="data-label">
         <strong title="${escapeHtml(label)}">${escapeHtml(label + requiredMark)}</strong>
         ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
+        ${badges.length ? `<div class="parameter-badges">${badges.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       </div>
       <label class="data-input-cell data-primary">
         <span class="sr-only">${escapeHtml(label)}数值</span>
@@ -751,6 +856,74 @@ function loadPointRowHtml(point, index) {
       </label>
       <button class="confirm-button${point.need_human_review ? "" : " confirmed"}" type="button" data-role="confirm">${point.need_human_review ? "确认" : "已确认"}</button>
     </div>
+  `;
+}
+
+function renderDerivedParametersHtml(review) {
+  const derived = review.derived_parameters || {};
+  const rows = Object.entries(derived)
+    .filter(([, value]) => value && typeof value === "object" && !Array.isArray(value))
+    .map(([field, item]) => `
+      <div class="derived-row">
+        <strong>${escapeHtml(FIELD_LABELS[field] || item.field || field)}</strong>
+        <span>${escapeHtml(formatStandardValue(item.value, item.unit))}</span>
+        <small>${escapeHtml(item.formula || "")}</small>
+      </div>
+    `).join("");
+  const loadDeflections = Array.isArray(derived.load_point_deflections) ? derived.load_point_deflections : [];
+  const loadRows = loadDeflections.map((item) => `
+    <div class="derived-row">
+      <strong>${escapeHtml(item.label || "载荷点")}</strong>
+      <span>${escapeHtml(formatStandardValue(item.deflection, item.deflection_unit))}</span>
+      <small>${escapeHtml(item.formula || "")}</small>
+    </div>
+  `).join("");
+  if (!rows && !loadRows) {
+    return `
+      <section class="review-block">
+        <div class="block-head"><h2>派生参数</h2><span>0 项</span></div>
+        <div class="empty-line">暂未生成中径、旋绕比、细长比或载荷变形量。</div>
+      </section>
+    `;
+  }
+  return `
+    <section class="review-block">
+      <div class="block-head"><h2>派生参数</h2><span>${Object.keys(derived).length} 组</span></div>
+      <div class="derived-list">${rows}${loadRows}</div>
+    </section>
+  `;
+}
+
+function renderStandardizationHtml(review) {
+  const results = Array.isArray(review.standardization_results) ? review.standardization_results : [];
+  if (!results.length) {
+    return `
+      <section class="review-block">
+        <div class="block-head"><h2>标准化建议</h2><span>0 项</span></div>
+        <div class="empty-line">当前弹簧类型尚未生成标准化建议。</div>
+      </section>
+    `;
+  }
+  return `
+    <section class="review-block">
+      <div class="block-head"><h2>标准化建议</h2><span>${results.length} 项</span></div>
+      <div class="standardization-list">
+        ${results.map((item, index) => `
+          <div class="standardization-row" data-kind="standardization" data-index="${index}">
+            <div>
+              <strong>${escapeHtml(targetFieldLabel(item.target_field))}</strong>
+              <span class="normalization-status ${escapeHtml(item.status || "need_context")}">${escapeHtml(standardizationStatusLabel(item.status))}</span>
+            </div>
+            <div>
+              <span>${escapeHtml(formatStandardizationSuggestion(item))}</span>
+              <small>${escapeHtml(item.standard_no || "")}</small>
+            </div>
+            <p>${escapeHtml(item.basis || "")}</p>
+            <button type="button" data-role="confirm-standard" ${canConfirmStandardization(item) ? "" : "disabled"}>确认建议</button>
+          </div>
+        `).join("")}
+      </div>
+    </section>
   `;
 }
 
@@ -823,6 +996,110 @@ function surfaceStatusLabel(status) {
   return labels[status] || "待确认";
 }
 
+function standardizationStatusLabel(status) {
+  const labels = {
+    suggested: "可确认建议",
+    need_context: "需补充条件",
+    not_applicable: "不适用",
+    rules_pending: "规则待接入",
+    human_confirmed: "人工确认",
+  };
+  return labels[status] || "待确认";
+}
+
+function standardSelectionStatusLabel(status) {
+  const labels = {
+    applicable: "可适用",
+    need_review: "需人工确认",
+    not_applicable: "不适用",
+    rules_pending: "规则待接入",
+  };
+  return labels[status] || "待确认";
+}
+
+function selectionSourceLabel(source) {
+  const labels = {
+    drawing_standard_no: "图纸标准号",
+    wire_diameter_threshold: "线径阈值",
+    recognized_feature: "识别特征",
+    llm_inference: "LLM判断",
+    insufficient_context: "信息不足",
+    spring_type: "弹簧类型",
+  };
+  return labels[source] || source || "";
+}
+
+function featureValueLabel(field, value) {
+  const text = String(value ?? "unknown");
+  const labels = {
+    spring_family: {
+      helical: "螺旋",
+      disc: "碟形",
+      wave: "波形",
+      rubber: "橡胶",
+      gas: "气弹簧",
+      unknown: "未知",
+    },
+    spring_shape: {
+      cylindrical: "圆柱",
+      conical: "圆锥",
+      barrel: "鼓形",
+      hourglass: "腰鼓",
+      unknown: "未知",
+    },
+    manufacturing_method: {
+      cold_coiled: "冷卷",
+      hot_coiled: "热卷",
+      unknown: "未知",
+    },
+    wire_section: {
+      round: "圆截面",
+      rectangular: "矩形截面",
+      square: "方形截面",
+      unknown: "未知",
+    },
+    pitch_type: {
+      constant: "等节距",
+      variable: "变节距",
+      unknown: "未知",
+    },
+  };
+  return labels[field]?.[text] || text;
+}
+
+function canConfirmStandardization(item) {
+  return item?.status === "suggested" || item?.target_field === "standard_no";
+}
+
+function targetFieldLabel(targetField) {
+  const text = String(targetField || "");
+  const loadMatch = text.match(/^load_points\.([^.]+)\.force$/);
+  if (loadMatch) return `载荷点 ${loadMatch[1]}`;
+  return FIELD_LABELS[text] || text;
+}
+
+function formatStandardValue(value, unit = "") {
+  if (value == null || value === "") return "-";
+  return `${value}${unit || ""}`;
+}
+
+function formatStandardizationSuggestion(item) {
+  const value = formatStandardValue(item.suggested_value, item.unit);
+  const upper = item.suggested_tolerance_upper;
+  const lower = item.suggested_tolerance_lower;
+  if (upper == null && lower == null) return value;
+  if (Number(upper) === Math.abs(Number(lower))) {
+    return `${value} ±${formatCompactNumber(Math.abs(Number(upper)))}`;
+  }
+  return `${value} ${upper ?? ""}/${lower ?? ""}`;
+}
+
+function formatCompactNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value ?? "");
+  return Number.isInteger(number) ? String(number) : String(Number(number.toFixed(4)));
+}
+
 function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   const context = getReviewContext(messageId) || activeReviewContext();
   const review = context?.review || state.review;
@@ -881,6 +1158,21 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     });
   });
 
+  root.querySelectorAll('[data-kind="standardization"]').forEach((row) => {
+    const item = review.standardization_results[Number(row.dataset.index)];
+    row.querySelector('[data-role="confirm-standard"]')?.addEventListener("click", () => {
+      activateReviewContext(messageId);
+      applyStandardizationResult(item);
+      updateLatestReviewMessage("已确认标准化建议，请继续核对导出数据。");
+    });
+  });
+
+  root.querySelector('[data-action="confirm-standard-selection"]')?.addEventListener("click", () => {
+    activateReviewContext(messageId);
+    confirmStandardSelection();
+    updateLatestReviewMessage("已确认标准选择判断，请继续核对尺寸和标准化建议。");
+  });
+
   root.querySelectorAll('[data-kind="technical"]').forEach((row) => {
     const item = review.technical_requirements[Number(row.dataset.index)];
     const contentInput = row.querySelector('[data-role="content"]');
@@ -927,6 +1219,65 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       updateLatestReviewMessage();
     });
   });
+}
+
+function applyStandardizationResult(item) {
+  if (!item) return;
+  state.review.standardization_results ||= [];
+  state.review.spring_parameters ||= {};
+  const target = String(item.target_field || "");
+  const loadMatch = target.match(/^load_points\.([^.]+)\.force$/);
+  if (loadMatch) {
+    const label = loadMatch[1];
+    const point = (state.review.spring_parameters.load_points || []).find((candidate) => {
+      return String(candidate.label || "") === label;
+    });
+    if (point) {
+      point.load_tolerance_upper = item.suggested_tolerance_upper;
+      point.load_tolerance_lower = item.suggested_tolerance_lower;
+      if (point.force && item.suggested_tolerance_upper != null) {
+        point.load_tolerance_percent = Number(((Number(item.suggested_tolerance_upper) / Number(point.force)) * 100).toFixed(3));
+      }
+      confirmParam(point, `standardization_${target}`);
+    }
+  } else if (target) {
+    const meta = getFieldMeta(target, state.review);
+    const param = state.review.spring_parameters[target] || blankParam(meta.unit);
+    if (item.suggested_value != null) {
+      param.value = item.suggested_value;
+    }
+    if (item.suggested_tolerance_upper != null || item.suggested_tolerance_lower != null) {
+      param.tolerance_upper = item.suggested_tolerance_upper;
+      param.tolerance_lower = item.suggested_tolerance_lower;
+    }
+    if (!param.unit && item.unit) {
+      param.unit = item.unit;
+    }
+    state.review.spring_parameters[target] = param;
+    confirmParam(param, `standardization_${target}`);
+    syncBubbleValue(target, param.value);
+  }
+  item.status = "human_confirmed";
+  item.need_human_review = false;
+  state.review.manual_confirmations[`standardization_${target}`] = {
+    confirmed: true,
+    value: item.suggested_value ?? null,
+    confirmed_at: new Date().toISOString(),
+    rule_id: item.rule_id,
+  };
+}
+
+function confirmStandardSelection() {
+  const selection = state.review.standard_selection;
+  if (!selection) return;
+  selection.need_human_review = false;
+  selection.human_confirmed = true;
+  selection.confirmed_at = new Date().toISOString();
+  state.review.manual_confirmations.standard_selection = {
+    confirmed: true,
+    value: selection.selected_standard || null,
+    confirmed_at: selection.confirmed_at,
+  };
 }
 
 function switchSpringType(type) {
@@ -1030,7 +1381,10 @@ function renderCompareOverlay() {
       <section class="compare-data-panel">
           ${renderTypeSelectorHtml(state.review)}
           ${renderSummaryHtml(state.review)}
+          ${renderStandardSelectionHtml(state.review)}
           ${renderParameterTableHtml(state.review)}
+          ${renderDerivedParametersHtml(state.review)}
+          ${renderStandardizationHtml(state.review)}
           ${renderGeometryEvidenceHtml(state.review)}
           ${renderRequirementsHtml(state.review)}
         </section>
@@ -1315,6 +1669,20 @@ function normalizeReview(review) {
   cloned.spring_template ||= getLocalTemplate(cloned.drawing_summary.spring_type);
   cloned.spring_parameters ||= {};
   cloned.spring_parameters.load_points ||= [];
+  cloned.spring_features ||= {};
+  cloned.standard_selection ||= {
+    selected_standard: null,
+    candidate_standards: [],
+    status: "need_review",
+    confidence: 0,
+    selection_source: "missing",
+    reason: "",
+    evidence: [],
+    need_human_review: false,
+    references: [],
+  };
+  cloned.derived_parameters ||= {};
+  cloned.standardization_results ||= [];
   cloned.technical_requirements ||= [];
   cloned.dimension_evidence ||= [];
   cloned.review_results ||= [];
@@ -1378,7 +1746,9 @@ function hasHumanReview(review) {
     return param && typeof param === "object" && param.need_human_review;
   });
   const techNeedsReview = (review.technical_requirements || []).some((item) => item.need_human_review);
-  return fieldNeedsReview || techNeedsReview;
+  const standardizationNeedsReview = (review.standardization_results || []).some((item) => item.need_human_review);
+  const standardSelectionNeedsReview = Boolean(review.standard_selection?.need_human_review);
+  return fieldNeedsReview || techNeedsReview || standardizationNeedsReview || standardSelectionNeedsReview;
 }
 
 function confirmAllFields() {
@@ -1393,6 +1763,14 @@ function confirmAllFields() {
   (state.review.technical_requirements || []).forEach((item, index) => {
     confirmParam(item, `technical_${index}`);
   });
+  (state.review.standardization_results || []).forEach((item) => {
+    if (canConfirmStandardization(item)) {
+      applyStandardizationResult(item);
+    }
+  });
+  if (state.review.standard_selection?.need_human_review) {
+    confirmStandardSelection();
+  }
 }
 
 function acknowledgeScannedInput() {
@@ -1510,13 +1888,16 @@ function isSupportedDrawing(file) {
 
 function scrollToBottom() {
   requestAnimationFrame(() => {
+    window.scrollTo(0, 0);
     conversation.scrollTop = conversation.scrollHeight;
   });
 }
 
 function scrollMessageIntoView(message) {
   requestAnimationFrame(() => {
-    message.scrollIntoView({ block: "start", behavior: "smooth" });
+    window.scrollTo(0, 0);
+    const top = Math.max(0, message.offsetTop - conversation.offsetTop - 12);
+    conversation.scrollTo({ top, behavior: "smooth" });
   });
 }
 

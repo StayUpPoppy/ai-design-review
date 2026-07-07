@@ -25,6 +25,16 @@ SOURCE_PRIORITY = {
 }
 
 
+NORMALIZATION_KEYS = (
+    "raw_value",
+    "standard_value",
+    "normalization_status",
+    "normalization_source",
+    "normalization_confidence",
+    "normalization_reason",
+)
+
+
 def source_weight(source: str) -> float:
     lowered = source.lower()
     for key, weight in SOURCE_PRIORITY.items():
@@ -87,7 +97,7 @@ def _merge_field(field: str, ordered: list[dict[str, Any]]) -> dict[str, Any]:
         max(float(best.get("confidence", 0) or 0), _combined_confidence(ordered)),
     )
 
-    return {
+    merged = {
         "field": field,
         "value": best.get("value"),
         "unit": best.get("unit"),
@@ -101,6 +111,10 @@ def _merge_field(field: str, ordered: list[dict[str, Any]]) -> dict[str, Any]:
         "suggested_region": best.get("suggested_region", ""),
         "need_human_review": _needs_human_review(best, ordered),
     }
+    for key in NORMALIZATION_KEYS:
+        if key in best:
+            merged[key] = best[key]
+    return merged
 
 
 def _normalize_load_point(candidate: dict[str, Any]) -> dict[str, Any]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -63,23 +64,68 @@ def render_pdf_with_pdftoppm(
     dpi: int = 200,
 ) -> list[str]:
     """Render a PDF with Poppler's pdftoppm if available."""
-    pdftoppm = shutil.which("pdftoppm")
-    if not pdftoppm:
+    candidates = _pdftoppm_candidates()
+    if not candidates:
         raise RuntimeError("pdftoppm is not available on PATH.")
 
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     output_prefix = output / prefix
-    command = [
-        pdftoppm,
-        "-png",
-        "-r",
-        str(dpi),
-        str(pdf_path),
-        str(output_prefix),
-    ]
-    subprocess.run(command, check=True, capture_output=True)
-    return [str(p) for p in sorted(output.glob(f"{prefix}-*.png"))]
+    errors: list[str] = []
+    for pdftoppm in candidates:
+        for stale in output.glob(f"{prefix}-*.png"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        command = [
+            pdftoppm,
+            "-png",
+            "-r",
+            str(dpi),
+            str(pdf_path),
+            str(output_prefix),
+        ]
+        completed = subprocess.run(command, capture_output=True)
+        rendered = [str(p) for p in sorted(output.glob(f"{prefix}-*.png"))]
+        if completed.returncode == 0 and rendered:
+            return rendered
+        stderr = completed.stderr.decode(errors="replace") if isinstance(completed.stderr, bytes) else str(completed.stderr or "")
+        stdout = completed.stdout.decode(errors="replace") if isinstance(completed.stdout, bytes) else str(completed.stdout or "")
+        detail = (stderr or stdout or "no output").strip()
+        errors.append(f"{pdftoppm}: exit {completed.returncode}; {detail}")
+    raise RuntimeError("pdftoppm failed to render PDF. Tried: " + " | ".join(errors))
+
+
+def _pdftoppm_candidates() -> list[str]:
+    found: list[str] = []
+    first = shutil.which("pdftoppm")
+    if first:
+        found.append(first)
+    if sys.platform.startswith("win"):
+        try:
+            completed = subprocess.run(["where.exe", "pdftoppm"], capture_output=True, text=True, check=False)
+            if completed.returncode == 0:
+                found.extend(line.strip() for line in completed.stdout.splitlines() if line.strip())
+        except OSError:
+            pass
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for item in found:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return sorted(unique, key=_pdftoppm_priority)
+
+
+def _pdftoppm_priority(path: str) -> tuple[int, str]:
+    suffix = Path(path).suffix.lower()
+    if suffix == ".exe":
+        return (0, path.lower())
+    return (1, path.lower())
 
 
 def _extract_pdf_text_chars(path: Path) -> int:

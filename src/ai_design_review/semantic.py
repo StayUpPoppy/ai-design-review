@@ -4,6 +4,8 @@ import re
 from copy import deepcopy
 from typing import Any
 
+from .material_terms import normalize_material
+
 
 def apply_spring_semantic_mapping(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Add spring-specific candidates inferred from generic recognizer output."""
@@ -102,6 +104,7 @@ def _extract_from_notes(
     if handedness:
         mapped.append(handedness)
 
+    mapped.extend(_parse_standard_context(notes_text, note_anchor))
     mapped.extend(_parse_load_points(notes_text, note_anchor, dimensions))
     mapped.extend(_parse_technical_requirements(notes_text, note_anchor))
     return mapped
@@ -184,6 +187,8 @@ def _parse_load_points(
                     "force": force,
                     "force_unit": "N",
                     "force_tolerance_percent": _parse_force_tolerance_percent(evidence),
+                    "load_tolerance_percent": _parse_force_tolerance_percent(evidence),
+                    "test_height_type": "specified_height",
                     "reference_only": label == "F2" and ("参考" in text or "(*)" in text or "*)" in text),
                 },
                 "source": "werk24_semantic",
@@ -194,6 +199,64 @@ def _parse_load_points(
                 "suggested_region": "Werk24 note/dimension semantic mapping",
             }
         )
+    return mapped
+
+
+def _parse_standard_context(text: str, note_anchor: dict[str, Any] | None) -> list[dict[str, Any]]:
+    mapped: list[dict[str, Any]] = []
+    standard = re.search(r"GB\s*/?\s*T\s*1239\.?2\s*[-—－]?\s*2009", text, re.IGNORECASE)
+    if standard:
+        mapped.append(_from_note("standard_no", "GB/T 1239.2-2009", note_anchor, standard.group(0), confidence=0.78))
+        mapped.append(_from_note("manufacturing_method", "cold_coiled", note_anchor, standard.group(0), confidence=0.76))
+
+    hot_standard = re.search(r"GB\s*/?\s*T\s*23934\s*[-—－]?\s*2014", text, re.IGNORECASE)
+    if hot_standard:
+        mapped.append(_from_note("standard_no", "GB/T 23934-2014", note_anchor, hot_standard.group(0), confidence=0.78))
+        mapped.append(_from_note("manufacturing_method", "hot_coiled", note_anchor, hot_standard.group(0), confidence=0.76))
+
+    if re.search(r"(圆柱螺旋|圆柱\s*压缩|cylindrical\s+compression)", text, re.IGNORECASE):
+        mapped.append(_from_note("spring_family", "helical", note_anchor, "圆柱螺旋压缩弹簧", confidence=0.68))
+        mapped.append(_from_note("spring_shape", "cylindrical", note_anchor, "圆柱螺旋压缩弹簧", confidence=0.68))
+    if re.search(r"(冷卷|冷绕|冷成形|cold\s*(?:coiled|formed|wound))", text, re.IGNORECASE):
+        mapped.append(_from_note("manufacturing_method", "cold_coiled", note_anchor, "冷卷/冷成形关键词", confidence=0.72))
+    if re.search(r"(热卷|热绕|热成形|hot\s*(?:coiled|formed|wound))", text, re.IGNORECASE):
+        mapped.append(_from_note("manufacturing_method", "hot_coiled", note_anchor, "热卷/热成形关键词", confidence=0.72))
+    if re.search(r"(圆锥|锥形|conical)", text, re.IGNORECASE):
+        mapped.append(_from_note("spring_shape", "conical", note_anchor, "圆锥/锥形关键词", confidence=0.72))
+    if re.search(r"(鼓形|腰鼓|barrel|hourglass)", text, re.IGNORECASE):
+        mapped.append(_from_note("spring_shape", "barrel", note_anchor, "鼓形/腰鼓关键词", confidence=0.7))
+    if re.search(r"(矩形截面|方形截面|模具弹簧|rectangular\s*(?:wire|section))", text, re.IGNORECASE):
+        mapped.append(_from_note("wire_section", "rectangular", note_anchor, "矩形截面关键词", confidence=0.72))
+    if re.search(r"(变节距|不等节距|variable\s*pitch)", text, re.IGNORECASE):
+        mapped.append(_from_note("pitch_type", "variable", note_anchor, "变节距关键词", confidence=0.72))
+
+    general_grade = re.search(r"(?:精度等级|精度|等级|级别)\s*[:：]?\s*([123])\s*级?", text)
+    if general_grade:
+        mapped.append(_from_note("accuracy_grade", f"{general_grade.group(1)}级", note_anchor, general_grade.group(0), confidence=0.68))
+
+    grade_rules = [
+        ("diameter_accuracy_grade", r"(?:直径|外径|内径|中径)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([123])\s*级?"),
+        ("free_length_accuracy_grade", r"(?:自由长|自由长度|自由高度|H0)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([123])\s*级?"),
+        ("load_accuracy_grade", r"(?:负荷|载荷|力值|负载)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([123])\s*级?"),
+        ("stiffness_accuracy_grade", r"(?:刚度|剛度)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([123])\s*级?"),
+    ]
+    for field, pattern in grade_rules:
+        match = re.search(pattern, text)
+        if match:
+            mapped.append(_from_note(field, f"{match.group(1)}级", note_anchor, match.group(0), confidence=0.7))
+
+    if re.search(r"外径\s*(?:控制|受控)", text):
+        mapped.append(_from_note("controlled_diameter_field", "outer_diameter", note_anchor, "外径控制", confidence=0.68))
+    elif re.search(r"内径\s*(?:控制|受控)", text):
+        mapped.append(_from_note("controlled_diameter_field", "inner_diameter", note_anchor, "内径控制", confidence=0.68))
+
+    end_grinding = re.search(r"(?:两端|端面|端部)?\s*(?:并紧)?\s*(不磨|未磨|磨削|磨平|磨)", text)
+    if end_grinding:
+        mapped.append(_from_note("end_grinding", end_grinding.group(0).strip(), note_anchor, end_grinding.group(0), confidence=0.66))
+
+    spring_rate = re.search(r"(?:刚度|剛度|弹簧刚度|SPRING\s*RATE|RATE)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:N\s*/\s*mm|N/mm)?", text, re.IGNORECASE)
+    if spring_rate:
+        mapped.append(_from_note("spring_rate", float(spring_rate.group(1)), note_anchor, spring_rate.group(0), unit="N/mm", confidence=0.7))
     return mapped
 
 
@@ -256,11 +319,15 @@ def _normalize_material_candidate(candidates: list[dict[str, Any]]) -> dict[str,
         if candidate.get("field") != "material":
             continue
         value = str(candidate.get("value") or candidate.get("evidence") or "")
-        normalized = _normalize_material(value)
-        if not normalized:
+        normalized = normalize_material(value)
+        if normalized["normalization_status"] != "matched":
             continue
         mapped = deepcopy(candidate)
-        mapped["value"] = normalized
+        mapped["value"] = normalized["value"]
+        mapped["raw_value"] = normalized["raw_value"]
+        mapped["standard_value"] = normalized["standard_value"]
+        mapped["normalization_status"] = normalized["normalization_status"]
+        mapped["normalization_source"] = normalized["normalization_source"]
         mapped["source"] = "werk24_semantic"
         mapped["confidence"] = max(float(mapped.get("confidence") or 0), 0.9)
         mapped["evidence"] = candidate.get("evidence") or value
@@ -271,20 +338,16 @@ def _normalize_material_candidate(candidates: list[dict[str, Any]]) -> dict[str,
 def _needs_material_normalization(candidates: list[dict[str, Any]]) -> bool:
     return any(
         candidate.get("field") == "material"
-        and _normalize_material(str(candidate.get("value") or "")) != candidate.get("value")
+        and _standard_material_value(candidate) not in (None, candidate.get("value"))
         for candidate in candidates
     )
 
 
-def _normalize_material(value: str) -> str | None:
-    compact = re.sub(r"[^A-Za-z0-9]", "", value).upper()
-    if "SUS304" in compact:
-        return "SUS304"
-    if "SUS301" in compact:
-        return "SUS301"
-    if "SUS316" in compact:
-        return "SUS316"
-    return None
+def _standard_material_value(candidate: dict[str, Any]) -> str | None:
+    normalized = normalize_material(candidate.get("value"))
+    if normalized["normalization_status"] != "matched":
+        return None
+    return str(normalized["value"])
 
 
 def _semantic_candidate(field: str, source: dict[str, Any], confidence: float) -> dict[str, Any]:

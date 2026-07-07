@@ -4,9 +4,11 @@ from typing import Any
 
 from .balloons import generate_balloons
 from .fusion import fuse_candidates
+from .material_terms import normalize_material
 from .preprocessing import probe_file
 from .rules import REQUIRED_FIELDS, determine_erp_ready, overall_status, run_rule_checks, should_require_human_review
 from .semantic import apply_spring_semantic_mapping
+from .standardizers import standardize_spring
 from .spring_templates import (
     classify_spring_type,
     field_default_unit,
@@ -28,6 +30,22 @@ TECHNICAL_FIELD_TYPES = {
     "other_requirement": "other",
 }
 
+SPRING_FEATURE_FIELDS = (
+    "spring_family",
+    "spring_shape",
+    "manufacturing_method",
+    "wire_section",
+    "pitch_type",
+)
+
+ACCURACY_GRADE_FIELDS = (
+    "accuracy_grade",
+    "diameter_accuracy_grade",
+    "free_length_accuracy_grade",
+    "load_accuracy_grade",
+    "stiffness_accuracy_grade",
+)
+
 
 class DrawingReviewWorkflow:
     """Deterministic workflow mirroring the future LangGraph nodes."""
@@ -45,7 +63,19 @@ class DrawingReviewWorkflow:
         spring_type = classification["spring_type"]
         spring_template = template_for(spring_type)
         spring_parameters = self._build_spring_parameters(fused["fields"], fused["load_points"], spring_type)
+        self._apply_company_default_accuracy(spring_parameters, spring_type)
+        spring_features = self._build_spring_features(fused["fields"], spring_type)
         technical_requirements = self._build_technical_requirements(fused["fields"])
+        standardization = standardize_spring(
+            spring_type,
+            spring_parameters,
+            spring_features=spring_features,
+            standard_selection_inference=fused["fields"].get("standard_selection_inference"),
+            technical_requirements=technical_requirements,
+        )
+        derived_parameters = standardization["derived_parameters"]
+        standardization_results = standardization["standardization_results"]
+        standard_selection = standardization["standard_selection"]
         review_results = run_rule_checks(
             spring_parameters,
             technical_requirements,
@@ -56,6 +86,10 @@ class DrawingReviewWorkflow:
         )
         human_review_required = should_require_human_review(spring_parameters, review_results)
         if any(item.get("need_human_review") for item in technical_requirements):
+            human_review_required = True
+        if any(item.get("need_human_review") for item in standardization_results):
+            human_review_required = True
+        if standard_selection.get("need_human_review"):
             human_review_required = True
         if classification.get("need_human_review"):
             human_review_required = True
@@ -75,7 +109,7 @@ class DrawingReviewWorkflow:
                 "spring_type": spring_type,
                 "spring_type_label": spring_template["label"],
                 "spring_type_confidence": classification["confidence"],
-                "material": _value(fused["fields"], "material", ""),
+                "material": spring_parameters.get("material", {}).get("value") or "",
                 "unit": "mm",
                 "overall_status": status,
                 "summary": _summary(status, human_review_required, erp_ready),
@@ -84,6 +118,10 @@ class DrawingReviewWorkflow:
             "spring_template": spring_template,
             "file_info": file_info,
             "spring_parameters": spring_parameters,
+            "spring_features": spring_features,
+            "standard_selection": standard_selection,
+            "derived_parameters": derived_parameters,
+            "standardization_results": standardization_results,
             "technical_requirements": technical_requirements,
             "dimension_evidence": dimension_evidence,
             "review_results": review_results,
@@ -108,6 +146,46 @@ class DrawingReviewWorkflow:
         parameters["load_points"] = [self._load_point(item) for item in load_points]
         parameters["torque_points"] = []
         return parameters
+
+    def _apply_company_default_accuracy(self, parameters: dict[str, Any], spring_type: str) -> None:
+        if spring_type != "compression_spring":
+            return
+        if any(parameters.get(field, {}).get("value") not in (None, "") for field in ACCURACY_GRADE_FIELDS):
+            return
+        if "accuracy_grade" not in parameters:
+            return
+        parameters["accuracy_grade"] = {
+            **parameters["accuracy_grade"],
+            "value": "2级",
+            "source": ["company_default"],
+            "evidence": "图纸未标注精度等级，按公司默认二级精度生成标准化建议。",
+            "confidence": 0.6,
+            "need_human_review": True,
+            "default_source": "company_default",
+            "default_reason": "图纸未标注精度等级，按公司默认二级精度生成标准化建议。",
+        }
+
+    def _build_spring_features(self, fields: dict[str, dict[str, Any]], spring_type: str) -> dict[str, Any]:
+        features = {
+            field: self._feature_param(fields, field)
+            for field in SPRING_FEATURE_FIELDS
+        }
+        if spring_type != "compression_spring":
+            return features
+        return features
+
+    def _feature_param(self, fields: dict[str, dict[str, Any]], field: str) -> dict[str, Any]:
+        item = fields.get(field, {})
+        return {
+            "value": item.get("value") if item else "unknown",
+            "source": item.get("source", []) if item else [],
+            "evidence": item.get("evidence", "") if item else "",
+            "confidence": item.get("confidence", 0) if item else 0,
+            "need_human_review": item.get("need_human_review", True) if item else True,
+            "page": item.get("page", 1) if item else 1,
+            "position": item.get("position") if item else None,
+            "suggested_region": item.get("suggested_region", "") if item else "",
+        }
 
     def _build_technical_requirements(self, fields: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         requirements = []
@@ -149,8 +227,21 @@ class DrawingReviewWorkflow:
 
     def _param(self, fields: dict[str, dict[str, Any]], field: str, default_unit: str | None = None) -> dict[str, Any]:
         item = fields.get(field, {})
+        value = item.get("value")
+        extra: dict[str, Any] = {}
+        if field == "material" and value not in (None, ""):
+            normalized = normalize_material(item.get("raw_value", value))
+            value = normalized["value"]
+            extra = {
+                "raw_value": normalized["raw_value"],
+                "standard_value": normalized["standard_value"],
+                "normalization_status": normalized["normalization_status"],
+                "normalization_source": normalized["normalization_source"],
+                "normalization_confidence": normalized["normalization_confidence"],
+                "normalization_reason": normalized["normalization_reason"],
+            }
         return {
-            "value": item.get("value"),
+            "value": value,
             "unit": item.get("unit") or default_unit,
             "tolerance_upper": item.get("tolerance_upper"),
             "tolerance_lower": item.get("tolerance_lower"),
@@ -161,6 +252,7 @@ class DrawingReviewWorkflow:
             "page": item.get("page", 1),
             "position": item.get("position"),
             "suggested_region": item.get("suggested_region", ""),
+            **extra,
         }
 
     def _load_point(self, item: dict[str, Any]) -> dict[str, Any]:
@@ -172,6 +264,12 @@ class DrawingReviewWorkflow:
             "force": value.get("force"),
             "force_unit": value.get("force_unit", "N"),
             "force_tolerance_percent": value.get("force_tolerance_percent"),
+            "deflection": value.get("deflection"),
+            "deflection_unit": value.get("deflection_unit", "mm"),
+            "load_tolerance_upper": value.get("load_tolerance_upper"),
+            "load_tolerance_lower": value.get("load_tolerance_lower"),
+            "load_tolerance_percent": value.get("load_tolerance_percent"),
+            "test_height_type": value.get("test_height_type", ""),
             "reference_only": value.get("reference_only", False),
             "source": item.get("source", []),
             "evidence": item.get("evidence", ""),

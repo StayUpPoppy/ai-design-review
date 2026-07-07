@@ -60,6 +60,44 @@ def main() -> None:
     assert load_points[1]["value"]["reference_only"] is True
     assert by_field["salt_spray"]["value"] == "720h无红锈"
     assert by_field["environmental"]["value"] == "GB/T 30512-2014"
+
+    vertical_payload = {
+        "texts": [
+            _block("2", 1782, 729),
+            _block("5", 1770, 792),
+            _block("1.材质:SUS304，线径Φ1.5±0.05", 100, 500),
+            _block("2.总圈数:4，旋向:右旋", 100, 540),
+        ]
+    }
+    vertical_candidates = ocr_payload_to_candidates(vertical_payload)
+    vertical_by_field = {
+        candidate["field"]: candidate
+        for candidate in vertical_candidates
+        if candidate["field"] != "load_point"
+    }
+    assert vertical_by_field["outer_diameter"]["value"] == 25
+    assert vertical_by_field["outer_diameter"].get("tolerance_upper") is None
+    assert vertical_by_field["outer_diameter"].get("tolerance_lower") is None
+    assert "竖排直径数字 25" in vertical_by_field["outer_diameter"]["evidence"]
+
+    partial_vertical_payload = {
+        "texts": [
+            _block("5", 1609, 721),
+            _block("2", 1609, 737),
+            _block("1.材质:SUS304，线径Φ1.5±0.05", 100, 500),
+            _block("2.总圈数:4，旋向:右旋", 100, 540),
+        ]
+    }
+    partial_candidates = ocr_payload_to_candidates(partial_vertical_payload)
+    partial_by_field = {
+        candidate["field"]: candidate
+        for candidate in partial_candidates
+        if candidate["field"] != "load_point"
+    }
+    assert partial_by_field["outer_diameter"]["value"] == 25
+    assert partial_by_field["outer_diameter"].get("tolerance_upper") is None
+    assert partial_by_field["outer_diameter"].get("tolerance_lower") is None
+    assert "OCR漏读上方2" in partial_by_field["outer_diameter"]["evidence"]
     print("paddleocr mapping test passed")
 
 

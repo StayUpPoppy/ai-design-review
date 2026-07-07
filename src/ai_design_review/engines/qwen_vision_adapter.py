@@ -147,13 +147,21 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
 1. 判断弹簧类型，只能使用 compression_spring、torsion_spring、extension_spring、retaining_ring、unknown_spring。
 2. 提取图纸名称、图号、版本、材料。
 3. 按弹簧类型提取尺寸字段。字段名必须使用英文 key，前端会用中文标签显示；不要自造 key。
-   - 通用：material、wire_diameter、outer_diameter、inner_diameter、mean_diameter、free_length、body_length、total_coils、active_coils、handedness、pitch。
-   - 压缩弹簧：solid_height、end_coils、support_coils、end_type，可提取 load_points。
+   - 通用：material、standard_no、accuracy_grade、wire_diameter、outer_diameter、inner_diameter、mean_diameter、free_length、body_length、total_coils、active_coils、handedness、pitch。
+   - 压缩弹簧：diameter_accuracy_grade、free_length_accuracy_grade、load_accuracy_grade、stiffness_accuracy_grade、controlled_diameter_field、solid_height、end_coils、support_coils、end_type、end_grinding、spring_rate、perpendicularity、straightness、permanent_set_limit，可提取 load_points。
    - 扭转弹簧：coil_body_length、arm_length、short_arm_length、long_arm_length、leg1_length、leg2_length、free_angle、working_angle、leg1_angle、leg2_angle、bend_radius、leg_end_type、mandrel_diameter、torque。
    - 拉伸弹簧：hook_type、hook_outer_diameter、hook_inner_diameter、hook_gap、hook1_type、hook2_type、hook1_length、hook2_length、hook1_outer_diameter、hook2_outer_diameter、hook1_inner_diameter、hook2_inner_diameter、hook1_opening、hook2_opening、hook_orientation、center_to_center_length、initial_tension，可提取 load_points。
    - 卡簧/挡圈：ring_type、thickness、free_diameter、opening_width、gap_width、notch_depth、groove_diameter、groove_width、lug_hole_diameter、lug_center_distance、opening_angle、section_width、section_height、chamfer、corner_radius。
 4. 提取动态工艺要求：surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process、other。表面处理、硬度、热处理、盐雾等不要放进 parameters，放进 technical_requirements。
-5. 不确定或识别不到的字段不要猜；可以留空或省略，并标记 need_human_review=true。只根据图纸可见文字、尺寸线和表格内容输出。
+5. 对压缩弹簧，额外判断是否属于圆柱螺旋压缩弹簧，并输出 spring_features：
+   - spring_family 只能为 helical、disc、wave、rubber、gas、unknown。
+   - spring_shape 只能为 cylindrical、conical、barrel、hourglass、unknown。
+   - manufacturing_method 只能为 cold_coiled、hot_coiled、unknown。图纸写 GB/T 1239.2、冷卷、冷绕、冷成形时倾向 cold_coiled；写 GB/T 23934、热卷、热绕、热成形时倾向 hot_coiled；没有依据时必须 unknown。
+   - wire_section 只能为 round、rectangular、square、unknown。
+   - pitch_type 只能为 constant、variable、unknown。
+6. 对压缩弹簧，输出 standard_selection_inference：推荐标准、制造方式、置信度、证据、原因、是否需要人工确认。只能在有标准号、工艺关键词或明显结构证据时推荐；证据不足时 selected_standard 为空或 unknown，并 need_human_review=true。
+7. 对压缩弹簧，只识别图纸已写明的标准号、等级、端部形式、刚度、垂直度、直线度等；不要计算标准公差，标准公差由后端规则表计算。
+8. 不确定或识别不到的字段不要猜；可以留空或省略，并标记 need_human_review=true。只根据图纸可见文字、尺寸线和表格内容输出。
 
 JSON 结构：
 {
@@ -163,8 +171,16 @@ JSON 结构：
     "material": {"value": "", "confidence": 0.0, "evidence": "", "need_human_review": true},
     "wire_diameter": {"value": null, "unit": "mm", "tolerance_upper": null, "tolerance_lower": null, "confidence": 0.0, "evidence": "", "need_human_review": true}
   },
+  "spring_features": {
+    "spring_family": {"value": "helical", "confidence": 0.0, "evidence": "", "need_human_review": true},
+    "spring_shape": {"value": "cylindrical", "confidence": 0.0, "evidence": "", "need_human_review": true},
+    "manufacturing_method": {"value": "unknown", "confidence": 0.0, "evidence": "", "need_human_review": true},
+    "wire_section": {"value": "round", "confidence": 0.0, "evidence": "", "need_human_review": true},
+    "pitch_type": {"value": "constant", "confidence": 0.0, "evidence": "", "need_human_review": true}
+  },
+  "standard_selection_inference": {"selected_standard": "", "manufacturing_method": "unknown", "confidence": 0.0, "evidence": [], "reason": "", "need_human_review": true},
   "load_points": [
-    {"label": "F1", "height": null, "height_unit": "mm", "force": null, "force_unit": "N", "force_tolerance_percent": null, "reference_only": false, "confidence": 0.0, "evidence": "", "need_human_review": true}
+    {"label": "F1", "height": null, "height_unit": "mm", "force": null, "force_unit": "N", "force_tolerance_percent": null, "load_tolerance_upper": null, "load_tolerance_lower": null, "load_tolerance_percent": null, "test_height_type": "", "reference_only": false, "confidence": 0.0, "evidence": "", "need_human_review": true}
   ],
   "technical_requirements": [
     {"type": "surface", "content": "", "confidence": 0.0, "evidence": "", "need_human_review": true}
@@ -220,6 +236,21 @@ def qwen_payload_to_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
     for field, item in parameters.items():
         candidates.extend(_parameter_candidate(field, item))
 
+    spring_features = payload.get("spring_features") if isinstance(payload.get("spring_features"), dict) else {}
+    for field in ("spring_family", "spring_shape", "manufacturing_method", "wire_section", "pitch_type"):
+        candidates.extend(_parameter_candidate(field, spring_features.get(field)))
+
+    standard_inference = payload.get("standard_selection_inference") or payload.get("standard_selection")
+    if isinstance(standard_inference, dict):
+        candidates.append(
+            _candidate(
+                "standard_selection_inference",
+                dict(standard_inference),
+                standard_inference,
+                suggested_region="Qwen cold/hot coiled standard inference",
+            )
+        )
+
     for item in payload.get("load_points") or []:
         if not isinstance(item, dict):
             continue
@@ -230,6 +261,10 @@ def qwen_payload_to_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
             "force": _numeric_or_none(item.get("force")),
             "force_unit": item.get("force_unit") or "N",
             "force_tolerance_percent": _numeric_or_none(item.get("force_tolerance_percent")),
+            "load_tolerance_upper": _numeric_or_none(item.get("load_tolerance_upper")),
+            "load_tolerance_lower": _numeric_or_none(item.get("load_tolerance_lower")),
+            "load_tolerance_percent": _numeric_or_none(item.get("load_tolerance_percent")),
+            "test_height_type": item.get("test_height_type") or "",
             "reference_only": bool(item.get("reference_only", False)),
         }
         if value["height"] is None and value["force"] is None:

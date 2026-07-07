@@ -122,6 +122,7 @@ async def create_review(
 
     warnings: list[str] = []
     images = _make_preview_images(drawing_path, page_dir, warnings)
+    uploaded_file_info = probe_file(drawing_path)
     image_url = _artifact_url(job_id, Path(images[0]).relative_to(job_dir)) if images else None
 
     candidates: list[dict[str, Any]] = []
@@ -239,6 +240,28 @@ async def create_review(
             "and must not invent dimensions."
         )
 
+    if _needs_ocr_fallback(candidates, uploaded_file_info, candidate_sources):
+        try:
+            warnings.append("No structured candidates were produced from the selected engines; trying local RapidOCR fallback.")
+            ocr_payload = await run_in_threadpool(
+                UnifiedOcrEngine(
+                    provider="rapidocr",
+                    work_dir=job_dir / "ocr_fallback_pages",
+                    diagnostics_path=job_dir / "ocr_fallback_diagnostics.json",
+                    dpi=200,
+                ).extract_with_raw,
+                drawing_path,
+            )
+            candidates.extend(ocr_payload.get("candidates", []))
+            raw_payloads["rapidocr_fallback"] = ocr_payload
+            candidate_sources.append("rapidocr_fallback")
+            warnings.extend(str(item) for item in ocr_payload.get("warnings", []))
+        except OcrProviderError as exc:
+            diagnostics_url = _artifact_url(job_id, Path("ocr_fallback_diagnostics.json"))
+            warnings.append(f"RapidOCR fallback failed: {exc}; diagnostics_url={diagnostics_url}")
+        except Exception as exc:
+            warnings.append(f"RapidOCR fallback failed: {type(exc).__name__}: {exc}")
+
     business_candidates = [
         candidate
         for candidate in candidates
@@ -262,7 +285,8 @@ async def create_review(
     }
     write_json(job_dir / "candidates.json", candidates_payload)
     write_json(job_dir / "review.json", review)
-    write_json(job_dir / "file_info.json", probe_file(drawing_path))
+    write_json(job_dir / "file_info.json", uploaded_file_info)
+    write_json(job_dir / "warnings.json", {"warnings": warnings})
 
     return {
         "job_id": job_id,
@@ -341,6 +365,18 @@ def _candidate_list_from_payload(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(payload, list):
         raise HTTPException(status_code=400, detail="Candidate JSON must be a list or contain candidates.")
     return payload
+
+
+def _needs_ocr_fallback(
+    candidates: list[dict[str, Any]],
+    file_info: dict[str, Any],
+    candidate_sources: list[str],
+) -> bool:
+    if not file_info.get("is_scanned_like"):
+        return False
+    if any(candidate.get("feature_type") != "dimension_evidence" for candidate in candidates):
+        return False
+    return not any("rapidocr" in str(source).lower() for source in candidate_sources)
 
 
 def _werk24_license_status() -> dict[str, str]:
