@@ -142,6 +142,27 @@ const SPRING_TYPE_LABELS = {
   unknown_spring: "未知弹簧",
 };
 
+const PARAMETER_COLLECTION_FIELDS = new Set(["load_points", "torque_points"]);
+
+const COMPRESSION_CORE_PARAMETER_FIELDS = new Set([
+  "material",
+  "standard_no",
+  "accuracy_grade",
+  "wire_diameter",
+  "outer_diameter",
+  "inner_diameter",
+  "mean_diameter",
+  "free_length",
+  "total_coils",
+  "handedness",
+  "end_grinding",
+]);
+
+const STANDARDIZATION_PARAMETER_ASSOCIATIONS = {
+  load_points: new Set(["active_coils", "load_accuracy_grade"]),
+  spring_rate: new Set(["active_coils", "stiffness_accuracy_grade"]),
+};
+
 const LOCAL_SPRING_TEMPLATES = {
   compression_spring: {
     spring_type: "compression_spring",
@@ -306,7 +327,6 @@ const advancedOptions = document.getElementById("advancedOptions");
 const useOcrInput = document.getElementById("useOcrInput");
 const useQwenInput = document.getElementById("useQwenInput");
 const ocrProviderInput = document.getElementById("ocrProviderInput");
-const useGeometryInput = document.getElementById("useGeometryInput");
 const useVlmInput = document.getElementById("useVlmInput");
 const visionProviderInput = document.getElementById("visionProviderInput");
 const useWerk24Input = document.getElementById("useWerk24Input");
@@ -441,7 +461,7 @@ async function submitSelectedFile() {
     form.append("use_qwen", useQwenInput?.checked ? "true" : "false");
     form.append("use_ocr", useOcrInput.checked ? "true" : "false");
     if (useOcrInput.checked) form.append("ocr_provider", ocrProviderInput.value);
-    form.append("use_geometry", useGeometryInput?.checked ? "true" : "false");
+    form.append("use_geometry", "false");
     form.append("use_vlm", useVlmInput?.checked ? "true" : "false");
     form.append("vision_provider", visionProviderInput?.value || "none");
     form.append("use_werk24", useWerk24Input?.checked ? "true" : "false");
@@ -496,10 +516,9 @@ async function checkApiHealth() {
     const baiduStatus = ocrRuntime.baidu_ocr?.status || "unknown";
     const baiduVlStatus = ocrRuntime.baidu_paddleocr_vl?.status || "unknown";
     const rapidStatus = ocrRuntime.rapidocr?.status || "unknown";
-    const geometryStatus = payload.geometry_runtime?.status || "unknown";
     const vlmStatus = payload.vlm_runtime?.status || "unknown";
     setBackendStatus(
-      `后端正常 · Qwen ${qwenModel} ${qwenStatus} · OCR ${defaultProvider} · 百度 ${baiduStatus} · 百度VL ${baiduVlStatus} · RapidOCR ${rapidStatus} · 几何 ${geometryStatus} · VLM ${vlmStatus}`,
+      `后端正常 · Qwen ${qwenModel} ${qwenStatus} · OCR ${defaultProvider} · 百度 ${baiduStatus} · 百度VL ${baiduVlStatus} · RapidOCR ${rapidStatus} · VLM ${vlmStatus}`,
     );
   } catch (error) {
     setBackendStatus(`后端不可用：${error.message || String(error)}`, true);
@@ -695,7 +714,12 @@ function renderDrawingCanvasHtml(className, imageUrl = state.imageUrl) {
 
 function renderParameterTableHtml(review) {
   const params = review.spring_parameters || {};
-  const parameterRows = getParameterFields(params, review).map((field) => {
+  const fieldGroups = getParameterFieldGroups(params, review);
+  const parameterRows = fieldGroups.core.map((field) => {
+    const meta = getFieldMeta(field, review);
+    return parameterRowHtml(field, params[field] || blankParam(meta.unit), meta);
+  });
+  const advancedRows = fieldGroups.advanced.map((field) => {
     const meta = getFieldMeta(field, review);
     return parameterRowHtml(field, params[field] || blankParam(meta.unit), meta);
   });
@@ -720,73 +744,20 @@ function renderParameterTableHtml(review) {
           </div>
         </div>
       ` : ""}
+      ${advancedRows.length ? `
+        <details class="advanced-parameters">
+          <summary>
+            <span>高级参数</span>
+            <small>${advancedRows.length} 项有识别值或标准化建议</small>
+          </summary>
+          <div class="data-table advanced-data-table">
+            ${dataTableHeadHtml("参数", "数值", "公差")}
+            ${advancedRows.join("")}
+          </div>
+        </details>
+      ` : ""}
     </section>
   `;
-}
-
-function renderGeometryEvidenceHtml(review) {
-  const items = Array.isArray(review.dimension_evidence) ? review.dimension_evidence : [];
-  if (!items.length) {
-    return `
-      <section class="review-block geometry-evidence-block">
-        <div class="block-head"><h2>几何证据</h2><span>0 项</span></div>
-        <div class="empty-line">未生成线段、箭头、圆弧或标题栏证据。</div>
-      </section>
-    `;
-  }
-  const counts = items.reduce((acc, item) => {
-    const kind = item.kind || "unknown";
-    acc[kind] = (acc[kind] || 0) + 1;
-    return acc;
-  }, {});
-  const chips = Object.entries(counts)
-    .sort((a, b) => b[1] - a[1])
-    .map(([kind, count]) => `<span>${escapeHtml(geometryKindLabel(kind))} ${count}</span>`)
-    .join("");
-  const rows = items.slice(0, 12).map((item) => `
-    <div class="evidence-row">
-      <strong>${escapeHtml(geometryKindLabel(item.kind || "unknown"))}</strong>
-      <span>${escapeHtml(formatEvidencePosition(item))}</span>
-      <small>${Math.round(Number(item.confidence || 0) * 100)}%</small>
-    </div>
-  `).join("");
-  return `
-    <section class="review-block geometry-evidence-block">
-      <div class="block-head"><h2>几何证据</h2><span>${items.length} 项</span></div>
-      <div class="evidence-chip-list">${chips}</div>
-      <div class="evidence-list">${rows}</div>
-    </section>
-  `;
-}
-
-function geometryKindLabel(kind) {
-  const labels = {
-    arrowhead_candidate: "箭头候选",
-    circle_candidate: "圆/弧候选",
-    contour: "轮廓",
-    drawing_content_bbox: "图纸内容区",
-    horizontal_line_candidate: "水平线",
-    vertical_line_candidate: "垂直线",
-    raster_line: "线段",
-    title_block_candidate: "标题栏",
-    vector_line: "PDF 矢量线",
-    vector_rect: "PDF 矢量框",
-    vector_text: "PDF 文本",
-  };
-  return labels[kind] || kind;
-}
-
-function formatEvidencePosition(item) {
-  const pos = item.position || {};
-  const page = item.page ? `P${item.page}` : "P?";
-  const x = Number(pos.x);
-  const y = Number(pos.y);
-  const w = Number(pos.width);
-  const h = Number(pos.height);
-  if (![x, y, w, h].every(Number.isFinite)) {
-    return item.suggested_region || page;
-  }
-  return `${page} · x${Math.round(x)} y${Math.round(y)} · ${Math.round(w)}×${Math.round(h)}`;
 }
 
 function dataTableHeadHtml(nameLabel, primaryLabel, secondaryLabel) {
@@ -804,9 +775,55 @@ function getParameterFields(params, review) {
   const templateFields = getSpringTemplate(review).fields.map((field) => field.key);
   const returnedFields = Object.keys(params).filter((field) => {
     const value = params[field];
-    return !["load_points", "torque_points"].includes(field) && value && typeof value === "object" && !Array.isArray(value);
+    return !PARAMETER_COLLECTION_FIELDS.has(field) && value && typeof value === "object" && !Array.isArray(value);
   });
   return Array.from(new Set([...templateFields, ...returnedFields]));
+}
+
+function getParameterFieldGroups(params, review) {
+  const fields = getParameterFields(params, review);
+  if (!isCompressionSpringReview(review)) {
+    return { core: fields, advanced: [] };
+  }
+  return {
+    core: fields.filter((field) => COMPRESSION_CORE_PARAMETER_FIELDS.has(field)),
+    advanced: fields.filter((field) => {
+      if (COMPRESSION_CORE_PARAMETER_FIELDS.has(field)) return false;
+      return shouldShowAdvancedParameter(field, params[field], review);
+    }),
+  };
+}
+
+function shouldShowAdvancedParameter(field, param, review) {
+  return hasParameterContent(param) || hasStandardizationForField(field, review);
+}
+
+function hasParameterContent(param) {
+  if (!param || typeof param !== "object" || Array.isArray(param)) return false;
+  if (param.value != null && param.value !== "") return true;
+  if (param.tolerance_upper != null && param.tolerance_upper !== "") return true;
+  if (param.tolerance_lower != null && param.tolerance_lower !== "") return true;
+  if (param.default_source) return true;
+  if (param.evidence || param.suggested_region) return true;
+  const sources = Array.isArray(param.source) ? param.source : [param.source].filter(Boolean);
+  if (sources.some((item) => ["human_edited", "human_confirmed"].includes(item))) return true;
+  return false;
+}
+
+function hasStandardizationForField(field, review) {
+  return (review.standardization_results || []).some((item) => {
+    const target = String(item.target_field || "");
+    const targetRoot = target.split(".")[0];
+    return target === field
+      || target.startsWith(`${field}.`)
+      || Boolean(STANDARDIZATION_PARAMETER_ASSOCIATIONS[targetRoot]?.has(field));
+  });
+}
+
+function isCompressionSpringReview(review) {
+  if (currentSpringType(review) === "compression_spring") return true;
+  const templateLabel = String(review?.spring_template?.label || "");
+  return templateLabel.includes("压缩") || normalizeSpringTypeValue(review?.spring_template?.spring_type) === "compression_spring";
 }
 
 function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)) {
@@ -1385,7 +1402,6 @@ function renderCompareOverlay() {
           ${renderParameterTableHtml(state.review)}
           ${renderDerivedParametersHtml(state.review)}
           ${renderStandardizationHtml(state.review)}
-          ${renderGeometryEvidenceHtml(state.review)}
           ${renderRequirementsHtml(state.review)}
         </section>
       </div>
@@ -1576,8 +1592,7 @@ function makeCompletionText(payload) {
   const warnings = payload.warnings?.length ? `警告：${payload.warnings.join("；")}` : "";
   const sources = payload.candidate_sources?.join(" / ") || "无";
   const businessCount = payload.business_candidate_count ?? payload.candidate_count ?? 0;
-  const evidenceCount = payload.geometry_evidence_count ?? 0;
-  return `审查完成：${businessCount} 个结构化候选，${evidenceCount} 项几何证据，来源 ${sources}。${warnings}`;
+  return `审查完成：${businessCount} 个结构化候选，来源 ${sources}。${warnings}`;
 }
 
 function appendUserMessage(text) {
@@ -1665,7 +1680,7 @@ function normalizeBaseUrl(url) {
 function normalizeReview(review) {
   const cloned = structuredClone(review);
   cloned.drawing_summary ||= {};
-  cloned.drawing_summary.spring_type ||= "compression_spring";
+  cloned.drawing_summary.spring_type = normalizeSpringTypeValue(cloned.drawing_summary.spring_type || "compression_spring");
   cloned.spring_template ||= getLocalTemplate(cloned.drawing_summary.spring_type);
   cloned.spring_parameters ||= {};
   cloned.spring_parameters.load_points ||= [];
@@ -1684,7 +1699,6 @@ function normalizeReview(review) {
   cloned.derived_parameters ||= {};
   cloned.standardization_results ||= [];
   cloned.technical_requirements ||= [];
-  cloned.dimension_evidence ||= [];
   cloned.review_results ||= [];
   cloned.balloons ||= [];
   cloned.manual_confirmations ||= {};
@@ -1692,10 +1706,30 @@ function normalizeReview(review) {
 }
 
 function currentSpringType(review) {
-  return review?.drawing_summary?.spring_type
-    || review?.spring_template?.spring_type
-    || review?.spring_type_detection?.spring_type
-    || "unknown_spring";
+  const candidates = [
+    review?.drawing_summary?.spring_type,
+    review?.spring_template?.spring_type,
+    review?.spring_type_detection?.spring_type,
+    review?.spring_template?.label,
+    review?.drawing_summary?.spring_type_label,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeSpringTypeValue(candidate);
+    if (normalized && normalized !== "unknown_spring") return normalized;
+  }
+  return "unknown_spring";
+}
+
+function normalizeSpringTypeValue(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "unknown_spring";
+  if (LOCAL_SPRING_TEMPLATES[raw]) return raw;
+  const labelMatch = Object.entries(SPRING_TYPE_LABELS).find(([, label]) => label === raw);
+  if (labelMatch) return labelMatch[0];
+  if (raw.includes("压缩")) return "compression_spring";
+  if (raw.includes("拉伸")) return "extension_spring";
+  if (raw.includes("扭转")) return "torsion_spring";
+  return raw;
 }
 
 function getLocalTemplate(type) {
@@ -1705,7 +1739,7 @@ function getLocalTemplate(type) {
 function getSpringTemplate(review) {
   const currentType = currentSpringType(review);
   const backendTemplate = review?.spring_template;
-  if (backendTemplate?.spring_type === currentType && Array.isArray(backendTemplate.fields)) {
+  if (normalizeSpringTypeValue(backendTemplate?.spring_type) === currentType && Array.isArray(backendTemplate.fields)) {
     return backendTemplate;
   }
   return getLocalTemplate(currentType);
