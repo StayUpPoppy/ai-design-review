@@ -54,7 +54,13 @@ class DrawingReviewWorkflow:
     def __init__(self, factory_rules: dict[str, Any]):
         self.factory_rules = factory_rules
 
-    def run(self, file_path: str | None, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    def run(
+        self,
+        file_path: str | None,
+        candidates: list[dict[str, Any]],
+        *,
+        run_standardization: bool = True,
+    ) -> dict[str, Any]:
         file_info = probe_file(file_path) if file_path else {"path": None, "kind": "unknown", "is_scanned_like": None}
         candidates = [*_file_text_candidates(file_info), *candidates]
         dimension_evidence = _dimension_evidence(candidates)
@@ -67,27 +73,33 @@ class DrawingReviewWorkflow:
         self._apply_company_default_accuracy(spring_parameters, spring_type)
         spring_features = self._build_spring_features(fused["fields"], spring_type)
         technical_requirements = self._build_technical_requirements(fused["fields"])
-        standardization = standardize_spring(
-            spring_type,
-            spring_parameters,
-            spring_features=spring_features,
-            standard_selection_inference=fused["fields"].get("standard_selection_inference"),
-            technical_requirements=technical_requirements,
-        )
-        derived_parameters = standardization["derived_parameters"]
-        standardization_results = standardization["standardization_results"]
-        standard_selection = standardization["standard_selection"]
-        llm_standardization = normalize_llm_standardization_results(
-            fused["fields"].get(LLM_STANDARDIZATION_FIELD),
-            spring_type=spring_type,
-            spring_parameters=spring_parameters,
-            standard_selection=standard_selection,
-        )
-        if llm_standardization["standardization_results"]:
-            standardization_results = [
-                *standardization_results,
-                *llm_standardization["standardization_results"],
-            ]
+        if run_standardization:
+            standardization = standardize_spring(
+                spring_type,
+                spring_parameters,
+                spring_features=spring_features,
+                standard_selection_inference=fused["fields"].get("standard_selection_inference"),
+                technical_requirements=technical_requirements,
+            )
+            derived_parameters = standardization["derived_parameters"]
+            standardization_results = standardization["standardization_results"]
+            standard_selection = standardization["standard_selection"]
+            llm_standardization = normalize_llm_standardization_results(
+                fused["fields"].get(LLM_STANDARDIZATION_FIELD),
+                spring_type=spring_type,
+                spring_parameters=spring_parameters,
+                standard_selection=standard_selection,
+            )
+            if llm_standardization["standardization_results"]:
+                standardization_results = [
+                    *standardization_results,
+                    *llm_standardization["standardization_results"],
+                ]
+        else:
+            derived_parameters = {}
+            standardization_results = []
+            standard_selection = pending_standard_selection()
+            llm_standardization = {"standardization_results": [], "diagnostics": []}
         review_results = run_rule_checks(
             spring_parameters,
             technical_requirements,
@@ -356,3 +368,52 @@ def _summary(status: str, human_review_required: bool, erp_ready: bool) -> str:
     if human_review_required:
         return f"当前审查状态为 {status}，存在需要人工确认的字段，暂不允许自动进入 ERP。"
     return f"当前审查状态为 {status}，需根据规则结果处理后再放行。"
+
+
+def pending_standard_selection() -> dict[str, Any]:
+    return {
+        "selected_standard": None,
+        "standard_label": "",
+        "candidate_standards": [],
+        "status": "not_started",
+        "rules_available": False,
+        "confidence": 0,
+        "selection_source": "not_started",
+        "reason": "等待点击标准化后再进行标准选择和公差计算。",
+        "evidence": [],
+        "need_human_review": False,
+        "references": [],
+        "metadata": {},
+    }
+
+
+def apply_standardization_to_review(
+    review: dict[str, Any],
+    *,
+    standard_selection_inference: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    spring_type = review.get("drawing_summary", {}).get("spring_type")
+    spring_type = spring_type or review.get("spring_template", {}).get("spring_type") or "unknown_spring"
+    standardization = standardize_spring(
+        spring_type,
+        review.get("spring_parameters") or {},
+        spring_features=review.get("spring_features") or {},
+        standard_selection_inference=standard_selection_inference,
+        technical_requirements=review.get("technical_requirements") or [],
+    )
+    review["standard_selection"] = standardization["standard_selection"]
+    review["derived_parameters"] = standardization["derived_parameters"]
+    review["standardization_results"] = standardization["standardization_results"]
+    review["llm_standardization_diagnostics"] = []
+    if review["standardization_results"] or review["standard_selection"].get("selected_standard"):
+        review.setdefault("drawing_summary", {})
+        review["drawing_summary"]["overall_status"] = "need_review"
+    if review["standard_selection"].get("need_human_review") or any(
+        item.get("need_human_review") for item in review["standardization_results"]
+    ):
+        review["human_review_required"] = True
+        review["erp_ready"] = False
+        review["erp_block_reason"] = review.get("erp_block_reason") or "标准化建议需要人工确认。"
+        review.setdefault("drawing_summary", {})
+        review["drawing_summary"]["summary"] = "已生成标准化建议，需要人工确认后再导出。"
+    return standardization

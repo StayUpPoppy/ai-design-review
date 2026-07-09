@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -26,7 +26,9 @@ from .io_utils import project_path, read_json, write_json
 from .llm_standardization_engine import LLMStandardizationEngine, llm_standardization_runtime_status
 from .preprocessing import IMAGE_EXTENSIONS, probe_file, render_pdf_with_pdftoppm
 from .standard_knowledge import retrieve_standard_chunks
-from .workflow import DrawingReviewWorkflow
+from .standardization_chat_agent import chat_about_standardization
+from .standardization_chat_llm import standardization_chat_llm_runtime_status
+from .workflow import DrawingReviewWorkflow, apply_standardization_to_review
 
 
 PROJECT_ROOT = project_path()
@@ -83,6 +85,7 @@ def health() -> dict[str, Any]:
         "frontend_origins": FRONTEND_ORIGINS,
         "qwen_runtime": qwen_runtime_status(),
         "llm_standardization_runtime": llm_standardization_runtime_status(),
+        "standardization_chat_runtime": standardization_chat_llm_runtime_status(),
         "ocr_runtime": ocr_runtime_status(),
         "geometry_runtime": {"status": "ready", "engine": "geometry"},
         "vlm_runtime": {"status": "not_configured", "mode": "optional_review_only"},
@@ -308,34 +311,10 @@ async def create_review(
         )
 
     rules = read_json(project_path("config", "factory_rules.json"))
-    review = DrawingReviewWorkflow(rules).run(str(drawing_path), candidates)
+    review = DrawingReviewWorkflow(rules).run(str(drawing_path), candidates, run_standardization=False)
     llm_standardization_payload: dict[str, Any] | None = None
     if use_llm_standardization:
-        if _should_run_llm_standardization(review):
-            try:
-                llm_standardization_payload = await run_in_threadpool(
-                    LLMStandardizationEngine().standardize_review,
-                    review,
-                )
-                raw_payloads["llm_standardization"] = llm_standardization_payload
-                if llm_standardization_payload.get("standardization_results"):
-                    candidate_sources.append("llm_standardization")
-                    _merge_llm_standardization(review, llm_standardization_payload)
-                    write_json(job_dir / "llm_standardization_raw.json", llm_standardization_payload)
-                else:
-                    warnings.append(
-                        "LLM standardization skipped: "
-                        f"{llm_standardization_payload.get('message') or llm_standardization_payload.get('reason') or 'no result'}"
-                    )
-            except Exception as exc:
-                warnings.append(f"LLM standardization failed: {type(exc).__name__}: {exc}")
-        else:
-            llm_standardization_payload = {
-                "status": "skipped",
-                "reason": "deterministic_results_available_or_no_standard",
-                "message": "当前已有本地规则标准化结果，或未选择标准，未调用 LLM/RAG 标准化。",
-            }
-            raw_payloads["llm_standardization"] = llm_standardization_payload
+        warnings.append("LLM/RAG 标准化已改为点击“标准化”按钮后执行，本次上传仅完成识别。")
 
     candidates_payload = {
         "job_id": job_id,
@@ -366,6 +345,104 @@ async def create_review(
     }
 
 
+@app.post("/api/reviews/standardize")
+async def standardize_review_payload(payload: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
+    body = payload or {}
+    review = body.get("review")
+    if not isinstance(review, dict):
+        raise HTTPException(status_code=400, detail="standardize requires a review object.")
+    warnings: list[str] = []
+    llm_standardization_payload = await _run_standardization_stage(
+        review,
+        warnings,
+        use_llm_standardization=bool(body.get("use_llm_standardization")),
+    )
+    return {
+        "warnings": warnings,
+        "llm_standardization": _llm_standardization_summary(llm_standardization_payload),
+        "review": review,
+    }
+
+
+@app.post("/api/reviews/{job_id}/standardize")
+async def standardize_existing_review(
+    job_id: str,
+    payload: dict[str, Any] | None = Body(None),
+) -> dict[str, Any]:
+    job_dir = _job_dir(job_id)
+    review_path = job_dir / "review.json"
+    body = payload or {}
+    review = body.get("review")
+    if not isinstance(review, dict):
+        if not review_path.exists():
+            raise HTTPException(status_code=404, detail="Review not found.")
+        review = read_json(review_path)
+
+    warnings: list[str] = []
+    llm_standardization_payload = await _run_standardization_stage(
+        review,
+        warnings,
+        use_llm_standardization=bool(body.get("use_llm_standardization")),
+        job_dir=job_dir,
+    )
+    write_json(review_path, review)
+    if warnings:
+        write_json(job_dir / "standardization_warnings.json", {"warnings": warnings})
+
+    return {
+        "job_id": job_id,
+        "llm_standardization_url": _artifact_url(job_id, Path("llm_standardization_raw.json"))
+        if llm_standardization_payload and llm_standardization_payload.get("standardization_results")
+        else None,
+        "warnings": warnings,
+        "llm_standardization": _llm_standardization_summary(llm_standardization_payload),
+        "review": review,
+    }
+
+
+@app.post("/api/reviews/standardization-chat")
+async def standardization_chat_payload(payload: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
+    body = payload or {}
+    review = body.get("review")
+    message = str(body.get("message") or "").strip()
+    if not isinstance(review, dict):
+        raise HTTPException(status_code=400, detail="standardization chat requires a review object.")
+    if not message:
+        raise HTTPException(status_code=400, detail="standardization chat requires a message.")
+    try:
+        return chat_about_standardization(review, message, use_llm=bool(body.get("use_llm")))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/reviews/{job_id}/standardization-chat")
+async def standardization_chat_existing_review(
+    job_id: str,
+    payload: dict[str, Any] | None = Body(None),
+) -> dict[str, Any]:
+    job_dir = _job_dir(job_id)
+    review_path = job_dir / "review.json"
+    body = payload or {}
+    review = body.get("review")
+    message = str(body.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="standardization chat requires a message.")
+    if not isinstance(review, dict):
+        if not review_path.exists():
+            raise HTTPException(status_code=404, detail="Review not found.")
+        review = read_json(review_path)
+    try:
+        result = chat_about_standardization(review, message, use_llm=bool(body.get("use_llm")))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    write_json(review_path, result["review"])
+    write_json(job_dir / "standardization_chat.json", {"turns": result["review"].get("standardization_chat", [])})
+    return {
+        "job_id": job_id,
+        **result,
+    }
+
+
 @app.get("/api/reviews/{job_id}")
 def get_review(job_id: str) -> dict[str, Any]:
     job_dir = _job_dir(job_id)
@@ -391,6 +468,58 @@ def download_review(job_id: str) -> FileResponse:
     if not review_path.exists():
         raise HTTPException(status_code=404, detail="Review not found.")
     return FileResponse(str(review_path), filename=f"{job_id}_review.json")
+
+
+async def _run_standardization_stage(
+    review: dict[str, Any],
+    warnings: list[str],
+    *,
+    use_llm_standardization: bool = False,
+    job_dir: Path | None = None,
+) -> dict[str, Any] | None:
+    apply_standardization_to_review(review)
+    llm_standardization_payload: dict[str, Any] | None = None
+    if not use_llm_standardization:
+        return llm_standardization_payload
+
+    if _should_run_llm_standardization(review):
+        try:
+            llm_standardization_payload = await run_in_threadpool(
+                LLMStandardizationEngine().standardize_review,
+                review,
+            )
+            if llm_standardization_payload.get("standardization_results"):
+                _merge_llm_standardization(review, llm_standardization_payload)
+                if job_dir is not None:
+                    write_json(job_dir / "llm_standardization_raw.json", llm_standardization_payload)
+            else:
+                warnings.append(
+                    "LLM standardization skipped: "
+                    f"{llm_standardization_payload.get('message') or llm_standardization_payload.get('reason') or 'no result'}"
+                )
+        except Exception as exc:
+            warnings.append(f"LLM standardization failed: {type(exc).__name__}: {exc}")
+    else:
+        llm_standardization_payload = {
+            "status": "skipped",
+            "reason": "deterministic_results_available_or_no_standard",
+            "message": "当前已有本地规则标准化结果，或未选择标准，未调用 LLM/RAG 标准化。",
+        }
+    return llm_standardization_payload
+
+
+def _llm_standardization_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not payload:
+        return None
+    return {
+        "status": payload.get("status"),
+        "model": payload.get("model"),
+        "duration_ms": payload.get("duration_ms"),
+        "result_count": len(payload.get("standardization_results") or []),
+        "retrieved_chunk_count": len(payload.get("retrieved_chunks") or []),
+        "reason": payload.get("reason"),
+        "message": payload.get("message"),
+    }
 
 
 async def _save_upload(upload: UploadFile, path: Path) -> None:

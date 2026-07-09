@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai_design_review.io_utils import project_path, read_json
 from ai_design_review.standardizers.compression import standardize_compression_spring
-from ai_design_review.workflow import DrawingReviewWorkflow
+from ai_design_review.workflow import DrawingReviewWorkflow, apply_standardization_to_review
 
 
 def main() -> None:
@@ -15,6 +15,7 @@ def main() -> None:
     _assert_gbt_1239_2_suggestions()
     _assert_missing_grade_requires_human_review()
     _assert_workflow_defaults_accuracy_and_standardizes()
+    _assert_workflow_can_defer_standardization()
     print("compression standardization test passed")
 
 
@@ -88,6 +89,7 @@ def _assert_workflow_defaults_accuracy_and_standardizes() -> None:
     result = workflow.run(
         None,
         [
+            _candidate("drawing_name", "压缩弹簧", confidence=0.96),
             _candidate("material", "SUS304", confidence=0.96),
             _candidate("wire_diameter", 1.5, unit="mm", confidence=0.96),
             _candidate("outer_diameter", 25, unit="mm", confidence=0.9),
@@ -125,6 +127,33 @@ def _assert_workflow_defaults_accuracy_and_standardizes() -> None:
     assert results["GBT1239.2-DIA"]["need_human_review"] is True
     assert results["GBT1239.2-DIA"]["metadata"]["accuracy_grade_source"] == "company_default"
     assert "公司默认2级" in results["GBT1239.2-DIA"]["basis"]
+
+
+def _assert_workflow_can_defer_standardization() -> None:
+    rules = read_json(project_path("config", "factory_rules.json"))
+    workflow = DrawingReviewWorkflow(rules)
+    result = workflow.run(
+        None,
+        [
+            _candidate("drawing_name", "压缩弹簧", confidence=0.96),
+            _candidate("material", "SUS304", confidence=0.96),
+            _candidate("wire_diameter", 1.5, unit="mm", confidence=0.96),
+            _candidate("outer_diameter", 25, unit="mm", confidence=0.9),
+            _candidate("free_length", 15, unit="mm", confidence=0.9),
+            _candidate("total_coils", 4, unit="turns", confidence=0.9),
+            _candidate("handedness", "右旋", confidence=0.9),
+        ],
+        run_standardization=False,
+    )
+    assert result["standard_selection"]["status"] == "not_started"
+    assert result["standardization_results"] == []
+    assert result["derived_parameters"] == {}
+
+    apply_standardization_to_review(result)
+    assert result["standard_selection"]["selected_standard"] == "GB/T 1239.2-2009"
+    assert result["standard_selection"]["selection_source"] == "wire_diameter_threshold"
+    assert result["derived_parameters"]["mean_diameter"]["value"] == 23.5
+    assert any(item["rule_id"] == "GBT1239.2-DIA" for item in result["standardization_results"])
 
 
 def _candidate(field: str, value, *, unit: str | None = None, confidence: float = 0.9) -> dict:
