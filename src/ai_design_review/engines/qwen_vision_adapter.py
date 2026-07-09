@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import RecognitionEngine
+from ..llm_standardization import LLM_STANDARDIZATION_FIELD
 from ..preprocessing import IMAGE_EXTENSIONS, render_pdf_with_pdftoppm
 from ..spring_templates import FIELD_LABELS, SPRING_TEMPLATES, SPRING_TYPE_UNKNOWN, template_for
 
@@ -248,6 +249,21 @@ def qwen_payload_to_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 dict(standard_inference),
                 standard_inference,
                 suggested_region="Qwen cold/hot coiled standard inference",
+            )
+        )
+
+    standardization_results = payload.get("standardization_results") or payload.get(LLM_STANDARDIZATION_FIELD)
+    if isinstance(standardization_results, (list, dict)):
+        candidates.append(
+            _candidate(
+                LLM_STANDARDIZATION_FIELD,
+                standardization_results,
+                {
+                    "confidence": payload.get("standardization_confidence", 0.72),
+                    "evidence": f"LLM standardization results: {len(standardization_results) if isinstance(standardization_results, list) else 1} item(s)",
+                    "need_human_review": True,
+                },
+                suggested_region="LLM/RAG standardization JSON",
             )
         )
 

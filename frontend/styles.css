@@ -715,8 +715,15 @@ textarea {
   color: #1558a8;
 }
 
+.normalization-status.llm_suggested {
+  border-color: #b9d7ff;
+  background: #eef6ff;
+  color: #1558a8;
+}
+
 .normalization-status.suggested,
 .normalization-status.unmatched,
+.normalization-status.unmapped,
 .normalization-status.need_context,
 .normalization-status.need_review,
 .normalization-status.rules_pending,

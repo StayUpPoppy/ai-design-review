@@ -1,0 +1,335 @@
+{
+  "collection": "spring_standards",
+  "source_file": "C:/Users/29580/Desktop/工作/图纸识别/弹簧标准/压缩弹簧公差标准摘录.md",
+  "chunks": [
+    {
+      "chunk_id": "gbt_1239_2_2009__scope_accuracy_permanent_set",
+      "title": "冷卷圆柱螺旋压缩弹簧：精度等级与永久变形",
+      "content": "冷卷圆柱螺旋压缩弹簧（GB/T 1239.2-2009）。尺寸与特性的极限偏差分为 1、2、3 三个等级，各项目等级根据使用需要分别独立选定。永久变形不得大于自由高度的 0.3%。",
+      "metadata": {
+        "standard_no": "GB/T 1239.2-2009",
+        "standard_aliases": ["GB/T 1239.2—2009", "GBT1239.2-2009"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "cold_coiled",
+        "wire_section": "round",
+        "rule_topic": "scope_accuracy_permanent_set",
+        "clause_no": "1",
+        "table_no": "",
+        "target_fields": ["accuracy_grade", "diameter_accuracy_grade", "free_length_accuracy_grade", "load_accuracy_grade", "stiffness_accuracy_grade", "permanent_set_limit"],
+        "accuracy_grades": ["1", "2", "3"]
+      }
+    },
+    {
+      "chunk_id": "gbt_1239_2_2009__diameter_tolerance__table_3_11",
+      "title": "冷卷压缩弹簧内径或外径极限偏差（表3-11）",
+      "content": "GB/T 1239.2-2009 表3-11，内径或外径极限偏差，单位 mm。旋绕比 C=D/d 为 3~8 时：1级 ±0.010D 最小 ±0.15；2级 ±0.015D 最小 ±0.20；3级 ±0.025D 最小 ±0.40。C 为 >8~15 时：1级 ±0.015D 最小 ±0.20；2级 ±0.020D 最小 ±0.30；3级 ±0.030D 最小 ±0.50。C 为 >15~22 时：1级 ±0.020D 最小 ±0.30；2级 ±0.030D 最小 ±0.50；3级 ±0.040D 最小 ±0.70。必要时可不对称使用，公差值不变。",
+      "metadata": {
+        "standard_no": "GB/T 1239.2-2009",
+        "standard_aliases": ["GB/T 1239.2—2009", "GBT1239.2-2009"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "cold_coiled",
+        "wire_section": "round",
+        "rule_topic": "diameter_tolerance",
+        "clause_no": "1.1",
+        "table_no": "表3-11",
+        "target_fields": ["outer_diameter", "inner_diameter", "controlled_diameter_field"],
+        "condition_fields": ["mean_diameter", "wire_diameter"],
+        "derived_fields": ["spring_index"],
+        "accuracy_grades": ["1", "2", "3"]
+      }
+    },
+    {
+      "chunk_id": "gbt_1239_2_2009__free_length_tolerance__table_3_12",
+      "title": "冷卷压缩弹簧自由高度极限偏差（表3-12）",
+      "content": "GB/T 1239.2-2009 表3-12，自由高度 H0 极限偏差，单位 mm。旋绕比 C=D/d 为 3~8 时：1级 ±0.010H0 最小 ±0.20；2级 ±0.02H0 最小 ±0.50；3级 ±0.03H0 最小 ±0.70。C 为 >8~15 时：1级 ±0.015H0 最小 ±0.50；2级 ±0.03H0 最小 ±0.70；3级 ±0.04H0 最小 ±0.80。C 为 >15~22 时：1级 ±0.020H0 最小 ±0.60；2级 ±0.04H0 最小 ±0.80；3级 ±0.06H0 最小 ±1.0。图样要求测量两点及以上指定高度下负荷时，自由高度作为参考。",
+      "metadata": {
+        "standard_no": "GB/T 1239.2-2009",
+        "standard_aliases": ["GB/T 1239.2—2009", "GBT1239.2-2009"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "cold_coiled",
+        "wire_section": "round",
+        "rule_topic": "free_length_tolerance",
+        "clause_no": "1.2",
+        "table_no": "表3-12",
+        "target_fields": ["free_length"],
+        "derived_fields": ["spring_index"],
+        "accuracy_grades": ["1", "2", "3"]
+      }
+    },
+    {
+      "chunk_id": "gbt_1239_2_2009__total_coils_tolerance__table_3_13",
+      "title": "冷卷压缩弹簧总圈数极限偏差（表3-13）",
+      "content": "GB/T 1239.2-2009 表3-13，总圈数 n1 极限偏差，单位圈。总圈数 ≤10 时极限偏差 ±0.25；>10~20 时 ±0.50；>20~50 时 ±1.00。有特性要求时，总圈数作为参考。",
+      "metadata": {
+        "standard_no": "GB/T 1239.2-2009",
+        "standard_aliases": ["GB/T 1239.2—2009", "GBT1239.2-2009"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "cold_coiled",
+        "wire_section": "round",
+        "rule_topic": "total_coils_tolerance",
+        "clause_no": "1.3",
+        "table_no": "表3-13",
+        "target_fields": ["total_coils"],
+        "accuracy_grades": []
+      }
+    },
+    {
+      "chunk_id": "gbt_1239_2_2009__perpendicularity_straightness__table_3_14",
+      "title": "冷卷压缩弹簧垂直度与直线度（表3-14）",
+      "content": "GB/T 1239.2-2009 表3-14，垂直度，单位 mm。1级垂直度 0.02H0（1.15°）；2级 0.05H0（2.9°）；3级 0.08H0（4.6°）。细长比 b=H0/D ≥5 时，垂直度由供需双方协商；建议改考核直线度，直线度为理论垂直度之半。",
+      "metadata": {
+        "standard_no": "GB/T 1239.2-2009",
+        "standard_aliases": ["GB/T 1239.2—2009", "GBT1239.2-2009"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "cold_coiled",
+        "wire_section": "round",
+        "rule_topic": "perpendicularity_straightness",
+        "clause_no": "1.4",
+        "table_no": "表3-14",
+        "target_fields": ["perpendicularity", "straightness", "free_length", "mean_diameter"],
+        "derived_fields": ["slenderness_ratio"],
+        "accuracy_grades": ["1", "2", "3"]
+      }
+    },
+    {
+      "chunk_id": "gbt_1239_2_2009__load_tolerance__table_3_15",
+      "title": "冷卷压缩弹簧指定高度或变形量负荷极限偏差（表3-15）",
+      "content": "GB/T 1239.2-2009 表3-15，指定高度或变形量时的负荷 F 极限偏差。有效圈数 n 为 3~10 时：1级 ±0.05F，2级 ±0.10F，3级 ±0.15F。有效圈数 n >10 时：1级 ±0.04F，2级 ±0.08F，3级 ±0.12F。",
+      "metadata": {
+        "standard_no": "GB/T 1239.2-2009",
+        "standard_aliases": ["GB/T 1239.2—2009", "GBT1239.2-2009"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "cold_coiled",
+        "wire_section": "round",
+        "rule_topic": "load_tolerance",
+        "clause_no": "1.5",
+        "table_no": "表3-15",
+        "target_fields": ["load_points", "active_coils", "load_accuracy_grade"],
+        "accuracy_grades": ["1", "2", "3"]
+      }
+    },
+    {
+      "chunk_id": "gbt_1239_2_2009__stiffness_tolerance__table_3_16",
+      "title": "冷卷压缩弹簧刚度极限偏差（表3-16）",
+      "content": "GB/T 1239.2-2009 表3-16，刚度 F' 极限偏差，单位 N/mm。有效圈数 n 为 3~10 时：1级 ±0.05F'，2级 ±0.10F'，3级 ±0.15F'。有效圈数 n >10 时：1级 ±0.04F'，2级 ±0.08F'，3级 ±0.12F'。",
+      "metadata": {
+        "standard_no": "GB/T 1239.2-2009",
+        "standard_aliases": ["GB/T 1239.2—2009", "GBT1239.2-2009"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "cold_coiled",
+        "wire_section": "round",
+        "rule_topic": "stiffness_tolerance",
+        "clause_no": "1.6",
+        "table_no": "表3-16",
+        "target_fields": ["spring_rate", "active_coils", "stiffness_accuracy_grade"],
+        "accuracy_grades": ["1", "2", "3"]
+      }
+    },
+    {
+      "chunk_id": "gbt_1239_2_2009__solid_height_reference",
+      "title": "冷卷压缩弹簧压并高度参考公式",
+      "content": "GB/T 1239.2-2009 压并高度参考。端面磨削 3/4 圈：Hb=n1×dmax。两端不磨：Hb=(n1+1.5)×dmax。式中 dmax=材料直径+极限偏差的最大值。",
+      "metadata": {
+        "standard_no": "GB/T 1239.2-2009",
+        "standard_aliases": ["GB/T 1239.2—2009", "GBT1239.2-2009"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "cold_coiled",
+        "wire_section": "round",
+        "rule_topic": "solid_height_reference",
+        "clause_no": "1.7",
+        "table_no": "",
+        "target_fields": ["solid_height", "total_coils", "wire_diameter", "end_grinding"],
+        "accuracy_grades": []
+      }
+    },
+    {
+      "chunk_id": "gbt_23934_2015__scope_accuracy_permanent_set",
+      "title": "热卷圆柱螺旋压缩弹簧：适用条件、精度等级与永久变形",
+      "content": "热卷圆柱螺旋压缩弹簧（GB/T 23934-2015）。精度等级为 T、1、2、3 四个等级；一般选用 1、2、3 级，特殊情况下选用 T 级。适用条件：自由高度 ≤9000mm；旋绕比 3~12；高径比 0.8~4；有效圈 ≥3圈；节距 ≤0.5D；材料直径 8~60mm；弹簧中径 ≤460mm。不符合时由供需双方商定。永久变形不得大于自由高度的 0.5%。",
+      "metadata": {
+        "standard_no": "GB/T 23934-2015",
+        "standard_aliases": ["GB/T 23934—2015", "GB/T 23934-2014", "GB/T 23934—2014", "GBT23934-2015", "GBT23934-2014"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "hot_coiled",
+        "wire_section": "round",
+        "rule_topic": "scope_accuracy_permanent_set",
+        "clause_no": "2",
+        "table_no": "",
+        "target_fields": ["accuracy_grade", "wire_diameter", "free_length", "mean_diameter", "active_coils", "pitch", "permanent_set_limit"],
+        "accuracy_grades": ["T", "1", "2", "3"]
+      }
+    },
+    {
+      "chunk_id": "gbt_23934_2015__diameter_tolerance__table_4_8",
+      "title": "热卷压缩弹簧内径或外径极限偏差（表4-8）",
+      "content": "GB/T 23934-2015 表4-8，内径或外径极限偏差，单位 mm。自由高度 H0≤250 时：T级 ±0.008D 最小 ±0.8；1级 ±0.01D 最小 ±1.0；2级 ±0.015D 最小 ±1.5；3级 ±0.02D 最小 ±2.0。H0 为 >250~500 时：T级 ±0.008D 最小 ±1.0；1级 ±0.01D 最小 ±1.5；2级 ±0.015D 最小 ±2.0；3级 ±0.02D 最小 ±2.5。H0>500 时：T级 ±0.008D 最小 ±1.5；1级 ±0.01D 最小 ±2.0；2级 ±0.015D 最小 ±2.5；3级 ±0.02D 最小 ±3.0。",
+      "metadata": {
+        "standard_no": "GB/T 23934-2015",
+        "standard_aliases": ["GB/T 23934—2015", "GB/T 23934-2014", "GB/T 23934—2014", "GBT23934-2015", "GBT23934-2014"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "hot_coiled",
+        "wire_section": "round",
+        "rule_topic": "diameter_tolerance",
+        "clause_no": "2.1",
+        "table_no": "表4-8",
+        "target_fields": ["outer_diameter", "inner_diameter", "controlled_diameter_field"],
+        "condition_fields": ["free_length", "mean_diameter"],
+        "accuracy_grades": ["T", "1", "2", "3"]
+      }
+    },
+    {
+      "chunk_id": "gbt_23934_2015__free_length_tolerance__table_4_9",
+      "title": "热卷压缩弹簧自由高度极限偏差（表4-9）",
+      "content": "GB/T 23934-2015 表4-9，自由高度极限偏差，单位 mm。T级 ±0.01H0 最小 ±1.5；1级 ±0.015H0 最小 ±2.0；2级 ±0.02H0 最小 ±3.0；3级 ±0.03H0 最小 ±4.0。",
+      "metadata": {
+        "standard_no": "GB/T 23934-2015",
+        "standard_aliases": ["GB/T 23934—2015", "GB/T 23934-2014", "GB/T 23934—2014", "GBT23934-2015", "GBT23934-2014"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "hot_coiled",
+        "wire_section": "round",
+        "rule_topic": "free_length_tolerance",
+        "clause_no": "2.2",
+        "table_no": "表4-9",
+        "target_fields": ["free_length", "free_length_accuracy_grade"],
+        "accuracy_grades": ["T", "1", "2", "3"]
+      }
+    },
+    {
+      "chunk_id": "gbt_23934_2015__total_coils_tolerance",
+      "title": "热卷压缩弹簧总圈数要求",
+      "content": "GB/T 23934-2015 总圈数。未规定特性要求时，总圈数极限偏差为 ±1/4 圈。规定特性要求时，不规定总圈数极限偏差。",
+      "metadata": {
+        "standard_no": "GB/T 23934-2015",
+        "standard_aliases": ["GB/T 23934—2015", "GB/T 23934-2014", "GB/T 23934—2014", "GBT23934-2015", "GBT23934-2014"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "hot_coiled",
+        "wire_section": "round",
+        "rule_topic": "total_coils_tolerance",
+        "clause_no": "2.3",
+        "table_no": "",
+        "target_fields": ["total_coils"],
+        "accuracy_grades": []
+      }
+    },
+    {
+      "chunk_id": "gbt_23934_2015__perpendicularity_straightness__table_4_10",
+      "title": "热卷压缩弹簧垂直度与直线度（表4-10）",
+      "content": "GB/T 23934-2015 表4-10，垂直度，端部 RYⅠ、RYⅢ，单位 mm。自由高度 H0≤500 时：T级 0.017H0；1级 0.026H0；2级 0.035H0；3级 0.050H0。H0>500 时：T级 0.026H0；1级 0.035H0；2级 0.050H0；3级 0.070H0。直线度不超过垂直度之半。端部 RYⅡ、RYⅣ：垂直度由供需双方商定。",
+      "metadata": {
+        "standard_no": "GB/T 23934-2015",
+        "standard_aliases": ["GB/T 23934—2015", "GB/T 23934-2014", "GB/T 23934—2014", "GBT23934-2015", "GBT23934-2014"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "hot_coiled",
+        "wire_section": "round",
+        "rule_topic": "perpendicularity_straightness",
+        "clause_no": "2.4",
+        "table_no": "表4-10",
+        "target_fields": ["perpendicularity", "straightness", "free_length", "end_type"],
+        "accuracy_grades": ["T", "1", "2", "3"]
+      }
+    },
+    {
+      "chunk_id": "gbt_23934_2015__height_at_load_tolerance__table_4_11",
+      "title": "热卷压缩弹簧指定负荷下高度极限偏差（表4-11）",
+      "content": "GB/T 23934-2015 表4-11，指定负荷下高度极限偏差，单位 mm。T级 ±0.03f 最小 ±1.5；1级 ±0.05f 最小 ±2.5；2级 ±0.10f 最小 ±5.0；3级 ±0.15f 最小 ±7.5。",
+      "metadata": {
+        "standard_no": "GB/T 23934-2015",
+        "standard_aliases": ["GB/T 23934—2015", "GB/T 23934-2014", "GB/T 23934—2014", "GBT23934-2015", "GBT23934-2014"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "hot_coiled",
+        "wire_section": "round",
+        "rule_topic": "height_at_load_tolerance",
+        "clause_no": "2.5",
+        "table_no": "表4-11",
+        "target_fields": ["load_points", "free_length", "load_accuracy_grade"],
+        "derived_fields": ["load_point_deflections"],
+        "accuracy_grades": ["T", "1", "2", "3"]
+      }
+    },
+    {
+      "chunk_id": "gbt_23934_2015__load_at_height_tolerance__table_4_12",
+      "title": "热卷压缩弹簧指定高度下负荷极限偏差（表4-12）",
+      "content": "GB/T 23934-2015 表4-12，指定高度下负荷极限偏差，单位 N。T级 ±0.03F，最小 ±1.5(mm)×F'；1级 ±0.05F，最小 ±2.5(mm)×F'；2级 ±0.10F，最小 ±5.0(mm)×F'；3级 ±0.15F，最小 ±7.5(mm)×F'。",
+      "metadata": {
+        "standard_no": "GB/T 23934-2015",
+        "standard_aliases": ["GB/T 23934—2015", "GB/T 23934-2014", "GB/T 23934—2014", "GBT23934-2015", "GBT23934-2014"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "hot_coiled",
+        "wire_section": "round",
+        "rule_topic": "load_at_height_tolerance",
+        "clause_no": "2.6",
+        "table_no": "表4-12",
+        "target_fields": ["load_points", "spring_rate", "load_accuracy_grade"],
+        "accuracy_grades": ["T", "1", "2", "3"]
+      }
+    },
+    {
+      "chunk_id": "gbt_23934_2015__stiffness_tolerance",
+      "title": "热卷压缩弹簧刚度极限偏差",
+      "content": "GB/T 23934-2015 刚度极限偏差。一般为 ±10%；特殊精度要求可选 ±5%。规定刚度极限偏差时，一般不再规定指定负荷下高度或指定高度下负荷的极限偏差。",
+      "metadata": {
+        "standard_no": "GB/T 23934-2015",
+        "standard_aliases": ["GB/T 23934—2015", "GB/T 23934-2014", "GB/T 23934—2014", "GBT23934-2015", "GBT23934-2014"],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "hot_coiled",
+        "wire_section": "round",
+        "rule_topic": "stiffness_tolerance",
+        "clause_no": "2.7",
+        "table_no": "",
+        "target_fields": ["spring_rate", "stiffness_accuracy_grade", "load_points"],
+        "accuracy_grades": ["special_5_percent", "general_10_percent"]
+      }
+    },
+    {
+      "chunk_id": "compression_spring__symbol_definitions",
+      "title": "压缩弹簧符号说明",
+      "content": "符号说明：D 表示弹簧中径；D1、D2 表示内径、外径；d 表示材料直径；H0 表示自由高度或自由长度；n、n1 表示有效圈数、总圈数；C 表示旋绕比 D/d；F 表示负荷；F' 表示刚度；f 表示变形量；T' 表示扭转刚度。",
+      "metadata": {
+        "standard_no": "",
+        "standard_aliases": [],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "",
+        "wire_section": "",
+        "rule_topic": "symbol_definitions",
+        "clause_no": "symbols",
+        "table_no": "",
+        "target_fields": ["mean_diameter", "inner_diameter", "outer_diameter", "wire_diameter", "free_length", "active_coils", "total_coils", "load_points", "spring_rate"],
+        "accuracy_grades": []
+      }
+    }
+  ]
+}

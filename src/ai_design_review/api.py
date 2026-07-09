@@ -23,7 +23,9 @@ from .engines.ocr_providers import (
 from .engines.qwen_vision_adapter import QwenVisionEngine, qwen_runtime_status
 from .engines.werk24_adapter import Werk24Engine
 from .io_utils import project_path, read_json, write_json
+from .llm_standardization_engine import LLMStandardizationEngine, llm_standardization_runtime_status
 from .preprocessing import IMAGE_EXTENSIONS, probe_file, render_pdf_with_pdftoppm
+from .standard_knowledge import retrieve_standard_chunks
 from .workflow import DrawingReviewWorkflow
 
 
@@ -80,10 +82,41 @@ def health() -> dict[str, Any]:
         "api_runs": str(API_RUN_ROOT),
         "frontend_origins": FRONTEND_ORIGINS,
         "qwen_runtime": qwen_runtime_status(),
+        "llm_standardization_runtime": llm_standardization_runtime_status(),
         "ocr_runtime": ocr_runtime_status(),
         "geometry_runtime": {"status": "ready", "engine": "geometry"},
         "vlm_runtime": {"status": "not_configured", "mode": "optional_review_only"},
         "paddleocr_runtime": {"status": "deprecated", "replacement": "ocr_runtime"},
+    }
+
+
+@app.get("/api/standard-knowledge/search")
+def search_standard_knowledge(
+    standard_no: str | None = None,
+    spring_type: str | None = "compression_spring",
+    target_fields: str | None = None,
+    query: str | None = None,
+    limit: int = 6,
+) -> dict[str, Any]:
+    fields = [
+        item.strip()
+        for item in str(target_fields or "").split(",")
+        if item.strip()
+    ]
+    chunks = retrieve_standard_chunks(
+        standard_no=standard_no,
+        spring_type=spring_type,
+        target_fields=fields,
+        query=query,
+        limit=limit,
+    )
+    return {
+        "standard_no": standard_no,
+        "spring_type": spring_type,
+        "target_fields": fields,
+        "query": query or "",
+        "count": len(chunks),
+        "chunks": chunks,
     }
 
 
@@ -100,6 +133,7 @@ async def create_review(
     use_qwen: bool = Form(True),
     use_geometry: bool = Form(False),
     use_vlm: bool = Form(False),
+    use_llm_standardization: bool = Form(False),
     vision_provider: str | None = Form("none"),
     use_paddleocr: bool = Form(False),
     use_sample_ocr: bool = Form(False),
@@ -275,6 +309,33 @@ async def create_review(
 
     rules = read_json(project_path("config", "factory_rules.json"))
     review = DrawingReviewWorkflow(rules).run(str(drawing_path), candidates)
+    llm_standardization_payload: dict[str, Any] | None = None
+    if use_llm_standardization:
+        if _should_run_llm_standardization(review):
+            try:
+                llm_standardization_payload = await run_in_threadpool(
+                    LLMStandardizationEngine().standardize_review,
+                    review,
+                )
+                raw_payloads["llm_standardization"] = llm_standardization_payload
+                if llm_standardization_payload.get("standardization_results"):
+                    candidate_sources.append("llm_standardization")
+                    _merge_llm_standardization(review, llm_standardization_payload)
+                    write_json(job_dir / "llm_standardization_raw.json", llm_standardization_payload)
+                else:
+                    warnings.append(
+                        "LLM standardization skipped: "
+                        f"{llm_standardization_payload.get('message') or llm_standardization_payload.get('reason') or 'no result'}"
+                    )
+            except Exception as exc:
+                warnings.append(f"LLM standardization failed: {type(exc).__name__}: {exc}")
+        else:
+            llm_standardization_payload = {
+                "status": "skipped",
+                "reason": "deterministic_results_available_or_no_standard",
+                "message": "当前已有本地规则标准化结果，或未选择标准，未调用 LLM/RAG 标准化。",
+            }
+            raw_payloads["llm_standardization"] = llm_standardization_payload
 
     candidates_payload = {
         "job_id": job_id,
@@ -298,6 +359,7 @@ async def create_review(
         "review_url": _artifact_url(job_id, Path("review.json")),
         "candidates_url": _artifact_url(job_id, Path("candidates.json")),
         "qwen_url": _artifact_url(job_id, Path("qwen_vision_raw.json")) if "qwen_vision" in raw_payloads else None,
+        "llm_standardization_url": _artifact_url(job_id, Path("llm_standardization_raw.json")) if llm_standardization_payload and llm_standardization_payload.get("standardization_results") else None,
         "geometry_url": _artifact_url(job_id, Path("geometry_evidence.json")) if "geometry" in raw_payloads else None,
         "warnings": warnings,
         "review": review,
@@ -377,6 +439,40 @@ def _needs_ocr_fallback(
     if any(candidate.get("feature_type") != "dimension_evidence" for candidate in candidates):
         return False
     return not any("rapidocr" in str(source).lower() for source in candidate_sources)
+
+
+def _should_run_llm_standardization(review: dict[str, Any]) -> bool:
+    selection = review.get("standard_selection") or {}
+    if not selection.get("selected_standard"):
+        return False
+    deterministic_results = [
+        item
+        for item in review.get("standardization_results", []) or []
+        if str(item.get("metadata", {}).get("source") or "") != "llm_standardization"
+    ]
+    return selection.get("status") == "rules_pending" or not deterministic_results
+
+
+def _merge_llm_standardization(review: dict[str, Any], payload: dict[str, Any]) -> None:
+    results = payload.get("standardization_results") or []
+    if not results:
+        return
+    review.setdefault("standardization_results", [])
+    review["standardization_results"].extend(results)
+    review.setdefault("llm_standardization_diagnostics", [])
+    review["llm_standardization_diagnostics"].extend(payload.get("diagnostics") or [])
+    review["llm_standardization"] = {
+        "status": payload.get("status"),
+        "model": payload.get("model"),
+        "duration_ms": payload.get("duration_ms"),
+        "retrieved_chunk_count": len(payload.get("retrieved_chunks") or []),
+    }
+    review["human_review_required"] = True
+    review["erp_ready"] = False
+    review["erp_block_reason"] = review.get("erp_block_reason") or "LLM/RAG 标准化建议需要人工确认。"
+    review.setdefault("drawing_summary", {})
+    review["drawing_summary"]["overall_status"] = "need_review"
+    review["drawing_summary"]["summary"] = "已生成 LLM/RAG 标准化建议，需要人工确认后再导出。"
 
 
 def _werk24_license_status() -> dict[str, str]:

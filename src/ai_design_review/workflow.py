@@ -4,6 +4,7 @@ from typing import Any
 
 from .balloons import generate_balloons
 from .fusion import fuse_candidates
+from .llm_standardization import LLM_STANDARDIZATION_FIELD, normalize_llm_standardization_results
 from .material_terms import normalize_material
 from .preprocessing import probe_file
 from .rules import REQUIRED_FIELDS, determine_erp_ready, overall_status, run_rule_checks, should_require_human_review
@@ -76,6 +77,17 @@ class DrawingReviewWorkflow:
         derived_parameters = standardization["derived_parameters"]
         standardization_results = standardization["standardization_results"]
         standard_selection = standardization["standard_selection"]
+        llm_standardization = normalize_llm_standardization_results(
+            fused["fields"].get(LLM_STANDARDIZATION_FIELD),
+            spring_type=spring_type,
+            spring_parameters=spring_parameters,
+            standard_selection=standard_selection,
+        )
+        if llm_standardization["standardization_results"]:
+            standardization_results = [
+                *standardization_results,
+                *llm_standardization["standardization_results"],
+            ]
         review_results = run_rule_checks(
             spring_parameters,
             technical_requirements,
@@ -122,6 +134,7 @@ class DrawingReviewWorkflow:
             "standard_selection": standard_selection,
             "derived_parameters": derived_parameters,
             "standardization_results": standardization_results,
+            "llm_standardization_diagnostics": llm_standardization["diagnostics"],
             "technical_requirements": technical_requirements,
             "dimension_evidence": dimension_evidence,
             "review_results": review_results,

@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .standard_knowledge import standard_references
+
 
 COLD_COILED_STANDARD = "GB/T 1239.2-2009"
 HOT_COILED_STANDARD = "GB/T 23934-2014"
@@ -409,12 +411,15 @@ def _candidate_standards() -> list[dict[str, Any]]:
 def _references(standard_no: str | None) -> list[dict[str, Any]]:
     if not standard_no:
         return []
+    references = standard_references(standard_no, limit=5)
+    if references:
+        return references
     return [
         {
             "standard_no": standard_no,
-            "source": "rag_knowledge_base",
-            "status": "pending",
-            "note": "RAG 标准原文/手册依据接入后，可在此返回对应 chunk 或条款引用。",
+            "source": "local_standard_knowledge",
+            "status": "missing",
+            "note": "当前标准知识库未检索到对应标准条款。",
         }
     ]
 

@@ -328,6 +328,7 @@ const useOcrInput = document.getElementById("useOcrInput");
 const useQwenInput = document.getElementById("useQwenInput");
 const ocrProviderInput = document.getElementById("ocrProviderInput");
 const useVlmInput = document.getElementById("useVlmInput");
+const useLlmStandardizationInput = document.getElementById("useLlmStandardizationInput");
 const visionProviderInput = document.getElementById("visionProviderInput");
 const useWerk24Input = document.getElementById("useWerk24Input");
 const confirmWerk24Input = document.getElementById("confirmWerk24Input");
@@ -463,6 +464,7 @@ async function submitSelectedFile() {
     if (useOcrInput.checked) form.append("ocr_provider", ocrProviderInput.value);
     form.append("use_geometry", "false");
     form.append("use_vlm", useVlmInput?.checked ? "true" : "false");
+    form.append("use_llm_standardization", useLlmStandardizationInput?.checked ? "true" : "false");
     form.append("vision_provider", visionProviderInput?.value || "none");
     form.append("use_werk24", useWerk24Input?.checked ? "true" : "false");
     form.append("confirm_upload_to_werk24", confirmWerk24Input?.checked ? "true" : "false");
@@ -516,9 +518,10 @@ async function checkApiHealth() {
     const baiduStatus = ocrRuntime.baidu_ocr?.status || "unknown";
     const baiduVlStatus = ocrRuntime.baidu_paddleocr_vl?.status || "unknown";
     const rapidStatus = ocrRuntime.rapidocr?.status || "unknown";
+    const llmStandardizationStatus = payload.llm_standardization_runtime?.status || "unknown";
     const vlmStatus = payload.vlm_runtime?.status || "unknown";
     setBackendStatus(
-      `后端正常 · Qwen ${qwenModel} ${qwenStatus} · OCR ${defaultProvider} · 百度 ${baiduStatus} · 百度VL ${baiduVlStatus} · RapidOCR ${rapidStatus} · VLM ${vlmStatus}`,
+      `后端正常 · Qwen ${qwenModel} ${qwenStatus} · OCR ${defaultProvider} · 百度 ${baiduStatus} · 百度VL ${baiduVlStatus} · RapidOCR ${rapidStatus} · 标准化LLM ${llmStandardizationStatus} · VLM ${vlmStatus}`,
     );
   } catch (error) {
     setBackendStatus(`后端不可用：${error.message || String(error)}`, true);
@@ -1016,9 +1019,11 @@ function surfaceStatusLabel(status) {
 function standardizationStatusLabel(status) {
   const labels = {
     suggested: "可确认建议",
+    llm_suggested: "LLM建议",
     need_context: "需补充条件",
     not_applicable: "不适用",
     rules_pending: "规则待接入",
+    unmapped: "未映射",
     human_confirmed: "人工确认",
   };
   return labels[status] || "待确认";
@@ -1085,7 +1090,9 @@ function featureValueLabel(field, value) {
 }
 
 function canConfirmStandardization(item) {
-  return item?.status === "suggested" || item?.target_field === "standard_no";
+  if (item?.metadata?.target_field_valid === false) return false;
+  if (item?.metadata?.target_field_error) return false;
+  return item?.status === "suggested" || item?.status === "llm_suggested" || item?.target_field === "standard_no";
 }
 
 function targetFieldLabel(targetField) {
@@ -1240,6 +1247,8 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
 
 function applyStandardizationResult(item) {
   if (!item) return;
+  if (item.metadata?.target_field_valid === false) return;
+  if (item.metadata?.target_field_error) return;
   state.review.standardization_results ||= [];
   state.review.spring_parameters ||= {};
   const target = String(item.target_field || "");
