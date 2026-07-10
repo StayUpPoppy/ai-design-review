@@ -12,6 +12,7 @@ const state = {
   activeReviewMessageId: null,
   reviewContexts: {},
   compareOpen: false,
+  compareTab: "parameters",
   compareView: {
     initialized: false,
     scale: 1,
@@ -24,6 +25,8 @@ const state = {
     startY: 0,
   },
   busy: false,
+  standardizationChatBusy: false,
+  standardizationChatTypingTimer: null,
 };
 
 const REQUIRED_FIELDS = [
@@ -530,21 +533,24 @@ async function runStandardization(messageId = state.activeReviewMessageId) {
   }
 }
 
-async function runStandardizationChat(message, messageId = state.activeReviewMessageId, useLlm = false) {
+async function runStandardizationChat(message, messageId = state.activeReviewMessageId, useLlm = true) {
   const text = String(message || "").trim();
-  if (!state.review || !text || state.busy) return;
+  if (!state.review || !text || state.standardizationChatBusy) return;
   activateReviewContext(messageId);
-  setBusy(true);
+  const requestReview = normalizeReview(structuredClone(state.review));
+  const pendingTurnId = appendPendingStandardizationChatTurn(text, messageId);
+  state.standardizationChatBusy = true;
+  refreshReviewSurfaces({ scrollChat: true });
   const endpoint = state.lastJob?.job_id
     ? `/api/reviews/${encodeURIComponent(state.lastJob.job_id)}/standardization-chat`
     : "/api/reviews/standardization-chat";
-  const thinkingId = appendAssistantText("正在分析标准化对话...");
+  let isTypingFinalReply = false;
   try {
     const response = await fetch(apiUrl(endpoint), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        review: state.review,
+        review: requestReview,
         message: text,
         use_llm: Boolean(useLlm),
       }),
@@ -552,22 +558,138 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || "标准化对话失败");
 
-    removeMessage(thinkingId);
     if (payload.job_id) {
       state.lastJob = { ...(state.lastJob || {}), job_id: payload.job_id };
     }
-    setReview(normalizeReview(payload.review), state.imageUrl);
+    const normalized = normalizeReview(payload.review);
+    const finalTurnIndex = Math.max((normalized.standardization_chat || []).length - 1, 0);
+    const finalTurn = normalized.standardization_chat?.[finalTurnIndex];
+    const finalAssistantText = finalTurn?.assistant || "";
+    if (finalTurn) {
+      finalTurn.assistant = "";
+      finalTurn.typing = true;
+      finalTurn._client_id = pendingTurnId;
+    }
+    setReview(normalized, state.imageUrl);
     const context = getReviewContext(messageId);
     if (context) {
       context.review = state.review;
       context.imageUrl = state.imageUrl;
     }
-    updateLatestReviewMessage("标准化对话已回复，请继续确认或修改参数。");
+    refreshReviewSurfaces({ scrollChat: true });
+    isTypingFinalReply = true;
+    animateStandardizationChatReply(finalTurnIndex, finalAssistantText, messageId);
   } catch (error) {
-    replaceMessage(thinkingId, error.message || String(error), true);
+    replacePendingStandardizationChatTurn(pendingTurnId, `标准化对话失败：${error.message || String(error)}`, true);
+    refreshReviewSurfaces({ scrollChat: true });
   } finally {
-    setBusy(false);
+    if (!isTypingFinalReply) {
+      state.standardizationChatBusy = false;
+      refreshReviewSurfaces({ scrollChat: true });
+    }
   }
+}
+
+function appendPendingStandardizationChatTurn(text, messageId = state.activeReviewMessageId) {
+  const clientId = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  state.review.standardization_chat ||= [];
+  state.review.standardization_chat.push({
+    _client_id: clientId,
+    created_at: new Date().toISOString(),
+    user: text,
+    assistant: "正在生成回复",
+    pending: true,
+    suggested_actions: [],
+  });
+  const context = getReviewContext(messageId);
+  if (context) {
+    context.review = state.review;
+    context.imageUrl = state.imageUrl;
+  }
+  return clientId;
+}
+
+function replacePendingStandardizationChatTurn(clientId, assistantText, isError = false) {
+  const turns = state.review?.standardization_chat || [];
+  const turn = turns.find((item) => item?._client_id === clientId);
+  if (!turn) return;
+  turn.assistant = assistantText;
+  turn.pending = false;
+  turn.typing = false;
+  turn.error = Boolean(isError);
+}
+
+function refreshReviewSurfaces(options = {}) {
+  if (!state.review) return;
+  refreshDerivedStatus(state.review);
+  exportButton.disabled = false;
+  const context = getReviewContext(state.activeReviewMessageId);
+  if (context) {
+    context.review = state.review;
+    context.imageUrl = state.imageUrl;
+  }
+  const activeMessage = conversation.querySelector(`[data-message-id="${state.activeReviewMessageId}"]`);
+  const body = activeMessage?.querySelector(".message-body");
+  if (body) {
+    renderReviewBody(body, context?.title || "已更新结构化尺寸数据，请继续确认。", context || activeReviewContext(), state.activeReviewMessageId);
+  }
+  if (state.compareOpen) {
+    renderCompareOverlay();
+  }
+  if (options.scrollChat) {
+    requestAnimationFrame(scrollStandardizationChatToBottom);
+  }
+}
+
+function animateStandardizationChatReply(turnIndex, finalText, messageId = state.activeReviewMessageId) {
+  clearTimeout(state.standardizationChatTypingTimer);
+  const fullText = String(finalText || "");
+  const turns = state.review?.standardization_chat || [];
+  const turn = turns[turnIndex];
+  if (!turn) return;
+  let offset = 0;
+  const step = fullText.length > 180 ? 3 : 1;
+
+  function renderTick() {
+    const visible = fullText.slice(0, offset);
+    document.querySelectorAll(`[data-chat-turn-index="${turnIndex}"] [data-role="chat-assistant-text"]`).forEach((node) => {
+      node.textContent = visible || "正在生成回复";
+    });
+    scrollStandardizationChatToBottom();
+  }
+
+  function finish() {
+    turn.assistant = fullText;
+    turn.typing = false;
+    turn.pending = false;
+    state.standardizationChatBusy = false;
+    const context = getReviewContext(messageId);
+    if (context) {
+      context.review = state.review;
+      context.imageUrl = state.imageUrl;
+    }
+    refreshReviewSurfaces({ scrollChat: true });
+    updateLatestReviewMessage("标准化对话已回复，请继续确认或修改参数。");
+  }
+
+  renderTick();
+  const tick = () => {
+    offset = Math.min(fullText.length, offset + step);
+    renderTick();
+    if (offset >= fullText.length) {
+      state.standardizationChatTypingTimer = null;
+      finish();
+      return;
+    }
+    state.standardizationChatTypingTimer = setTimeout(tick, 24);
+  };
+  state.standardizationChatTypingTimer = setTimeout(tick, 120);
+}
+
+function scrollStandardizationChatToBottom() {
+  document.querySelectorAll(".standardization-chat-list").forEach((list) => {
+    list.scrollTop = list.scrollHeight;
+  });
 }
 
 async function loadDemoReview() {
@@ -1042,34 +1164,35 @@ function renderStandardizationHtml(review) {
 
 function renderStandardizationChatHtml(review) {
   const turns = Array.isArray(review.standardization_chat) ? review.standardization_chat : [];
-  const rows = turns.map((turn, turnIndex) => `
-    <div class="standardization-chat-turn">
+  const rows = turns.map((turn, turnIndex) => {
+    const isGenerating = Boolean(turn.pending || turn.typing);
+    const assistantText = turn.assistant || (isGenerating ? "正在生成回复" : "");
+    return `
+    <div class="standardization-chat-turn${turn.error ? " error" : ""}${isGenerating ? " generating" : ""}" data-chat-turn-index="${turnIndex}">
       <div class="chat-line user-line">
         <strong>你</strong>
         <span>${escapeHtml(turn.user || "")}</span>
       </div>
       <div class="chat-line assistant-line">
         <strong>助手</strong>
-        <span>${escapeHtml(turn.assistant || "")}</span>
+        <span data-role="chat-assistant-text">${escapeHtml(assistantText)}</span>
       </div>
-      ${renderStandardizationChatIntentMetaHtml(turn)}
-      ${renderStandardizationChatConstraintsHtml(turn)}
-      ${renderStandardizationChatActionsHtml(turn, turnIndex)}
+      ${isGenerating ? "" : renderStandardizationChatIntentMetaHtml(turn)}
+      ${isGenerating ? "" : renderStandardizationChatConstraintsHtml(turn)}
+      ${isGenerating ? "" : renderStandardizationChatActionsHtml(turn, turnIndex)}
     </div>
-  `).join("");
+  `;
+  }).join("");
+  const chatBusyAttr = state.standardizationChatBusy ? "disabled" : "";
   return `
     <section class="review-block standardization-chat-block">
       <div class="block-head"><h2>标准化对话</h2><span>${turns.length} 轮</span></div>
       <div class="standardization-chat-list">
-        ${rows || `<div class="empty-line">可以问“为什么外径公差是这个值”，也可以说“外径改成22mm”。</div>`}
+        ${rows || `<div class="standardization-chat-empty">你好，可以问我标准化依据、参数调整建议，或输入“请根据标准化手册推荐完整标准化方案”。</div>`}
       </div>
       <form class="standardization-chat-form" data-action="standardization-chat">
-        <input data-role="standardization-chat-input" type="text" placeholder="输入标准化问题或修改意图，例如：请根据标准化手册推荐完整标准化方案">
-        <label class="standardization-chat-toggle">
-          <input data-role="standardization-chat-llm" type="checkbox">
-          LLM理解
-        </label>
-        <button type="submit">发送</button>
+        <input data-role="standardization-chat-input" type="text" placeholder="发消息，询问标准化依据或修改参数...">
+        <button type="submit" ${chatBusyAttr}>${state.standardizationChatBusy ? "生成中" : "发送"}</button>
       </form>
     </section>
   `;
@@ -1451,11 +1574,10 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       event.preventDefault();
       activateReviewContext(messageId);
       const input = form.querySelector('[data-role="standardization-chat-input"]');
-      const useLlm = Boolean(form.querySelector('[data-role="standardization-chat-llm"]')?.checked);
       const text = input?.value?.trim() || "";
       if (!text) return;
       input.value = "";
-      runStandardizationChat(text, messageId, useLlm);
+      runStandardizationChat(text, messageId, true);
     });
   });
 
@@ -2067,12 +2189,13 @@ function createCompareOverlay() {
 function renderCompareOverlay() {
   if (!state.review) return;
   refreshDerivedStatus(state.review);
+  const activeTab = validCompareTab(state.compareTab);
   compareOverlay.innerHTML = `
     <div class="compare-shell">
       <header class="compare-head">
         <div>
-          <h2>图纸与结构化数据对比</h2>
-          <p>左侧查看原始图纸，右侧逐项确认或修改尺寸数据。</p>
+          <h2>图纸核对</h2>
+          <p>左侧查看原图，右侧确认参数、标准化建议和 AI 对话。</p>
         </div>
         <div class="compare-actions">
           <button type="button" data-action="standardize">${standardizeButtonLabel(state.review)}</button>
@@ -2089,16 +2212,7 @@ function renderCompareOverlay() {
           </div>
           ${renderCompareViewerHtml()}
         </section>
-      <section class="compare-data-panel">
-          ${renderTypeSelectorHtml(state.review)}
-          ${renderSummaryHtml(state.review)}
-          ${renderStandardSelectionHtml(state.review)}
-          ${renderParameterTableHtml(state.review)}
-          ${renderDerivedParametersHtml(state.review)}
-          ${renderStandardizationHtml(state.review)}
-          ${renderStandardizationChatHtml(state.review)}
-          ${renderRequirementsHtml(state.review)}
-        </section>
+        ${renderCompareDataPanelHtml(state.review, activeTab)}
       </div>
     </div>
   `;
@@ -2114,8 +2228,100 @@ function renderCompareOverlay() {
     acknowledgeScannedInput();
     updateLatestReviewMessage("已全部确认，当前审查状态已刷新。");
   });
+  bindCompareTabs(compareOverlay);
   bindReviewEditors(compareOverlay);
   initializeCompareViewer();
+}
+
+function renderCompareDataPanelHtml(review, activeTab) {
+  const panels = {
+    parameters: `
+      ${renderTypeSelectorHtml(review)}
+      ${renderSummaryHtml(review)}
+      ${renderParameterTableHtml(review)}
+      ${renderRequirementsHtml(review)}
+    `,
+    standards: `
+      ${renderStandardSelectionHtml(review)}
+      ${renderStandardizationHtml(review)}
+      ${renderDerivedParametersHtml(review)}
+    `,
+    assistant: `
+      ${renderStandardizationChatHtml(review)}
+    `,
+  };
+  return `
+    <section class="compare-data-panel">
+      <div class="compare-data-top">
+        <div>
+          <strong>${escapeHtml(compareTabTitle(activeTab))}</strong>
+          <small>${escapeHtml(compareTabDescription(activeTab))}</small>
+        </div>
+        ${renderCompareTabsHtml(activeTab)}
+      </div>
+      <div class="compare-tab-panels">
+        ${Object.entries(panels).map(([tab, html]) => `
+          <div class="compare-tab-panel${tab === activeTab ? " active" : ""}" data-compare-panel="${escapeHtml(tab)}">
+            ${html}
+          </div>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderCompareTabsHtml(activeTab) {
+  const tabs = [
+    ["parameters", "参数"],
+    ["standards", "标准化"],
+    ["assistant", "AI 对话"],
+  ];
+  return `
+    <nav class="compare-tabs" aria-label="右侧数据视图">
+      ${tabs.map(([tab, label]) => `
+        <button type="button" class="${tab === activeTab ? "active" : ""}" data-compare-tab="${escapeHtml(tab)}">${escapeHtml(label)}</button>
+      `).join("")}
+    </nav>
+  `;
+}
+
+function bindCompareTabs(root) {
+  root.querySelectorAll("[data-compare-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const tab = validCompareTab(button.dataset.compareTab);
+      state.compareTab = tab;
+      root.querySelectorAll("[data-compare-tab]").forEach((item) => {
+        item.classList.toggle("active", item.dataset.compareTab === tab);
+      });
+      root.querySelector(".compare-data-top strong").textContent = compareTabTitle(tab);
+      root.querySelector(".compare-data-top small").textContent = compareTabDescription(tab);
+      root.querySelectorAll("[data-compare-panel]").forEach((panel) => {
+        panel.classList.toggle("active", panel.dataset.comparePanel === tab);
+      });
+    });
+  });
+}
+
+function validCompareTab(tab) {
+  return ["parameters", "standards", "assistant"].includes(tab) ? tab : "parameters";
+}
+
+function compareTabTitle(tab) {
+  const titles = {
+    parameters: "参数确认",
+    standards: "标准化",
+    assistant: "AI 对话",
+  };
+  return titles[tab] || titles.parameters;
+}
+
+function compareTabDescription(tab) {
+  const descriptions = {
+    parameters: "核对识别尺寸和技术要求",
+    standards: "查看标准选择、建议和派生参数",
+    assistant: "按当前图纸上下文提问或应用建议",
+  };
+  return descriptions[tab] || descriptions.parameters;
 }
 
 function renderCompareViewerHtml() {

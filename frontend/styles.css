@@ -415,6 +415,12 @@ button:disabled {
   gap: 8px;
 }
 
+.standardization-chat-empty {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
 .standardization-chat-turn {
   display: grid;
   gap: 6px;
@@ -550,7 +556,7 @@ button:disabled {
 
 .standardization-chat-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 72px;
+  grid-template-columns: minmax(0, 1fr) 72px;
   gap: 8px;
   align-items: center;
 }
@@ -561,22 +567,6 @@ button:disabled {
   border-radius: 8px;
   padding: 0 10px;
   font: inherit;
-}
-
-.standardization-chat-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.standardization-chat-toggle input {
-  min-height: auto;
-  width: auto;
-  padding: 0;
 }
 
 .standardization-chat-form button {
@@ -943,7 +933,7 @@ textarea {
   position: fixed;
   inset: 0;
   z-index: 20;
-  background: #f6f8fb;
+  background: #f3f6fa;
 }
 
 .compare-overlay[hidden] {
@@ -961,7 +951,8 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  padding: 14px 22px;
+  min-height: 58px;
+  padding: 10px 18px;
   background: #fff;
   border-bottom: 1px solid var(--line);
 }
@@ -972,20 +963,27 @@ textarea {
 }
 
 .compare-head h2 {
-  font-size: 18px;
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .compare-head p {
-  margin-top: 4px;
+  margin-top: 2px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .compare-actions {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.compare-actions button {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 .compare-actions button:first-child {
@@ -996,7 +994,7 @@ textarea {
 
 .compare-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) clamp(460px, 34vw, 500px);
+  grid-template-columns: minmax(0, 1fr) clamp(430px, 32vw, 540px);
   min-height: 0;
   overflow: hidden;
 }
@@ -1019,10 +1017,11 @@ textarea {
   justify-content: space-between;
   gap: 12px;
   align-items: center;
-  padding: 10px 14px;
+  min-height: 38px;
+  padding: 8px 12px;
   background: #fff;
   border-bottom: 1px solid var(--line);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .compare-panel-head span {
@@ -1038,14 +1037,16 @@ textarea {
 .compare-tools {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
+  gap: 6px;
+  padding: 8px 12px;
   background: #fff;
   border-bottom: 1px solid var(--line);
 }
 
 .compare-tools button {
-  min-height: 32px;
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 12px;
 }
 
 #compareZoomLabel {
@@ -1093,11 +1094,289 @@ textarea {
 
 .compare-data-panel {
   min-width: 460px;
-  overflow-y: auto;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
   overflow-x: hidden;
-  padding: 12px 12px 20px;
-  background: #fff;
+  background: #f9fbfd;
   font-family: "Segoe UI Variable", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif;
+}
+
+.compare-data-top {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  gap: 9px;
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid #dfe7f2;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(10px);
+}
+
+.compare-data-top > div {
+  display: grid;
+  gap: 2px;
+}
+
+.compare-data-top strong {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.compare-data-top small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.compare-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  border: 1px solid #dfe7f2;
+  border-radius: 8px;
+  background: #eef3f8;
+  padding: 3px;
+}
+
+.compare-tabs button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #536178;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.compare-tabs button.active {
+  background: #fff;
+  color: var(--primary);
+  box-shadow: 0 1px 4px rgb(36 79 180 / 12%);
+}
+
+.compare-tab-panels {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.compare-tab-panel {
+  display: none;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 12px 20px;
+}
+
+.compare-tab-panel.active {
+  display: block;
+  min-height: 0;
+}
+
+.compare-tab-panel > .spring-type-panel:first-child,
+.compare-tab-panel > .summary-strip:first-child,
+.compare-tab-panel > .review-block:first-child {
+  margin-top: 0;
+}
+
+.compare-tab-panel > .review-block:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"].active {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  overflow: hidden;
+  padding: 0;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-block {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 0;
+  min-height: 0;
+  height: 100%;
+  margin: 0;
+  border-top: 0;
+  padding-top: 0;
+  background: #fff;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-block .block-head {
+  display: none;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-list {
+  align-content: start;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 14px 18px;
+  background: #fff;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-empty {
+  width: min(100%, 360px);
+  margin: 18px 0;
+  color: #2b3345;
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-turn {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-turn.generating .assistant-line span::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: #9aa7ba;
+  vertical-align: middle;
+  animation: chatPulse 1s ease-in-out infinite;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-turn.error .assistant-line span {
+  color: #b42318;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .chat-line {
+  display: flex;
+  gap: 0;
+  line-height: 1.6;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .chat-line strong {
+  display: none;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .chat-line span {
+  max-width: 86%;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .user-line {
+  justify-content: flex-end;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .user-line span {
+  border-radius: 18px 18px 6px 18px;
+  background: #f1f2f4;
+  color: #20283a;
+  padding: 10px 13px;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .assistant-line {
+  justify-content: flex-start;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .assistant-line span {
+  max-width: 100%;
+  color: #161d2d;
+  padding: 2px 2px;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-turn > small {
+  width: fit-content;
+  border-radius: 999px;
+  background: #f6f8fb;
+  color: #7a8598;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-constraints {
+  grid-template-columns: auto minmax(0, 1fr);
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 7px 9px;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-actions {
+  gap: 7px;
+  max-width: 100%;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-batch,
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-action {
+  border-color: #edf1f6;
+  border-radius: 12px;
+  background: #fafbfd;
+  box-shadow: none;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-action {
+  grid-template-columns: 1fr;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-action button,
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-batch button {
+  width: fit-content;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-form {
+  position: sticky;
+  bottom: 12px;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 62px;
+  gap: 8px;
+  align-items: center;
+  margin: 0 12px 12px;
+  border: 1px solid #a9c8ff;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 12px 30px rgb(29 47 74 / 12%);
+  padding: 9px 10px;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-form input {
+  min-height: 40px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  padding: 0 8px;
+  font-size: 14px;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-form input:focus {
+  outline: none;
+}
+
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-form button {
+  min-height: 34px;
+  border-color: var(--primary);
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  padding: 0 12px;
+}
+
+@keyframes chatPulse {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: translateY(0);
+  }
+
+  50% {
+    opacity: 1;
+    transform: translateY(-1px);
+  }
 }
 
 .compare-data-panel .summary-strip {
@@ -1106,7 +1385,7 @@ textarea {
 }
 
 .compare-data-panel .data-table {
-  --data-columns: minmax(105px, 1fr) 86px 86px 62px;
+  --data-columns: minmax(110px, 1fr) 92px 92px 66px;
 }
 
 .compare-data-panel .requirement-list {
@@ -1127,10 +1406,6 @@ textarea {
   min-height: 30px;
   padding: 0 7px;
   font-size: 12px;
-}
-
-.compare-data-panel .review-block:first-of-type {
-  border-top: 0;
 }
 
 .composer {
@@ -1417,6 +1692,18 @@ textarea {
     min-width: 0;
   }
 
+  .compare-tab-panels {
+    overflow: visible;
+  }
+
+  .compare-data-top {
+    position: static;
+  }
+
+  .compare-tab-panel[data-compare-panel="assistant"].active {
+    min-height: 62vh;
+  }
+
   .compare-head {
     align-items: flex-start;
     flex-direction: column;
@@ -1487,6 +1774,10 @@ textarea {
 
   .spring-type-panel {
     grid-template-columns: 1fr;
+  }
+
+  .compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-form {
+    grid-template-columns: minmax(0, 1fr) 58px;
   }
 }
 
