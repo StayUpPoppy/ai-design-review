@@ -10,6 +10,7 @@ SOURCE_PRIORITY = {
     "cad": 0.95,
     "dxf": 0.95,
     "dwg": 0.95,
+    "dimension_role_ranker": 0.94,
     "werk24": 0.86,
     "qwen_vision": 0.88,
     "baidu_paddleocr_vl": 0.84,

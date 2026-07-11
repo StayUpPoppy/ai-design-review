@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .balloons import generate_balloons
+from .dimension_roles import apply_compression_dimension_role_ranking
 from .fusion import fuse_candidates
 from .llm_standardization import LLM_STANDARDIZATION_FIELD, normalize_llm_standardization_results
 from .material_terms import normalize_material
@@ -65,6 +66,7 @@ class DrawingReviewWorkflow:
         candidates = [*_file_text_candidates(file_info), *candidates]
         dimension_evidence = _dimension_evidence(candidates)
         candidates = apply_spring_semantic_mapping(candidates)
+        candidates = apply_compression_dimension_role_ranking(candidates)
         fused = fuse_candidates(candidates)
         classification = classify_spring_type(candidates, file_info)
         spring_type = classification["spring_type"]

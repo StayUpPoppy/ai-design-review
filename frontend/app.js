@@ -161,6 +161,13 @@ const COMPRESSION_CORE_PARAMETER_FIELDS = new Set([
   "end_grinding",
 ]);
 
+const SPECIALIZED_ACCURACY_PARAMETER_FIELDS = new Set([
+  "diameter_accuracy_grade",
+  "free_length_accuracy_grade",
+  "load_accuracy_grade",
+  "stiffness_accuracy_grade",
+]);
+
 const STANDARDIZATION_PARAMETER_ASSOCIATIONS = {
   load_points: new Set(["active_coils", "load_accuracy_grade"]),
   spring_rate: new Set(["active_coils", "stiffness_accuracy_grade"]),
@@ -1013,7 +1020,20 @@ function getParameterFieldGroups(params, review) {
 }
 
 function shouldShowAdvancedParameter(field, param, review) {
+  if (SPECIALIZED_ACCURACY_PARAMETER_FIELDS.has(field)) {
+    return hasExplicitSpecializedAccuracyContent(param);
+  }
   return hasParameterContent(param) || hasStandardizationForField(field, review);
+}
+
+function hasExplicitSpecializedAccuracyContent(param) {
+  if (!param || typeof param !== "object" || Array.isArray(param)) return false;
+  const hasValue = param.value != null && param.value !== "";
+  const hasTolerance = (param.tolerance_upper != null && param.tolerance_upper !== "")
+    || (param.tolerance_lower != null && param.tolerance_lower !== "");
+  if (!hasValue && !hasTolerance) return false;
+  if (param.default_source === "company_default") return false;
+  return true;
 }
 
 function hasParameterContent(param) {

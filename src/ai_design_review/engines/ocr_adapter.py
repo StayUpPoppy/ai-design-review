@@ -982,6 +982,9 @@ def _looks_like_vertical_tolerance(text: str) -> bool:
 def _free_length_block(blocks: list[dict[str, Any]], full_text: str) -> dict[str, Any] | None:
     outer = _outer_diameter_block(blocks)
     outer_value = _number_from_text(str(outer.get("text", ""))) if outer else None
+    outer_cluster = _outer_diameter_vertical_cluster(blocks)
+    if outer_cluster:
+        outer_value = outer_cluster[0]
     heights = _load_heights(full_text)
     min_free = max(heights) if heights else 0
 
