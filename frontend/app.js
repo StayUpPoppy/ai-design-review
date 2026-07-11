@@ -948,7 +948,7 @@ function renderParameterTableHtml(review) {
     const meta = getFieldMeta(field, review);
     return parameterRowHtml(field, params[field] || blankParam(meta.unit), meta);
   });
-  const loadPointRows = (params.load_points || []).map((point, index) => loadPointRowHtml(point, index));
+  const loadPointRows = (params.load_points || []).map((point, index) => loadPointRowHtml(point, index, review));
   const totalRows = parameterRows.length + loadPointRows.length;
   return `
     <section class="review-block">
@@ -963,8 +963,8 @@ function renderParameterTableHtml(review) {
       ${loadPointRows.length ? `
         <div class="data-subsection">
           <div class="data-subsection-head">载荷点</div>
-          <div class="data-table">
-            ${dataTableHeadHtml("载荷点", "高度", "力值")}
+          <div class="data-table load-point-table">
+            ${loadPointTableHeadHtml()}
             ${loadPointRows.join("")}
           </div>
         </div>
@@ -992,6 +992,18 @@ function dataTableHeadHtml(nameLabel, primaryLabel, secondaryLabel) {
       <span>${escapeHtml(primaryLabel)}</span>
       <span>${escapeHtml(secondaryLabel)}</span>
       <span>操作</span>
+    </div>
+  `;
+}
+
+function loadPointTableHeadHtml() {
+  return `
+    <div class="data-table-head" aria-hidden="true">
+      <span>&#36733;&#33655;&#28857;</span>
+      <span>&#39640;&#24230;</span>
+      <span>&#21147;&#20540;</span>
+      <span>&#20844;&#24046;</span>
+      <span>&#25805;&#20316;</span>
     </div>
   `;
 }
@@ -1092,9 +1104,10 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
   `;
 }
 
-function loadPointRowHtml(point, index) {
+function loadPointRowHtml(point, index, review = state.review) {
   const evidence = point.evidence || "";
   const label = point.label || `F${index + 1}`;
+  const tolerance = loadPointToleranceDisplay(point, label, review);
   return `
     <div class="data-row load-point" data-kind="load_point" data-index="${index}">
       <div class="data-label">
@@ -1109,9 +1122,70 @@ function loadPointRowHtml(point, index) {
         <span class="sr-only">${escapeHtml(label)}力值 N</span>
         <input data-role="force" aria-label="${escapeHtml(label)}力值 N" value="${escapeHtml(point.force ?? "")}">
       </label>
+      <label class="data-input-cell data-tertiary load-point-tolerance">
+        <span class="sr-only">${escapeHtml(label)}&#20844;&#24046;</span>
+        <input data-role="load-tolerance" aria-label="${escapeHtml(label)}&#20844;&#24046;" value="${escapeHtml(tolerance.value)}" placeholder="${escapeHtml(tolerance.placeholder)}" title="${escapeHtml(tolerance.title)}">
+        ${tolerance.note ? `<small>${escapeHtml(tolerance.note)}</small>` : ""}
+      </label>
       <button class="confirm-button${point.need_human_review ? "" : " confirmed"}" type="button" data-role="confirm">${point.need_human_review ? "确认" : "已确认"}</button>
     </div>
   `;
+}
+
+function loadPointToleranceDisplay(point, label, review) {
+  const suggestion = findLoadPointToleranceSuggestion(review, label);
+  const suggested = suggestion ? formatLoadPointAbsoluteTolerance(
+    suggestion.suggested_tolerance_upper,
+    suggestion.suggested_tolerance_lower,
+  ) : "";
+  const absolute = formatLoadPointAbsoluteTolerance(
+    point.load_tolerance_upper,
+    point.load_tolerance_lower,
+  );
+  if (absolute) {
+    return {
+      value: absolute,
+      placeholder: "",
+      title: suggestion?.basis || "",
+      note: suggested && suggested !== absolute ? `\u6807\u51c6\u5efa\u8bae ${suggested}` : "",
+    };
+  }
+
+  const drawingPercent = point.force_tolerance_percent ?? point.load_tolerance_percent;
+  if (drawingPercent != null && drawingPercent !== "") {
+    return {
+      value: `\u00b1${formatCompactNumber(Math.abs(Number(drawingPercent)))}%`,
+      placeholder: "",
+      title: suggestion?.basis || "",
+      note: suggested ? `\u6807\u51c6\u5efa\u8bae ${suggested}` : "\u56fe\u7eb8\u516c\u5dee",
+    };
+  }
+
+  if (!suggestion) {
+    return { value: "", placeholder: "", title: "", note: "" };
+  }
+  return {
+    value: "",
+    placeholder: suggested ? `\u5efa\u8bae ${suggested}` : "",
+    title: suggestion.basis || "",
+    note: suggested ? "\u6807\u51c6\u5efa\u8bae" : "",
+  };
+}
+
+function findLoadPointToleranceSuggestion(review, label) {
+  const target = `load_points.${label}.force`;
+  return (review?.standardization_results || []).find((item) => {
+    if (String(item.target_field || "") !== target) return false;
+    return item.suggested_tolerance_upper != null || item.suggested_tolerance_lower != null;
+  }) || null;
+}
+
+function formatLoadPointAbsoluteTolerance(upper, lower) {
+  if (upper == null && lower == null) return "";
+  if (upper != null && lower != null && Number(upper) === Math.abs(Number(lower))) {
+    return `\u00b1${formatCompactNumber(Math.abs(Number(upper)))}N`;
+  }
+  return `${upper ?? ""}/${lower ?? ""}N`;
 }
 
 function renderDerivedParametersHtml(review) {
@@ -1564,6 +1638,12 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     row.querySelector('[data-role="force"]').addEventListener("change", (event) => {
       activateReviewContext(messageId);
       point.force = parseValue(event.target.value, point.force);
+      markParamEdited(point);
+      updateLatestReviewMessage();
+    });
+    row.querySelector('[data-role="load-tolerance"]').addEventListener("change", (event) => {
+      activateReviewContext(messageId);
+      applyLoadPointTolerance(point, event.target.value);
       markParamEdited(point);
       updateLatestReviewMessage();
     });
@@ -2825,6 +2905,36 @@ function applyTolerance(param, value) {
     const [upper, lower] = text.split("/").map((part) => Number(part.trim()));
     param.tolerance_upper = Number.isNaN(upper) ? null : upper;
     param.tolerance_lower = Number.isNaN(lower) ? null : lower;
+  }
+}
+
+function applyLoadPointTolerance(point, value) {
+  const text = value.trim().replace(/^\u5efa\u8bae\s*/, "").replace(/N$/i, "");
+  if (!text) {
+    point.load_tolerance_upper = null;
+    point.load_tolerance_lower = null;
+    point.load_tolerance_percent = null;
+    point.force_tolerance_percent = null;
+    return;
+  }
+  if (text.endsWith("%")) {
+    const percent = Number(text.replace(/^\u00b1/, "").slice(0, -1));
+    if (!Number.isNaN(percent)) {
+      point.force_tolerance_percent = Math.abs(percent);
+      point.load_tolerance_percent = Math.abs(percent);
+      point.load_tolerance_upper = null;
+      point.load_tolerance_lower = null;
+    }
+    return;
+  }
+  const parsed = { tolerance_upper: null, tolerance_lower: null };
+  applyTolerance(parsed, text.replace(/^\u00b1/, "\u00b1"));
+  point.load_tolerance_upper = parsed.tolerance_upper;
+  point.load_tolerance_lower = parsed.tolerance_lower;
+  if (point.force && parsed.tolerance_upper != null) {
+    point.load_tolerance_percent = Number(
+      ((Math.abs(Number(parsed.tolerance_upper)) / Math.abs(Number(point.force))) * 100).toFixed(3),
+    );
   }
 }
 
