@@ -1321,6 +1321,7 @@ function renderStandardizationChatHtml(review) {
       </div>
       ${isGenerating ? "" : renderStandardizationChatIntentMetaHtml(turn)}
       ${isGenerating ? "" : renderStandardizationChatConstraintsHtml(turn)}
+      ${isGenerating ? "" : renderStandardizationChatReferencesHtml(turn)}
       ${isGenerating ? "" : renderStandardizationChatActionsHtml(turn, turnIndex)}
     </div>
   `;
@@ -1372,13 +1373,47 @@ function renderStandardizationChatConstraintsHtml(turn) {
   `;
 }
 
+function renderStandardizationChatReferencesHtml(turn) {
+  const references = Array.isArray(turn?.references) ? turn.references.filter((item) => item && typeof item === "object") : [];
+  if (!references.length) return "";
+  const sourceLabel = turn?.llm_chat?.status === "generated" ? "LLM/RAG 检索依据" : "标准依据";
+  return `
+    <details class="standardization-chat-references">
+      <summary>${escapeHtml(`${sourceLabel} · ${references.length} 条`)}</summary>
+      <ul>
+        ${references.map((reference) => {
+          const title = reference.title || reference.rule_topic || reference.table_no || reference.chunk_id || "标准资料";
+          const parts = [reference.standard_no, reference.table_no, reference.rule_topic]
+            .filter(Boolean)
+            .map((item) => String(item));
+          return `<li><strong>${escapeHtml(title)}</strong>${parts.length ? `<span>${escapeHtml(parts.join(" · "))}</span>` : ""}</li>`;
+        }).join("")}
+      </ul>
+    </details>
+  `;
+}
+
 function renderStandardizationChatActionsHtml(turn, turnIndex) {
   const actions = Array.isArray(turn.suggested_actions) ? turn.suggested_actions : [];
   if (!actions.length) return "";
   return `
     <div class="standardization-chat-actions">
+      ${renderStandardizationChatRollbackHtml(turn, turnIndex)}
       ${renderStandardizationChatBatchHtml(turn, turnIndex)}
       ${actions.map((action, actionIndex) => renderStandardizationChatActionHtml(action, turnIndex, actionIndex)).join("")}
+    </div>
+  `;
+}
+
+function renderStandardizationChatRollbackHtml(turn, turnIndex) {
+  const log = latestStandardizationChatApplication(turn);
+  if (!log) return "";
+  const count = Array.isArray(log.applied_patches) ? log.applied_patches.length : 1;
+  const status = log.restandardization_status === "failed" ? "重新标准化未完成，可先撤销本次写回。" : "已写回参数并重新标准化，可撤销最近一次应用。";
+  return `
+    <div class="standardization-chat-rollback" data-kind="chat_action_rollback" data-turn-index="${turnIndex}" data-log-id="${escapeHtml(log.id)}">
+      <small>${escapeHtml(`本轮已应用 ${count} 项建议。${status}`)}</small>
+      <button type="button" class="secondary-action" data-role="undo-chat-turn-actions">撤销本次应用</button>
     </div>
   `;
 }
@@ -1780,7 +1815,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       activateReviewContext(messageId);
       const turn = review.standardization_chat?.[Number(row.dataset.turnIndex)];
       const action = turn?.suggested_actions?.[Number(row.dataset.actionIndex)];
-      const applied = applyStandardizationChatActions([action], turn, { batch: false });
+      const applied = applyStandardizationChatActions([action], turn, { batch: false, turnIndex: Number(row.dataset.turnIndex) });
       if (!applied.ok) {
         updateLatestReviewMessage(applied.message || "暂时无法应用这条标准化对话建议。");
         return;
@@ -1801,7 +1836,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         updateLatestReviewMessage(validation.message || "本轮建议暂时不能批量应用。");
         return;
       }
-      const applied = applyStandardizationChatActions(validation.candidates, turn, { batch: true });
+      const applied = applyStandardizationChatActions(validation.candidates, turn, { batch: true, turnIndex: Number(row.dataset.turnIndex) });
       if (!applied.ok) {
         updateLatestReviewMessage(applied.message || "本轮建议暂时不能批量应用。");
         return;
@@ -1809,6 +1844,21 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       updateLatestReviewMessage(`已应用 ${applied.patches.length} 条对话修改建议，正在重新标准化...`);
       const standardized = await runStandardization(messageId);
       markStandardizationChatActionLogRestandardized(applied.log_id, standardized);
+    });
+  });
+
+  root.querySelectorAll('[data-kind="chat_action_rollback"]').forEach((row) => {
+    row.querySelector('[data-role="undo-chat-turn-actions"]')?.addEventListener("click", async () => {
+      if (state.busy) return;
+      activateReviewContext(messageId);
+      const reverted = undoStandardizationChatApplication(row.dataset.logId || "");
+      if (!reverted.ok) {
+        updateLatestReviewMessage(reverted.message || "暂时无法撤销这次对话应用。");
+        return;
+      }
+      updateLatestReviewMessage("已撤销本次对话应用，正在按撤销后的参数重新标准化...");
+      const standardized = await runStandardization(messageId);
+      markStandardizationChatApplicationRollbackRestandardized(reverted.log_id, standardized);
     });
   });
 
@@ -2087,6 +2137,7 @@ function applyStandardizationChatActions(actions, turn, options = {}) {
   }
 
   const now = new Date().toISOString();
+  const rollback = captureStandardizationChatRollback(list, turn, options);
   const patches = [];
   for (const action of list) {
     const applied = applyStandardizationChatAction(action, turn, { now });
@@ -2101,6 +2152,7 @@ function applyStandardizationChatActions(actions, turn, options = {}) {
     patches,
     batch: Boolean(options.batch) || patches.length > 1,
     appliedAt: now,
+    rollback,
   });
   return { ok: true, patches, log_id: logId };
 }
@@ -2254,7 +2306,53 @@ function applyStandardizationChatToleranceAction(action, turn, options = {}) {
   };
 }
 
-function recordStandardizationChatActionLog({ turn, patches, batch, appliedAt }) {
+function captureStandardizationChatRollback(actions, turn, options = {}) {
+  const parameters = state.review?.spring_parameters || {};
+  const confirmations = state.review?.manual_confirmations || {};
+  const fieldStates = actions.map((action) => {
+    const target = String(action?.target_field || "");
+    const loadMatch = target.match(/^load_points\.([^.]+)\.force$/);
+    const confirmationKey = action?.type === "propose_tolerance_patch"
+      ? `standardization_chat_${target}_tolerance`
+      : `standardization_chat_${target}`;
+    const confirmation = Object.prototype.hasOwnProperty.call(confirmations, confirmationKey)
+      ? { exists: true, value: structuredClone(confirmations[confirmationKey]) }
+      : { exists: false, value: null };
+    if (loadMatch) {
+      const label = loadMatch[1];
+      const index = (parameters.load_points || []).findIndex((point) => String(point?.label || "") === label);
+      return {
+        target,
+        kind: "load_point",
+        index,
+        label,
+        value: index >= 0 ? structuredClone(parameters.load_points[index]) : null,
+        confirmation_key: confirmationKey,
+        confirmation,
+      };
+    }
+    return {
+      target,
+      kind: "parameter",
+      exists: Object.prototype.hasOwnProperty.call(parameters, target),
+      value: Object.prototype.hasOwnProperty.call(parameters, target) ? structuredClone(parameters[target]) : null,
+      confirmation_key: confirmationKey,
+      confirmation,
+    };
+  });
+  const actionStates = actions.map((action) => ({
+    index: Array.isArray(turn?.suggested_actions) ? turn.suggested_actions.indexOf(action) : -1,
+    value: structuredClone(action),
+  }));
+  return {
+    turn_created_at: turn?.created_at || null,
+    turn_index: Number.isInteger(options.turnIndex) ? options.turnIndex : null,
+    field_states: fieldStates,
+    action_states: actionStates,
+  };
+}
+
+function recordStandardizationChatActionLog({ turn, patches, batch, appliedAt, rollback }) {
   state.review.agent_actions ||= [];
   const logId = `standardization_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   state.review.agent_actions.push({
@@ -2266,6 +2364,8 @@ function recordStandardizationChatActionLog({ turn, patches, batch, appliedAt })
     constraints: standardizationChatConstraints(turn),
     applied_at: appliedAt || new Date().toISOString(),
     applied_patches: patches,
+    rollback: rollback || null,
+    turn_created_at: rollback?.turn_created_at || turn?.created_at || null,
     restandardized: false,
     restandardization_status: "pending",
   });
@@ -2279,6 +2379,111 @@ function markStandardizationChatActionLogRestandardized(logId, completed) {
     log.restandardized = Boolean(completed);
     log.restandardization_status = completed ? "completed" : "failed";
     log.restandardized_at = new Date().toISOString();
+  }
+  const context = getReviewContext(state.activeReviewMessageId);
+  if (context) {
+    context.review = state.review;
+    context.imageUrl = state.imageUrl;
+  }
+}
+
+function latestStandardizationChatApplication(turn) {
+  const turnCreatedAt = turn?.created_at || null;
+  return [...(state.review?.agent_actions || [])].reverse().find((item) => {
+    return item?.source === "standardization_chat"
+      && item?.turn_created_at === turnCreatedAt
+      && item?.rollback
+      && !item?.reverted;
+  }) || null;
+}
+
+function undoStandardizationChatApplication(logId) {
+  const log = (state.review?.agent_actions || []).find((item) => item?.id === logId);
+  if (!log?.rollback || log.reverted) {
+    return { ok: false, message: "没有可撤销的对话应用记录。" };
+  }
+  const conflict = standardizationChatRollbackConflict(log);
+  if (conflict) {
+    return { ok: false, message: `${targetFieldLabel(conflict)} 已被后续修改，不能覆盖较新的参数。` };
+  }
+  const parameters = state.review.spring_parameters ||= {};
+  const confirmations = state.review.manual_confirmations ||= {};
+  for (const snapshot of log.rollback.field_states || []) {
+    if (snapshot.kind === "load_point") {
+      const points = parameters.load_points ||= [];
+      if (snapshot.index >= 0) {
+        points[snapshot.index] = structuredClone(snapshot.value);
+      }
+    } else if (snapshot.exists) {
+      parameters[snapshot.target] = structuredClone(snapshot.value);
+      syncBubbleValue(snapshot.target, parameters[snapshot.target]?.value);
+    } else {
+      delete parameters[snapshot.target];
+      syncBubbleValue(snapshot.target, undefined);
+    }
+    if (snapshot.confirmation?.exists) {
+      confirmations[snapshot.confirmation_key] = structuredClone(snapshot.confirmation.value);
+    } else {
+      delete confirmations[snapshot.confirmation_key];
+    }
+  }
+  const turn = findStandardizationChatTurn(log.rollback);
+  if (turn) {
+    for (const actionState of log.rollback.action_states || []) {
+      if (actionState.index >= 0) {
+        turn.suggested_actions[actionState.index] = structuredClone(actionState.value);
+      }
+    }
+  }
+  log.reverted = true;
+  log.reverted_at = new Date().toISOString();
+  log.rollback_restandardization_status = "pending";
+  return { ok: true, log_id: log.id };
+}
+
+function standardizationChatRollbackConflict(log) {
+  for (const patch of log.applied_patches || []) {
+    const target = String(patch?.target_field || "");
+    if (patch?.action_type === "propose_tolerance_patch") {
+      const current = currentActionTargetTolerance(target);
+      if (!standardizationChatValuesEqual(current.upper, patch.suggested_tolerance_upper)
+        || !standardizationChatValuesEqual(current.lower, patch.suggested_tolerance_lower)) {
+        return target;
+      }
+      continue;
+    }
+    if (!standardizationChatValuesEqual(currentActionTargetValue(target), patch.proposed_value)) {
+      return target;
+    }
+  }
+  return "";
+}
+
+function standardizationChatValuesEqual(left, right) {
+  if (left == null && right == null) return true;
+  const numericLeft = Number(left);
+  const numericRight = Number(right);
+  if (Number.isFinite(numericLeft) && Number.isFinite(numericRight)) {
+    return Math.abs(numericLeft - numericRight) < 1e-9;
+  }
+  return String(left ?? "") === String(right ?? "");
+}
+
+function findStandardizationChatTurn(rollback) {
+  const turns = state.review?.standardization_chat || [];
+  if (rollback?.turn_created_at) {
+    const matched = turns.find((turn) => turn?.created_at === rollback.turn_created_at);
+    if (matched) return matched;
+  }
+  const index = Number(rollback?.turn_index);
+  return Number.isInteger(index) && index >= 0 ? turns[index] : null;
+}
+
+function markStandardizationChatApplicationRollbackRestandardized(logId, completed) {
+  const log = (state.review?.agent_actions || []).find((item) => item?.id === logId);
+  if (log) {
+    log.rollback_restandardization_status = completed ? "completed" : "failed";
+    log.rollback_restandardized_at = new Date().toISOString();
   }
   const context = getReviewContext(state.activeReviewMessageId);
   if (context) {

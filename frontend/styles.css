@@ -514,6 +514,43 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.standardization-chat-references {
+  border-top: 1px solid #e8eef6;
+  color: var(--muted);
+  font-size: 12px;
+  padding-top: 6px;
+}
+
+.standardization-chat-references summary {
+  cursor: pointer;
+  width: fit-content;
+  color: #526982;
+}
+
+.standardization-chat-references ul {
+  display: grid;
+  gap: 5px;
+  list-style: none;
+  margin: 7px 0 0;
+  padding: 0;
+}
+
+.standardization-chat-references li {
+  display: grid;
+  gap: 2px;
+  border-left: 2px solid #d8e7f8;
+  padding-left: 8px;
+}
+
+.standardization-chat-references li strong {
+  color: #35506c;
+  font-weight: 600;
+}
+
+.standardization-chat-references li span {
+  overflow-wrap: anywhere;
+}
+
 .standardization-chat-batch {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -533,6 +570,27 @@ button:disabled {
 
 .standardization-chat-batch button {
   min-height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.standardization-chat-rollback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid #e8eef6;
+  padding-top: 7px;
+}
+
+.standardization-chat-rollback small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.standardization-chat-rollback button {
+  flex: 0 0 auto;
+  min-height: 29px;
   padding: 0 8px;
   font-size: 12px;
 }
@@ -1413,6 +1471,11 @@ textarea {
   max-width: 100%;
 }
 
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-references,
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-rollback {
+  width: min(100%, 430px);
+}
+
 .compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-batch,
 .compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-action,
 .compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-missing-field {
@@ -1776,6 +1839,11 @@ textarea {
   .standardization-chat-action,
   .standardization-chat-missing-field {
     grid-template-columns: 1fr;
+  }
+
+  .standardization-chat-rollback {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .standardization-toolbar {
