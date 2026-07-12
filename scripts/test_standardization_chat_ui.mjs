@@ -13,6 +13,7 @@ const context = {
   state: { review: null, activeReviewMessageId: null },
   structuredClone,
   targetFieldLabel: (field) => field,
+  escapeHtml: (value) => String(value),
   syncBubbleValue: () => {},
   getReviewContext: () => null,
 };
@@ -73,4 +74,30 @@ const conflict = context.undoStandardizationChatApplication("chat-apply-1");
 assert.equal(conflict.ok, false);
 assert.equal(context.state.review.spring_parameters.outer_diameter.value, 24);
 
-console.log("standardization chat UI rollback test passed");
+const supplementStart = appSource.indexOf("function canBatchSupplementChatAction");
+const supplementEnd = appSource.indexOf("function renderStandardizationChatBatchHtml", supplementStart);
+assert.notEqual(supplementStart, -1, "batch supplement helpers must exist");
+assert.notEqual(supplementEnd, -1, "batch supplement helper block must be complete");
+vm.runInContext(appSource.slice(supplementStart, supplementEnd), context);
+
+assert.equal(context.canBatchSupplementChatAction({
+  type: "request_missing_field",
+  target_field: "active_coils",
+  status: "need_input",
+}), true);
+assert.equal(context.canBatchSupplementChatAction({
+  type: "request_missing_field",
+  target_field: "technical_requirements.1",
+  status: "need_input",
+}), false);
+assert.equal(context.supplementInputMode("active_coils"), "decimal");
+assert.equal(context.supplementInputMode("end_grinding"), "text");
+const supplementForm = context.renderStandardizationChatSupplementFormHtml([
+  { action: { target_field: "active_coils", target_label: "有效圈数", reason: "补充后可计算" }, actionIndex: 0 },
+  { action: { target_field: "end_grinding", target_label: "端面磨削" }, actionIndex: 1 },
+], 3);
+assert.match(supplementForm, /data-kind="chat_supplement_form"/);
+assert.match(supplementForm, /data-field="active_coils"/);
+assert.match(supplementForm, /data-field="end_grinding"/);
+
+console.log("standardization chat UI rollback and batch supplement test passed");

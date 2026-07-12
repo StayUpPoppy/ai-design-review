@@ -161,6 +161,18 @@ const COMPRESSION_CORE_PARAMETER_FIELDS = new Set([
   "end_grinding",
 ]);
 
+const COMPRESSION_GENERATION_CORE_FIELDS = [
+  "material",
+  "wire_diameter",
+  "free_length",
+  "total_coils",
+  "active_coils",
+  "handedness",
+  "end_grinding",
+];
+
+const CONTROLLED_DIAMETER_FIELDS = ["outer_diameter", "inner_diameter", "mean_diameter"];
+
 const SPECIALIZED_ACCURACY_PARAMETER_FIELDS = new Set([
   "diameter_accuracy_grade",
   "free_length_accuracy_grade",
@@ -499,11 +511,16 @@ async function submitSelectedFile() {
 async function runStandardization(messageId = state.activeReviewMessageId) {
   if (!state.review || state.busy) return false;
   activateReviewContext(messageId);
+  const scrollState = captureReviewScrollState();
   setBusy(true);
   const endpoint = state.lastJob?.job_id
     ? `/api/reviews/${encodeURIComponent(state.lastJob.job_id)}/standardize`
     : "/api/reviews/standardize";
-  const thinkingId = appendAssistantText("正在根据当前确认/修改后的参数进行标准化...");
+  const thinkingId = appendAssistantText(
+    "正在根据当前确认/修改后的参数进行标准化...",
+    false,
+    { scroll: false },
+  );
   try {
     const response = await fetch(apiUrl(endpoint), {
       method: "POST",
@@ -539,14 +556,16 @@ async function runStandardization(messageId = state.activeReviewMessageId) {
     return false;
   } finally {
     setBusy(false);
+    restoreReviewScrollState(scrollState);
   }
 }
 
-async function runStandardizationChat(message, messageId = state.activeReviewMessageId, useLlm = true) {
+async function runStandardizationChat(message, messageId = state.activeReviewMessageId, useLlm = true, options = {}) {
   const text = String(message || "").trim();
   if (!state.review || !text || state.standardizationChatBusy) return;
   activateReviewContext(messageId);
   const requestReview = normalizeReview(structuredClone(state.review));
+  markSubmittedMissingChatActions(requestReview, options.submittedMissingActions);
   const pendingTurnId = appendPendingStandardizationChatTurn(text, messageId);
   state.standardizationChatBusy = true;
   refreshReviewSurfaces({ scrollChat: true });
@@ -562,6 +581,7 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
         review: requestReview,
         message: text,
         use_llm: Boolean(useLlm),
+        supplements: options.supplements || undefined,
       }),
     });
     const payload = await response.json();
@@ -599,6 +619,16 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
   }
 }
 
+function markSubmittedMissingChatActions(review, actionRefs) {
+  if (!Array.isArray(actionRefs)) return;
+  actionRefs.forEach((reference) => {
+    const action = review.standardization_chat?.[reference.turnIndex]?.suggested_actions?.[reference.actionIndex];
+    if (action?.type === "request_missing_field" && action.status === "need_input") {
+      action.status = "submitted";
+    }
+  });
+}
+
 function appendPendingStandardizationChatTurn(text, messageId = state.activeReviewMessageId) {
   const clientId = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   state.review.standardization_chat ||= [];
@@ -630,6 +660,7 @@ function replacePendingStandardizationChatTurn(clientId, assistantText, isError 
 
 function refreshReviewSurfaces(options = {}) {
   if (!state.review) return;
+  const conversationScrollTop = conversation.scrollTop;
   refreshDerivedStatus(state.review);
   exportButton.disabled = false;
   const context = getReviewContext(state.activeReviewMessageId);
@@ -647,7 +678,42 @@ function refreshReviewSurfaces(options = {}) {
   }
   if (options.scrollChat) {
     requestAnimationFrame(scrollStandardizationChatToBottom);
+  } else {
+    restoreConversationScroll(conversationScrollTop);
   }
+}
+
+function restoreConversationScroll(scrollTop) {
+  requestAnimationFrame(() => {
+    conversation.scrollTop = scrollTop;
+  });
+}
+
+function captureReviewScrollState() {
+  return {
+    windowX: window.scrollX,
+    windowY: window.scrollY,
+    conversationScrollTop: conversation.scrollTop,
+    comparePanels: captureComparePanelScrollPositions(),
+    chatLists: Array.from(document.querySelectorAll(".standardization-chat-list"), (list) => list.scrollTop),
+  };
+}
+
+function restoreReviewScrollState(scrollState) {
+  if (!scrollState) return;
+  const restore = () => {
+    window.scrollTo(scrollState.windowX || 0, scrollState.windowY || 0);
+    conversation.scrollTop = scrollState.conversationScrollTop || 0;
+    restoreComparePanelScrollPositions(scrollState.comparePanels, { immediate: true });
+    document.querySelectorAll(".standardization-chat-list").forEach((list, index) => {
+      const scrollTop = scrollState.chatLists?.[index];
+      if (Number.isFinite(scrollTop)) list.scrollTop = scrollTop;
+    });
+  };
+  requestAnimationFrame(() => {
+    restore();
+    requestAnimationFrame(restore);
+  });
 }
 
 function animateStandardizationChatReply(turnIndex, finalText, messageId = state.activeReviewMessageId) {
@@ -1234,6 +1300,159 @@ function renderDerivedParametersHtml(review) {
   `;
 }
 
+function renderGenerationReadinessHtml(review) {
+  const readiness = assessGenerationReadiness(review);
+  const statusLabels = {
+    ready: "可生成",
+    ready_with_warnings: "可生成，有提示",
+    needs_input: "待补充",
+    needs_confirmation: "待确认",
+    not_applicable: "暂不适用",
+  };
+  const ready = ["ready", "ready_with_warnings"].includes(readiness.status);
+  return `
+    <section class="review-block generation-readiness-block">
+      <div class="block-head">
+        <h2>生图参数包</h2>
+        <span class="generation-readiness-status ${escapeHtml(readiness.status)}">${escapeHtml(statusLabels[readiness.status] || "待核对")}</span>
+      </div>
+      <p class="generation-readiness-summary">${escapeHtml(readiness.summary)}</p>
+      <div class="generation-readiness-progress">已确认核心参数 ${readiness.confirmed_core_count}/${readiness.core_field_count}</div>
+      ${renderGenerationReadinessIssues("需要补充", readiness.missing_fields, "missing")}
+      ${renderGenerationReadinessIssues("需要确认", readiness.pending_fields, "pending")}
+      ${renderGenerationReadinessIssues("风险提示", readiness.warnings, "warning")}
+      <div class="generation-package-actions">
+        <button type="button" data-action="export-generation-package" ${ready ? "" : "disabled"}>导出参数包</button>
+        <small>仅包含已确认主参数；派生参数和标准化依据单独保留用于追溯。</small>
+      </div>
+    </section>
+  `;
+}
+
+function renderGenerationReadinessIssues(title, issues, kind) {
+  const items = Array.isArray(issues) ? issues : [];
+  if (!items.length) return "";
+  return `
+    <section class="generation-readiness-issues ${escapeHtml(kind)}">
+      <strong>${escapeHtml(title)} · ${items.length}</strong>
+      <div>
+        ${items.map((item) => `
+          <div>
+            <span><b>${escapeHtml(item.label || targetFieldLabel(item.field))}</b>${escapeHtml(item.reason || "")}</span>
+            ${canFocusGenerationIssue(item.field) ? `<button type="button" class="secondary-action" data-role="focus-generation-field" data-field="${escapeHtml(item.field)}">去处理</button>` : ""}
+          </div>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function canFocusGenerationIssue(field) {
+  const target = String(field || "");
+  return Boolean(target) && !target.startsWith("technical_requirements.");
+}
+
+function assessGenerationReadiness(review) {
+  if (currentSpringType(review) !== "compression_spring") {
+    return {
+      status: "not_applicable",
+      summary: "当前仅对圆柱螺旋压缩弹簧生成参数包。",
+      missing_fields: [],
+      pending_fields: [],
+      warnings: [],
+      confirmed_core_count: 0,
+      core_field_count: 0,
+    };
+  }
+  const parameters = review.spring_parameters || {};
+  const missing = [];
+  const pending = [];
+  const warnings = [];
+  let confirmed = 0;
+  COMPRESSION_GENERATION_CORE_FIELDS.forEach((field) => {
+    const state = generationParameterState(parameters[field]);
+    if (state === "missing") missing.push(generationIssue(field, "缺少重新生图所需的核心参数。"));
+    else if (state === "pending") pending.push(generationIssue(field, "参数已有值，但仍需人工确认。"));
+    else confirmed += 1;
+  });
+  const diameterStates = CONTROLLED_DIAMETER_FIELDS.map((field) => generationParameterState(parameters[field]));
+  if (diameterStates.includes("confirmed")) {
+    confirmed += 1;
+  } else if (diameterStates.includes("pending")) {
+    pending.push(generationIssue("outer_diameter", "受控直径已有识别值，但仍需人工确认。", "受控直径"));
+  } else {
+    missing.push(generationIssue("outer_diameter", "至少确认外径、内径或中径中的一项作为受控直径。", "受控直径"));
+  }
+  const selection = review.standard_selection || {};
+  if (!selection.selected_standard) {
+    missing.push(generationIssue("standard_no", "尚未完成适用技术标准选择。"));
+  } else if (selection.need_human_review && !selection.human_confirmed) {
+    pending.push(generationIssue("standard_no", "适用技术标准尚未人工确认。"));
+  }
+  if (review.derived_parameters_stale) {
+    pending.push(generationIssue("standardization", "参数修改后尚未重新标准化。", "标准化结果"));
+  }
+  for (const item of review.standardization_results || []) {
+    if (!item || typeof item !== "object") continue;
+    if (["stale", "need_context"].includes(item.status)) {
+      pending.push(generationIssue(item.target_field || "standardization", item.basis || "标准化结果仍需补充或重新计算。"));
+    } else if (item.status === "not_applicable") {
+      warnings.push(generationIssue(item.target_field || "standardization", item.basis || "当前标准规则不适用，需作为特殊设计复核。"));
+    }
+  }
+  (parameters.load_points || []).forEach((point, index) => {
+    if (!point || typeof point !== "object") return;
+    const label = point.label || `F${index + 1}`;
+    const field = `load_points.${label}.force`;
+    if (point.height == null || point.height === "" || point.force == null || point.force === "") {
+      missing.push(generationIssue(field, `${label} 的高度和力值需要完整填写。`, `载荷点 ${label}`));
+    } else if (point.need_human_review) {
+      pending.push(generationIssue(field, `载荷点 ${label} 尚未人工确认。`, `载荷点 ${label}`));
+    }
+  });
+  (review.technical_requirements || []).forEach((item, index) => {
+    if (!item?.content || !item.need_human_review) return;
+    const label = TECH_LABELS[item.type] || item.type || "技术要求";
+    pending.push(generationIssue(`technical_requirements.${index + 1}`, `技术要求“${label}”尚未人工确认。`, label));
+  });
+  const status = missing.length ? "needs_input" : pending.length ? "needs_confirmation" : warnings.length ? "ready_with_warnings" : "ready";
+  const summary = status === "ready"
+    ? "核心参数、技术要求和标准化状态均已确认，可生成参数包。"
+    : status === "ready_with_warnings"
+      ? "参数包可以生成，但存在需要在生图前知悉的风险提示。"
+      : status === "needs_input"
+        ? `还缺少 ${missing.length} 项生成必填信息。`
+        : `核心尺寸已齐，但还有 ${pending.length} 项需要人工确认。`;
+  return {
+    status,
+    summary,
+    missing_fields: dedupeGenerationIssues(missing),
+    pending_fields: dedupeGenerationIssues(pending),
+    warnings: dedupeGenerationIssues(warnings),
+    confirmed_core_count: confirmed,
+    core_field_count: COMPRESSION_GENERATION_CORE_FIELDS.length + 1,
+  };
+}
+
+function generationParameterState(param) {
+  if (!param || typeof param !== "object" || param.value == null || param.value === "") return "missing";
+  return param.need_human_review ? "pending" : "confirmed";
+}
+
+function generationIssue(field, reason, label = null) {
+  return { field, label: label || targetFieldLabel(field), reason };
+}
+
+function dedupeGenerationIssues(issues) {
+  const seen = new Set();
+  return issues.filter((item) => {
+    const key = `${item.field}:${item.reason}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function renderStandardizationHtml(review) {
   const results = Array.isArray(review.standardization_results) ? review.standardization_results : [];
   const batchPlan = standardizationBatchPlan(review);
@@ -1396,11 +1615,15 @@ function renderStandardizationChatReferencesHtml(turn) {
 function renderStandardizationChatActionsHtml(turn, turnIndex) {
   const actions = Array.isArray(turn.suggested_actions) ? turn.suggested_actions : [];
   if (!actions.length) return "";
+  const indexedActions = actions.map((action, actionIndex) => ({ action, actionIndex }));
+  const supplementActions = indexedActions.filter(({ action }) => canBatchSupplementChatAction(action));
+  const visibleActions = indexedActions.filter(({ action }) => action?.type !== "request_missing_field");
   return `
     <div class="standardization-chat-actions">
       ${renderStandardizationChatRollbackHtml(turn, turnIndex)}
+      ${supplementActions.length ? renderStandardizationChatSupplementFormHtml(supplementActions, turnIndex) : ""}
       ${renderStandardizationChatBatchHtml(turn, turnIndex)}
-      ${actions.map((action, actionIndex) => renderStandardizationChatActionHtml(action, turnIndex, actionIndex)).join("")}
+      ${visibleActions.map(({ action, actionIndex }) => renderStandardizationChatActionHtml(action, turnIndex, actionIndex)).join("")}
     </div>
   `;
 }
@@ -1419,9 +1642,6 @@ function renderStandardizationChatRollbackHtml(turn, turnIndex) {
 }
 
 function renderStandardizationChatActionHtml(action, turnIndex, actionIndex) {
-  if (action?.type === "request_missing_field") {
-    return renderStandardizationChatMissingFieldHtml(action);
-  }
   const target = String(action.target_field || "");
   const canApply = canApplyStandardizationChatAction(action);
   const status = action.status === "applied" ? "已应用" : "待确认";
@@ -1433,6 +1653,7 @@ function renderStandardizationChatActionHtml(action, turnIndex, actionIndex) {
         <span>${escapeHtml(formatStandardizationChatActionValue(action))}</span>
       </div>
       ${renderStandardizationChatActionPreviewHtml(action)}
+      ${renderStandardizationChatActionValidationHtml(action)}
       <div class="standardization-chat-action-notes">
         ${affected.length ? `<small>影响：${escapeHtml(affected.map((field) => targetFieldLabel(field)).join("、"))}</small>` : ""}
         ${action.reason ? `<small>${escapeHtml(action.reason)}</small>` : ""}
@@ -1442,31 +1663,105 @@ function renderStandardizationChatActionHtml(action, turnIndex, actionIndex) {
   `;
 }
 
-function renderStandardizationChatMissingFieldHtml(action) {
-  const target = String(action?.target_field || "");
-  const label = action?.target_label || targetFieldLabel(target) || "缺失字段";
-  const ruleIds = Array.isArray(action?.rule_ids) ? action.rule_ids.filter(Boolean) : [];
+function renderStandardizationChatActionValidationHtml(action) {
+  const validation = action?.validation;
+  if (!validation || validation.status === "not_applicable") return "";
+  const statusLabels = {
+    ready: "可应用",
+    warning: "有风险",
+    blocked: "不可应用",
+  };
+  const issues = Array.isArray(validation.issues) ? validation.issues.slice(0, 2) : [];
+  const preview = renderStandardizationChatDerivedPreview(validation.derived_preview);
   return `
-    <div class="standardization-chat-missing-field" data-kind="chat_missing_field" data-field="${escapeHtml(target)}">
-      <div>
-        <strong>需要补充：${escapeHtml(label)}</strong>
-        ${action?.reason ? `<small>${escapeHtml(action.reason)}</small>` : ""}
-        ${ruleIds.length ? `<small>关联规则：${escapeHtml(ruleIds.join("、"))}</small>` : ""}
-      </div>
-      <button type="button" data-role="focus-missing-field">去填写</button>
+    <div class="standardization-chat-validation ${escapeHtml(validation.status || "warning")}">
+      <strong>${escapeHtml(statusLabels[validation.status] || "待确认")}</strong>
+      <small>${escapeHtml(validation.summary || "参数预检完成，请人工确认。")}</small>
+      ${issues.length ? `<ul>${issues.map((item) => `<li>${escapeHtml(item.message || "")}</li>`).join("")}</ul>` : ""}
+      ${preview ? `<span>${escapeHtml(preview)}</span>` : ""}
     </div>
   `;
+}
+
+function renderStandardizationChatDerivedPreview(preview) {
+  if (!preview || typeof preview !== "object") return "";
+  const fields = ["mean_diameter", "spring_index", "slenderness_ratio"];
+  const values = fields.flatMap((field) => {
+    const item = preview[field];
+    if (!item || item.value == null) return [];
+    return `${targetFieldLabel(field)} ${formatStandardValue(item.value, item.unit || "")}`;
+  });
+  return values.length ? `预计：${values.join(" · ")}` : "";
+}
+
+function canBatchSupplementChatAction(action) {
+  const target = String(action?.target_field || "");
+  return action?.type === "request_missing_field"
+    && action?.status === "need_input"
+    && Boolean(target)
+    && target !== "standardization"
+    && !target.startsWith("technical_requirements.");
+}
+
+function renderStandardizationChatSupplementFormHtml(items, turnIndex) {
+  return `
+    <form class="standardization-chat-supplement-form" data-kind="chat_supplement_form" data-turn-index="${turnIndex}">
+      <div class="standardization-chat-supplement-head">
+        <strong>补充本轮参数</strong>
+        <small>可一次填写多项，提交后统一生成待确认建议。</small>
+      </div>
+      <div class="standardization-chat-supplement-fields">
+        ${items.map(({ action, actionIndex }) => {
+          const target = String(action?.target_field || "");
+          const label = action?.target_label || targetFieldLabel(target) || "缺失字段";
+          return `
+            <label class="standardization-chat-supplement-field">
+              <span>${escapeHtml(label)}</span>
+              <input
+                type="text"
+                inputmode="${supplementInputMode(target)}"
+                data-role="supplement-value"
+                data-field="${escapeHtml(target)}"
+                data-action-index="${actionIndex}"
+                placeholder="${escapeHtml(supplementPlaceholder(target))}"
+              >
+              ${action?.reason ? `<small>${escapeHtml(action.reason)}</small>` : ""}
+            </label>
+          `;
+        }).join("")}
+      </div>
+      <button type="submit">提交本轮补充</button>
+    </form>
+  `;
+}
+
+function supplementInputMode(target) {
+  const numericFields = new Set([
+    "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length",
+    "body_length", "solid_height", "total_coils", "active_coils", "end_coils", "support_coils",
+    "pitch", "spring_rate", "perpendicularity", "straightness", "permanent_set_limit",
+  ]);
+  return numericFields.has(target) || target.startsWith("load_points.") ? "decimal" : "text";
+}
+
+function supplementPlaceholder(target) {
+  if (target.endsWith("accuracy_grade")) return "例如：2级";
+  if (target === "end_grinding") return "例如：两端磨平";
+  if (target.startsWith("load_points.")) return "输入载荷值";
+  return supplementInputMode(target) === "decimal" ? "输入数值" : "输入内容";
 }
 
 function renderStandardizationChatBatchHtml(turn, turnIndex) {
   const validation = validateStandardizationChatBatch(turn);
   if (validation.candidates.length < 2) return "";
+  const proposalValidation = turn?.proposal_validation;
   const label = validation.ok ? `应用本轮全部建议（${validation.candidates.length}）` : "本轮批量应用不可用";
   return `
     <div class="standardization-chat-batch" data-kind="chat_action_batch" data-turn-index="${turnIndex}">
       <div>
         <strong>本轮建议</strong>
         <small>${escapeHtml(validation.message || `可一次写回 ${validation.candidates.length} 条建议，写回后会重新标准化。`)}</small>
+        ${proposalValidation && proposalValidation.status !== "not_applicable" ? `<small class="standardization-chat-batch-validation ${escapeHtml(proposalValidation.status || "warning")}">${escapeHtml(proposalValidation.summary || "")}</small>` : ""}
       </div>
       <button type="button" data-role="apply-chat-turn-actions" ${validation.ok ? "" : "disabled"}>${escapeHtml(label)}</button>
     </div>
@@ -1784,6 +2079,17 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     updateLatestReviewMessage(reverted ? `已撤销上次应用的 ${reverted.applied_count} 项标准化建议。` : "没有可撤销的标准化应用记录。");
   });
 
+  root.querySelector('[data-action="export-generation-package"]')?.addEventListener("click", () => {
+    activateReviewContext(messageId);
+    const packageData = makeGenerationParameterPackage(state.review);
+    if (!packageData) {
+      updateLatestReviewMessage("当前仍有缺失或待确认的生图参数，暂不能导出参数包。");
+      return;
+    }
+    downloadJson(packageData, "compression_spring_generation_parameters.json");
+    updateLatestReviewMessage("已导出已确认的生图参数包，可作为后续重新生图的唯一主参数输入。");
+  });
+
   root.querySelector('[data-action="confirm-standard-selection"]')?.addEventListener("click", () => {
     activateReviewContext(messageId);
     confirmStandardSelection();
@@ -1802,10 +2108,41 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     });
   });
 
-  root.querySelectorAll('[data-kind="chat_missing_field"]').forEach((row) => {
-    row.querySelector('[data-role="focus-missing-field"]')?.addEventListener("click", () => {
+  root.querySelectorAll('[data-kind="chat_supplement_form"]').forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (state.standardizationChatBusy) return;
       activateReviewContext(messageId);
-      focusMissingStandardizationField(row.dataset.field || "", messageId);
+      const turnIndex = Number(form.dataset.turnIndex);
+      const turn = review.standardization_chat?.[turnIndex];
+      const supplements = {};
+      const submittedMissingActions = [];
+      const messageParts = [];
+      form.querySelectorAll('[data-role="supplement-value"]').forEach((input) => {
+        const value = input.value.trim();
+        const target = String(input.dataset.field || "");
+        if (!value || !target) return;
+        const actionIndex = Number(input.dataset.actionIndex);
+        const action = turn?.suggested_actions?.[actionIndex];
+        supplements[target] = value;
+        submittedMissingActions.push({ turnIndex, actionIndex });
+        messageParts.push(`${action?.target_label || targetFieldLabel(target)}=${value}`);
+      });
+      if (!Object.keys(supplements).length) {
+        updateLatestReviewMessage("请至少填写一项需要补充的参数。");
+        return;
+      }
+      runStandardizationChat(`补充参数：${messageParts.join("；")}`, messageId, false, {
+        supplements,
+        submittedMissingActions,
+      });
+    });
+  });
+
+  root.querySelectorAll('[data-role="focus-generation-field"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      activateReviewContext(messageId);
+      focusMissingStandardizationField(button.dataset.field || "", messageId);
     });
   });
 
@@ -2014,6 +2351,7 @@ function validateStandardizationChatBatch(turn) {
   const candidates = standardizationChatPatchCandidates(turn);
   const invalid = candidates.filter((action) => !canApplyStandardizationChatAction(action));
   const duplicateTargets = duplicateStandardizationChatTargets(candidates);
+  const proposalValidation = turn?.proposal_validation;
   if (candidates.length < 2) {
     return {
       ok: false,
@@ -2033,6 +2371,13 @@ function validateStandardizationChatBatch(turn) {
       ok: false,
       candidates,
       message: `同一字段存在多条同类建议：${duplicateTargets.join("、")}，请逐条确认。`,
+    };
+  }
+  if (proposalValidation?.status === "blocked") {
+    return {
+      ok: false,
+      candidates,
+      message: proposalValidation.summary || "本轮参数组合不符合可行性校验，不能批量应用。",
     };
   }
   return {
@@ -2060,6 +2405,7 @@ function duplicateStandardizationChatTargets(actions) {
 function canApplyStandardizationChatAction(action) {
   if (!action || action.status === "applied") return false;
   if (!isApplicableStandardizationChatActionType(action.type)) return false;
+  if (action.validation?.status === "blocked") return false;
   if (action.metadata?.action_type_valid === false) return false;
   if (action.metadata?.target_field_valid === false) return false;
   if (!action.target_field) return false;
@@ -2580,6 +2926,7 @@ function switchSpringType(type) {
 }
 
 function updateLatestReviewMessage(title = "已更新结构化尺寸数据，请继续确认。") {
+  const conversationScrollTop = conversation.scrollTop;
   refreshDerivedStatus(state.review);
   exportButton.disabled = false;
   const context = getReviewContext(state.activeReviewMessageId);
@@ -2598,6 +2945,7 @@ function updateLatestReviewMessage(title = "已更新结构化尺寸数据，请
   if (state.compareOpen) {
     renderCompareOverlay();
   }
+  restoreConversationScroll(conversationScrollTop);
 }
 
 function openCompareOverlay(messageId = state.activeReviewMessageId) {
@@ -2620,6 +2968,12 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
   const target = String(field || "").trim();
   if (!target || !state.review) return;
   if (messageId) activateReviewContext(messageId);
+  if (target === "standardization") {
+    state.compareTab = "standards";
+    if (!state.compareOpen) openCompareOverlay(messageId);
+    else renderCompareOverlay();
+    return;
+  }
   state.compareTab = "parameters";
   if (!state.compareOpen) {
     openCompareOverlay(messageId);
@@ -2627,6 +2981,18 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
     renderCompareOverlay();
   }
   requestAnimationFrame(() => {
+    const loadMatch = target.match(/^load_points\.([^.]+)\.force$/);
+    if (loadMatch) {
+      const pointIndex = (state.review.spring_parameters?.load_points || []).findIndex((point) => String(point?.label || "") === loadMatch[1]);
+      const loadRow = compareOverlay.querySelector(`[data-kind="load_point"][data-index="${pointIndex}"]`);
+      if (loadRow) {
+        loadRow.scrollIntoView({ behavior: "smooth", block: "center" });
+        const input = loadRow.querySelector('[data-role="force"]');
+        input?.focus({ preventScroll: true });
+        input?.select();
+      }
+      return;
+    }
     const row = Array.from(compareOverlay.querySelectorAll('[data-kind="param"]'))
       .find((item) => item.dataset.field === target);
     if (!row) return;
@@ -2651,6 +3017,7 @@ function createCompareOverlay() {
 
 function renderCompareOverlay() {
   if (!state.review) return;
+  const scrollState = captureCompareOverlayScrollState();
   refreshDerivedStatus(state.review);
   const activeTab = validCompareTab(state.compareTab);
   compareOverlay.innerHTML = `
@@ -2694,6 +3061,49 @@ function renderCompareOverlay() {
   bindCompareTabs(compareOverlay);
   bindReviewEditors(compareOverlay);
   initializeCompareViewer();
+  restoreCompareOverlayScrollState(scrollState);
+}
+
+function captureCompareOverlayScrollState() {
+  return {
+    panels: captureComparePanelScrollPositions(),
+    chatLists: Array.from(compareOverlay.querySelectorAll(".standardization-chat-list"), (list) => list.scrollTop),
+  };
+}
+
+function restoreCompareOverlayScrollState(scrollState) {
+  if (!scrollState) return;
+  const restore = () => {
+    restoreComparePanelScrollPositions(scrollState.panels, { immediate: true });
+    compareOverlay.querySelectorAll(".standardization-chat-list").forEach((list, index) => {
+      const scrollTop = scrollState.chatLists?.[index];
+      if (Number.isFinite(scrollTop)) list.scrollTop = scrollTop;
+    });
+  };
+  restore();
+  requestAnimationFrame(() => {
+    restore();
+    requestAnimationFrame(restore);
+  });
+}
+
+function captureComparePanelScrollPositions() {
+  const positions = {};
+  compareOverlay.querySelectorAll("[data-compare-panel]").forEach((panel) => {
+    positions[panel.dataset.comparePanel] = panel.scrollTop;
+  });
+  return positions;
+}
+
+function restoreComparePanelScrollPositions(positions, options = {}) {
+  const restore = () => {
+    compareOverlay.querySelectorAll("[data-compare-panel]").forEach((panel) => {
+      const scrollTop = positions[panel.dataset.comparePanel];
+      if (Number.isFinite(scrollTop)) panel.scrollTop = scrollTop;
+    });
+  };
+  if (options.immediate) restore();
+  else requestAnimationFrame(restore);
 }
 
 function renderCompareDataPanelHtml(review, activeTab) {
@@ -2708,6 +3118,9 @@ function renderCompareDataPanelHtml(review, activeTab) {
       ${renderStandardSelectionHtml(review)}
       ${renderStandardizationHtml(review)}
       ${renderDerivedParametersHtml(review)}
+    `,
+    generation: `
+      ${renderGenerationReadinessHtml(review)}
     `,
     assistant: `
       ${renderStandardizationChatHtml(review)}
@@ -2737,6 +3150,7 @@ function renderCompareTabsHtml(activeTab) {
   const tabs = [
     ["parameters", "参数"],
     ["standards", "标准化"],
+    ["generation", "生图参数包"],
     ["assistant", "AI 对话"],
   ];
   return `
@@ -2766,13 +3180,14 @@ function bindCompareTabs(root) {
 }
 
 function validCompareTab(tab) {
-  return ["parameters", "standards", "assistant"].includes(tab) ? tab : "parameters";
+  return ["parameters", "standards", "generation", "assistant"].includes(tab) ? tab : "parameters";
 }
 
 function compareTabTitle(tab) {
   const titles = {
     parameters: "参数确认",
     standards: "标准化",
+    generation: "生图参数包",
     assistant: "AI 对话",
   };
   return titles[tab] || titles.parameters;
@@ -2782,6 +3197,7 @@ function compareTabDescription(tab) {
   const descriptions = {
     parameters: "核对识别尺寸和技术要求",
     standards: "查看标准选择、建议和派生参数",
+    generation: "检查重新生图需要的已确认参数",
     assistant: "按当前图纸上下文提问或应用建议",
   };
   return descriptions[tab] || descriptions.parameters;
@@ -2972,7 +3388,7 @@ function appendUserMessage(text) {
   scrollToBottom();
 }
 
-function appendAssistantText(text, isError = false) {
+function appendAssistantText(text, isError = false, options = {}) {
   const message = createMessage("assistant");
   message.classList.toggle("error", isError);
   message.querySelector(".message-body").innerHTML = `
@@ -2980,7 +3396,7 @@ function appendAssistantText(text, isError = false) {
     <p>${escapeHtml(text)}</p>
   `;
   conversation.appendChild(message);
-  scrollToBottom();
+  if (options.scroll !== false) scrollToBottom();
   return message.dataset.messageId;
 }
 
@@ -3292,6 +3708,59 @@ function makeExportReview() {
   exported.export_type = "human_confirmed_review";
   refreshDerivedStatus(exported);
   return exported;
+}
+
+function makeGenerationParameterPackage(review = state.review) {
+  const readiness = assessGenerationReadiness(review);
+  if (!["ready", "ready_with_warnings"].includes(readiness.status)) return null;
+  const confirmedParameters = {};
+  Object.entries(review.spring_parameters || {}).forEach(([field, param]) => {
+    if (["load_points", "torque_points"].includes(field) || generationParameterState(param) !== "confirmed") return;
+    const value = field === "material" && param.standard_value ? param.standard_value : param.value;
+    confirmedParameters[field] = {
+      label: targetFieldLabel(field),
+      value,
+      unit: param.unit || null,
+      tolerance_upper: param.tolerance_upper ?? null,
+      tolerance_lower: param.tolerance_lower ?? null,
+      confirmation_source: "human_confirmed",
+    };
+  });
+  const requirements = (review.technical_requirements || [])
+    .filter((item) => item?.content && !item.need_human_review)
+    .map((item) => ({
+      type: item.type,
+      content: item.type === "surface" && item.standard_content ? item.standard_content : item.content,
+      confirmation_source: "human_confirmed",
+    }));
+  const summary = review.drawing_summary || {};
+  const selection = review.standard_selection || {};
+  return {
+    schema_version: "spring_generation_parameters/v1",
+    package_type: "confirmed_compression_spring_generation_input",
+    generated_at: new Date().toISOString(),
+    source: {
+      drawing_no: summary.drawing_no || null,
+      drawing_name: summary.drawing_name || null,
+      spring_type: currentSpringType(review),
+      spring_type_label: summary.spring_type_label || SPRING_TYPE_LABELS[currentSpringType(review)] || null,
+    },
+    standard_context: {
+      selected_standard: selection.selected_standard || null,
+      selection_status: selection.status || null,
+      human_confirmed: Boolean(selection.human_confirmed),
+    },
+    generation_parameters: {
+      spring_parameters: confirmedParameters,
+      load_points: structuredClone((review.spring_parameters?.load_points || []).filter((point) => !point?.need_human_review)),
+      technical_requirements: requirements,
+    },
+    derived_parameters: structuredClone(review.derived_parameters || {}),
+    standardization_trace: {
+      results: structuredClone(review.standardization_results || []),
+      readiness,
+    },
+  };
 }
 
 function downloadJson(data, filename) {

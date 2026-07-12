@@ -411,7 +411,12 @@ async def standardization_chat_payload(payload: dict[str, Any] | None = Body(Non
         raise HTTPException(status_code=400, detail="standardization chat requires a message.")
     try:
         context = await _prepare_standardization_chat_context(review, message)
-        result = chat_about_standardization(review, message, use_llm=bool(body.get("use_llm")))
+        result = chat_about_standardization(
+            review,
+            message,
+            use_llm=bool(body.get("use_llm")),
+            supplements=body.get("supplements"),
+        )
         return _attach_standardization_chat_context(result, context)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -435,7 +440,12 @@ async def standardization_chat_existing_review(
         review = read_json(review_path)
     try:
         context = await _prepare_standardization_chat_context(review, message)
-        result = chat_about_standardization(review, message, use_llm=bool(body.get("use_llm")))
+        result = chat_about_standardization(
+            review,
+            message,
+            use_llm=bool(body.get("use_llm")),
+            supplements=body.get("supplements"),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = _attach_standardization_chat_context(result, context)

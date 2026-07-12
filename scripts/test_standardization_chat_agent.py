@@ -18,6 +18,7 @@ def main() -> None:
     _assert_detects_full_plan_without_hardcoded_actions()
     _assert_requests_missing_context_before_full_plan()
     _assert_uses_pending_question_to_parse_a_direct_value()
+    _assert_proposes_multiple_structured_supplements()
     _assert_context_refresh_detects_missing_or_stale_results()
     _assert_full_plan_timeout_fallback_is_explicit()
     print("standardization chat agent test passed")
@@ -50,7 +51,8 @@ def _assert_proposes_patch_without_applying() -> None:
     assert action["proposed_value"] == 22
     assert action["unit"] == "mm"
     assert review["spring_parameters"]["outer_diameter"]["value"] == 20
-    assert "暂不自动写回" in payload["reply"]
+    assert "不会自动写回" in payload["reply"]
+    assert action["validation"]["status"] == "ready"
 
 
 def _assert_detects_full_plan_without_hardcoded_actions() -> None:
@@ -102,6 +104,27 @@ def _assert_uses_pending_question_to_parse_a_direct_value() -> None:
     assert payload["intent"]["type"] == "parameter_change_request"
     assert payload["intent"]["target_field"] == "active_coils"
     assert payload["suggested_actions"][0]["proposed_value"] == 8
+
+
+def _assert_proposes_multiple_structured_supplements() -> None:
+    review = _review()
+    review["spring_parameters"]["active_coils"] = {"value": None, "unit": "turns"}
+    review["spring_parameters"]["end_grinding"] = {"value": None, "unit": ""}
+    payload = chat_about_standardization(
+        review,
+        "supplement active coils and end grinding",
+        supplements={"active_coils": "8", "end_grinding": "两端磨平"},
+        use_llm=True,
+    )
+    assert payload["intent"]["type"] == "batch_parameter_supplement"
+    assert payload["intent"]["status"] == "proposal_ready"
+    assert [action["target_field"] for action in payload["suggested_actions"]] == [
+        "active_coils",
+        "end_grinding",
+    ]
+    assert [action["proposed_value"] for action in payload["suggested_actions"]] == [8, "两端磨平"]
+    assert "llm_chat" not in payload
+    assert review["spring_parameters"]["active_coils"]["value"] is None
 
 
 def _assert_context_refresh_detects_missing_or_stale_results() -> None:

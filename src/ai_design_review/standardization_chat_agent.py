@@ -4,6 +4,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from .generation_readiness import assess_generation_readiness
+from .spring_feasibility import assess_parameter_change_set
 from .spring_templates import FIELD_LABELS
 from .standard_knowledge import retrieve_standard_chunks
 from .standardization_chat_llm import StandardizationChatLLMEngine
@@ -30,6 +32,7 @@ EXPLANATION_WORDS = ("为什么", "依据", "怎么", "如何", "怎么算", "�
 CHANGE_WORDS = ("太小", "太大", "偏小", "偏大", "过小", "过大", "低了", "高了", "改", "调整", "设为", "设置", "换成", "增加", "减小", "降低", "提高")
 CONFIRM_WORDS = ("按你说", "就用", "确认", "应用", "采用", "可以")
 FULL_PLAN_WORDS = ("完整标准化方案", "标准化方案", "完整方案", "整体标准化", "推荐进行标准化", "推荐标准化", "根据标准化手册", "根据手册")
+GENERATION_READINESS_WORDS = ("可以重新生图", "能重新生图", "能生成图纸", "可以生成图纸", "还缺哪些参数", "还缺什么参数", "生成参数包", "图纸参数包", "生图参数")
 
 PLAN_TARGET_FIELDS = (
     "standard_no",
@@ -45,6 +48,25 @@ PLAN_TARGET_FIELDS = (
     "perpendicularity",
     "straightness",
 )
+
+NUMERIC_SUPPLEMENT_FIELDS = {
+    "wire_diameter",
+    "outer_diameter",
+    "inner_diameter",
+    "mean_diameter",
+    "free_length",
+    "body_length",
+    "solid_height",
+    "total_coils",
+    "active_coils",
+    "end_coils",
+    "support_coils",
+    "pitch",
+    "spring_rate",
+    "perpendicularity",
+    "straightness",
+    "permanent_set_limit",
+}
 
 
 def standardization_chat_context_needs_refresh(review: dict[str, Any], message: str) -> dict[str, Any]:
@@ -80,11 +102,13 @@ def chat_about_standardization(
     *,
     use_llm: bool = False,
     llm_engine: Any | None = None,
+    supplements: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     text = str(message or "").strip()
     if not text:
         raise ValueError("message is required.")
 
+    raw_supplements = supplements if isinstance(supplements, dict) else {}
     target = _detect_target_field(text)
     intent_type = _detect_intent_type(text)
     missing_context = _missing_standardization_context(review)
@@ -96,7 +120,11 @@ def chat_about_standardization(
             target = pending_target
             intent_type = "change"
 
-    if intent_type == "full_plan" and missing_context:
+    if raw_supplements:
+        result = _handle_batch_supplements(review, raw_supplements)
+    elif intent_type == "generation_readiness":
+        result = _handle_generation_readiness(review)
+    elif intent_type == "full_plan" and missing_context:
         result = _handle_missing_context(review, missing_context)
     elif intent_type == "full_plan":
         result = _handle_full_plan(review, text)
@@ -111,8 +139,10 @@ def chat_about_standardization(
 
     # Missing inputs are deterministic blocking conditions. Ask for them first
     # rather than allowing an LLM to produce a seemingly complete plan.
-    if use_llm and result["intent"]["type"] != "missing_context":
+    if use_llm and not raw_supplements and result["intent"]["type"] not in {"missing_context", "generation_readiness"}:
         result = _run_llm_chat(review, text, result, llm_engine=llm_engine)
+
+    _attach_proposal_feasibility(review, result)
 
     turn = {
         "created_at": _now(),
@@ -122,6 +152,10 @@ def chat_about_standardization(
         "suggested_actions": result.get("suggested_actions", []),
         "references": result.get("references", []),
     }
+    if result.get("proposal_validation"):
+        turn["proposal_validation"] = result["proposal_validation"]
+    if result.get("generation_readiness"):
+        turn["generation_readiness"] = result["generation_readiness"]
     if result.get("llm_chat"):
         turn["llm_chat"] = result["llm_chat"]
     if result.get("diagnostics"):
@@ -169,6 +203,165 @@ def _run_llm_chat(
         "suggested_actions": rule_result.get("suggested_actions", []),
     }
     return llm_result
+
+
+def _attach_proposal_feasibility(review: dict[str, Any], result: dict[str, Any]) -> None:
+    actions = [item for item in result.get("suggested_actions", []) or [] if isinstance(item, dict)]
+    parameter_actions = [item for item in actions if item.get("type") == "propose_parameter_patch"]
+    if not parameter_actions:
+        return
+
+    for action in parameter_actions:
+        validation = assess_parameter_change_set(review, [action])
+        action["validation"] = validation
+        metadata = action.setdefault("metadata", {})
+        metadata["feasibility_status"] = validation["status"]
+        metadata["feasibility_can_apply"] = validation["status"] != "blocked"
+
+    proposal_validation = assess_parameter_change_set(review, parameter_actions)
+    result["proposal_validation"] = proposal_validation
+    if proposal_validation["status"] == "blocked":
+        result["reply"] = (
+            f"{result.get('reply') or ''}\n\n"
+            f"变更预检未通过：{proposal_validation['summary']} 请调整目标值后再确认。"
+        ).strip()
+    elif proposal_validation["status"] == "warning":
+        result["reply"] = (
+            f"{result.get('reply') or ''}\n\n"
+            f"变更预检提示：{proposal_validation['summary']}"
+        ).strip()
+
+
+def _handle_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
+    readiness = assess_generation_readiness(review)
+    missing = readiness.get("missing_fields") or []
+    pending = readiness.get("pending_fields") or []
+    actions = [
+        {
+            "type": "request_missing_field",
+            "target_field": item.get("field"),
+            "target_label": item.get("label"),
+            "reason": item.get("reason"),
+            "status": "need_input",
+            "apply_policy": "manual_input_required",
+        }
+        for item in [*missing, *pending]
+        if item.get("field") and not str(item.get("field")).startswith("technical_requirements.")
+    ]
+    status = readiness.get("status")
+    if status in {"ready", "ready_with_warnings"}:
+        reply = "当前已具备重新生图的确认参数，可在“生图参数包”页导出独立 JSON。"
+        if readiness.get("warnings"):
+            reply += f" 另有 {len(readiness['warnings'])} 条风险提示，请在生图前复核。"
+        intent_status = "ready"
+    else:
+        labels = "、".join(
+            list(dict.fromkeys(str(item.get("label") or item.get("field") or "") for item in [*missing, *pending] if item.get("label") or item.get("field")))
+        )
+        reply = f"当前还不能生成最终图纸参数包：{readiness.get('summary') or '仍有待补充信息。'}"
+        if labels:
+            reply += f" 请补充或确认：{labels}。"
+        intent_status = "need_input"
+    response = _response(
+        reply,
+        intent_type="generation_readiness",
+        target_field=str((missing or pending or [{}])[0].get("field") or ""),
+        target_fields=[str(item.get("field") or "") for item in [*missing, *pending] if item.get("field")],
+        status=intent_status,
+        suggested_actions=actions,
+        affected_fields=["generation_parameters"],
+    )
+    response["generation_readiness"] = readiness
+    return response
+
+
+def _handle_batch_supplements(review: dict[str, Any], supplements: dict[str, Any]) -> dict[str, Any]:
+    actions: list[dict[str, Any]] = []
+    invalid: list[str] = []
+    for raw_target, raw_value in supplements.items():
+        target = str(raw_target or "").strip()
+        if not _supplement_target_exists(review, target):
+            invalid.append(_target_label(target) or target)
+            continue
+        value = _coerce_supplement_value(target, raw_value)
+        if value is None:
+            invalid.append(_target_label(target) or target)
+            continue
+        actions.append(
+            {
+                "type": "propose_parameter_patch",
+                "target_field": target,
+                "target_label": _target_label(target),
+                "current_value": _current_value(review, target),
+                "proposed_value": value,
+                "unit": _target_unit(review, target),
+                "affected_fields": _affected_fields(target),
+                "reason": "用户在缺失参数卡片中批量补充。",
+                "apply_policy": "manual_confirm_required",
+            }
+        )
+
+    if not actions:
+        reply = "没有识别到可用的补充值。请检查本轮填写内容后再提交。"
+        if invalid:
+            reply += f" 未能解析：{'、'.join(dict.fromkeys(invalid))}。"
+        return _response(
+            reply,
+            intent_type="batch_parameter_supplement",
+            target_field="",
+            status="need_clarification",
+        )
+
+    targets = [str(action["target_field"]) for action in actions]
+    labels = _join_labels(targets)
+    reply = (
+        f"已收到本轮 {len(actions)} 项补充：{labels}。"
+        "请核对下方建议；可以逐项应用，也可以一次应用本轮全部建议，随后只会重新标准化一次。"
+    )
+    if invalid:
+        reply += f" 未能解析：{'、'.join(dict.fromkeys(invalid))}。"
+    return _response(
+        reply,
+        intent_type="batch_parameter_supplement",
+        target_field=targets[0],
+        target_fields=targets,
+        status="proposal_ready",
+        suggested_actions=actions,
+        affected_fields=list(dict.fromkeys(field for action in actions for field in action["affected_fields"])),
+        references=_retrieve_plan_references(review, "批量补充标准化参数", targets),
+    )
+
+
+def _supplement_target_exists(review: dict[str, Any], target: str) -> bool:
+    if target.startswith("load_points."):
+        parts = target.split(".")
+        if len(parts) != 3 or parts[2] != "force":
+            return False
+        return any(
+            str(point.get("label") or "").upper() == parts[1].upper()
+            for point in review.get("spring_parameters", {}).get("load_points", []) or []
+            if isinstance(point, dict)
+        )
+    return target in (review.get("spring_parameters") or {})
+
+
+def _coerce_supplement_value(target: str, raw_value: Any) -> Any | None:
+    text = str(raw_value if raw_value is not None else "").strip()
+    if not text:
+        return None
+    if target.endswith("accuracy_grade"):
+        grade = re.search(r"([123])\s*级", text)
+        return f"{grade.group(1)}级" if grade else None
+    if target == "end_grinding":
+        if "不磨" in text:
+            return "不磨"
+        if "磨" in text:
+            return "两端磨平"
+        return text
+    if target in NUMERIC_SUPPLEMENT_FIELDS or target.startswith("load_points."):
+        matched = re.search(r"-?\d+(?:\.\d+)?", text)
+        return _to_number(matched.group(0)) if matched else None
+    return text
 
 
 def _missing_standardization_context(review: dict[str, Any]) -> list[dict[str, Any]]:
@@ -324,8 +517,8 @@ def _handle_change(review: dict[str, Any], message: str, target: str | None) -> 
     }
     reply = (
         f"我识别到你想把{_target_label(target)}从 {_format_current_value(current_value)} 调整为 "
-        f"{_format_value(value, action['unit'])}。第一版对话 Agent 暂不自动写回参数。"
-        f"如果后续确认应用，需要重新计算：{_join_labels(affected)}。"
+        f"{_format_value(value, action['unit'])}。已生成可审阅的修改建议，不会自动写回参数。"
+        f"确认应用后会重新计算：{_join_labels(affected)}。"
     )
     if references:
         reply += " 我也找到了相关标准依据，后续重新标准化会继续引用这些条款。"
@@ -367,7 +560,7 @@ def _handle_full_plan(review: dict[str, Any], message: str) -> dict[str, Any]:
 
 def _handle_confirm(review: dict[str, Any], message: str, target: str | None) -> dict[str, Any]:
     return _response(
-        "我理解你是在确认前面的建议。当前第一版标准化对话不会自动写回尺寸，请在结构化尺寸表里手动修改对应数值，然后点击“重新标准化”。下一步可以再做“确认后应用修改”的安全写回。",
+        "我理解你是在确认前面的建议。请点击建议卡片上的“应用建议”或“应用本轮全部建议”；系统会写回已确认的字段并自动重新标准化。",
         intent_type="confirmation",
         target_field=target or "",
         status="manual_apply_required",
@@ -419,6 +612,8 @@ def _response(
 
 def _detect_intent_type(text: str) -> str:
     normalized = text.lower()
+    if any(word in text for word in GENERATION_READINESS_WORDS):
+        return "generation_readiness"
     if any(word in text for word in FULL_PLAN_WORDS):
         return "full_plan"
     if any(word in text for word in EXPLANATION_WORDS):
