@@ -26,7 +26,7 @@ from .io_utils import project_path, read_json, write_json
 from .llm_standardization_engine import LLMStandardizationEngine, llm_standardization_runtime_status
 from .preprocessing import IMAGE_EXTENSIONS, probe_file, render_pdf_with_pdftoppm
 from .standard_knowledge import retrieve_standard_chunks
-from .standardization_chat_agent import chat_about_standardization
+from .standardization_chat_agent import chat_about_standardization, standardization_chat_context_needs_refresh
 from .standardization_chat_llm import standardization_chat_llm_runtime_status
 from .workflow import DrawingReviewWorkflow, apply_standardization_to_review
 
@@ -410,7 +410,9 @@ async def standardization_chat_payload(payload: dict[str, Any] | None = Body(Non
     if not message:
         raise HTTPException(status_code=400, detail="standardization chat requires a message.")
     try:
-        return chat_about_standardization(review, message, use_llm=bool(body.get("use_llm")))
+        context = await _prepare_standardization_chat_context(review, message)
+        result = chat_about_standardization(review, message, use_llm=bool(body.get("use_llm")))
+        return _attach_standardization_chat_context(result, context)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -432,9 +434,11 @@ async def standardization_chat_existing_review(
             raise HTTPException(status_code=404, detail="Review not found.")
         review = read_json(review_path)
     try:
+        context = await _prepare_standardization_chat_context(review, message)
         result = chat_about_standardization(review, message, use_llm=bool(body.get("use_llm")))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result = _attach_standardization_chat_context(result, context)
     write_json(review_path, result["review"])
     write_json(job_dir / "standardization_chat.json", {"turns": result["review"].get("standardization_chat", [])})
     return {
@@ -506,6 +510,36 @@ async def _run_standardization_stage(
             "message": "当前已有本地规则标准化结果，或未选择标准，未调用 LLM/RAG 标准化。",
         }
     return llm_standardization_payload
+
+
+async def _prepare_standardization_chat_context(review: dict[str, Any], message: str) -> dict[str, Any]:
+    context = standardization_chat_context_needs_refresh(review, message)
+    if not context["required"]:
+        return {**context, "status": "current", "warnings": []}
+
+    warnings: list[str] = []
+    await _run_standardization_stage(
+        review,
+        warnings,
+        use_llm_standardization=False,
+    )
+    review["derived_parameters_stale"] = False
+    review["standardization_apply_history"] = []
+    return {
+        **context,
+        "status": "refreshed",
+        "warnings": warnings,
+        "selected_standard": (review.get("standard_selection") or {}).get("selected_standard"),
+        "result_count": len(review.get("standardization_results") or []),
+    }
+
+
+def _attach_standardization_chat_context(result: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    result["standardization_context"] = context
+    turn = result.get("turn")
+    if isinstance(turn, dict):
+        turn["standardization_context"] = context
+    return result
 
 
 def _llm_standardization_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:

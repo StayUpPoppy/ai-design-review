@@ -175,22 +175,7 @@ class DrawingReviewWorkflow:
         return parameters
 
     def _apply_company_default_accuracy(self, parameters: dict[str, Any], spring_type: str) -> None:
-        if spring_type != "compression_spring":
-            return
-        if any(parameters.get(field, {}).get("value") not in (None, "") for field in ACCURACY_GRADE_FIELDS):
-            return
-        if "accuracy_grade" not in parameters:
-            return
-        parameters["accuracy_grade"] = {
-            **parameters["accuracy_grade"],
-            "value": "2级",
-            "source": ["company_default"],
-            "evidence": "图纸未标注精度等级，按公司默认二级精度生成标准化建议。",
-            "confidence": 0.6,
-            "need_human_review": True,
-            "default_source": "company_default",
-            "default_reason": "图纸未标注精度等级，按公司默认二级精度生成标准化建议。",
-        }
+        _apply_company_default_accuracy(parameters, spring_type)
 
     def _build_spring_features(self, fields: dict[str, dict[str, Any]], spring_type: str) -> dict[str, Any]:
         features = {
@@ -396,9 +381,11 @@ def apply_standardization_to_review(
 ) -> dict[str, Any]:
     spring_type = review.get("drawing_summary", {}).get("spring_type")
     spring_type = spring_type or review.get("spring_template", {}).get("spring_type") or "unknown_spring"
+    spring_parameters = review.get("spring_parameters") or {}
+    _apply_company_default_accuracy(spring_parameters, spring_type)
     standardization = standardize_spring(
         spring_type,
-        review.get("spring_parameters") or {},
+        spring_parameters,
         spring_features=review.get("spring_features") or {},
         standard_selection_inference=standard_selection_inference,
         technical_requirements=review.get("technical_requirements") or [],
@@ -419,3 +406,22 @@ def apply_standardization_to_review(
         review.setdefault("drawing_summary", {})
         review["drawing_summary"]["summary"] = "已生成标准化建议，需要人工确认后再导出。"
     return standardization
+
+
+def _apply_company_default_accuracy(parameters: dict[str, Any], spring_type: str) -> None:
+    if spring_type != "compression_spring":
+        return
+    if any(parameters.get(field, {}).get("value") not in (None, "") for field in ACCURACY_GRADE_FIELDS):
+        return
+    if "accuracy_grade" not in parameters:
+        return
+    parameters["accuracy_grade"] = {
+        **parameters["accuracy_grade"],
+        "value": "2级",
+        "source": ["company_default"],
+        "evidence": "图纸未标注精度等级，按公司默认二级精度生成标准化建议。",
+        "confidence": 0.6,
+        "need_human_review": True,
+        "default_source": "company_default",
+        "default_reason": "图纸未标注精度等级，按公司默认二级精度生成标准化建议。",
+    }

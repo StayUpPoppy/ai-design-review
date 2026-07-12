@@ -14,6 +14,7 @@ def main() -> None:
     _assert_derived_parameters()
     _assert_gbt_1239_2_suggestions()
     _assert_missing_grade_requires_human_review()
+    _assert_need_context_exposes_missing_fields()
     _assert_workflow_defaults_accuracy_and_standardizes()
     _assert_workflow_can_defer_standardization()
     print("compression standardization test passed")
@@ -81,6 +82,17 @@ def _assert_missing_grade_requires_human_review() -> None:
     assert free_length["status"] == "need_context"
     assert free_length["need_human_review"] is True
     assert all("2级" not in str(item.get("basis", "")) for item in results if item["status"] == "need_context")
+
+
+def _assert_need_context_exposes_missing_fields() -> None:
+    parameters = _base_parameters()
+    parameters.pop("active_coils")
+    parameters.pop("end_grinding")
+    results = standardize_compression_spring(parameters)["standardization_results"]
+    by_rule = {item["rule_id"]: item for item in results}
+    assert by_rule["GBT1239.2-LOAD"]["metadata"]["missing_fields"] == ["active_coils"]
+    assert by_rule["GBT1239.2-STIFF"]["metadata"]["missing_fields"] == ["active_coils"]
+    assert by_rule["GBT1239.2-SOLID"]["metadata"]["missing_fields"] == ["end_grinding"]
 
 
 def _assert_workflow_defaults_accuracy_and_standardizes() -> None:

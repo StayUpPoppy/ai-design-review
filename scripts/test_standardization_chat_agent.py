@@ -5,7 +5,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_design_review.standardization_chat_agent import chat_about_standardization
+from ai_design_review.standardization_chat_agent import (
+    chat_about_standardization,
+    standardization_chat_context_needs_refresh,
+)
 
 
 def main() -> None:
@@ -13,6 +16,9 @@ def main() -> None:
     _assert_asks_for_missing_target_value()
     _assert_proposes_patch_without_applying()
     _assert_detects_full_plan_without_hardcoded_actions()
+    _assert_requests_missing_context_before_full_plan()
+    _assert_uses_pending_question_to_parse_a_direct_value()
+    _assert_context_refresh_detects_missing_or_stale_results()
     _assert_full_plan_timeout_fallback_is_explicit()
     print("standardization chat agent test passed")
 
@@ -54,7 +60,62 @@ def _assert_detects_full_plan_without_hardcoded_actions() -> None:
     assert payload["intent"]["status"] == "manual_apply_required"
     assert "outer_diameter" in payload["intent"]["target_fields"]
     assert payload["suggested_actions"] == []
-    assert "LLM理解" in payload["reply"]
+    assert "当前参数" in payload["reply"]
+
+
+def _assert_requests_missing_context_before_full_plan() -> None:
+    review = _review()
+    review["standardization_results"] = [
+        {
+            "target_field": "load_points",
+            "rule_id": "GBT1239.2-LOAD",
+            "basis": "缺少载荷精度等级或有效圈数，无法计算指定高度负荷极限偏差。",
+            "status": "need_context",
+            "metadata": {"missing_fields": ["active_coils"]},
+        },
+        {
+            "target_field": "solid_height",
+            "rule_id": "GBT1239.2-SOLID",
+            "basis": "缺少端面磨削方式，无法选择压并高度参考公式。",
+            "status": "need_context",
+            "metadata": {"missing_fields": ["end_grinding"]},
+        },
+    ]
+    payload = chat_about_standardization(review, "请根据标准化手册推荐完整标准化方案", use_llm=True)
+    assert payload["intent"]["type"] == "missing_context"
+    assert payload["intent"]["status"] == "need_input"
+    assert [action["target_field"] for action in payload["suggested_actions"]] == ["active_coils", "end_grinding"]
+    assert all(action["type"] == "request_missing_field" for action in payload["suggested_actions"])
+    assert "llm_chat" not in payload
+
+
+def _assert_uses_pending_question_to_parse_a_direct_value() -> None:
+    review = _review()
+    review["standardization_chat"] = [
+        {
+            "suggested_actions": [
+                {"type": "request_missing_field", "target_field": "active_coils", "status": "need_input"},
+            ]
+        }
+    ]
+    payload = chat_about_standardization(review, "8")
+    assert payload["intent"]["type"] == "parameter_change_request"
+    assert payload["intent"]["target_field"] == "active_coils"
+    assert payload["suggested_actions"][0]["proposed_value"] == 8
+
+
+def _assert_context_refresh_detects_missing_or_stale_results() -> None:
+    missing = _review()
+    missing["standardization_results"] = []
+    context = standardization_chat_context_needs_refresh(missing, "请根据标准化手册推荐完整标准化方案")
+    assert context["required"] is True
+    assert "missing_standardization_results" in context["reasons"]
+
+    stale = _review()
+    stale["standardization_results"][0]["status"] = "stale"
+    context = standardization_chat_context_needs_refresh(stale, "外径改成22mm")
+    assert context["required"] is True
+    assert "stale_parameters_or_results" in context["reasons"]
 
 
 def _assert_full_plan_timeout_fallback_is_explicit() -> None:
@@ -72,7 +133,7 @@ def _assert_full_plan_timeout_fallback_is_explicit() -> None:
     assert payload["intent"]["type"] == "full_standardization_plan"
     assert payload["suggested_actions"] == []
     assert payload["llm_chat"]["status"] == "failed"
-    assert "没有生成多字段方案" in payload["reply"]
+    assert "自动更新本地标准化建议" in payload["reply"]
 
 
 def _review() -> dict:

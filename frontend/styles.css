@@ -405,6 +405,53 @@ button:disabled {
   font-size: 12px;
 }
 
+.standardization-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+  border: 1px solid #dbe7f7;
+  border-radius: 8px;
+  background: #f7fbff;
+  padding: 8px 10px;
+}
+
+.standardization-toolbar > span {
+  color: #53657d;
+  font-size: 12px;
+}
+
+.standardization-toolbar > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.standardization-toolbar button {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.secondary-action {
+  border-color: #ced9e8;
+  background: #fff;
+  color: #52647b;
+}
+
+.standardization-stale-notice {
+  margin-bottom: 9px;
+  border: 1px solid #ffd7a8;
+  border-radius: 8px;
+  background: #fff8ed;
+  color: #8a4b00;
+  padding: 7px 9px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .standardization-chat-block {
   display: grid;
   gap: 10px;
@@ -499,6 +546,39 @@ button:disabled {
   border-radius: 8px;
   background: #fff;
   padding: 8px;
+}
+
+.standardization-chat-missing-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid #f0d7a9;
+  border-radius: 8px;
+  background: #fffaf0;
+  padding: 9px 10px;
+}
+
+.standardization-chat-missing-field > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.standardization-chat-missing-field strong {
+  color: #8a5a15;
+  font-size: 12px;
+}
+
+.standardization-chat-missing-field small {
+  color: #7a6a51;
+  overflow-wrap: anywhere;
+}
+
+.standardization-chat-missing-field button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 .standardization-chat-action > div {
@@ -917,7 +997,8 @@ textarea {
 .normalization-status.need_context,
 .normalization-status.need_review,
 .normalization-status.rules_pending,
-.normalization-status.not_applicable {
+.normalization-status.not_applicable,
+.normalization-status.stale {
   border-color: #ffd7a8;
   background: #fff8ed;
   color: #9a4f00;
@@ -1333,7 +1414,8 @@ textarea {
 }
 
 .compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-batch,
-.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-action {
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-action,
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-missing-field {
   border-color: #edf1f6;
   border-radius: 12px;
   background: #fafbfd;
@@ -1345,6 +1427,7 @@ textarea {
 }
 
 .compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-action button,
+.compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-missing-field button,
 .compare-tab-panel[data-compare-panel="assistant"] .standardization-chat-batch button {
   width: fit-content;
 }
@@ -1690,8 +1773,22 @@ textarea {
   .derived-row,
   .standardization-row,
   .standardization-chat-batch,
-  .standardization-chat-action {
+  .standardization-chat-action,
+  .standardization-chat-missing-field {
     grid-template-columns: 1fr;
+  }
+
+  .standardization-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .standardization-toolbar > div {
+    justify-content: stretch;
+  }
+
+  .standardization-toolbar button {
+    flex: 1 1 0;
   }
 
   .compare-layout {

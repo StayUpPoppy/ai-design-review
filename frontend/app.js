@@ -521,6 +521,8 @@ async function runStandardization(messageId = state.activeReviewMessageId) {
       state.lastJob = { ...(state.lastJob || {}), ...payload };
     }
     setReview(normalizeReview(payload.review), state.imageUrl);
+    state.review.standardization_apply_history = [];
+    state.review.derived_parameters_stale = false;
     const context = getReviewContext(messageId);
     if (context) {
       context.review = state.review;
@@ -1099,7 +1101,7 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
         <span class="sr-only">${escapeHtml(label)}公差</span>
         <input data-role="tolerance" aria-label="${escapeHtml(label)}公差" value="${escapeHtml(formatTolerance(param))}">
       </label>
-      <button class="confirm-button${param.need_human_review ? "" : " confirmed"}" type="button" data-role="confirm">${param.need_human_review ? "确认" : "已确认"}</button>
+      <button class="confirm-button${param.need_human_review ? "" : " confirmed"}" type="button" data-role="confirm">${confirmationActionLabel(param)}</button>
     </div>
   `;
 }
@@ -1127,7 +1129,7 @@ function loadPointRowHtml(point, index, review = state.review) {
         <input data-role="load-tolerance" aria-label="${escapeHtml(label)}&#20844;&#24046;" value="${escapeHtml(tolerance.value)}" placeholder="${escapeHtml(tolerance.placeholder)}" title="${escapeHtml(tolerance.title)}">
         ${tolerance.note ? `<small>${escapeHtml(tolerance.note)}</small>` : ""}
       </label>
-      <button class="confirm-button${point.need_human_review ? "" : " confirmed"}" type="button" data-role="confirm">${point.need_human_review ? "确认" : "已确认"}</button>
+      <button class="confirm-button${point.need_human_review ? "" : " confirmed"}" type="button" data-role="confirm">${confirmationActionLabel(point)}</button>
     </div>
   `;
 }
@@ -1188,8 +1190,15 @@ function formatLoadPointAbsoluteTolerance(upper, lower) {
   return `${upper ?? ""}/${lower ?? ""}N`;
 }
 
+function confirmationActionLabel(item) {
+  return item?.need_human_review ? "确认" : "修改";
+}
+
 function renderDerivedParametersHtml(review) {
   const derived = review.derived_parameters || {};
+  const staleNotice = review.derived_parameters_stale
+    ? `<div class="standardization-stale-notice">参数已修改，派生参数和标准化建议待重新计算。</div>`
+    : "";
   const rows = Object.entries(derived)
     .filter(([, value]) => value && typeof value === "object" && !Array.isArray(value))
     .map(([field, item]) => `
@@ -1211,13 +1220,15 @@ function renderDerivedParametersHtml(review) {
     return `
       <section class="review-block">
         <div class="block-head"><h2>派生参数</h2><span>0 项</span></div>
+        ${staleNotice}
         <div class="empty-line">暂未生成中径、旋绕比、细长比或载荷变形量。</div>
       </section>
     `;
   }
   return `
     <section class="review-block">
-      <div class="block-head"><h2>派生参数</h2><span>${Object.keys(derived).length} 组</span></div>
+      <div class="block-head"><h2>派生参数</h2><span>${review.derived_parameters_stale ? "待重新计算" : `${Object.keys(derived).length} 组`}</span></div>
+      ${staleNotice}
       <div class="derived-list">${rows}${loadRows}</div>
     </section>
   `;
@@ -1225,6 +1236,9 @@ function renderDerivedParametersHtml(review) {
 
 function renderStandardizationHtml(review) {
   const results = Array.isArray(review.standardization_results) ? review.standardization_results : [];
+  const batchPlan = standardizationBatchPlan(review);
+  const canUndo = Boolean(lastStandardizationApplyHistory(review));
+  const staleCount = results.filter((item) => item.status === "stale").length;
   if (!results.length) {
     return `
       <section class="review-block">
@@ -1236,6 +1250,13 @@ function renderStandardizationHtml(review) {
   return `
     <section class="review-block">
       <div class="block-head"><h2>标准化建议</h2><span>${results.length} 项</span></div>
+      <div class="standardization-toolbar">
+        <span>${staleCount ? `参数已修改，${staleCount} 项建议已过期，请重新标准化` : (batchPlan.items.length ? `可一键应用 ${batchPlan.items.length} 项建议` : "暂无可批量应用的建议")}${batchPlan.conflicts.length ? `；${batchPlan.conflicts.length} 个字段存在多方案` : ""}</span>
+        <div>
+          <button type="button" data-action="apply-standardization-batch" ${batchPlan.items.length ? "" : "disabled"}>应用全部可用建议</button>
+          <button type="button" class="secondary-action" data-action="undo-standardization-batch" ${canUndo ? "" : "disabled"}>撤销上次应用</button>
+        </div>
+      </div>
       <div class="standardization-list">
         ${results.map((item, index) => `
           <div class="standardization-row" data-kind="standardization" data-index="${index}">
@@ -1248,12 +1269,39 @@ function renderStandardizationHtml(review) {
               <small>${escapeHtml(item.standard_no || "")}</small>
             </div>
             <p>${escapeHtml(item.basis || "")}</p>
-            <button type="button" data-role="confirm-standard" ${canConfirmStandardization(item) ? "" : "disabled"}>确认建议</button>
+            <button type="button" data-role="confirm-standard" ${canConfirmStandardization(item) ? "" : "disabled"}>${item.status === "human_confirmed" ? "已应用" : "确认建议"}</button>
           </div>
         `).join("")}
       </div>
     </section>
   `;
+}
+
+function standardizationBatchPlan(review) {
+  const groups = new Map();
+  (review?.standardization_results || []).forEach((item, index) => {
+    if (!canConfirmStandardization(item)) return;
+    const target = String(item.target_field || "").trim();
+    if (!target) return;
+    const group = groups.get(target) || [];
+    group.push({ item, index });
+    groups.set(target, group);
+  });
+  const items = [];
+  const conflicts = [];
+  groups.forEach((group, target) => {
+    if (group.length === 1) {
+      items.push(group[0]);
+    } else {
+      conflicts.push({ target, label: targetFieldLabel(target), count: group.length });
+    }
+  });
+  return { items, conflicts };
+}
+
+function lastStandardizationApplyHistory(review) {
+  const history = review?.standardization_apply_history || [];
+  return history.length ? history[history.length - 1] : null;
 }
 
 function renderStandardizationChatHtml(review) {
@@ -1282,10 +1330,10 @@ function renderStandardizationChatHtml(review) {
     <section class="review-block standardization-chat-block">
       <div class="block-head"><h2>标准化对话</h2><span>${turns.length} 轮</span></div>
       <div class="standardization-chat-list">
-        ${rows || `<div class="standardization-chat-empty">你好，可以问我标准化依据、参数调整建议，或输入“请根据标准化手册推荐完整标准化方案”。</div>`}
+        ${rows || `<div class="standardization-chat-empty">直接输入“请根据标准化手册推荐完整标准化方案”，或提出参数、公差调整需求；我会按当前参数自动准备标准化依据。</div>`}
       </div>
       <form class="standardization-chat-form" data-action="standardization-chat">
-        <input data-role="standardization-chat-input" type="text" placeholder="发消息，询问标准化依据或修改参数...">
+        <input data-role="standardization-chat-input" type="text" placeholder="直接要求按手册标准化，或修改参数...">
         <button type="submit" ${chatBusyAttr}>${state.standardizationChatBusy ? "生成中" : "发送"}</button>
       </form>
     </section>
@@ -1306,6 +1354,9 @@ function renderStandardizationChatIntentMetaHtml(turn) {
     parts.push("LLM/RAG");
   } else if (turn.llm_chat?.status === "failed") {
     parts.push("LLM降级");
+  }
+  if (turn.standardization_context?.status === "refreshed") {
+    parts.push("已按当前参数更新标准化");
   }
   return parts.length ? `<small>${escapeHtml(parts.join(" · "))}</small>` : "";
 }
@@ -1333,6 +1384,9 @@ function renderStandardizationChatActionsHtml(turn, turnIndex) {
 }
 
 function renderStandardizationChatActionHtml(action, turnIndex, actionIndex) {
+  if (action?.type === "request_missing_field") {
+    return renderStandardizationChatMissingFieldHtml(action);
+  }
   const target = String(action.target_field || "");
   const canApply = canApplyStandardizationChatAction(action);
   const status = action.status === "applied" ? "已应用" : "待确认";
@@ -1349,6 +1403,22 @@ function renderStandardizationChatActionHtml(action, turnIndex, actionIndex) {
         ${action.reason ? `<small>${escapeHtml(action.reason)}</small>` : ""}
       </div>
       <button type="button" data-role="apply-chat-action" ${canApply ? "" : "disabled"}>${escapeHtml(status === "已应用" ? status : "应用建议")}</button>
+    </div>
+  `;
+}
+
+function renderStandardizationChatMissingFieldHtml(action) {
+  const target = String(action?.target_field || "");
+  const label = action?.target_label || targetFieldLabel(target) || "缺失字段";
+  const ruleIds = Array.isArray(action?.rule_ids) ? action.rule_ids.filter(Boolean) : [];
+  return `
+    <div class="standardization-chat-missing-field" data-kind="chat_missing_field" data-field="${escapeHtml(target)}">
+      <div>
+        <strong>需要补充：${escapeHtml(label)}</strong>
+        ${action?.reason ? `<small>${escapeHtml(action.reason)}</small>` : ""}
+        ${ruleIds.length ? `<small>关联规则：${escapeHtml(ruleIds.join("、"))}</small>` : ""}
+      </div>
+      <button type="button" data-role="focus-missing-field">去填写</button>
     </div>
   `;
 }
@@ -1466,6 +1536,7 @@ function standardizationStatusLabel(status) {
     rules_pending: "规则待接入",
     unmapped: "未映射",
     human_confirmed: "人工确认",
+    stale: "已过期，需重算",
   };
   return labels[status] || "待确认";
 }
@@ -1556,6 +1627,7 @@ function featureValueLabel(field, value) {
 }
 
 function canConfirmStandardization(item) {
+  if (item?.status === "human_confirmed" || item?.status === "stale") return false;
   if (item?.metadata?.target_field_valid === false) return false;
   if (item?.metadata?.target_field_error) return false;
   return item?.status === "suggested" || item?.status === "llm_suggested" || item?.target_field === "standard_no";
@@ -1610,46 +1682,47 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     row.querySelector('[data-role="value"]').addEventListener("change", (event) => {
       activateReviewContext(messageId);
       param.value = parseValue(event.target.value, param.value);
-      markParamEdited(param);
+      markParamEdited(param, field);
       syncBubbleValue(field, param.value);
       updateLatestReviewMessage();
     });
     row.querySelector('[data-role="tolerance"]').addEventListener("change", (event) => {
       activateReviewContext(messageId);
       applyTolerance(param, event.target.value);
-      markParamEdited(param);
+      markParamEdited(param, field);
       updateLatestReviewMessage();
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
-      confirmParam(param, field);
+      toggleParamConfirmation(param, field);
       updateLatestReviewMessage();
     });
   });
 
   root.querySelectorAll('[data-kind="load_point"]').forEach((row) => {
     const point = review.spring_parameters.load_points[Number(row.dataset.index)];
+    const pointField = `load_points.${point?.label || `F${Number(row.dataset.index) + 1}`}`;
     row.querySelector('[data-role="height"]').addEventListener("change", (event) => {
       activateReviewContext(messageId);
       point.height = parseValue(event.target.value, point.height);
-      markParamEdited(point);
+      markParamEdited(point, pointField, { confirmationField: `load_points_${row.dataset.index}` });
       updateLatestReviewMessage();
     });
     row.querySelector('[data-role="force"]').addEventListener("change", (event) => {
       activateReviewContext(messageId);
       point.force = parseValue(event.target.value, point.force);
-      markParamEdited(point);
+      markParamEdited(point, pointField, { confirmationField: `load_points_${row.dataset.index}` });
       updateLatestReviewMessage();
     });
     row.querySelector('[data-role="load-tolerance"]').addEventListener("change", (event) => {
       activateReviewContext(messageId);
       applyLoadPointTolerance(point, event.target.value);
-      markParamEdited(point);
+      markParamEdited(point, pointField, { confirmationField: `load_points_${row.dataset.index}` });
       updateLatestReviewMessage();
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
-      confirmParam(point, `load_point_${row.dataset.index}`);
+      toggleParamConfirmation(point, `load_points_${row.dataset.index}`, { invalidationField: pointField });
       updateLatestReviewMessage();
     });
   });
@@ -1658,9 +1731,22 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     const item = review.standardization_results[Number(row.dataset.index)];
     row.querySelector('[data-role="confirm-standard"]')?.addEventListener("click", () => {
       activateReviewContext(messageId);
-      applyStandardizationResult(item);
-      updateLatestReviewMessage("已确认标准化建议，请继续核对导出数据。");
+      const applied = applyStandardizationResults([item], { mode: "single" });
+      updateLatestReviewMessage(applied.count ? "已应用标准化建议，请继续核对导出数据。" : "该建议当前无法应用，请重新标准化后再试。");
     });
+  });
+
+  root.querySelector('[data-action="apply-standardization-batch"]')?.addEventListener("click", () => {
+    activateReviewContext(messageId);
+    const plan = standardizationBatchPlan(state.review);
+    const applied = applyStandardizationResults(plan.items.map(({ item }) => item), { mode: "batch" });
+    updateLatestReviewMessage(applied.count ? `已应用 ${applied.count} 项标准化建议，可继续修改或导出。` : "暂无可批量应用的标准化建议。");
+  });
+
+  root.querySelector('[data-action="undo-standardization-batch"]')?.addEventListener("click", () => {
+    activateReviewContext(messageId);
+    const reverted = undoLastStandardizationApplication();
+    updateLatestReviewMessage(reverted ? `已撤销上次应用的 ${reverted.applied_count} 项标准化建议。` : "没有可撤销的标准化应用记录。");
   });
 
   root.querySelector('[data-action="confirm-standard-selection"]')?.addEventListener("click", () => {
@@ -1678,6 +1764,13 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       if (!text) return;
       input.value = "";
       runStandardizationChat(text, messageId, true);
+    });
+  });
+
+  root.querySelectorAll('[data-kind="chat_missing_field"]').forEach((row) => {
+    row.querySelector('[data-role="focus-missing-field"]')?.addEventListener("click", () => {
+      activateReviewContext(messageId);
+      focusMissingStandardizationField(row.dataset.field || "", messageId);
     });
   });
 
@@ -1768,9 +1861,9 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
 }
 
 function applyStandardizationResult(item) {
-  if (!item) return;
-  if (item.metadata?.target_field_valid === false) return;
-  if (item.metadata?.target_field_error) return;
+  if (!item) return false;
+  if (item.metadata?.target_field_valid === false) return false;
+  if (item.metadata?.target_field_error) return false;
   state.review.standardization_results ||= [];
   state.review.spring_parameters ||= {};
   const target = String(item.target_field || "");
@@ -1780,14 +1873,13 @@ function applyStandardizationResult(item) {
     const point = (state.review.spring_parameters.load_points || []).find((candidate) => {
       return String(candidate.label || "") === label;
     });
-    if (point) {
-      point.load_tolerance_upper = item.suggested_tolerance_upper;
-      point.load_tolerance_lower = item.suggested_tolerance_lower;
-      if (point.force && item.suggested_tolerance_upper != null) {
-        point.load_tolerance_percent = Number(((Number(item.suggested_tolerance_upper) / Number(point.force)) * 100).toFixed(3));
-      }
-      confirmParam(point, `standardization_${target}`);
+    if (!point) return false;
+    point.load_tolerance_upper = item.suggested_tolerance_upper;
+    point.load_tolerance_lower = item.suggested_tolerance_lower;
+    if (point.force && item.suggested_tolerance_upper != null) {
+      point.load_tolerance_percent = Number(((Number(item.suggested_tolerance_upper) / Number(point.force)) * 100).toFixed(3));
     }
+    confirmParam(point, `standardization_${target}`);
   } else if (target) {
     const meta = getFieldMeta(target, state.review);
     const param = state.review.spring_parameters[target] || blankParam(meta.unit);
@@ -1812,7 +1904,50 @@ function applyStandardizationResult(item) {
     value: item.suggested_value ?? null,
     confirmed_at: new Date().toISOString(),
     rule_id: item.rule_id,
+    target_field: target,
   };
+  return true;
+}
+
+function applyStandardizationResults(items, options = {}) {
+  const candidates = (Array.isArray(items) ? items : [items]).filter((item) => canConfirmStandardization(item));
+  if (!candidates.length) return { count: 0, history_id: null };
+  const before = {
+    spring_parameters: structuredClone(state.review.spring_parameters || {}),
+    standardization_results: structuredClone(state.review.standardization_results || []),
+    manual_confirmations: structuredClone(state.review.manual_confirmations || {}),
+  };
+  const appliedItems = candidates.filter((item) => applyStandardizationResult(item));
+  if (!appliedItems.length) return { count: 0, history_id: null };
+  state.review.standardization_apply_history ||= [];
+  const historyId = `standardization_apply_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  state.review.standardization_apply_history.push({
+    id: historyId,
+    mode: options.mode || "single",
+    applied_at: new Date().toISOString(),
+    applied_count: appliedItems.length,
+    targets: appliedItems.map((item) => String(item.target_field || "")),
+    before,
+  });
+  return { count: appliedItems.length, history_id: historyId };
+}
+
+function undoLastStandardizationApplication() {
+  const history = state.review?.standardization_apply_history || [];
+  const last = history.pop();
+  if (!last?.before) return null;
+  state.review.spring_parameters = structuredClone(last.before.spring_parameters || {});
+  state.review.standardization_results = structuredClone(last.before.standardization_results || []);
+  state.review.manual_confirmations = structuredClone(last.before.manual_confirmations || {});
+  state.review.confirmation_history ||= [];
+  state.review.confirmation_history.push({
+    event: "standardization_application_reverted",
+    history_id: last.id,
+    reverted_at: new Date().toISOString(),
+    applied_count: last.applied_count,
+    targets: last.targets,
+  });
+  return last;
 }
 
 function standardizationChatConstraints(turn) {
@@ -2276,6 +2411,29 @@ function closeCompareOverlay() {
   compareOverlay.hidden = true;
 }
 
+function focusMissingStandardizationField(field, messageId = state.activeReviewMessageId) {
+  const target = String(field || "").trim();
+  if (!target || !state.review) return;
+  if (messageId) activateReviewContext(messageId);
+  state.compareTab = "parameters";
+  if (!state.compareOpen) {
+    openCompareOverlay(messageId);
+  } else {
+    renderCompareOverlay();
+  }
+  requestAnimationFrame(() => {
+    const row = Array.from(compareOverlay.querySelectorAll('[data-kind="param"]'))
+      .find((item) => item.dataset.field === target);
+    if (!row) return;
+    const advanced = row.closest("details");
+    if (advanced) advanced.open = true;
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+    const input = row.querySelector('[data-role="value"]');
+    input?.focus({ preventScroll: true });
+    input?.select();
+  });
+}
+
 function createCompareOverlay() {
   const overlay = document.createElement("section");
   overlay.id = "compareOverlay";
@@ -2701,7 +2859,10 @@ function normalizeReview(review) {
     references: [],
   };
   cloned.derived_parameters ||= {};
+  cloned.derived_parameters_stale ??= false;
   cloned.standardization_results ||= [];
+  cloned.standardization_apply_history ||= [];
+  cloned.confirmation_history ||= [];
   cloned.standardization_chat ||= [];
   cloned.agent_actions ||= [];
   cloned.technical_requirements ||= [];
@@ -2803,11 +2964,8 @@ function confirmAllFields() {
   (state.review.technical_requirements || []).forEach((item, index) => {
     confirmParam(item, `technical_${index}`);
   });
-  (state.review.standardization_results || []).forEach((item) => {
-    if (canConfirmStandardization(item)) {
-      applyStandardizationResult(item);
-    }
-  });
+  const standardizationPlan = standardizationBatchPlan(state.review);
+  applyStandardizationResults(standardizationPlan.items.map(({ item }) => item), { mode: "confirm_all" });
   if (state.review.standard_selection?.need_human_review) {
     confirmStandardSelection();
   }
@@ -2827,7 +2985,7 @@ function acknowledgeScannedInput() {
 function confirmParam(param, field) {
   param.need_human_review = false;
   param.confidence = Math.max(Number(param.confidence) || 0, 0.99);
-  param.source = Array.from(new Set(["human_confirmed", ...(param.source || [])]));
+  param.source = Array.from(new Set(["human_confirmed", ...sourceValues(param.source)]));
   state.review.manual_confirmations[field] = {
     confirmed: true,
     value: param.value ?? param.content ?? null,
@@ -2835,9 +2993,87 @@ function confirmParam(param, field) {
   };
 }
 
-function markParamEdited(param) {
+function toggleParamConfirmation(param, field, options = {}) {
+  if (param?.need_human_review) {
+    confirmParam(param, field);
+    return "confirmed";
+  }
   param.need_human_review = true;
-  param.source = Array.from(new Set(["human_edited", ...(param.source || [])]));
+  param.source = Array.from(new Set(["human_reopened", ...sourceValues(param.source)]));
+  revokeManualConfirmations(options.invalidationField || field, "reopened_for_edit");
+  return "reopened";
+}
+
+function markParamEdited(param, field = "", options = {}) {
+  param.need_human_review = true;
+  param.source = Array.from(new Set(["human_edited", ...sourceValues(param.source)]));
+  if (!field) return;
+  if (options.confirmationField) {
+    revokeManualConfirmations(options.confirmationField, "value_edited");
+  }
+  revokeManualConfirmations(field, "value_edited");
+  invalidateStandardizationResults(field);
+}
+
+function sourceValues(source) {
+  if (Array.isArray(source)) return source;
+  return source ? [source] : [];
+}
+
+function revokeManualConfirmations(field, reason) {
+  if (!state.review || !field) return false;
+  const confirmations = state.review.manual_confirmations ||= {};
+  let revoked = false;
+  Object.entries(confirmations).forEach(([key, entry]) => {
+    if (!entry?.confirmed || !confirmationMatchesField(key, entry, field)) return;
+    state.review.confirmation_history ||= [];
+    state.review.confirmation_history.push({
+      event: "confirmation_reopened",
+      field,
+      confirmation_key: key,
+      reason,
+      reopened_at: new Date().toISOString(),
+      previous_confirmation: structuredClone(entry),
+    });
+    confirmations[key] = {
+      ...entry,
+      confirmed: false,
+      revoked_at: new Date().toISOString(),
+      revoke_reason: reason,
+    };
+    revoked = true;
+  });
+  return revoked;
+}
+
+function confirmationMatchesField(key, entry, field) {
+  const target = String(entry?.target_field || "");
+  if (key === field || target === field || target.startsWith(`${field}.`)) return true;
+  if (key.endsWith(`_${field}`)) return true;
+  return field.startsWith("load_points.") && key.includes(field);
+}
+
+function invalidateStandardizationResults(field) {
+  const activeStatuses = new Set(["suggested", "llm_suggested", "human_confirmed"]);
+  let invalidated = 0;
+  (state.review.standardization_results || []).forEach((item) => {
+    if (!activeStatuses.has(item.status)) return;
+    item.metadata ||= {};
+    item.metadata.stale_by_field = field;
+    item.metadata.stale_at = new Date().toISOString();
+    item.status = "stale";
+    item.need_human_review = true;
+    invalidated += 1;
+  });
+  if (!invalidated) return 0;
+  state.review.standardization_apply_history = [];
+  state.review.derived_parameters_stale = true;
+  if (["wire_diameter", "standard_no"].includes(field)) {
+    state.review.standard_selection ||= {};
+    state.review.standard_selection.need_human_review = true;
+    state.review.standard_selection.human_confirmed = false;
+  }
+  return invalidated;
 }
 
 function syncBubbleValue(field, value) {

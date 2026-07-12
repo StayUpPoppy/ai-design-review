@@ -18,6 +18,7 @@ FIELD_SYNONYMS: dict[str, tuple[str, ...]] = {
     "total_coils": ("总圈数", "圈数", "n1"),
     "active_coils": ("有效圈数", "工作圈数"),
     "solid_height": ("压并高度", "并紧高度"),
+    "end_grinding": ("端面磨削", "端面磨平", "两端磨平", "磨平", "不磨"),
     "spring_rate": ("刚度", "弹簧刚度", "k"),
     "perpendicularity": ("垂直度",),
     "straightness": ("直线度",),
@@ -46,6 +47,33 @@ PLAN_TARGET_FIELDS = (
 )
 
 
+def standardization_chat_context_needs_refresh(review: dict[str, Any], message: str) -> dict[str, Any]:
+    """Decide whether a chat turn needs fresh deterministic standardization context."""
+    text = str(message or "").strip()
+    intent_type = _detect_intent_type(text)
+    results = [item for item in review.get("standardization_results", []) or [] if isinstance(item, dict)]
+    selection = review.get("standard_selection") or {}
+    stale_count = sum(1 for item in results if item.get("status") == "stale")
+    has_stale_context = bool(review.get("derived_parameters_stale")) or stale_count > 0
+    needs_standardization_context = intent_type in {"full_plan", "explain", "change", "confirm"} or any(
+        word in text for word in ("标准化", "手册", "公差", "标准")
+    )
+    reasons: list[str] = []
+    if needs_standardization_context and not results:
+        reasons.append("missing_standardization_results")
+    if needs_standardization_context and has_stale_context:
+        reasons.append("stale_parameters_or_results")
+    if needs_standardization_context and not selection.get("selected_standard"):
+        reasons.append("missing_standard_selection")
+    return {
+        "required": bool(reasons),
+        "intent_type": intent_type,
+        "reasons": reasons,
+        "result_count": len(results),
+        "stale_result_count": stale_count,
+    }
+
+
 def chat_about_standardization(
     review: dict[str, Any],
     message: str,
@@ -59,7 +87,18 @@ def chat_about_standardization(
 
     target = _detect_target_field(text)
     intent_type = _detect_intent_type(text)
-    if intent_type == "full_plan":
+    missing_context = _missing_standardization_context(review)
+    pending_fields = _pending_missing_context_fields(review)
+    if intent_type == "unknown" and pending_fields:
+        pending_target = target if target in pending_fields else pending_fields[0]
+        pending_value, _ = _extract_requested_value(text, pending_target)
+        if pending_value is not None:
+            target = pending_target
+            intent_type = "change"
+
+    if intent_type == "full_plan" and missing_context:
+        result = _handle_missing_context(review, missing_context)
+    elif intent_type == "full_plan":
         result = _handle_full_plan(review, text)
     elif intent_type == "explain":
         result = _handle_explain(review, text, target)
@@ -70,7 +109,9 @@ def chat_about_standardization(
     else:
         result = _handle_unknown(review, text, target)
 
-    if use_llm:
+    # Missing inputs are deterministic blocking conditions. Ask for them first
+    # rather than allowing an LLM to produce a seemingly complete plan.
+    if use_llm and result["intent"]["type"] != "missing_context":
         result = _run_llm_chat(review, text, result, llm_engine=llm_engine)
 
     turn = {
@@ -107,8 +148,8 @@ def _run_llm_chat(
         error_text = f"{type(exc).__name__}: {exc}"
         if (rule_result.get("intent") or {}).get("type") == "full_standardization_plan":
             fallback["reply"] = (
-                "我已识别到你要基于标准化手册生成完整标准化方案，但这次 LLM/RAG 没有返回结果，"
-                f"所以没有生成多字段方案。可以稍后重试，或减少上下文后再试。错误：{error_text}"
+                "我已按当前参数自动更新本地标准化建议，但这次 LLM/RAG 没有返回多字段对话方案。"
+                f"你仍可在标准化建议区批量应用规则结果，或稍后重试 AI 方案。错误：{error_text}"
             )
         else:
             fallback["reply"] = (
@@ -128,6 +169,82 @@ def _run_llm_chat(
         "suggested_actions": rule_result.get("suggested_actions", []),
     }
     return llm_result
+
+
+def _missing_standardization_context(review: dict[str, Any]) -> list[dict[str, Any]]:
+    missing_by_field: dict[str, dict[str, Any]] = {}
+    for item in review.get("standardization_results", []) or []:
+        if not isinstance(item, dict) or item.get("status") != "need_context":
+            continue
+        metadata = item.get("metadata") or {}
+        fields = metadata.get("missing_fields") or []
+        if not isinstance(fields, list):
+            continue
+        for field in fields:
+            target_field = str(field or "").strip()
+            if not target_field:
+                continue
+            entry = missing_by_field.setdefault(
+                target_field,
+                {
+                    "target_field": target_field,
+                    "target_label": _target_label(target_field),
+                    "reason": str(item.get("basis") or "标准化计算缺少该字段。"),
+                    "rule_ids": [],
+                },
+            )
+            rule_id = str(item.get("rule_id") or "")
+            if rule_id and rule_id not in entry["rule_ids"]:
+                entry["rule_ids"].append(rule_id)
+    return list(missing_by_field.values())
+
+
+def _pending_missing_context_fields(review: dict[str, Any]) -> list[str]:
+    for turn in reversed(review.get("standardization_chat", []) or []):
+        if not isinstance(turn, dict):
+            continue
+        fields = [
+            str(action.get("target_field") or "").strip()
+            for action in turn.get("suggested_actions", []) or []
+            if isinstance(action, dict)
+            and action.get("type") == "request_missing_field"
+            and action.get("status") == "need_input"
+        ]
+        if fields:
+            return list(dict.fromkeys(field for field in fields if field))
+    return []
+
+
+def _handle_missing_context(review: dict[str, Any], missing_context: list[dict[str, Any]]) -> dict[str, Any]:
+    target_fields = [item["target_field"] for item in missing_context]
+    actions = [
+        {
+            "type": "request_missing_field",
+            "target_field": item["target_field"],
+            "target_label": item["target_label"],
+            "reason": item["reason"],
+            "rule_ids": item["rule_ids"],
+            "status": "need_input",
+            "apply_policy": "manual_input_required",
+        }
+        for item in missing_context
+    ]
+    labels = _join_labels(target_fields)
+    reply = (
+        f"要生成可确认的完整标准化方案，还需要补充：{labels}。"
+        "请点击下方“去填写”直接录入，或在对话中回复“字段名 数值”，例如“有效圈数 8”。"
+        "补充后再次发送标准化请求，我会按当前参数自动重新计算。"
+    )
+    return _response(
+        reply,
+        intent_type="missing_context",
+        target_field=target_fields[0] if target_fields else "",
+        target_fields=target_fields,
+        status="need_input",
+        suggested_actions=actions,
+        affected_fields=["derived_parameters", "standardization_results"],
+        references=_retrieve_plan_references(review, "补充标准化缺失参数", target_fields),
+    )
 
 
 def _handle_explain(review: dict[str, Any], message: str, target: str | None) -> dict[str, Any]:
@@ -229,14 +346,13 @@ def _handle_full_plan(review: dict[str, Any], message: str) -> dict[str, Any]:
     selected_standard = (review.get("standard_selection") or {}).get("selected_standard")
     if selected_standard:
         reply = (
-            f"我识别到你需要基于标准化手册生成完整标准化方案。请勾选“LLM理解”后发送，"
-            f"我会结合当前参数、{selected_standard} 和检索到的手册依据生成多字段建议；"
+            f"我会基于当前参数、{selected_standard} 和检索到的手册依据生成完整标准化方案；"
             "建议仍需人工确认后才写回。"
         )
     else:
         reply = (
-            "我识别到你需要完整标准化方案，但当前还没有明确适用标准。请先点击“标准化”完成标准选择，"
-            "再勾选“LLM理解”让我结合手册依据生成方案。"
+            "我会先根据当前图纸参数自动完成标准选择，再结合手册依据生成完整标准化方案；"
+            "如关键信息不足，会明确列出需要补充的字段。"
         )
     return _response(
         reply,
@@ -352,7 +468,17 @@ def _matching_standardization_results(review: dict[str, Any], target: str | None
     return results[:1] if len(results) == 1 else []
 
 
-def _extract_requested_value(text: str, target: str) -> tuple[float | None, str | None]:
+def _extract_requested_value(text: str, target: str) -> tuple[Any | None, str | None]:
+    if target.endswith("accuracy_grade"):
+        grade = re.search(r"([123])\s*级", text)
+        if grade:
+            return f"{grade.group(1)}级", None
+    if target == "end_grinding":
+        if "不磨" in text:
+            return "不磨", None
+        if "磨" in text:
+            return "两端磨平", None
+
     patterns = (
         r"(?:改成|改为|设置为|设为|调整到|调到|变成|换成|增加到|减小到|降低到|提高到)\s*(-?\d+(?:\.\d+)?)\s*([a-zA-Z/]+|毫米|mm|N/mm|N|圈)?",
         r"(?:到|为)\s*(-?\d+(?:\.\d+)?)\s*([a-zA-Z/]+|毫米|mm|N/mm|N|圈)?",

@@ -129,6 +129,10 @@ class CompressionSpringStandardizer:
             status=status,
             suggested_value=value or self.standard_no,
             need_human_review=not bool(value),
+            # A selected standard can still be used for calculation when it has not
+            # yet been written back to the drawing parameter. Do not ask for it as
+            # a blocking input in the conversational completion loop.
+            metadata={"missing_fields": []},
         )
 
     def _diameter_result(self, spring_parameters: dict[str, Any], derived: dict[str, Any]) -> dict[str, Any]:
@@ -139,15 +143,34 @@ class CompressionSpringStandardizer:
         spring_index = _number(_param_value(derived, "spring_index"))
         grade = _grade(spring_parameters, "diameter_accuracy_grade")
         if value is None or spring_index is None:
-            return self._need_context(target_field, "GBT1239.2-DIA", "缺少受控直径或旋绕比，无法计算内径/外径标准公差。")
+            missing_fields = [target_field] if value is None else []
+            missing_fields.extend(self._spring_index_missing_fields(spring_parameters, derived))
+            return self._need_context(
+                target_field,
+                "GBT1239.2-DIA",
+                "缺少受控直径或旋绕比，无法计算内径/外径标准公差。",
+                missing_fields=missing_fields,
+            )
         if not grade:
-            return self._need_context(target_field, "GBT1239.2-DIA", "缺少直径精度等级，需人工选择 1/2/3 级。", value)
+            return self._need_context(
+                target_field,
+                "GBT1239.2-DIA",
+                "缺少直径精度等级，需人工选择 1/2/3 级。",
+                value,
+                missing_fields=["accuracy_grade"],
+            )
         item = self._band_rule("diameter_tolerance", spring_index)
         if not item:
             return self._not_applicable(target_field, "GBT1239.2-DIA", f"旋绕比 C={spring_index:g} 超出 GB/T 1239.2 表 3-11 的 3~22 范围。", value)
         tol = self._factor_tolerance(item, grade, value)
         if tol is None:
-            return self._need_context(target_field, "GBT1239.2-DIA", f"直径精度等级 {grade} 不在规则表中。", value)
+            return self._need_context(
+                target_field,
+                "GBT1239.2-DIA",
+                f"直径精度等级 {grade} 不在规则表中。",
+                value,
+                missing_fields=["accuracy_grade"],
+            )
         return _symmetric_result(
             target_field=target_field,
             rule_id="GBT1239.2-DIA",
@@ -162,15 +185,34 @@ class CompressionSpringStandardizer:
         spring_index = _number(_param_value(derived, "spring_index"))
         grade = _grade(spring_parameters, "free_length_accuracy_grade")
         if value is None or spring_index is None:
-            return self._need_context("free_length", "GBT1239.2-FREE", "缺少自由高度或旋绕比，无法计算自由高度标准公差。")
+            missing_fields = ["free_length"] if value is None else []
+            missing_fields.extend(self._spring_index_missing_fields(spring_parameters, derived))
+            return self._need_context(
+                "free_length",
+                "GBT1239.2-FREE",
+                "缺少自由高度或旋绕比，无法计算自由高度标准公差。",
+                missing_fields=missing_fields,
+            )
         if not grade:
-            return self._need_context("free_length", "GBT1239.2-FREE", "缺少自由高度精度等级，需人工选择 1/2/3 级。", value)
+            return self._need_context(
+                "free_length",
+                "GBT1239.2-FREE",
+                "缺少自由高度精度等级，需人工选择 1/2/3 级。",
+                value,
+                missing_fields=["accuracy_grade"],
+            )
         item = self._band_rule("free_length_tolerance", spring_index)
         if not item:
             return self._not_applicable("free_length", "GBT1239.2-FREE", f"旋绕比 C={spring_index:g} 超出 GB/T 1239.2 表 3-12 的 3~22 范围。", value)
         tol = self._factor_tolerance(item, grade, value)
         if tol is None:
-            return self._need_context("free_length", "GBT1239.2-FREE", f"自由高度精度等级 {grade} 不在规则表中。", value)
+            return self._need_context(
+                "free_length",
+                "GBT1239.2-FREE",
+                f"自由高度精度等级 {grade} 不在规则表中。",
+                value,
+                missing_fields=["accuracy_grade"],
+            )
         return _symmetric_result(
             target_field="free_length",
             rule_id="GBT1239.2-FREE",
@@ -183,7 +225,12 @@ class CompressionSpringStandardizer:
     def _total_coils_result(self, spring_parameters: dict[str, Any]) -> dict[str, Any]:
         value = _number(_param_value(spring_parameters, "total_coils"))
         if value is None:
-            return self._need_context("total_coils", "GBT1239.2-COILS", "缺少总圈数，无法给出总圈数极限偏差。")
+            return self._need_context(
+                "total_coils",
+                "GBT1239.2-COILS",
+                "缺少总圈数，无法给出总圈数极限偏差。",
+                missing_fields=["total_coils"],
+            )
         for item in self.rules.get("total_coils_tolerance", []):
             min_value = item.get("min")
             max_value = item.get("max")
@@ -203,12 +250,27 @@ class CompressionSpringStandardizer:
         free_length = _number(_param_value(spring_parameters, "free_length"))
         grade = _grade(spring_parameters, "accuracy_grade")
         if free_length is None:
-            return self._need_context("perpendicularity", "GBT1239.2-PERP", "缺少自由高度，无法计算垂直度限值。")
+            return self._need_context(
+                "perpendicularity",
+                "GBT1239.2-PERP",
+                "缺少自由高度，无法计算垂直度限值。",
+                missing_fields=["free_length"],
+            )
         if not grade:
-            return self._need_context("perpendicularity", "GBT1239.2-PERP", "缺少垂直度精度等级，需人工选择 1/2/3 级。")
+            return self._need_context(
+                "perpendicularity",
+                "GBT1239.2-PERP",
+                "缺少垂直度精度等级，需人工选择 1/2/3 级。",
+                missing_fields=["accuracy_grade"],
+            )
         item = (self.rules.get("perpendicularity") or {}).get(grade)
         if not item:
-            return self._need_context("perpendicularity", "GBT1239.2-PERP", f"垂直度精度等级 {grade} 不在规则表中。")
+            return self._need_context(
+                "perpendicularity",
+                "GBT1239.2-PERP",
+                f"垂直度精度等级 {grade} 不在规则表中。",
+                missing_fields=["accuracy_grade"],
+            )
         value = _round(float(item["factor"]) * free_length)
         slenderness = _number(_param_value(derived, "slenderness_ratio"))
         review = slenderness is not None and slenderness >= 5
@@ -257,9 +319,24 @@ class CompressionSpringStandardizer:
         wire = _number(_param_value(spring_parameters, "wire_diameter"))
         end_mode = _solid_height_mode(_param_value(spring_parameters, "end_grinding"))
         if total is None or wire is None:
-            return self._need_context("solid_height", "GBT1239.2-SOLID", "缺少总圈数或线径，无法计算压并高度参考值。")
+            missing_fields = []
+            if total is None:
+                missing_fields.append("total_coils")
+            if wire is None:
+                missing_fields.append("wire_diameter")
+            return self._need_context(
+                "solid_height",
+                "GBT1239.2-SOLID",
+                "缺少总圈数或线径，无法计算压并高度参考值。",
+                missing_fields=missing_fields,
+            )
         if not end_mode:
-            return self._need_context("solid_height", "GBT1239.2-SOLID", "缺少端面磨削方式，无法选择压并高度参考公式。")
+            return self._need_context(
+                "solid_height",
+                "GBT1239.2-SOLID",
+                "缺少端面磨削方式，无法选择压并高度参考公式。",
+                missing_fields=["end_grinding"],
+            )
         wire_upper = _number(spring_parameters.get("wire_diameter", {}).get("tolerance_upper")) or 0
         max_wire = wire + max(0, wire_upper)
         if end_mode == "ground":
@@ -285,11 +362,17 @@ class CompressionSpringStandardizer:
         if not load_points:
             return []
         if not grade or active is None:
+            missing_fields = []
+            if active is None:
+                missing_fields.append("active_coils")
+            if not grade:
+                missing_fields.append("accuracy_grade")
             return [
                 self._need_context(
                     "load_points",
                     "GBT1239.2-LOAD",
                     "缺少载荷精度等级或有效圈数，无法计算指定高度负荷极限偏差。",
+                    missing_fields=missing_fields,
                 )
             ]
         ratio = self._active_coil_ratio("load_tolerance", active, grade)
@@ -329,7 +412,18 @@ class CompressionSpringStandardizer:
         active = _number(_param_value(spring_parameters, "active_coils"))
         grade = _grade(spring_parameters, "stiffness_accuracy_grade")
         if not grade or active is None:
-            return self._need_context("spring_rate", "GBT1239.2-STIFF", "缺少刚度精度等级或有效圈数，无法计算刚度极限偏差。", stiffness)
+            missing_fields = []
+            if active is None:
+                missing_fields.append("active_coils")
+            if not grade:
+                missing_fields.append("accuracy_grade")
+            return self._need_context(
+                "spring_rate",
+                "GBT1239.2-STIFF",
+                "缺少刚度精度等级或有效圈数，无法计算刚度极限偏差。",
+                stiffness,
+                missing_fields=missing_fields,
+            )
         ratio = self._active_coil_ratio("stiffness_tolerance", active, grade)
         if ratio is None:
             return self._not_applicable("spring_rate", "GBT1239.2-STIFF", f"有效圈数 n={active:g} 不满足刚度公差规则。", stiffness)
@@ -388,7 +482,31 @@ class CompressionSpringStandardizer:
             return _number((table.get("gt_10") or {}).get(grade))
         return None
 
-    def _need_context(self, target_field: str, rule_id: str, basis: str, value: Any = None) -> dict[str, Any]:
+    def _spring_index_missing_fields(
+        self,
+        spring_parameters: dict[str, Any],
+        derived_parameters: dict[str, Any],
+    ) -> list[str]:
+        if _number(_param_value(derived_parameters, "spring_index")) is not None:
+            return []
+        missing_fields: list[str] = []
+        if _number(_param_value(spring_parameters, "wire_diameter")) is None:
+            missing_fields.append("wire_diameter")
+        has_outer = _number(_param_value(spring_parameters, "outer_diameter")) is not None
+        has_inner = _number(_param_value(spring_parameters, "inner_diameter")) is not None
+        if not has_outer and not has_inner:
+            missing_fields.append("outer_diameter")
+        return missing_fields
+
+    def _need_context(
+        self,
+        target_field: str,
+        rule_id: str,
+        basis: str,
+        value: Any = None,
+        *,
+        missing_fields: list[str] | None = None,
+    ) -> dict[str, Any]:
         return _result(
             target_field=target_field,
             rule_id=rule_id,
@@ -397,6 +515,7 @@ class CompressionSpringStandardizer:
             status="need_context",
             suggested_value=value,
             need_human_review=True,
+            metadata={"missing_fields": list(dict.fromkeys(missing_fields or []))},
         )
 
     def _not_applicable(self, target_field: str, rule_id: str, basis: str, value: Any = None) -> dict[str, Any]:
@@ -519,4 +638,3 @@ def _solid_height_mode(value: Any) -> str | None:
 def _round(value: float) -> float:
     rounded = round(float(value), 4)
     return int(rounded) if rounded.is_integer() else rounded
-
