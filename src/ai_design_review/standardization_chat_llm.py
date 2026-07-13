@@ -278,6 +278,7 @@ def normalize_chat_payload(
             normalized["suggested_tolerance_upper"] = normalized.get("tolerance_upper")
         if "tolerance_lower" in normalized and "suggested_tolerance_lower" not in normalized:
             normalized["suggested_tolerance_lower"] = normalized.get("tolerance_lower")
+        _normalize_unchanged_load_value_action(normalized, review, diagnostics, index)
         normalized["apply_policy"] = "manual_confirm_required"
         normalized["affected_fields"] = _string_list(normalized.get("affected_fields"))
         actions.append(normalized)
@@ -313,6 +314,74 @@ def normalize_chat_payload(
             "retrieved_chunk_count": len(chunks),
         },
     }
+
+
+def _normalize_unchanged_load_value_action(
+    action: dict[str, Any],
+    review: dict[str, Any],
+    diagnostics: list[dict[str, Any]],
+    index: int,
+) -> None:
+    """Turn a no-op F-value patch into the matching deterministic tolerance patch.
+
+    The model sometimes describes a load tolerance rule as a parameter patch whose
+    proposed force is identical to the drawing force. Applying that action must not
+    merely reconfirm the force while leaving the drawing tolerance untouched.
+    """
+    if action.get("type") != "propose_parameter_patch":
+        return
+    target = str(action.get("target_field") or "")
+    match = re.fullmatch(r"load_points\.([^.]+)\.force", target)
+    if not match:
+        return
+    point = next(
+        (
+            item
+            for item in (review.get("spring_parameters") or {}).get("load_points", []) or []
+            if isinstance(item, dict) and str(item.get("label") or "") == match.group(1)
+        ),
+        None,
+    )
+    if not isinstance(point, dict) or not _same_number(action.get("proposed_value"), point.get("force")):
+        return
+    result = next(
+        (
+            item
+            for item in review.get("standardization_results", []) or []
+            if isinstance(item, dict)
+            and item.get("target_field") == target
+            and item.get("suggested_tolerance_upper") is not None
+            and item.get("suggested_tolerance_lower") is not None
+            and item.get("status") in {"suggested", "llm_suggested", "human_confirmed"}
+        ),
+        None,
+    )
+    if not isinstance(result, dict):
+        return
+
+    action["type"] = "propose_tolerance_patch"
+    action.pop("proposed_value", None)
+    action["suggested_tolerance_upper"] = result.get("suggested_tolerance_upper")
+    action["suggested_tolerance_lower"] = result.get("suggested_tolerance_lower")
+    action["unit"] = result.get("unit") or point.get("force_unit") or "N"
+    action["target_label"] = f"载荷点 {match.group(1)} 负荷公差"
+    action["reason"] = result.get("basis") or action.get("reason") or "按当前标准化结果更新负荷公差。"
+    action["affected_fields"] = [f"{target}_tolerance"]
+    action.setdefault("metadata", {})["normalized_from_unchanged_force_patch"] = True
+    diagnostics.append(
+        {
+            "type": "normalized_unchanged_load_value_action",
+            "index": index,
+            "target_field": target,
+        }
+    )
+
+
+def _same_number(left: Any, right: Any) -> bool:
+    try:
+        return abs(float(left) - float(right)) < 1e-9
+    except (TypeError, ValueError):
+        return False
 
 
 def standardization_chat_llm_runtime_status() -> dict[str, Any]:

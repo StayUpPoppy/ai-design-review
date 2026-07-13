@@ -12,6 +12,7 @@ from ai_design_review.standardization_chat_llm import StandardizationChatLLMEngi
 def main() -> None:
     _assert_llm_engine_returns_structured_actions()
     _assert_llm_engine_returns_full_plan_tolerance_actions()
+    _assert_unchanged_load_value_action_becomes_tolerance_patch()
     _assert_agent_uses_llm_when_requested()
     print("standardization chat llm test passed")
 
@@ -108,6 +109,49 @@ def _assert_llm_engine_returns_full_plan_tolerance_actions() -> None:
     assert action["apply_policy"] == "manual_confirm_required"
     assert action["metadata"]["action_type_valid"] is True
     assert action["metadata"]["target_field_valid"] is True
+
+
+def _assert_unchanged_load_value_action_becomes_tolerance_patch() -> None:
+    review = _review()
+    review["spring_parameters"]["load_points"][0].update({
+        "force_tolerance_percent": 10,
+        "load_tolerance_percent": 10,
+    })
+    review["standardization_results"].append({
+        "target_field": "load_points.F1.force",
+        "suggested_value": 100,
+        "suggested_tolerance_upper": 5,
+        "suggested_tolerance_lower": -5,
+        "unit": "N",
+        "standard_no": "GB/T 1239.2-2009",
+        "rule_id": "GBT1239.2-LOAD",
+        "basis": "表3-15：1级，负荷极限偏差 ±5%F。",
+        "status": "suggested",
+    })
+
+    def fake_completion(_: dict) -> dict:
+        return {
+            "reply": "负荷保持不变，按1级推荐负荷公差。",
+            "intent": {"type": "full_standardization_plan", "target_fields": ["load_points.F1.force"], "status": "proposal_ready"},
+            "suggested_actions": [{
+                "type": "propose_parameter_patch",
+                "target_field": "load_points.F1.force",
+                "proposed_value": 100,
+                "unit": "N",
+                "reason": "按表3-15推荐 ±5%F。",
+            }],
+        }
+
+    payload = StandardizationChatLLMEngine(completion_fn=fake_completion).chat(
+        review,
+        "请按1级标准化负荷公差",
+        {"intent": {"type": "full_standardization_plan"}},
+    )
+    action = payload["suggested_actions"][0]
+    assert action["type"] == "propose_tolerance_patch"
+    assert action["suggested_tolerance_upper"] == 5
+    assert action["suggested_tolerance_lower"] == -5
+    assert action["metadata"]["normalized_from_unchanged_force_patch"] is True
 
 
 def _assert_agent_uses_llm_when_requested() -> None:

@@ -1210,6 +1210,19 @@ function loadPointToleranceDisplay(point, label, review) {
     point.load_tolerance_upper,
     point.load_tolerance_lower,
   );
+  const drawingPercent = point.drawing_force_tolerance_percent ?? point.drawing_load_tolerance_percent;
+  const standardizedPercent = point.load_tolerance_percent ?? point.force_tolerance_percent;
+  if (point.tolerance_source === "standardization" && standardizedPercent != null && standardizedPercent !== "") {
+    const drawingNote = drawingPercent != null && drawingPercent !== ""
+      ? `\u56fe\u7eb8\u539f\u516c\u5dee \u00b1${formatCompactNumber(Math.abs(Number(drawingPercent)))}%`
+      : "";
+    return {
+      value: `\u00b1${formatCompactNumber(Math.abs(Number(standardizedPercent)))}%`,
+      placeholder: "",
+      title: point.tolerance_basis || suggestion?.basis || "",
+      note: [absolute ? `\u6807\u51c6\u5316\u503c ${absolute}` : "", drawingNote].filter(Boolean).join("\uff1b"),
+    };
+  }
   if (absolute) {
     return {
       value: absolute,
@@ -1219,10 +1232,10 @@ function loadPointToleranceDisplay(point, label, review) {
     };
   }
 
-  const drawingPercent = point.force_tolerance_percent ?? point.load_tolerance_percent;
-  if (drawingPercent != null && drawingPercent !== "") {
+  const rawDrawingPercent = point.force_tolerance_percent ?? point.load_tolerance_percent;
+  if (rawDrawingPercent != null && rawDrawingPercent !== "") {
     return {
-      value: `\u00b1${formatCompactNumber(Math.abs(Number(drawingPercent)))}%`,
+      value: `\u00b1${formatCompactNumber(Math.abs(Number(rawDrawingPercent)))}%`,
       placeholder: "",
       title: suggestion?.basis || "",
       note: suggested ? `\u6807\u51c6\u5efa\u8bae ${suggested}` : "\u56fe\u7eb8\u516c\u5dee",
@@ -1254,6 +1267,26 @@ function formatLoadPointAbsoluteTolerance(upper, lower) {
     return `\u00b1${formatCompactNumber(Math.abs(Number(upper)))}N`;
   }
   return `${upper ?? ""}/${lower ?? ""}N`;
+}
+
+function applyStandardizedLoadTolerance(point, upper, lower, options = {}) {
+  if (!point || typeof point !== "object") return;
+  if (point.drawing_force_tolerance_percent == null && point.force_tolerance_percent != null) {
+    point.drawing_force_tolerance_percent = point.force_tolerance_percent;
+  }
+  if (point.drawing_load_tolerance_percent == null && point.load_tolerance_percent != null) {
+    point.drawing_load_tolerance_percent = point.load_tolerance_percent;
+  }
+  point.load_tolerance_upper = upper ?? null;
+  point.load_tolerance_lower = lower ?? null;
+  const referenceTolerance = upper ?? (lower == null ? null : Math.abs(Number(lower)));
+  if (point.force && referenceTolerance != null && !Number.isNaN(Number(referenceTolerance))) {
+    const percent = Number(((Math.abs(Number(referenceTolerance)) / Math.abs(Number(point.force))) * 100).toFixed(3));
+    point.force_tolerance_percent = percent;
+    point.load_tolerance_percent = percent;
+  }
+  point.tolerance_source = "standardization";
+  point.tolerance_basis = options.basis || point.tolerance_basis || "";
 }
 
 function confirmationActionLabel(item) {
@@ -1965,9 +1998,14 @@ function canConfirmStandardization(item) {
 
 function targetFieldLabel(targetField) {
   const text = String(targetField || "");
-  const loadMatch = text.match(/^load_points\.([^.]+)\.force$/);
-  if (loadMatch) return `载荷点 ${loadMatch[1]}`;
+  const loadTarget = parseLoadPointTarget(text);
+  if (loadTarget) return `载荷点 ${loadTarget.label} ${loadTarget.field === "height" ? "高度" : "力值"}`;
   return FIELD_LABELS[text] || text;
+}
+
+function parseLoadPointTarget(target) {
+  const match = String(target || "").match(/^load_points\.([^.]+)\.(force|height)$/);
+  return match ? { label: match[1], field: match[2] } : null;
 }
 
 function formatStandardValue(value, unit = "") {
@@ -2261,11 +2299,12 @@ function applyStandardizationResult(item) {
       return String(candidate.label || "") === label;
     });
     if (!point) return false;
-    point.load_tolerance_upper = item.suggested_tolerance_upper;
-    point.load_tolerance_lower = item.suggested_tolerance_lower;
-    if (point.force && item.suggested_tolerance_upper != null) {
-      point.load_tolerance_percent = Number(((Number(item.suggested_tolerance_upper) / Number(point.force)) * 100).toFixed(3));
-    }
+    applyStandardizedLoadTolerance(
+      point,
+      item.suggested_tolerance_upper,
+      item.suggested_tolerance_lower,
+      { basis: item.basis || "" },
+    );
     confirmParam(point, `standardization_${target}`);
   } else if (target) {
     const meta = getFieldMeta(target, state.review);
@@ -2457,11 +2496,10 @@ function formatTolerancePair(tolerance, unit = "") {
 }
 
 function standardizationChatTargetExists(target) {
-  const loadMatch = String(target || "").match(/^load_points\.([^.]+)\.force$/);
-  if (!loadMatch) return true;
-  const label = loadMatch[1];
+  const loadTarget = parseLoadPointTarget(target);
+  if (!loadTarget) return true;
   return (state.review?.spring_parameters?.load_points || []).some((candidate) => {
-    return String(candidate.label || "") === label;
+    return String(candidate.label || "") === loadTarget.label;
   });
 }
 
@@ -2518,9 +2556,9 @@ function applyStandardizationChatAction(action, turn, options = {}) {
   const now = options.now || new Date().toISOString();
   let unit = action.unit || "";
 
-  const loadMatch = target.match(/^load_points\.([^.]+)\.force$/);
-  if (loadMatch) {
-    const label = loadMatch[1];
+  const loadTarget = parseLoadPointTarget(target);
+  if (loadTarget) {
+    const { label, field } = loadTarget;
     const point = (state.review.spring_parameters.load_points || []).find((candidate) => {
       return String(candidate.label || "") === label;
     });
@@ -2528,9 +2566,10 @@ function applyStandardizationChatAction(action, turn, options = {}) {
       action.apply_error = `未找到载荷点 ${label}`;
       return { ok: false, message: `未找到载荷点 ${label}，请先在载荷点表中补充。` };
     }
-    unit = unit || point.force_unit || "";
-    point.force = value;
-    if (unit) point.force_unit = unit;
+    const unitKey = field === "height" ? "height_unit" : "force_unit";
+    unit = unit || point[unitKey] || (field === "height" ? "mm" : "N");
+    point[field] = value;
+    if (unit) point[unitKey] = unit;
     point.need_human_review = false;
     point.confidence = Math.max(Number(point.confidence) || 0, 0.99);
     point.source = Array.from(new Set(["standardization_chat", "human_confirmed", ...(point.source || [])]));
@@ -2603,8 +2642,7 @@ function applyStandardizationChatToleranceAction(action, turn, options = {}) {
       action.apply_error = `未找到载荷点 ${label}`;
       return { ok: false, message: `未找到载荷点 ${label}，请先在载荷点表中补充。` };
     }
-    point.load_tolerance_upper = tolerance.upper;
-    point.load_tolerance_lower = tolerance.lower;
+    applyStandardizedLoadTolerance(point, tolerance.upper, tolerance.lower, { basis: action.reason || "" });
     point.need_human_review = false;
     point.confidence = Math.max(Number(point.confidence) || 0, 0.99);
     point.source = Array.from(new Set(["standardization_chat", "human_confirmed", ...(point.source || [])]));
@@ -2657,15 +2695,15 @@ function captureStandardizationChatRollback(actions, turn, options = {}) {
   const confirmations = state.review?.manual_confirmations || {};
   const fieldStates = actions.map((action) => {
     const target = String(action?.target_field || "");
-    const loadMatch = target.match(/^load_points\.([^.]+)\.force$/);
+    const loadTarget = parseLoadPointTarget(target);
     const confirmationKey = action?.type === "propose_tolerance_patch"
       ? `standardization_chat_${target}_tolerance`
       : `standardization_chat_${target}`;
     const confirmation = Object.prototype.hasOwnProperty.call(confirmations, confirmationKey)
       ? { exists: true, value: structuredClone(confirmations[confirmationKey]) }
       : { exists: false, value: null };
-    if (loadMatch) {
-      const label = loadMatch[1];
+    if (loadTarget) {
+      const { label } = loadTarget;
       const index = (parameters.load_points || []).findIndex((point) => String(point?.label || "") === label);
       return {
         target,
@@ -2839,13 +2877,13 @@ function markStandardizationChatApplicationRollbackRestandardized(logId, complet
 }
 
 function currentActionTargetValue(target) {
-  const loadMatch = String(target || "").match(/^load_points\.([^.]+)\.force$/);
-  if (loadMatch) {
-    const label = loadMatch[1];
+  const loadTarget = parseLoadPointTarget(target);
+  if (loadTarget) {
+    const { label, field } = loadTarget;
     const point = (state.review.spring_parameters?.load_points || []).find((candidate) => {
       return String(candidate.label || "") === label;
     });
-    return point?.force;
+    return point?.[field];
   }
   const param = state.review.spring_parameters?.[target];
   return param && typeof param === "object" ? param.value : undefined;
@@ -2981,13 +3019,13 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
     renderCompareOverlay();
   }
   requestAnimationFrame(() => {
-    const loadMatch = target.match(/^load_points\.([^.]+)\.force$/);
-    if (loadMatch) {
-      const pointIndex = (state.review.spring_parameters?.load_points || []).findIndex((point) => String(point?.label || "") === loadMatch[1]);
+    const loadTarget = parseLoadPointTarget(target);
+    if (loadTarget) {
+      const pointIndex = (state.review.spring_parameters?.load_points || []).findIndex((point) => String(point?.label || "") === loadTarget.label);
       const loadRow = compareOverlay.querySelector(`[data-kind="load_point"][data-index="${pointIndex}"]`);
       if (loadRow) {
         loadRow.scrollIntoView({ behavior: "smooth", block: "center" });
-        const input = loadRow.querySelector('[data-role="force"]');
+        const input = loadRow.querySelector(`[data-role="${loadTarget.field}"]`);
         input?.focus({ preventScroll: true });
         input?.select();
       }
@@ -3825,6 +3863,8 @@ function applyLoadPointTolerance(point, value) {
     point.load_tolerance_lower = null;
     point.load_tolerance_percent = null;
     point.force_tolerance_percent = null;
+    point.tolerance_source = "human";
+    point.tolerance_basis = "";
     return;
   }
   if (text.endsWith("%")) {
@@ -3834,6 +3874,8 @@ function applyLoadPointTolerance(point, value) {
       point.load_tolerance_percent = Math.abs(percent);
       point.load_tolerance_upper = null;
       point.load_tolerance_lower = null;
+      point.tolerance_source = "human";
+      point.tolerance_basis = "";
     }
     return;
   }
@@ -3846,6 +3888,8 @@ function applyLoadPointTolerance(point, value) {
       ((Math.abs(Number(parsed.tolerance_upper)) / Math.abs(Number(point.force))) * 100).toFixed(3),
     );
   }
+  point.tolerance_source = "human";
+  point.tolerance_basis = "";
 }
 
 function parseValue(text, previous) {

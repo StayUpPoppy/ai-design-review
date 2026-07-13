@@ -12,12 +12,24 @@ assert.notEqual(end, -1, "chat application rollback helper block must be complet
 const context = {
   state: { review: null, activeReviewMessageId: null },
   structuredClone,
+  FIELD_LABELS: {},
   targetFieldLabel: (field) => field,
   escapeHtml: (value) => String(value),
   syncBubbleValue: () => {},
   getReviewContext: () => null,
 };
 vm.createContext(context);
+const loadTargetStart = appSource.indexOf("function targetFieldLabel");
+const loadTargetEnd = appSource.indexOf("function formatStandardValue", loadTargetStart);
+assert.notEqual(loadTargetStart, -1, "load point target helper must exist");
+assert.notEqual(loadTargetEnd, -1, "load point target helper block must be complete");
+vm.runInContext(appSource.slice(loadTargetStart, loadTargetEnd), context);
+const toleranceStart = appSource.indexOf("function loadPointToleranceDisplay");
+const toleranceEnd = appSource.indexOf("function confirmationActionLabel", toleranceStart);
+assert.notEqual(toleranceStart, -1, "load tolerance display helpers must exist");
+assert.notEqual(toleranceEnd, -1, "load tolerance display helper block must be complete");
+context.formatCompactNumber = (value) => String(value);
+vm.runInContext(appSource.slice(toleranceStart, toleranceEnd), context);
 vm.runInContext(appSource.slice(start, end), context);
 
 const pendingAction = {
@@ -99,5 +111,30 @@ const supplementForm = context.renderStandardizationChatSupplementFormHtml([
 assert.match(supplementForm, /data-kind="chat_supplement_form"/);
 assert.match(supplementForm, /data-field="active_coils"/);
 assert.match(supplementForm, /data-field="end_grinding"/);
+
+assert.deepEqual(
+  JSON.parse(JSON.stringify(context.parseLoadPointTarget("load_points.F1.height"))),
+  { label: "F1", field: "height" },
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(context.parseLoadPointTarget("load_points.F2.force"))),
+  { label: "F2", field: "force" },
+);
+assert.equal(context.targetFieldLabel("load_points.F1.height"), "载荷点 F1 高度");
+
+const standardizedPoint = {
+  label: "F1",
+  force: 16,
+  force_tolerance_percent: 10,
+  load_tolerance_percent: 10,
+};
+context.applyStandardizedLoadTolerance(standardizedPoint, 0.8, -0.8, { basis: "表3-15" });
+assert.equal(standardizedPoint.drawing_force_tolerance_percent, 10);
+assert.equal(standardizedPoint.force_tolerance_percent, 5);
+assert.equal(standardizedPoint.load_tolerance_percent, 5);
+const toleranceDisplay = context.loadPointToleranceDisplay(standardizedPoint, "F1", { standardization_results: [] });
+assert.equal(toleranceDisplay.value, "±5%");
+assert.match(toleranceDisplay.note, /±0.8N/);
+assert.match(toleranceDisplay.note, /±10%/);
 
 console.log("standardization chat UI rollback and batch supplement test passed");

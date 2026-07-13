@@ -317,7 +317,7 @@ class CompressionSpringStandardizer:
     def _solid_height_result(self, spring_parameters: dict[str, Any]) -> dict[str, Any]:
         total = _number(_param_value(spring_parameters, "total_coils"))
         wire = _number(_param_value(spring_parameters, "wire_diameter"))
-        end_mode = _solid_height_mode(_param_value(spring_parameters, "end_grinding"))
+        end_mode = solid_height_mode(_param_value(spring_parameters, "end_grinding"))
         if total is None or wire is None:
             missing_fields = []
             if total is None:
@@ -624,10 +624,15 @@ def _grade(spring_parameters: dict[str, Any], specific_field: str) -> str | None
     return None
 
 
-def _solid_height_mode(value: Any) -> str | None:
+def solid_height_mode(value: Any) -> str | None:
     text = str(value or "").strip()
     if not text:
         return None
+    normalized = text.lower().replace("-", "_").replace(" ", "")
+    if normalized in {"not_ground", "notground", "unground", "no", "false"}:
+        return "not_ground"
+    if normalized in {"ground", "grounded", "yes", "true", "closed_and_ground"}:
+        return "ground"
     if "不磨" in text or "未磨" in text:
         return "not_ground"
     if "磨" in text:

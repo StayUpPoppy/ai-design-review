@@ -335,7 +335,7 @@ def _handle_batch_supplements(review: dict[str, Any], supplements: dict[str, Any
 def _supplement_target_exists(review: dict[str, Any], target: str) -> bool:
     if target.startswith("load_points."):
         parts = target.split(".")
-        if len(parts) != 3 or parts[2] != "force":
+        if len(parts) != 3 or parts[2] not in {"force", "height"}:
             return False
         return any(
             str(point.get("label") or "").upper() == parts[1].upper()
@@ -629,9 +629,9 @@ def _detect_intent_type(text: str) -> str:
 
 def _detect_target_field(text: str) -> str | None:
     lowered = text.lower()
-    load_label = re.search(r"\bF\d+\b", text, re.IGNORECASE)
-    if load_label:
-        return f"load_points.{load_label.group(0).upper()}.force"
+    load_target = _detect_load_point_target(text)
+    if load_target:
+        return load_target
     for field, words in FIELD_SYNONYMS.items():
         for word in words:
             needle = word.lower()
@@ -644,6 +644,18 @@ def _detect_target_field(text: str) -> str | None:
             if needle in lowered:
                 return field
     return None
+
+
+def _detect_load_point_target(text: str) -> str | None:
+    height_label = re.search(r"(?<![A-Za-z0-9])H(\d+)(?!\d)", text, re.IGNORECASE)
+    if height_label:
+        return f"load_points.F{height_label.group(1)}.height"
+
+    load_label = re.search(r"(?<![A-Za-z0-9])F(\d+)(?!\d)", text, re.IGNORECASE)
+    if not load_label:
+        return None
+    field = "height" if re.search(r"(?:高度|高程|压缩到|压缩高度|试验高度|测试高度)", text) else "force"
+    return f"load_points.F{load_label.group(1)}.{field}"
 
 
 def _matching_standardization_results(review: dict[str, Any], target: str | None, message: str) -> list[dict[str, Any]]:
@@ -772,9 +784,10 @@ def _current_value(review: dict[str, Any], target: str) -> Any:
     if target.startswith("load_points."):
         parts = target.split(".")
         label = parts[1] if len(parts) > 1 else ""
+        field = parts[2] if len(parts) > 2 else "force"
         for point in review.get("spring_parameters", {}).get("load_points", []) or []:
             if str(point.get("label") or "").upper() == label.upper():
-                return point.get("force")
+                return point.get(field)
         return None
     value = review.get("spring_parameters", {}).get(target)
     if isinstance(value, dict):
@@ -784,7 +797,7 @@ def _current_value(review: dict[str, Any], target: str) -> Any:
 
 def _target_unit(review: dict[str, Any], target: str) -> str | None:
     if target.startswith("load_points."):
-        return "N"
+        return "mm" if target.endswith(".height") else "N"
     value = review.get("spring_parameters", {}).get(target)
     if isinstance(value, dict):
         return value.get("unit")
@@ -846,6 +859,10 @@ def _target_label(field: str | None) -> str:
         return ""
     if field.startswith("load_points."):
         parts = field.split(".")
+        if len(parts) > 2 and parts[2] == "height":
+            return f"载荷点 {parts[1]} 高度"
+        if len(parts) > 2 and parts[2] == "force":
+            return f"载荷点 {parts[1]} 力值"
         return f"载荷点 {parts[1]}" if len(parts) > 1 else "载荷点"
     labels = {
         "standard_selection": "标准选择",

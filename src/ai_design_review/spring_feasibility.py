@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from .standardizers.compression import derive_compression_parameters
+from .standardizers.compression import derive_compression_parameters, solid_height_mode
 
 
 COLD_COILED_STANDARD = "GB/T 1239.2-2009"
@@ -26,7 +26,9 @@ def assess_parameter_change_set(review: dict[str, Any], actions: list[dict[str, 
     if spring_type != "compression_spring":
         return _result("not_applicable", "当前仅对压缩弹簧执行参数可行性预检。")
 
-    parameters = deepcopy(review.get("spring_parameters") or {})
+    baseline_parameters = deepcopy(review.get("spring_parameters") or {})
+    baseline_issues = _compression_issues(baseline_parameters, review)
+    parameters = deepcopy(baseline_parameters)
     changed_fields: list[str] = []
     for action in applicable:
         target = str(action["target_field"])
@@ -37,7 +39,10 @@ def assess_parameter_change_set(review: dict[str, Any], actions: list[dict[str, 
     if not changed_fields:
         return _result("not_applicable", "当前建议没有可模拟的参数字段。")
 
-    issues = _compression_issues(parameters, review)
+    candidate_issues = _compression_issues(parameters, review)
+    baseline_keys = {_issue_key(issue) for issue in baseline_issues}
+    issues = [issue for issue in candidate_issues if _issue_key(issue) not in baseline_keys]
+    existing_issues = [issue for issue in candidate_issues if _issue_key(issue) in baseline_keys]
     derived = derive_compression_parameters(parameters)
     preview = _derived_preview(derived)
     status = "blocked" if any(item["severity"] == "blocked" for item in issues) else "warning" if issues else "ready"
@@ -46,6 +51,7 @@ def assess_parameter_change_set(review: dict[str, Any], actions: list[dict[str, 
         "status": status,
         "summary": summary,
         "issues": issues,
+        "existing_issues": existing_issues,
         "changed_fields": list(dict.fromkeys(changed_fields)),
         "derived_preview": preview,
     }
@@ -164,10 +170,10 @@ def _reference_solid_height(parameters: dict[str, Any], wire: float | None, tota
         return None
     wire_upper = _number((parameters.get("wire_diameter") or {}).get("tolerance_upper")) or 0
     max_wire = wire + max(0, wire_upper)
-    end_mode = str(_value(parameters, "end_grinding") or "")
+    end_mode = solid_height_mode(_value(parameters, "end_grinding"))
     if not end_mode:
         return None
-    return total * max_wire if "磨" in end_mode and "不磨" not in end_mode else (total + 1.5) * max_wire
+    return total * max_wire if end_mode == "ground" else (total + 1.5) * max_wire
 
 
 def _derived_preview(derived: dict[str, Any]) -> dict[str, Any]:
@@ -190,6 +196,14 @@ def _issue(issues: list[dict[str, Any]], severity: str, fields: list[str], messa
     issues.append({"severity": severity, "fields": fields, "message": message})
 
 
+def _issue_key(issue: dict[str, Any]) -> tuple[str, tuple[str, ...], str]:
+    return (
+        str(issue.get("severity") or ""),
+        tuple(str(field) for field in issue.get("fields") or []),
+        str(issue.get("message") or ""),
+    )
+
+
 def _summary(status: str, issues: list[dict[str, Any]]) -> str:
     if status == "ready":
         return "参数关系校验通过，可人工确认后应用。"
@@ -201,7 +215,7 @@ def _summary(status: str, issues: list[dict[str, Any]]) -> str:
 
 def _load_target(target: str) -> tuple[str, str] | None:
     parts = target.split(".")
-    if len(parts) == 3 and parts[0] == "load_points" and parts[2] == "force":
+    if len(parts) == 3 and parts[0] == "load_points" and parts[2] in {"force", "height"}:
         return parts[1], parts[2]
     return None
 

@@ -14,6 +14,9 @@ def main() -> None:
     _assert_impossible_diameter_is_blocked()
     _assert_out_of_table_spring_index_is_warning()
     _assert_invalid_coil_relationship_is_blocked()
+    _assert_load_point_height_change_is_simulated()
+    _assert_existing_end_condition_conflict_does_not_block_active_coils()
+    _assert_new_end_condition_conflict_is_blocked()
     _assert_agent_attaches_blocking_validation()
     print("spring feasibility test passed")
 
@@ -41,6 +44,34 @@ def _assert_invalid_coil_relationship_is_blocked() -> None:
     result = assess_parameter_change_set(_review(), [_parameter_action("active_coils", 13)])
     assert result["status"] == "blocked"
     assert any("有效圈数不能大于总圈数" in item["message"] for item in result["issues"])
+
+
+def _assert_load_point_height_change_is_simulated() -> None:
+    review = _review()
+    result = assess_parameter_change_set(review, [_parameter_action("load_points.F1.height", 45)])
+    assert result["status"] == "blocked"
+    assert any("F1 的试验高度不能大于自由长度" in item["message"] for item in result["issues"])
+
+
+def _assert_existing_end_condition_conflict_does_not_block_active_coils() -> None:
+    review = _solid_height_review(total_coils=10, active_coils=8)
+    result = assess_parameter_change_set(review, [_parameter_action("active_coils", 7)])
+    assert result["status"] == "ready"
+    assert result["issues"] == []
+    assert any(
+        item["fields"] == ["solid_height", "load_points.F2.height"] and "10.925" in item["message"]
+        for item in result["existing_issues"]
+    )
+
+
+def _assert_new_end_condition_conflict_is_blocked() -> None:
+    review = _solid_height_review(total_coils=8, active_coils=7)
+    result = assess_parameter_change_set(review, [_parameter_action("total_coils", 10)])
+    assert result["status"] == "blocked"
+    assert any(
+        item["fields"] == ["solid_height", "load_points.F2.height"] and "10.925" in item["message"]
+        for item in result["issues"]
+    )
 
 
 def _assert_agent_attaches_blocking_validation() -> None:
@@ -76,6 +107,22 @@ def _review() -> dict:
         },
         "standardization_results": [],
         "derived_parameters": {},
+    }
+
+
+def _solid_height_review(total_coils: float, active_coils: float) -> dict:
+    return {
+        "drawing_summary": {"spring_type": "compression_spring"},
+        "standard_selection": {"selected_standard": "GB/T 1239.2-2009"},
+        "spring_parameters": {
+            "wire_diameter": {"value": 0.9, "unit": "mm", "tolerance_upper": 0.05},
+            "outer_diameter": {"value": 8.25, "unit": "mm"},
+            "free_length": {"value": 30.25, "unit": "mm"},
+            "total_coils": {"value": total_coils, "unit": "turns"},
+            "active_coils": {"value": active_coils, "unit": "turns"},
+            "end_grinding": {"value": "不磨"},
+            "load_points": [{"label": "F2", "height": 9.668, "force": 35}],
+        },
     }
 
 

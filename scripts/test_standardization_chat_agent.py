@@ -18,6 +18,8 @@ def main() -> None:
     _assert_detects_full_plan_without_hardcoded_actions()
     _assert_requests_missing_context_before_full_plan()
     _assert_uses_pending_question_to_parse_a_direct_value()
+    _assert_proposes_load_point_height_patch()
+    _assert_proposes_load_point_force_patch()
     _assert_proposes_multiple_structured_supplements()
     _assert_context_refresh_detects_missing_or_stale_results()
     _assert_full_plan_timeout_fallback_is_explicit()
@@ -104,6 +106,24 @@ def _assert_uses_pending_question_to_parse_a_direct_value() -> None:
     assert payload["intent"]["type"] == "parameter_change_request"
     assert payload["intent"]["target_field"] == "active_coils"
     assert payload["suggested_actions"][0]["proposed_value"] == 8
+
+
+def _assert_proposes_load_point_height_patch() -> None:
+    review = _review()
+    payload = chat_about_standardization(review, "将H1改为18mm")
+    action = payload["suggested_actions"][0]
+    assert action["target_field"] == "load_points.F1.height"
+    assert action["proposed_value"] == 18
+    assert action["unit"] == "mm"
+
+
+def _assert_proposes_load_point_force_patch() -> None:
+    review = _review()
+    payload = chat_about_standardization(review, "将F1力值改为120N")
+    action = payload["suggested_actions"][0]
+    assert action["target_field"] == "load_points.F1.force"
+    assert action["proposed_value"] == 120
+    assert action["unit"] == "N"
 
 
 def _assert_proposes_multiple_structured_supplements() -> None:
