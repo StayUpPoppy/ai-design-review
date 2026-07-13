@@ -17,6 +17,7 @@ def main() -> None:
     _assert_proposes_patch_without_applying()
     _assert_detects_full_plan_without_hardcoded_actions()
     _assert_requests_missing_context_before_full_plan()
+    _assert_recognizes_natural_standardization_request()
     _assert_uses_pending_question_to_parse_a_direct_value()
     _assert_proposes_load_point_height_patch()
     _assert_proposes_load_point_force_patch()
@@ -90,6 +91,24 @@ def _assert_requests_missing_context_before_full_plan() -> None:
     assert payload["intent"]["status"] == "need_input"
     assert [action["target_field"] for action in payload["suggested_actions"]] == ["active_coils", "end_grinding"]
     assert all(action["type"] == "request_missing_field" for action in payload["suggested_actions"])
+    assert "llm_chat" not in payload
+
+
+def _assert_recognizes_natural_standardization_request() -> None:
+    review = _review()
+    review["standardization_results"] = [
+        {
+            "target_field": "load_points",
+            "rule_id": "GBT1239.2-LOAD",
+            "basis": "缺少有效圈数，无法计算指定高度负荷极限偏差。",
+            "status": "need_context",
+            "metadata": {"missing_fields": ["active_coils"]},
+        }
+    ]
+    payload = chat_about_standardization(review, "请按照标准手册进行标准化", use_llm=True)
+    assert payload["intent"]["type"] == "missing_context"
+    assert payload["intent"]["status"] == "need_input"
+    assert [action["target_field"] for action in payload["suggested_actions"]] == ["active_coils"]
     assert "llm_chat" not in payload
 
 
