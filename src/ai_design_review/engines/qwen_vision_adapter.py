@@ -154,6 +154,8 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
    - 拉伸弹簧：hook_type、hook_outer_diameter、hook_inner_diameter、hook_gap、hook1_type、hook2_type、hook1_length、hook2_length、hook1_outer_diameter、hook2_outer_diameter、hook1_inner_diameter、hook2_inner_diameter、hook1_opening、hook2_opening、hook_orientation、center_to_center_length、initial_tension，可提取 load_points。
    - 卡簧/挡圈：ring_type、thickness、free_diameter、opening_width、gap_width、notch_depth、groove_diameter、groove_width、lug_hole_diameter、lug_center_distance、opening_angle、section_width、section_height、chamfer、corner_radius。
    - 端面磨削 end_grinding：只有图纸文字明确写“不磨/未磨”时才填“不磨”；只有文字明确写“磨平/磨削”，或两端面有明确关联的表面粗糙度/加工符号且端面画为平整时才填“两端磨平”。不得仅因弹簧示意图看似开口、或没有文字标注，就推断为“不磨”；无法确定时不要输出该字段。
+   - 表面粗糙度符号、加工符号或小三角旁的数值（例如 Ra 12.5、▽ 12.5）属于技术要求，绝不能填入 outer_diameter、inner_diameter、mean_diameter、free_length、body_length、wire_diameter 或 load_points。
+   - 对圆柱压缩弹簧：outer_diameter 必须来自直径尺寸线、直径符号或紧邻的一侧公差；free_length 必须来自两端之间的轴向总长度尺寸线；H1/H2 只属于 load_points 的试验高度。没有足够定位依据时省略字段并标记 need_human_review=true。
 4. 提取动态工艺要求：surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process、other。表面处理、硬度、热处理、盐雾等不要放进 parameters，放进 technical_requirements。
 5. 对压缩弹簧，额外判断是否属于圆柱螺旋压缩弹簧，并输出 spring_features：
    - spring_family 只能为 helical、disc、wave、rubber、gas、unknown。

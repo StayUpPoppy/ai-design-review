@@ -7,6 +7,15 @@ from typing import Any
 
 ROLE_SOURCE = "dimension_role_ranker"
 
+# A numeric value placed beside a surface-finish symbol is a technical
+# requirement, not a spring geometry dimension.
+_SURFACE_ROUGHNESS_RE = re.compile(
+    r"(?:roughness|surface\s*(?:finish|roughness)|\b(?:ra|rz)\s*\d|"
+    r"\u7c97\u7cd9\u5ea6|\u8868\u9762\u7c97\u7cd9|\u5c0f\u4e09\u89d2|\u8868\u9762\u7b26\u53f7|"
+    r"[\u25bd\u25bc\u2315])",
+    re.IGNORECASE,
+)
+
 CORE_DIMENSION_FIELDS = {
     "outer_diameter",
     "inner_diameter",
@@ -77,6 +86,7 @@ def _select_outer_diameter(
         _choice(candidate, _number(candidate.get("value")), field=str(candidate.get("field") or ""))
         for candidate in candidates
         if str(candidate.get("field") or "") in {"outer_diameter", "mean_diameter", "inner_diameter", "free_length"}
+        and not _is_surface_roughness_candidate(candidate)
     ]
     pool = [item for item in pool if item["value"] is not None and 5 <= float(item["value"]) <= 200]
     pool.extend(_diameter_text_choices(text))
@@ -84,6 +94,10 @@ def _select_outer_diameter(
         return None
 
     max_load_height = max(load_heights) if load_heights else None
+    has_geometry_anchored_candidate = any(
+        _has_outer_geometry_anchor(item["candidate"])
+        for item in pool
+    )
     scored: list[dict[str, Any]] = []
     for item in pool:
         candidate = item["candidate"]
@@ -101,6 +115,12 @@ def _select_outer_diameter(
             score += 0.38
         if _has_outer_tolerance(candidate):
             score += 0.24
+        if _has_outer_geometry_anchor(candidate):
+            score += 0.16
+        elif has_geometry_anchored_candidate:
+            # The assigned field is not sufficient evidence when another
+            # candidate is tied to a dimension marker or tolerance.
+            score -= 0.66
         if max_load_height is not None and value <= max_load_height + max(1.2, max_load_height * 0.08) and not marker:
             score -= 0.28
         if re.search(r"\b[HF][12]\b|力值|载荷|负荷|\d+\s*N|%", evidence, re.IGNORECASE):
@@ -109,7 +129,7 @@ def _select_outer_diameter(
         scored.append(item)
 
     best = max(scored, key=lambda item: item["score"])
-    if not _has_diameter_marker(best["candidate"]) and not _has_outer_tolerance(best["candidate"]):
+    if not _has_outer_geometry_anchor(best["candidate"]):
         return None
     return best
 
@@ -124,6 +144,7 @@ def _select_free_length(
         _choice(candidate, _number(candidate.get("value")), field=str(candidate.get("field") or ""))
         for candidate in candidates
         if str(candidate.get("field") or "") in {"free_length", "body_length", "outer_diameter"}
+        and not _is_surface_roughness_candidate(candidate)
     ]
     pool = [item for item in pool if item["value"] is not None and 2 <= float(item["value"]) <= 300]
     pool.extend(_free_length_text_choices(text, load_heights, outer_choice))
@@ -133,6 +154,8 @@ def _select_free_length(
     max_load_height = max(load_heights) if load_heights else None
     outer_value = float(outer_choice["value"]) if outer_choice and outer_choice.get("value") is not None else None
     outer_is_strong = bool(outer_choice and (_has_diameter_marker(outer_choice["candidate"]) or _has_outer_tolerance(outer_choice["candidate"])))
+
+    has_axis_length_candidate = any(_has_axis_length_anchor(item["candidate"]) for item in pool)
 
     scored: list[dict[str, Any]] = []
     for item in pool:
@@ -146,6 +169,10 @@ def _select_free_length(
             score += 0.08
         elif item["field"] == "outer_diameter":
             score -= 0.38
+        if _has_axis_length_anchor(candidate):
+            score += 0.24
+        elif has_axis_length_candidate:
+            score -= 0.58
         if re.search(r"(自由长|自由长度|自由高度|FREE\s*LENGTH|L0|Lf)", evidence, re.IGNORECASE):
             score += 0.42
         if max_load_height is not None:
@@ -322,9 +349,62 @@ def _candidate_text(candidate: dict[str, Any]) -> str:
     )
 
 
+def _is_surface_roughness_candidate(candidate: dict[str, Any]) -> bool:
+    field = str(candidate.get("field") or "")
+    if field in {"surface_requirement", "surface", "roughness"}:
+        return True
+    return bool(_SURFACE_ROUGHNESS_RE.search(_candidate_text(candidate)))
+
+
+def _has_outer_geometry_anchor(candidate: dict[str, Any]) -> bool:
+    return not _is_surface_roughness_candidate(candidate) and (
+        _has_diameter_marker(candidate) or _has_outer_tolerance(candidate)
+    )
+
+
+def _has_axis_length_anchor(candidate: dict[str, Any]) -> bool:
+    if _is_surface_roughness_candidate(candidate):
+        return False
+    text = _candidate_text(candidate)
+    if re.search(r"(自由长|自由长度|自由高度|FREE\s*LENGTH|\bL0\b|\bLf\b|轴向|兩端)", text, re.IGNORECASE):
+        return True
+    if str(candidate.get("field") or "") not in {"free_length", "body_length"}:
+        return False
+    width, height = _position_size(candidate.get("position"))
+    return width is not None and height is not None and width >= height * 1.35
+
+
+def _position_size(position: Any) -> tuple[float | None, float | None]:
+    if not isinstance(position, dict):
+        return None, None
+    width = _number(position.get("width"))
+    height = _number(position.get("height"))
+    if width is not None and height is not None:
+        return abs(width), abs(height)
+
+    polygon = position.get("polygon")
+    if not isinstance(polygon, list) or len(polygon) < 2:
+        return None, None
+    points = [
+        (float(point[0]), float(point[1]))
+        for point in polygon
+        if isinstance(point, (list, tuple)) and len(point) >= 2
+    ]
+    if len(points) < 2:
+        return None, None
+    xs, ys = zip(*points)
+    return max(xs) - min(xs), max(ys) - min(ys)
+
+
 def _has_diameter_marker(candidate: dict[str, Any]) -> bool:
     text = _candidate_text(candidate)
-    return bool(re.search(r"(外径|外徑|OD|O\.D\.|[ΦØ]|直径|直徑|竖排|豎排|diameter)", text, re.IGNORECASE))
+    return bool(
+        re.search(
+            r"(外径|外徑|OD|O\.D\.|[ΦØ]|直径|直徑|竖排|豎排|vertical|diameter)",
+            text,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _has_outer_tolerance(candidate: dict[str, Any]) -> bool:
@@ -333,7 +413,7 @@ def _has_outer_tolerance(candidate: dict[str, Any]) -> bool:
     text = _candidate_text(candidate)
     return (
         (upper == 0 and lower is not None and lower < 0)
-        or bool(re.search(r"(上偏差\s*0|0\s*[-−/]\s*0\.\d|0/-0\.\d)", text))
+        or bool(re.search(r"(上偏差\s*0|0\s*[-−/]\s*0\.\d+|0/-0\.\d+)", text))
     )
 
 

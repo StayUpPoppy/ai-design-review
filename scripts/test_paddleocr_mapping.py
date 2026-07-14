@@ -78,26 +78,53 @@ def main() -> None:
     assert vertical_by_field["outer_diameter"]["value"] == 25
     assert vertical_by_field["outer_diameter"].get("tolerance_upper") is None
     assert vertical_by_field["outer_diameter"].get("tolerance_lower") is None
-    assert "竖排直径数字 25" in vertical_by_field["outer_diameter"]["evidence"]
+    assert "vertical dimension candidate 25" in vertical_by_field["outer_diameter"]["evidence"]
 
-    partial_vertical_payload = {
+    uqd04_payload = {
         "texts": [
-            _block("5", 1609, 721),
-            _block("2", 1609, 737),
+            _block("30.25", 720, 300),
+            _block("12.5", 1180, 350),
+            _block("8", 1609, 721),
+            _block(".", 1609, 745),
+            _block("2", 1609, 769),
+            _block("5", 1609, 793),
+            _block("0/-0.02", 1640, 800),
             _block("1.材质:SUS304，线径Φ1.5±0.05", 100, 500),
             _block("2.总圈数:4，旋向:右旋", 100, 540),
+            _block("5.力值要求: H1压缩到21.15mm/F1=16N±10% H2压缩到9.668mm/F2=35N±10%", 100, 580),
         ]
     }
-    partial_candidates = ocr_payload_to_candidates(partial_vertical_payload)
-    partial_by_field = {
+    uqd04_candidates = ocr_payload_to_candidates(uqd04_payload)
+    uqd04_by_field = {
         candidate["field"]: candidate
-        for candidate in partial_candidates
+        for candidate in uqd04_candidates
         if candidate["field"] != "load_point"
     }
-    assert partial_by_field["outer_diameter"]["value"] == 25
-    assert partial_by_field["outer_diameter"].get("tolerance_upper") is None
-    assert partial_by_field["outer_diameter"].get("tolerance_lower") is None
-    assert "OCR漏读上方2" in partial_by_field["outer_diameter"]["evidence"]
+    assert uqd04_by_field["outer_diameter"]["value"] == 8.25
+    assert uqd04_by_field["outer_diameter"].get("tolerance_upper") == 0
+    assert uqd04_by_field["outer_diameter"].get("tolerance_lower") == -0.02
+    assert uqd04_by_field["free_length"]["value"] == 30.25
+    assert "one-sided tolerance" in uqd04_by_field["outer_diameter"]["evidence"]
+
+    order2_payload = {
+        "texts": [
+            _block("19", 720, 300),
+            _block("12.5", 1180, 350),
+            _block("27", 1609, 721),
+            _block("0/-0.02", 1640, 760),
+            _block("1.材质:SUS304，线径Φ1.2±0.05", 100, 500),
+            _block("2.总圈数:8，旋向:右旋", 100, 540),
+            _block("5.力值要求: H1压缩到13mm/F1=12N±10% H2压缩到8mm/F2=20N±10%", 100, 580),
+        ]
+    }
+    order2_candidates = ocr_payload_to_candidates(order2_payload)
+    order2_by_field = {
+        candidate["field"]: candidate
+        for candidate in order2_candidates
+        if candidate["field"] != "load_point"
+    }
+    assert order2_by_field["outer_diameter"]["value"] == 27
+    assert order2_by_field["free_length"]["value"] == 19
     print("paddleocr mapping test passed")
 
 

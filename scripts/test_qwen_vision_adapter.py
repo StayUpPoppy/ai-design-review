@@ -5,12 +5,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_design_review.engines.qwen_vision_adapter import parse_qwen_json, qwen_payload_to_candidates
+from ai_design_review.engines.qwen_vision_adapter import (  # noqa: E402
+    QWEN_SYSTEM_PROMPT,
+    parse_qwen_json,
+    qwen_payload_to_candidates,
+)
 from ai_design_review.io_utils import read_json
 from ai_design_review.workflow import DrawingReviewWorkflow
 
 
 def main() -> None:
+    assert "Ra 12.5" in QWEN_SYSTEM_PROMPT
+    assert "H1/H2 只属于 load_points" in QWEN_SYSTEM_PROMPT
     payload = parse_qwen_json(
         """
         ```json

@@ -583,7 +583,7 @@ def _extract_outer_diameter(
     if match:
         value = float(match.group(1))
         lower = -float(match.group(2))
-        if 8 <= value <= 120:
+        if 4 <= value <= 200:
             return [
                 _candidate(
                     "outer_diameter",
@@ -897,75 +897,160 @@ def _polygon_points(polygon: Any) -> list[list[float]]:
 
 
 def _outer_diameter_block(blocks: list[dict[str, Any]]) -> dict[str, Any] | None:
-    candidates = []
+    candidates: list[tuple[float, dict[str, Any]]] = []
     for block in blocks:
         value = _number_from_text(str(block.get("text", "")))
-        if value is None or not 8 <= value <= 120:
+        if value is None or not 4 <= value <= 200:
             continue
-        if _has_nearby_text(block, blocks, {"0"}) and _has_nearby_number(block, blocks, -0.02):
-            candidates.append((value, block))
+        tolerance = _closest_one_sided_tolerance(block, blocks)
+        if tolerance is not None:
+            candidates.append((_distance(block, tolerance), block))
     if candidates:
-        return max(candidates, key=lambda item: item[0])[1]
+        return min(candidates, key=lambda item: item[0])[1]
     return None
 
 
 def _outer_diameter_vertical_cluster(blocks: list[dict[str, Any]]) -> tuple[float, float | None, str, dict[str, Any]] | None:
-    tolerance_like = [
-        block for block in blocks
-        if _looks_like_vertical_tolerance(str(block.get("text", "")))
-    ]
-    for tolerance_block in tolerance_like:
-        nearby_digits = [
-            other for other in blocks
-            if other is not tolerance_block
-            and str(other.get("text", "")).strip() in {"2", "5"}
-            and _distance(tolerance_block, other) <= 120
+    anchored: list[tuple[int, float, float, str, dict[str, Any]]] = []
+    has_one_sided_tolerance = False
+    for tolerance_block in blocks:
+        lower = _one_sided_tolerance_lower(str(tolerance_block.get("text", "")))
+        if lower is None:
+            continue
+        has_one_sided_tolerance = True
+        nearby = [
+            block
+            for block in blocks
+            if block is not tolerance_block and _distance(tolerance_block, block) <= 240
         ]
-        digits = {str(item.get("text", "")).strip(): item for item in nearby_digits}
-        if "2" not in digits or "5" not in digits:
-            continue
-        two = digits["2"]
-        five = digits["5"]
-        value = 25.0 if (two.get("position") or {}).get("y", 0) < (five.get("position") or {}).get("y", 0) else 52.0
-        if value != 25.0:
-            continue
-        evidence = " / ".join(
-            str(item.get("text", "")).strip()
-            for item in [tolerance_block, digits["5"], digits["2"]]
-            if item.get("text")
+        for value, fragments, anchor in _vertical_number_clusters(nearby):
+            if not _same_vertical_dimension_lane(tolerance_block, anchor):
+                continue
+            distance = _distance(tolerance_block, anchor)
+            evidence = " / ".join(
+                [
+                    f"vertical dimension {''.join(str(item.get('text', '')).strip() for item in fragments)}",
+                    f"one-sided tolerance {str(tolerance_block.get('text', '')).strip()}",
+                ]
+            )
+            anchored.append((len(fragments), distance, value, evidence, anchor))
+
+    if anchored:
+        _, _, value, evidence, anchor = min(
+            anchored,
+            key=lambda item: (-item[0], item[1]),
         )
-        return value, -0.02, evidence, tolerance_block
-    digits = [
-        block for block in blocks
-        if str(block.get("text", "")).strip() in {"2", "5"}
+        tolerance_block = _closest_one_sided_tolerance(anchor, blocks)
+        lower = _one_sided_tolerance_lower(str(tolerance_block.get("text", ""))) if tolerance_block else None
+        return value, lower, evidence, anchor
+
+    if has_one_sided_tolerance:
+        return None
+
+    # A tolerance can be missed by OCR. Keep a low-confidence fallback based
+    # on a rightmost multi-character vertical number cluster, never on a
+    # hard-coded value or a single number near a surface-finish symbol.
+    fallback = [
+        item
+        for item in _vertical_number_clusters(blocks)
+        if len(item[1]) >= 2
+    ]
+    if fallback:
+        value, fragments, anchor = max(
+            fallback,
+            key=lambda item: (
+                _position_x(item[2]),
+                len(item[1]),
+            ),
+        )
+        evidence = f"vertical dimension candidate {''.join(str(item.get('text', '')).strip() for item in fragments)}"
+        return value, None, evidence, anchor
+    return None
+
+
+def _vertical_number_clusters(blocks: list[dict[str, Any]]) -> list[tuple[float, list[dict[str, Any]], dict[str, Any]]]:
+    fragments = [
+        block
+        for block in blocks
+        if re.fullmatch(r"[0-9.]+", str(block.get("text", "")).strip())
         and (block.get("position") or {}).get("x") is not None
         and (block.get("position") or {}).get("y") is not None
     ]
-    for two in [item for item in digits if str(item.get("text", "")).strip() == "2"]:
-        two_pos = two.get("position") or {}
-        for five in [item for item in digits if str(item.get("text", "")).strip() == "5"]:
-            five_pos = five.get("position") or {}
-            x_close = abs(float(two_pos["x"]) - float(five_pos["x"])) <= 45
-            y_gap = float(five_pos["y"]) - float(two_pos["y"])
-            if not x_close or not 20 <= y_gap <= 100:
-                continue
-            if float(two_pos["x"]) < 1200:
-                continue
-            evidence = f"竖排直径数字 {two.get('text')}{five.get('text')}"
-            return 25.0, None, evidence, two
-    for five in [item for item in digits if str(item.get("text", "")).strip() == "5"]:
-        five_pos = five.get("position") or {}
-        for lower_two in [item for item in digits if str(item.get("text", "")).strip() == "2"]:
-            two_pos = lower_two.get("position") or {}
-            x_close = abs(float(two_pos["x"]) - float(five_pos["x"])) <= 45
-            y_gap = float(two_pos["y"]) - float(five_pos["y"])
-            if not x_close or not 5 <= y_gap <= 40:
-                continue
-            if float(five_pos["x"]) < 1200:
-                continue
-            evidence = f"竖排直径疑似 25（OCR漏读上方2，保留人工确认）"
-            return 25.0, None, evidence, five
+    clusters: list[tuple[float, list[dict[str, Any]], dict[str, Any]]] = []
+    seen: set[tuple[float, tuple[int, ...]]] = set()
+    for block in fragments:
+        raw_value = str(block.get("text", "")).strip()
+        if not re.fullmatch(r"\d+(?:\.\d+)?", raw_value):
+            continue
+        value = float(raw_value)
+        if not 4 <= value <= 200:
+            continue
+        key = (round(value, 4), (id(block),))
+        seen.add(key)
+        clusters.append((value, [block], block))
+
+    for seed in fragments:
+        seed_position = seed.get("position") or {}
+        group = [
+            item
+            for item in fragments
+            if abs(_position_x(item) - float(seed_position["x"])) <= 48
+            and abs(_position_y(item) - float(seed_position["y"])) <= 220
+        ]
+        group.sort(key=_position_y)
+        raw_value = "".join(str(item.get("text", "")).strip() for item in group).strip(".")
+        if not re.fullmatch(r"\d+(?:\.\d+)?", raw_value):
+            continue
+        value = float(raw_value)
+        if not 4 <= value <= 200:
+            continue
+        key = (round(value, 4), tuple(id(item) for item in group))
+        if key in seen:
+            continue
+        seen.add(key)
+        clusters.append((value, group, group[0]))
+    return clusters
+
+
+def _closest_one_sided_tolerance(block: dict[str, Any], blocks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates = [
+        item
+        for item in blocks
+        if item is not block
+        and _one_sided_tolerance_lower(str(item.get("text", ""))) is not None
+        and _same_vertical_dimension_lane(block, item)
+        and _distance(block, item) <= 240
+    ]
+    return min(candidates, key=lambda item: _distance(block, item)) if candidates else None
+
+
+def _one_sided_tolerance_lower(text: str) -> float | None:
+    compact = text.replace(" ", "").replace("O", "0").replace("o", "0")
+    match = re.search(r"(?:0\s*/\s*[-−]?|[-−])\s*(0?\.\d+)", compact)
+    if match:
+        return -float(match.group(1))
+    if "20:0-" in compact or "20.0-" in compact or "20-0" in compact:
+        return -0.02
     return None
+
+
+def _same_vertical_dimension_lane(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_position = left.get("position") or {}
+    right_position = right.get("position") or {}
+    if left_position.get("x") is None or right_position.get("x") is None:
+        return False
+    left_width = float(left_position.get("width") or 0)
+    right_width = float(right_position.get("width") or 0)
+    max_offset = max(80.0, (left_width + right_width) / 2 + 40.0)
+    return abs(_position_x(left) - _position_x(right)) <= max_offset
+
+
+def _position_x(block: dict[str, Any]) -> float:
+    return float((block.get("position") or {}).get("x") or 0)
+
+
+def _position_y(block: dict[str, Any]) -> float:
+    return float((block.get("position") or {}).get("y") or 0)
 
 
 def _looks_like_vertical_tolerance(text: str) -> bool:
@@ -996,7 +1081,10 @@ def _free_length_block(blocks: list[dict[str, Any]], full_text: str) -> dict[str
             continue
         if not min_free < value <= 100:
             continue
-        if outer_value is not None and value >= outer_value:
+        # Free length can be either smaller or larger than the controlled
+        # diameter. Only exclude the same value, which is normally the
+        # diameter dimension being considered a second time.
+        if outer_value is not None and abs(value - outer_value) <= 1e-6:
             continue
         if any(token in text.upper() for token in ("F", "H", "%", "N", "SUS", "GB")):
             continue

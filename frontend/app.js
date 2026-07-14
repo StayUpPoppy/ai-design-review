@@ -475,7 +475,9 @@ async function submitSelectedFile() {
   setBusy(true);
   appendUserMessage(`上传图纸：${state.selectedFile.name}`);
   const providerLabel = ocrProviderInput.selectedOptions[0]?.textContent || "OCR";
-  const activeEngineLabel = useQwenInput?.checked ? "Qwen3.7 视觉识别" : providerLabel;
+  const activeEngineLabel = useQwenInput?.checked
+    ? "Qwen3.7 视觉识别（必要时自动坐标复核）"
+    : providerLabel;
   const thinkingId = appendAssistantText(`正在识别图纸，当前引擎：${activeEngineLabel}...`);
 
   try {

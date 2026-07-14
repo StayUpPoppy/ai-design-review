@@ -11,6 +11,7 @@ from ai_design_review.fusion import fuse_candidates  # noqa: E402
 
 def main() -> None:
     test_reassigns_vertical_diameter_and_axis_length()
+    test_excludes_surface_roughness_from_uqd04_dimensions()
     test_preserves_explicit_labeled_dimensions()
     test_skips_non_compression_context()
     print("dimension role tests passed")
@@ -34,7 +35,7 @@ def test_reassigns_vertical_diameter_and_axis_length() -> None:
         ),
         _candidate("load_point", {"label": "F1", "height": 11.414, "force": 11.9}, "ocr", "H1/F1", 0.78),
         _candidate("load_point", {"label": "F2", "height": 9.474, "force": 15.3}, "ocr", "H2/F2", 0.78),
-        _candidate("outer_diameter", 12.5, "qwen_vision", "局部竖向尺寸 12.5", 0.78),
+        _candidate("outer_diameter", 12.5, "qwen_vision", "surface roughness triangle Ra 12.5", 0.78),
         _candidate("free_length", 25, "rapidocr", "OCR 将竖排外径数字误归为自由长度 25", 0.62),
         _candidate(
             "outer_diameter",
@@ -50,6 +51,47 @@ def test_reassigns_vertical_diameter_and_axis_length() -> None:
     fused = fuse_candidates(apply_compression_dimension_role_ranking(candidates))
     assert fused["fields"]["outer_diameter"]["value"] == 25, fused["fields"]["outer_diameter"]
     assert fused["fields"]["free_length"]["value"] == 15, fused["fields"]["free_length"]
+    assert "dimension_role_ranker" in fused["fields"]["outer_diameter"]["source"]
+    assert "dimension_role_ranker" in fused["fields"]["free_length"]["source"]
+
+
+def test_excludes_surface_roughness_from_uqd04_dimensions() -> None:
+    candidates = [
+        _note(
+            """
+            UQD04阳接头弹簧 压缩弹簧
+            H1=21.15mm/F1=16N±10%
+            H2=9.668mm/F2=35N±10%
+            30.25
+            12.5
+            """
+        ),
+        _candidate("load_point", {"label": "F1", "height": 21.15, "force": 16}, "rapidocr", "H1/F1", 0.78),
+        _candidate("load_point", {"label": "F2", "height": 9.668, "force": 35}, "rapidocr", "H2/F2", 0.78),
+        _candidate("outer_diameter", 12.5, "qwen_vision", "roughness symbol ▽ 12.5", 0.88),
+        _candidate("free_length", 12.5, "qwen_vision", "surface roughness triangle 12.5", 0.86),
+        _candidate(
+            "outer_diameter",
+            8.25,
+            "rapidocr",
+            "vertical dimension 8.25 / one-sided tolerance 0/-0.02",
+            0.72,
+            tolerance_upper=0,
+            tolerance_lower=-0.02,
+        ),
+        _candidate(
+            "free_length",
+            30.25,
+            "rapidocr",
+            "axis length 30.25",
+            0.72,
+            position={"x": 720, "y": 300, "width": 120, "height": 20},
+        ),
+    ]
+
+    fused = fuse_candidates(apply_compression_dimension_role_ranking(candidates))
+    assert fused["fields"]["outer_diameter"]["value"] == 8.25, fused["fields"]["outer_diameter"]
+    assert fused["fields"]["free_length"]["value"] == 30.25, fused["fields"]["free_length"]
     assert "dimension_role_ranker" in fused["fields"]["outer_diameter"]["source"]
     assert "dimension_role_ranker" in fused["fields"]["free_length"]["source"]
 
@@ -96,6 +138,7 @@ def _candidate(
     *,
     tolerance_upper=None,
     tolerance_lower=None,
+    position=None,
 ) -> dict:
     return {
         "field": field,
@@ -107,6 +150,7 @@ def _candidate(
         "confidence": confidence,
         "tolerance_upper": tolerance_upper,
         "tolerance_lower": tolerance_lower,
+        "position": position,
     }
 
 

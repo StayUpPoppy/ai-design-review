@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import uuid
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -206,6 +207,30 @@ async def create_review(
             write_json(job_dir / "qwen_vision_raw.json", qwen_payload)
         except Exception as exc:
             warnings.append(f"Qwen vision extraction failed: {type(exc).__name__}: {exc}")
+
+    if _needs_dimension_grounding_ocr(candidates, uploaded_file_info, candidate_sources):
+        try:
+            warnings.append(
+                "Qwen 核心尺寸缺少可定位依据，已自动调用本地 RapidOCR 做坐标交叉复核。"
+            )
+            ocr_payload = await run_in_threadpool(
+                UnifiedOcrEngine(
+                    provider="rapidocr",
+                    work_dir=job_dir / "ocr_dimension_grounding_pages",
+                    diagnostics_path=job_dir / "ocr_dimension_grounding_diagnostics.json",
+                    dpi=240,
+                ).extract_with_raw,
+                drawing_path,
+            )
+            candidates.extend(ocr_payload.get("candidates", []))
+            raw_payloads["rapidocr_dimension_grounding"] = ocr_payload
+            candidate_sources.append("rapidocr_dimension_grounding")
+            warnings.extend(str(item) for item in ocr_payload.get("warnings", []))
+        except OcrProviderError as exc:
+            diagnostics_url = _artifact_url(job_id, Path("ocr_dimension_grounding_diagnostics.json"))
+            warnings.append(f"Dimension-grounding OCR failed: {exc}; diagnostics_url={diagnostics_url}")
+        except Exception as exc:
+            warnings.append(f"Dimension-grounding OCR failed: {type(exc).__name__}: {exc}")
 
     if use_geometry:
         try:
@@ -600,6 +625,71 @@ def _candidate_list_from_payload(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(payload, list):
         raise HTTPException(status_code=400, detail="Candidate JSON must be a list or contain candidates.")
     return payload
+
+
+def _needs_dimension_grounding_ocr(
+    candidates: list[dict[str, Any]],
+    file_info: dict[str, Any],
+    candidate_sources: list[str],
+) -> bool:
+    """Run local coordinate OCR only when Qwen leaves core dimensions ungrounded."""
+    if file_info.get("kind") not in {"pdf", "image"}:
+        return False
+    if any("ocr" in str(source).lower() for source in candidate_sources):
+        return False
+
+    qwen_candidates = [
+        candidate
+        for candidate in candidates
+        if "qwen" in str(candidate.get("source") or "").lower()
+    ]
+    if not qwen_candidates or not _looks_like_compression_drawing(qwen_candidates):
+        return False
+
+    outer_candidates = [item for item in qwen_candidates if item.get("field") == "outer_diameter"]
+    free_candidates = [item for item in qwen_candidates if item.get("field") == "free_length"]
+    if not outer_candidates or not free_candidates:
+        return True
+    if not any(_has_outer_dimension_anchor(item) for item in outer_candidates):
+        return True
+    if not any(_has_free_length_anchor(item) for item in free_candidates):
+        return True
+
+    outer_values = {str(item.get("value")) for item in outer_candidates if item.get("value") not in (None, "")}
+    free_values = {str(item.get("value")) for item in free_candidates if item.get("value") not in (None, "")}
+    return bool(outer_values and outer_values == free_values)
+
+
+def _looks_like_compression_drawing(candidates: list[dict[str, Any]]) -> bool:
+    text = " ".join(
+        str(candidate.get(key) or "")
+        for candidate in candidates
+        for key in ("field", "value", "evidence", "suggested_region")
+    )
+    return (
+        any(candidate.get("field") == "load_point" for candidate in candidates)
+        or bool(re.search(r"(compression\s+spring|压缩弹簧|压簧|圆柱螺旋)", text, re.IGNORECASE))
+    )
+
+
+def _has_outer_dimension_anchor(candidate: dict[str, Any]) -> bool:
+    if candidate.get("tolerance_upper") == 0 and candidate.get("tolerance_lower") not in (None, ""):
+        return True
+    text = " ".join(
+        str(candidate.get(key) or "")
+        for key in ("evidence", "suggested_region")
+    )
+    if re.search(r"(roughness|\b(?:ra|rz)\s*\d|粗糙度|表面粗糙|小三角|[▽▼⌕])", text, re.IGNORECASE):
+        return False
+    return bool(re.search(r"(outer\s*diameter|outer\s*dia|外径|直径|\bOD\b|[ΦØ]|0\s*/\s*-?0\.\d+)", text, re.IGNORECASE))
+
+
+def _has_free_length_anchor(candidate: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(candidate.get(key) or "")
+        for key in ("evidence", "suggested_region")
+    )
+    return bool(re.search(r"(free\s*length|自由长度|自由长|轴向|两端|兩端|\bL0\b|\bLf\b)", text, re.IGNORECASE))
 
 
 def _needs_ocr_fallback(
