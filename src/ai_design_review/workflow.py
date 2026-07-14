@@ -11,6 +11,7 @@ from .preprocessing import probe_file
 from .rules import REQUIRED_FIELDS, determine_erp_ready, overall_status, run_rule_checks, should_require_human_review
 from .semantic import apply_spring_semantic_mapping
 from .standardizers import standardize_spring
+from .standardizers.coil_counts import apply_company_simple_active_coils
 from .spring_templates import (
     classify_spring_type,
     field_default_unit,
@@ -73,6 +74,7 @@ class DrawingReviewWorkflow:
         spring_template = template_for(spring_type)
         spring_parameters = self._build_spring_parameters(fused["fields"], fused["load_points"], spring_type)
         self._apply_company_default_accuracy(spring_parameters, spring_type)
+        apply_company_simple_active_coils(spring_type, spring_parameters)
         spring_features = self._build_spring_features(fused["fields"], spring_type)
         technical_requirements = self._build_technical_requirements(fused["fields"])
         if run_standardization:
@@ -383,6 +385,7 @@ def apply_standardization_to_review(
     spring_type = spring_type or review.get("spring_template", {}).get("spring_type") or "unknown_spring"
     spring_parameters = review.get("spring_parameters") or {}
     _apply_company_default_accuracy(spring_parameters, spring_type)
+    apply_company_simple_active_coils(spring_type, spring_parameters)
     standardization = standardize_spring(
         spring_type,
         spring_parameters,

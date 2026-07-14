@@ -67,11 +67,7 @@ def fuse_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
         if conflict:
             conflicts.append(conflict)
 
-    load_points = sorted(
-        load_points,
-        key=lambda item: item.get("value", {}).get("height", 999999),
-        reverse=True,
-    )
+    load_points = _merge_load_points(load_points, conflicts)
 
     return {
         "fields": fields,
@@ -82,7 +78,13 @@ def fuse_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _candidate_score(candidate: dict[str, Any]) -> float:
     confidence = float(candidate.get("confidence", 0) or 0)
-    return confidence * source_weight(str(candidate.get("source", "")))
+    return confidence * _candidate_source_weight(candidate)
+
+
+def _candidate_source_weight(candidate: dict[str, Any]) -> float:
+    source = candidate.get("source", "")
+    sources = source if isinstance(source, list) else [source]
+    return max((source_weight(str(item)) for item in sources), default=0.5)
 
 
 def _merge_field(field: str, ordered: list[dict[str, Any]]) -> dict[str, Any]:
@@ -129,8 +131,121 @@ def _normalize_load_point(candidate: dict[str, Any]) -> dict[str, Any]:
         "page": candidate.get("page", 1),
         "position": candidate.get("position"),
         "suggested_region": candidate.get("suggested_region", ""),
-        "need_human_review": source_weight(str(candidate.get("source", ""))) < 0.98,
+        "need_human_review": _candidate_source_weight(candidate) < 0.98,
     }
+
+
+def _merge_load_points(load_points: list[dict[str, Any]], conflicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge duplicate F1/F2 candidates emitted by multiple extraction engines."""
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for index, point in enumerate(load_points):
+        label = str((point.get("value") or {}).get("label") or "").strip().upper()
+        key = label or f"__unnamed_{index}"
+        groups[key].append(point)
+
+    merged = [_merge_load_point(label, points, conflicts) for label, points in groups.items()]
+    return sorted(
+        merged,
+        key=lambda item: _number_or_default((item.get("value") or {}).get("height"), 999999),
+        reverse=True,
+    )
+
+
+def _merge_load_point(
+    label: str,
+    points: list[dict[str, Any]],
+    conflicts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    ordered = sorted(points, key=_candidate_score, reverse=True)
+    best = ordered[0]
+    merged_value: dict[str, Any] = {}
+    value_keys = (
+        "label",
+        "height",
+        "height_unit",
+        "force",
+        "force_unit",
+        "force_tolerance_percent",
+        "load_tolerance_upper",
+        "load_tolerance_lower",
+        "load_tolerance_percent",
+        "test_height_type",
+    )
+    for key in value_keys:
+        merged_value[key] = _first_load_point_value(ordered, key)
+    merged_value["label"] = label if not label.startswith("__unnamed_") else merged_value.get("label")
+    merged_value["reference_only"] = all(bool((item.get("value") or {}).get("reference_only")) for item in ordered)
+
+    for key, display_name in (("height", "height"), ("force", "force")):
+        values = [_load_point_value(item, key) for item in ordered]
+        values = [value for value in values if value not in (None, "")]
+        if len(values) > 1 and any(not _values_close(values[0], value) for value in values[1:]):
+            conflicts.append(
+                {
+                    "field": f"load_points.{label}.{key}",
+                    "values": values,
+                    "sources": _all_sources(ordered),
+                    "message": f"Load point {label} has conflicting {display_name} values from multiple sources.",
+                    "need_human_review": True,
+                }
+            )
+
+    confidence = min(0.99, max(float(best.get("confidence", 0) or 0), _combined_confidence(ordered)))
+    has_conflict = any(
+        item.get("field", "").startswith(f"load_points.{label}.")
+        for item in conflicts
+    )
+    return {
+        "field": "load_point",
+        "value": merged_value,
+        "source": _all_sources(ordered),
+        "evidence": _join_evidence(ordered),
+        "confidence": round(confidence, 3),
+        "page": best.get("page", 1),
+        "position": best.get("position"),
+        "suggested_region": best.get("suggested_region", ""),
+        "need_human_review": has_conflict or _needs_human_review(best, ordered),
+    }
+
+
+def _first_load_point_value(points: list[dict[str, Any]], key: str) -> Any:
+    for point in points:
+        value = _load_point_value(point, key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _load_point_value(point: dict[str, Any], key: str) -> Any:
+    return (point.get("value") or {}).get(key)
+
+
+def _all_sources(items: list[dict[str, Any]]) -> list[str]:
+    sources: list[str] = []
+    for item in items:
+        source = item.get("source", "unknown")
+        raw_sources = source if isinstance(source, list) else [source]
+        for value in raw_sources:
+            text = str(value or "unknown")
+            if text not in sources:
+                sources.append(text)
+    return sources
+
+
+def _join_evidence(items: list[dict[str, Any]]) -> str:
+    evidence: list[str] = []
+    for item in items:
+        value = str(item.get("evidence", "")).strip()
+        if value and value not in evidence:
+            evidence.append(value)
+    return " | ".join(evidence)
+
+
+def _number_or_default(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _combined_confidence(items: list[dict[str, Any]]) -> float:
@@ -143,9 +258,8 @@ def _combined_confidence(items: list[dict[str, Any]]) -> float:
 
 
 def _needs_human_review(best: dict[str, Any], ordered: list[dict[str, Any]]) -> bool:
-    source = str(best.get("source", ""))
     confidence = float(best.get("confidence", 0) or 0)
-    if source_weight(source) >= 0.98 and confidence >= 0.95:
+    if _candidate_source_weight(best) >= 0.98 and confidence >= 0.95:
         return False
     if len(ordered) < 2:
         return True

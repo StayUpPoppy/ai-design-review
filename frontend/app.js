@@ -157,6 +157,7 @@ const COMPRESSION_CORE_PARAMETER_FIELDS = new Set([
   "mean_diameter",
   "free_length",
   "total_coils",
+  "active_coils",
   "handedness",
   "end_grinding",
 ]);

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ..io_utils import project_path, read_json
+from .coil_counts import derive_active_coils
 
 
 STANDARD_PATH = project_path("config", "spring_standards", "gbt_1239_2_2009.json")
@@ -27,6 +28,7 @@ def derive_compression_parameters(spring_parameters: dict[str, Any]) -> dict[str
     recognized_mean = _number(_param_value(spring_parameters, "mean_diameter"))
     free_length = _number(_param_value(spring_parameters, "free_length"))
     derived: dict[str, Any] = {}
+    derived.update(derive_active_coils("compression_spring", spring_parameters))
 
     mean_diameter = recognized_mean
     source_fields: list[str] = []
@@ -110,7 +112,7 @@ class CompressionSpringStandardizer:
             results.append(straightness)
         results.append(self._solid_height_result(spring_parameters))
         results.extend(self._load_results(spring_parameters, derived_parameters))
-        stiffness = self._stiffness_result(spring_parameters)
+        stiffness = self._stiffness_result(spring_parameters, derived_parameters)
         if stiffness:
             results.append(stiffness)
         permanent_set = self._permanent_set_result(spring_parameters)
@@ -357,7 +359,8 @@ class CompressionSpringStandardizer:
 
     def _load_results(self, spring_parameters: dict[str, Any], derived: dict[str, Any]) -> list[dict[str, Any]]:
         grade = _grade(spring_parameters, "load_accuracy_grade")
-        active = _number(_param_value(spring_parameters, "active_coils"))
+        active, active_source = _active_coils(spring_parameters, derived)
+        active_note = _active_coil_note(active_source, derived)
         load_points = spring_parameters.get("load_points", []) or []
         if not load_points:
             return []
@@ -394,22 +397,30 @@ class CompressionSpringStandardizer:
                     target_field=f"load_points.{label}.force",
                     rule_id="GBT1239.2-LOAD",
                     standard_no=self.standard_no,
-                    basis=f"表3-15：有效圈数 n={active:g}，{grade}级，指定高度负荷极限偏差 ±{ratio:g}F。",
+                    basis=f"表3-15：有效圈数 n={active:g}，{grade}级，指定高度负荷极限偏差 ±{ratio:g}F。{active_note}",
                     status="suggested",
                     suggested_value=force,
                     suggested_tolerance_upper=tolerance,
                     suggested_tolerance_lower=-tolerance,
                     unit=point.get("force_unit", "N"),
-                    metadata={"deflection": deflections.get(label)},
+                    metadata={
+                        "deflection": deflections.get(label),
+                        "active_coils_source": active_source,
+                    },
                 )
             )
         return results
 
-    def _stiffness_result(self, spring_parameters: dict[str, Any]) -> dict[str, Any] | None:
+    def _stiffness_result(
+        self,
+        spring_parameters: dict[str, Any],
+        derived: dict[str, Any],
+    ) -> dict[str, Any] | None:
         stiffness = _number(_param_value(spring_parameters, "spring_rate"))
         if stiffness is None:
             return None
-        active = _number(_param_value(spring_parameters, "active_coils"))
+        active, active_source = _active_coils(spring_parameters, derived)
+        active_note = _active_coil_note(active_source, derived)
         grade = _grade(spring_parameters, "stiffness_accuracy_grade")
         if not grade or active is None:
             missing_fields = []
@@ -432,12 +443,13 @@ class CompressionSpringStandardizer:
             target_field="spring_rate",
             rule_id="GBT1239.2-STIFF",
             standard_no=self.standard_no,
-            basis=f"表3-16：有效圈数 n={active:g}，{grade}级，刚度极限偏差 ±{ratio:g}F'。",
+            basis=f"表3-16：有效圈数 n={active:g}，{grade}级，刚度极限偏差 ±{ratio:g}F'。{active_note}",
             status="suggested",
             suggested_value=stiffness,
             suggested_tolerance_upper=tolerance,
             suggested_tolerance_lower=-tolerance,
             unit="N/mm",
+            metadata={"active_coils_source": active_source},
         )
 
     def _permanent_set_result(self, spring_parameters: dict[str, Any]) -> dict[str, Any] | None:
@@ -533,6 +545,24 @@ class CompressionSpringStandardizer:
 @lru_cache(maxsize=1)
 def load_compression_rules(path: str | Path | None = None) -> dict[str, Any]:
     return read_json(Path(path) if path else STANDARD_PATH)
+
+
+def _active_coils(
+    spring_parameters: dict[str, Any],
+    derived_parameters: dict[str, Any],
+) -> tuple[float | None, str | None]:
+    direct = _number(_param_value(spring_parameters, "active_coils"))
+    if direct is not None:
+        return direct, "drawing_or_manual"
+    derived = _number(_param_value(derived_parameters, "active_coils"))
+    return (derived, "company_simple_rule") if derived is not None else (None, None)
+
+
+def _active_coil_note(active_source: str | None, derived_parameters: dict[str, Any]) -> str:
+    if active_source != "company_simple_rule":
+        return ""
+    basis = str((derived_parameters.get("active_coils") or {}).get("basis") or "")
+    return basis
 
 
 def _derived_param(field: str, value: Any, unit: str | None, formula: str, source_fields: list[str]) -> dict[str, Any]:

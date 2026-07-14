@@ -41,8 +41,12 @@ def _base_parameters() -> dict:
 
 
 def _assert_derived_parameters() -> None:
-    payload = standardize_compression_spring(_base_parameters())
+    parameters = _base_parameters()
+    parameters.pop("active_coils")
+    payload = standardize_compression_spring(parameters)
     derived = payload["derived_parameters"]
+    assert derived["active_coils"]["value"] == 10
+    assert derived["active_coils"]["formula"] == "total_coils - 2"
     assert derived["mean_diameter"]["value"] == 18
     assert derived["spring_index"]["value"] == 9
     assert derived["slenderness_ratio"]["value"] == 1.6667
@@ -90,8 +94,10 @@ def _assert_need_context_exposes_missing_fields() -> None:
     parameters.pop("end_grinding")
     results = standardize_compression_spring(parameters)["standardization_results"]
     by_rule = {item["rule_id"]: item for item in results}
-    assert by_rule["GBT1239.2-LOAD"]["metadata"]["missing_fields"] == ["active_coils"]
-    assert by_rule["GBT1239.2-STIFF"]["metadata"]["missing_fields"] == ["active_coils"]
+    assert by_rule["GBT1239.2-LOAD"]["status"] == "suggested"
+    assert by_rule["GBT1239.2-LOAD"]["metadata"]["active_coils_source"] == "company_simple_rule"
+    assert by_rule["GBT1239.2-STIFF"]["status"] == "suggested"
+    assert by_rule["GBT1239.2-STIFF"]["metadata"]["active_coils_source"] == "company_simple_rule"
     assert by_rule["GBT1239.2-SOLID"]["metadata"]["missing_fields"] == ["end_grinding"]
 
 
@@ -160,11 +166,14 @@ def _assert_workflow_can_defer_standardization() -> None:
     assert result["standard_selection"]["status"] == "not_started"
     assert result["standardization_results"] == []
     assert result["derived_parameters"] == {}
+    assert result["spring_parameters"]["active_coils"]["value"] == 2
+    assert result["spring_parameters"]["active_coils"]["derived_rule_id"] == "COMPANY-SIMPLE-ACTIVE-COILS-V1"
 
     apply_standardization_to_review(result)
     assert result["standard_selection"]["selected_standard"] == "GB/T 1239.2-2009"
     assert result["standard_selection"]["selection_source"] == "wire_diameter_threshold"
     assert result["derived_parameters"]["mean_diameter"]["value"] == 23.5
+    assert "active_coils" not in result["derived_parameters"]
     assert any(item["rule_id"] == "GBT1239.2-DIA" for item in result["standardization_results"])
 
 

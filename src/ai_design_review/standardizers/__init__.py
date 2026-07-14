@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..standard_selector import COLD_COILED_STANDARD, select_standard
+from .coil_counts import derive_active_coils
 from .compression import derive_compression_parameters, standardize_compression_spring
 
 
@@ -36,7 +37,7 @@ def standardize_spring(
             "standard_selection": standard_selection,
         }
     return {
-        "derived_parameters": {},
+        "derived_parameters": derive_active_coils(spring_type, spring_parameters),
         "standardization_results": [],
         "standard_selection": standard_selection,
     }
