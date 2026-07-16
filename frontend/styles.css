@@ -988,6 +988,21 @@ button:disabled {
   font-size: 11px;
 }
 
+.data-row.parameter-risk-blocked {
+  background: #fff8f8;
+  box-shadow: inset 3px 0 0 #dc4c4c;
+}
+
+.data-row.parameter-risk-warning {
+  background: #fffdf6;
+  box-shadow: inset 3px 0 0 #d69324;
+}
+
+.data-row.parameter-risk-needs_input {
+  background: #f7fbff;
+  box-shadow: inset 3px 0 0 #4e81c9;
+}
+
 .data-input-cell {
   display: block;
 }
@@ -1466,6 +1481,127 @@ textarea {
   border-color: #d9e4f5;
   background: #f7fbff;
   color: #355f9d;
+}
+
+.generation-readiness-status.blocked,
+.parameter-reasonableness-status.blocked {
+  border-color: #efbbbb;
+  background: #fff3f3;
+  color: #b13636;
+}
+
+.parameter-reasonableness-block {
+  display: grid;
+  gap: 10px;
+}
+
+.parameter-reasonableness-status {
+  border: 1px solid #d7e0ec;
+  border-radius: 999px;
+  background: #f7f9fc;
+  color: #536178;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.parameter-reasonableness-status.pass {
+  border-color: #b9e2cb;
+  background: #f1fbf5;
+  color: #197b4e;
+}
+
+.parameter-reasonableness-status.warning {
+  border-color: #f0d7a9;
+  background: #fffaf0;
+  color: #9a6716;
+}
+
+.parameter-reasonableness-status.needs_input {
+  border-color: #d9e4f5;
+  background: #f7fbff;
+  color: #355f9d;
+}
+
+.parameter-reasonableness-summary {
+  margin: 0;
+  color: #28384c;
+  line-height: 1.55;
+}
+
+.parameter-reasonableness-list {
+  display: grid;
+  gap: 8px;
+}
+
+.parameter-reasonableness-item {
+  display: grid;
+  gap: 5px;
+  border: 1px solid #e5ebf3;
+  border-left: 3px solid #8aa0bd;
+  border-radius: 7px;
+  padding: 10px;
+  background: #fbfdff;
+}
+
+.parameter-reasonableness-item.blocked {
+  border-color: #f1caca;
+  border-left-color: #dc4c4c;
+  background: #fff9f9;
+}
+
+.parameter-reasonableness-item.warning {
+  border-color: #f1dfb9;
+  border-left-color: #d69324;
+  background: #fffdf8;
+}
+
+.parameter-reasonableness-item.needs_input {
+  border-color: #d6e2f4;
+  border-left-color: #4e81c9;
+  background: #f8fbff;
+}
+
+.parameter-reasonableness-item-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.parameter-reasonableness-item-head strong {
+  color: #2d3f56;
+  font-size: 12px;
+}
+
+.parameter-reasonableness-item-head small,
+.parameter-reasonableness-item > small {
+  color: #66758a;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.parameter-reasonableness-item p {
+  margin: 0;
+  color: #253149;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.parameter-reasonableness-item b {
+  color: #41536b;
+}
+
+.parameter-reasonableness-item button {
+  justify-self: start;
+  min-height: 28px;
+  font-size: 12px;
+}
+
+.parameter-reasonableness-empty {
+  color: #4e6a5d;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .generation-readiness-summary {

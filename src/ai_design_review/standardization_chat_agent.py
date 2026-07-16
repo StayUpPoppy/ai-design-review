@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .generation_readiness import assess_generation_readiness
-from .spring_feasibility import assess_parameter_change_set
+from .spring_feasibility import assess_parameter_change_set, assess_parameter_reasonableness
 from .spring_templates import FIELD_LABELS
 from .standard_knowledge import retrieve_standard_chunks
 from .standardization_chat_llm import StandardizationChatLLMEngine
@@ -50,6 +50,8 @@ FULL_PLAN_WORDS = (
     "重新标准化",
 )
 GENERATION_READINESS_WORDS = ("可以重新生图", "能重新生图", "能生成图纸", "可以生成图纸", "还缺哪些参数", "还缺什么参数", "生成参数包", "图纸参数包", "生图参数")
+
+REASONABLENESS_WORDS = ("不合理", "合理性", "是否合理", "哪些问题", "参数问题", "客户确认", "客户沟通", "图纸问题")
 
 PLAN_TARGET_FIELDS = (
     "standard_no",
@@ -125,6 +127,8 @@ def chat_about_standardization(
     if not text:
         raise ValueError("message is required.")
 
+    review["parameter_reasonableness"] = assess_parameter_reasonableness(review)
+
     raw_supplements = supplements if isinstance(supplements, dict) else {}
     target = _detect_target_field(text)
     intent_type = _detect_intent_type(text)
@@ -139,6 +143,8 @@ def chat_about_standardization(
 
     if raw_supplements:
         result = _handle_batch_supplements(review, raw_supplements)
+    elif intent_type == "parameter_reasonableness":
+        result = _handle_parameter_reasonableness(review, text)
     elif intent_type == "generation_readiness":
         result = _handle_generation_readiness(review)
     elif intent_type == "full_plan" and missing_context:
@@ -156,7 +162,11 @@ def chat_about_standardization(
 
     # Missing inputs are deterministic blocking conditions. Ask for them first
     # rather than allowing an LLM to produce a seemingly complete plan.
-    if use_llm and not raw_supplements and result["intent"]["type"] not in {"missing_context", "generation_readiness"}:
+    if use_llm and not raw_supplements and result["intent"]["type"] not in {
+        "missing_context",
+        "generation_readiness",
+        "parameter_reasonableness",
+    }:
         result = _run_llm_chat(review, text, result, llm_engine=llm_engine)
 
     _attach_proposal_feasibility(review, result)
@@ -247,6 +257,41 @@ def _attach_proposal_feasibility(review: dict[str, Any], result: dict[str, Any])
             f"{result.get('reply') or ''}\n\n"
             f"变更预检提示：{proposal_validation['summary']}"
         ).strip()
+
+
+def _handle_parameter_reasonableness(review: dict[str, Any], message: str) -> dict[str, Any]:
+    assessment = review.get("parameter_reasonableness") or assess_parameter_reasonableness(review)
+    issues = [item for item in assessment.get("issues", []) if isinstance(item, dict)]
+    status = str(assessment.get("status") or "pass")
+    if not issues:
+        return _response(
+            "当前已识别参数未发现明显几何矛盾或当前标准适用范围风险。仍建议人工确认识别值和客户工况。",
+            intent_type="parameter_reasonableness",
+            target_field="",
+            status="pass",
+        )
+
+    sections = []
+    for item in issues[:5]:
+        sections.append(
+            f"【{item.get('severity')}】{item.get('message') or ''}\n"
+            f"原因：{item.get('explanation') or item.get('basis') or '需要人工复核。'}\n"
+            f"建议向客户确认：{item.get('customer_question') or '请确认相关尺寸。'}"
+        )
+    prefix = "当前图纸存在不能直接采用的参数矛盾。" if status == "blocked" else "当前图纸有需要复核的参数。"
+    if status == "needs_input":
+        prefix = "当前图纸缺少完整判断所需的信息。"
+    reply = f"{prefix}\n\n" + "\n\n".join(sections)
+    if len(issues) > 5:
+        reply += f"\n\n其余 {len(issues) - 5} 项请在参数合理性区域查看。"
+    return _response(
+        reply,
+        intent_type="parameter_reasonableness",
+        target_field=str((issues[0].get("fields") or [""])[0]),
+        target_fields=[str(field) for item in issues for field in item.get("fields") or []],
+        status=status,
+        references=_retrieve_references(review, None, message),
+    )
 
 
 def _handle_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
@@ -629,6 +674,8 @@ def _response(
 
 def _detect_intent_type(text: str) -> str:
     normalized = text.lower()
+    if any(word in text for word in REASONABLENESS_WORDS):
+        return "parameter_reasonableness"
     if any(word in text for word in GENERATION_READINESS_WORDS):
         return "generation_readiness"
     if any(word in text for word in FULL_PLAN_WORDS):

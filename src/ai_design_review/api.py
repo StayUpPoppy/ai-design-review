@@ -29,6 +29,7 @@ from .preprocessing import IMAGE_EXTENSIONS, probe_file, render_pdf_with_pdftopp
 from .standard_knowledge import retrieve_standard_chunks
 from .standardization_chat_agent import chat_about_standardization, standardization_chat_context_needs_refresh
 from .standardization_chat_llm import standardization_chat_llm_runtime_status
+from .spring_feasibility import assess_parameter_reasonableness
 from .workflow import DrawingReviewWorkflow, apply_standardization_to_review
 
 
@@ -387,6 +388,16 @@ async def standardize_review_payload(payload: dict[str, Any] | None = Body(None)
         "llm_standardization": _llm_standardization_summary(llm_standardization_payload),
         "review": review,
     }
+
+
+@app.post("/api/reviews/reasonableness")
+def assess_review_reasonableness(payload: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
+    """Return a lightweight deterministic diagnostic for the caller's current review state."""
+    review = (payload or {}).get("review")
+    if not isinstance(review, dict):
+        raise HTTPException(status_code=400, detail="reasonableness requires a review object.")
+    assessment = assess_parameter_reasonableness(review)
+    return {"parameter_reasonableness": assessment}
 
 
 @app.post("/api/reviews/{job_id}/standardize")

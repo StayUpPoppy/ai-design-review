@@ -27,6 +27,8 @@ const state = {
   busy: false,
   standardizationChatBusy: false,
   standardizationChatTypingTimer: null,
+  reasonablenessRefreshTimer: null,
+  reasonablenessRequestSerial: 0,
 };
 
 const REQUIRED_FIELDS = [
@@ -543,6 +545,7 @@ async function runStandardization(messageId = state.activeReviewMessageId) {
     setReview(normalizeReview(payload.review), state.imageUrl);
     state.review.standardization_apply_history = [];
     state.review.derived_parameters_stale = false;
+    state.review.parameter_reasonableness_stale = false;
     const context = getReviewContext(messageId);
     if (context) {
       context.review = state.review;
@@ -663,7 +666,7 @@ function replacePendingStandardizationChatTurn(clientId, assistantText, isError 
 
 function refreshReviewSurfaces(options = {}) {
   if (!state.review) return;
-  const conversationScrollTop = conversation.scrollTop;
+  const reviewScrollState = captureReviewScrollState();
   refreshDerivedStatus(state.review);
   exportButton.disabled = false;
   const context = getReviewContext(state.activeReviewMessageId);
@@ -682,7 +685,7 @@ function refreshReviewSurfaces(options = {}) {
   if (options.scrollChat) {
     requestAnimationFrame(scrollStandardizationChatToBottom);
   } else {
-    restoreConversationScroll(conversationScrollTop);
+    restoreReviewScrollState(reviewScrollState);
   }
 }
 
@@ -716,6 +719,69 @@ function restoreReviewScrollState(scrollState) {
   requestAnimationFrame(() => {
     restore();
     requestAnimationFrame(restore);
+  });
+}
+
+function scheduleParameterReasonablenessRefresh(messageId = state.activeReviewMessageId) {
+  clearTimeout(state.reasonablenessRefreshTimer);
+  state.reasonablenessRefreshTimer = setTimeout(() => {
+    refreshParameterReasonableness(messageId);
+  }, 180);
+}
+
+async function refreshParameterReasonableness(messageId = state.activeReviewMessageId) {
+  if (!state.review) return;
+  const requestId = ++state.reasonablenessRequestSerial;
+  const requestReview = normalizeReview(structuredClone(state.review));
+  try {
+    const response = await fetch(apiUrl("/api/reviews/reasonableness"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ review: requestReview }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.parameter_reasonableness) return;
+    if (requestId !== state.reasonablenessRequestSerial || !state.review) return;
+    state.review.parameter_reasonableness = payload.parameter_reasonableness;
+    state.review.parameter_reasonableness_stale = false;
+    const context = getReviewContext(messageId);
+    if (context) context.review = state.review;
+    syncParameterReasonablenessSurfaces(messageId);
+  } catch {
+    // Keep the last diagnostic visible while the local API is unavailable.
+  }
+}
+
+function syncParameterReasonablenessSurfaces(messageId = state.activeReviewMessageId) {
+  if (!state.review) return;
+  refreshDerivedStatus(state.review);
+  document.querySelectorAll(".summary-strip").forEach((node) => {
+    node.outerHTML = renderSummaryHtml(state.review);
+  });
+  document.querySelectorAll('[data-kind="parameter-reasonableness"]').forEach((node) => {
+    const html = renderParameterReasonablenessHtml(state.review);
+    if (html) node.outerHTML = html;
+  });
+  document.querySelectorAll('[data-kind="param"]').forEach((row) => {
+    const severity = reasonablenessSeverityForField(state.review, row.dataset.field);
+    ["blocked", "warning", "needs_input"].forEach((value) => row.classList.toggle(`parameter-risk-${value}`, severity === value));
+  });
+  document.querySelectorAll('[data-kind="load_point"]').forEach((row) => {
+    const point = state.review.spring_parameters?.load_points?.[Number(row.dataset.index)];
+    const field = `load_points.${point?.label || `F${Number(row.dataset.index) + 1}`}`;
+    const severity = reasonablenessSeverityForField(state.review, field);
+    ["blocked", "warning", "needs_input"].forEach((value) => row.classList.toggle(`parameter-risk-${value}`, severity === value));
+  });
+  bindReasonablenessIssueFocus(document, messageId);
+}
+
+function bindReasonablenessIssueFocus(root, messageId = state.activeReviewMessageId) {
+  root.querySelectorAll('[data-role="focus-reasonableness-field"]').forEach((button) => {
+    if (button.dataset.boundReasonablenessFocus) return;
+    button.dataset.boundReasonablenessFocus = "true";
+    button.addEventListener("click", () => {
+      focusMissingStandardizationField(button.dataset.field || "", messageId);
+    });
   });
 }
 
@@ -1008,6 +1074,75 @@ function renderDrawingCanvasHtml(className, imageUrl = state.imageUrl) {
   `;
 }
 
+function renderParameterReasonablenessHtml(review) {
+  const assessment = review?.parameter_reasonableness || {};
+  const status = assessment.status || "not_applicable";
+  const issues = Array.isArray(assessment.issues) ? assessment.issues : [];
+  const labels = {
+    pass: "参数关系正常",
+    warning: "存在风险提示",
+    blocked: "存在不可用参数",
+    needs_input: "需要补充信息",
+    not_applicable: "暂不适用",
+  };
+  if (status === "not_applicable") return "";
+  return `
+    <section class="review-block parameter-reasonableness-block" data-kind="parameter-reasonableness">
+      <div class="block-head">
+        <h2>参数合理性</h2>
+        <span class="parameter-reasonableness-status ${escapeHtml(status)}">${escapeHtml(labels[status] || "待核对")}</span>
+      </div>
+      <p class="parameter-reasonableness-summary">${escapeHtml(assessment.summary || "正在核对参数关系。")}</p>
+      ${issues.length ? `
+        <div class="parameter-reasonableness-list">
+          ${issues.map((item, index) => {
+            const fields = Array.isArray(item.fields) ? item.fields.filter(Boolean) : [];
+            const target = fields[0] || "";
+            return `
+              <article class="parameter-reasonableness-item ${escapeHtml(item.severity || "warning")}">
+                <div class="parameter-reasonableness-item-head">
+                  <strong>${escapeHtml(reasonablenessSeverityLabel(item.severity))}</strong>
+                  <small>${escapeHtml(item.rule_id || `RULE-${index + 1}`)}</small>
+                </div>
+                <p>${escapeHtml(item.message || "参数需要复核。")}</p>
+                ${item.calculation ? `<small><b>计算：</b>${escapeHtml(item.calculation)}</small>` : ""}
+                ${item.basis ? `<small><b>依据：</b>${escapeHtml(item.basis)}</small>` : ""}
+                ${item.explanation ? `<small><b>说明：</b>${escapeHtml(item.explanation)}</small>` : ""}
+                ${item.customer_question ? `<small><b>建议向客户确认：</b>${escapeHtml(item.customer_question)}</small>` : ""}
+                ${target ? `<button type="button" class="secondary-action" data-role="focus-reasonableness-field" data-field="${escapeHtml(target)}">定位参数</button>` : ""}
+              </article>
+            `;
+          }).join("")}
+        </div>
+      ` : `<div class="parameter-reasonableness-empty">未发现明显几何矛盾或当前标准适用范围风险，仍请确认识别值与使用工况。</div>`}
+    </section>
+  `;
+}
+
+function reasonablenessSeverityLabel(severity) {
+  const labels = {
+    blocked: "不可用",
+    warning: "风险提示",
+    needs_input: "待补充",
+  };
+  return labels[severity] || "待核对";
+}
+
+function reasonablenessSeverityForField(review, field) {
+  const target = String(field || "");
+  const ranks = { blocked: 3, warning: 2, needs_input: 1 };
+  let result = "";
+  for (const issue of review?.parameter_reasonableness?.issues || []) {
+    const fields = Array.isArray(issue?.fields) ? issue.fields : [];
+    const matches = fields.some((candidate) => {
+      const value = String(candidate || "");
+      return value === target || value.startsWith(`${target}.`) || target.startsWith(`${value}.`);
+    });
+    if (matches && (ranks[issue.severity] || 0) > (ranks[result] || 0)) result = issue.severity;
+  }
+  return result;
+}
+
 function renderParameterTableHtml(review) {
   const params = review.spring_parameters || {};
   const fieldGroups = getParameterFieldGroups(params, review);
@@ -1165,8 +1300,12 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
       badges.push("图纸识别");
     }
   }
+  const reasonablenessSeverity = reasonablenessSeverityForField(state.review, field);
+  if (reasonablenessSeverity) {
+    badges.push(reasonablenessSeverityLabel(reasonablenessSeverity));
+  }
   return `
-    <div class="data-row" data-kind="param" data-field="${escapeHtml(field)}">
+    <div class="data-row${reasonablenessSeverity ? ` parameter-risk-${escapeHtml(reasonablenessSeverity)}` : ""}" data-kind="param" data-field="${escapeHtml(field)}">
       <div class="data-label">
         <strong title="${escapeHtml(label)}">${escapeHtml(label + requiredMark)}</strong>
         ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
@@ -1189,8 +1328,9 @@ function loadPointRowHtml(point, index, review = state.review) {
   const evidence = point.evidence || "";
   const label = point.label || `F${index + 1}`;
   const tolerance = loadPointToleranceDisplay(point, label, review);
+  const reasonablenessSeverity = reasonablenessSeverityForField(review, `load_points.${label}`);
   return `
-    <div class="data-row load-point" data-kind="load_point" data-index="${index}">
+    <div class="data-row load-point${reasonablenessSeverity ? ` parameter-risk-${escapeHtml(reasonablenessSeverity)}` : ""}" data-kind="load_point" data-index="${index}">
       <div class="data-label">
         <strong title="${escapeHtml(label)}">${escapeHtml(label)}</strong>
         ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
@@ -1353,6 +1493,7 @@ function renderGenerationReadinessHtml(review) {
     ready_with_warnings: "可生成，有提示",
     needs_input: "待补充",
     needs_confirmation: "待确认",
+    blocked: "存在不可用参数",
     not_applicable: "暂不适用",
   };
   const ready = ["ready", "ready_with_warnings"].includes(readiness.status);
@@ -1411,6 +1552,8 @@ function assessGenerationReadiness(review) {
     };
   }
   const parameters = review.spring_parameters || {};
+  const reasonableness = review.parameter_reasonableness || {};
+  const reasonablenessStale = Boolean(review.parameter_reasonableness_stale);
   const missing = [];
   const pending = [];
   const warnings = [];
@@ -1461,22 +1604,32 @@ function assessGenerationReadiness(review) {
     const label = TECH_LABELS[item.type] || item.type || "技术要求";
     pending.push(generationIssue(`technical_requirements.${index + 1}`, `技术要求“${label}”尚未人工确认。`, label));
   });
-  const status = missing.length ? "needs_input" : pending.length ? "needs_confirmation" : warnings.length ? "ready_with_warnings" : "ready";
-  const summary = status === "ready"
+  const status = reasonableness.status === "blocked"
+    ? "blocked"
+    : reasonablenessStale
+      ? "needs_confirmation"
+      : missing.length ? "needs_input" : pending.length ? "needs_confirmation" : warnings.length ? "ready_with_warnings" : "ready";
+  const summary = status === "blocked"
+    ? (reasonableness.summary || "存在无法直接采用的参数矛盾。")
+    : status === "ready"
     ? "核心参数、技术要求和标准化状态均已确认，可生成参数包。"
     : status === "ready_with_warnings"
       ? "参数包可以生成，但存在需要在生图前知悉的风险提示。"
       : status === "needs_input"
         ? `还缺少 ${missing.length} 项生成必填信息。`
         : `核心尺寸已齐，但还有 ${pending.length} 项需要人工确认。`;
+  const displaySummary = reasonablenessStale && status !== "blocked"
+    ? "参数已修改，正在重新核对合理性；完成前不能导出生图参数包。"
+    : summary;
   return {
     status,
-    summary,
+    summary: displaySummary,
     missing_fields: dedupeGenerationIssues(missing),
     pending_fields: dedupeGenerationIssues(pending),
     warnings: dedupeGenerationIssues(warnings),
     confirmed_core_count: confirmed,
     core_field_count: COMPRESSION_GENERATION_CORE_FIELDS.length + 1,
+    parameter_reasonableness: reasonableness,
   };
 }
 
@@ -2047,6 +2200,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   const context = getReviewContext(messageId) || activeReviewContext();
   const review = context?.review || state.review;
   if (!review) return;
+  bindReasonablenessIssueFocus(root, messageId);
 
   root.querySelectorAll('[data-action="spring-type"]').forEach((select) => {
     select.addEventListener("change", (event) => {
@@ -2065,18 +2219,23 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       param.value = parseValue(event.target.value, param.value);
       markParamEdited(param, field);
       syncBubbleValue(field, param.value);
-      updateLatestReviewMessage();
+      scheduleParameterReasonablenessRefresh(messageId);
     });
     row.querySelector('[data-role="tolerance"]').addEventListener("change", (event) => {
       activateReviewContext(messageId);
       applyTolerance(param, event.target.value);
       markParamEdited(param, field);
-      updateLatestReviewMessage();
+      scheduleParameterReasonablenessRefresh(messageId);
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
-      toggleParamConfirmation(param, field);
-      updateLatestReviewMessage();
+      const action = toggleParamConfirmation(param, field);
+      const button = row.querySelector('[data-role="confirm"]');
+      if (button) {
+        button.classList.toggle("confirmed", action === "confirmed");
+        button.textContent = confirmationActionLabel(param);
+      }
+      scheduleParameterReasonablenessRefresh(messageId);
     });
   });
 
@@ -2087,24 +2246,29 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       activateReviewContext(messageId);
       point.height = parseValue(event.target.value, point.height);
       markParamEdited(point, pointField, { confirmationField: `load_points_${row.dataset.index}` });
-      updateLatestReviewMessage();
+      scheduleParameterReasonablenessRefresh(messageId);
     });
     row.querySelector('[data-role="force"]').addEventListener("change", (event) => {
       activateReviewContext(messageId);
       point.force = parseValue(event.target.value, point.force);
       markParamEdited(point, pointField, { confirmationField: `load_points_${row.dataset.index}` });
-      updateLatestReviewMessage();
+      scheduleParameterReasonablenessRefresh(messageId);
     });
     row.querySelector('[data-role="load-tolerance"]').addEventListener("change", (event) => {
       activateReviewContext(messageId);
       applyLoadPointTolerance(point, event.target.value);
       markParamEdited(point, pointField, { confirmationField: `load_points_${row.dataset.index}` });
-      updateLatestReviewMessage();
+      scheduleParameterReasonablenessRefresh(messageId);
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
-      toggleParamConfirmation(point, `load_points_${row.dataset.index}`, { invalidationField: pointField });
-      updateLatestReviewMessage();
+      const action = toggleParamConfirmation(point, `load_points_${row.dataset.index}`, { invalidationField: pointField });
+      const button = row.querySelector('[data-role="confirm"]');
+      if (button) {
+        button.classList.toggle("confirmed", action === "confirmed");
+        button.textContent = confirmationActionLabel(point);
+      }
+      scheduleParameterReasonablenessRefresh(messageId);
     });
   });
 
@@ -2113,6 +2277,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     row.querySelector('[data-role="confirm-standard"]')?.addEventListener("click", () => {
       activateReviewContext(messageId);
       const applied = applyStandardizationResults([item], { mode: "single" });
+      if (applied.count) scheduleParameterReasonablenessRefresh(messageId);
       updateLatestReviewMessage(applied.count ? "已应用标准化建议，请继续核对导出数据。" : "该建议当前无法应用，请重新标准化后再试。");
     });
   });
@@ -2121,12 +2286,14 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     activateReviewContext(messageId);
     const plan = standardizationBatchPlan(state.review);
     const applied = applyStandardizationResults(plan.items.map(({ item }) => item), { mode: "batch" });
+    if (applied.count) scheduleParameterReasonablenessRefresh(messageId);
     updateLatestReviewMessage(applied.count ? `已应用 ${applied.count} 项标准化建议，可继续修改或导出。` : "暂无可批量应用的标准化建议。");
   });
 
   root.querySelector('[data-action="undo-standardization-batch"]')?.addEventListener("click", () => {
     activateReviewContext(messageId);
     const reverted = undoLastStandardizationApplication();
+    if (reverted) scheduleParameterReasonablenessRefresh(messageId);
     updateLatestReviewMessage(reverted ? `已撤销上次应用的 ${reverted.applied_count} 项标准化建议。` : "没有可撤销的标准化应用记录。");
   });
 
@@ -2368,6 +2535,7 @@ function applyStandardizationResults(items, options = {}) {
     targets: appliedItems.map((item) => String(item.target_field || "")),
     before,
   });
+  state.review.parameter_reasonableness_stale = true;
   return { count: appliedItems.length, history_id: historyId };
 }
 
@@ -2378,6 +2546,7 @@ function undoLastStandardizationApplication() {
   state.review.spring_parameters = structuredClone(last.before.spring_parameters || {});
   state.review.standardization_results = structuredClone(last.before.standardization_results || []);
   state.review.manual_confirmations = structuredClone(last.before.manual_confirmations || {});
+  state.review.parameter_reasonableness_stale = true;
   state.review.confirmation_history ||= [];
   state.review.confirmation_history.push({
     event: "standardization_application_reverted",
@@ -2551,6 +2720,7 @@ function applyStandardizationChatActions(actions, turn, options = {}) {
     appliedAt: now,
     rollback,
   });
+  state.review.parameter_reasonableness_stale = true;
   return { ok: true, patches, log_id: logId };
 }
 
@@ -2977,7 +3147,7 @@ function switchSpringType(type) {
 }
 
 function updateLatestReviewMessage(title = "已更新结构化尺寸数据，请继续确认。") {
-  const conversationScrollTop = conversation.scrollTop;
+  const reviewScrollState = captureReviewScrollState();
   refreshDerivedStatus(state.review);
   exportButton.disabled = false;
   const context = getReviewContext(state.activeReviewMessageId);
@@ -2996,7 +3166,7 @@ function updateLatestReviewMessage(title = "已更新结构化尺寸数据，请
   if (state.compareOpen) {
     renderCompareOverlay();
   }
-  restoreConversationScroll(conversationScrollTop);
+  restoreReviewScrollState(reviewScrollState);
 }
 
 function openCompareOverlay(messageId = state.activeReviewMessageId) {
@@ -3162,6 +3332,7 @@ function renderCompareDataPanelHtml(review, activeTab) {
     parameters: `
       ${renderTypeSelectorHtml(review)}
       ${renderSummaryHtml(review)}
+      ${renderParameterReasonablenessHtml(review)}
       ${renderParameterTableHtml(review)}
       ${renderRequirementsHtml(review)}
     `,
@@ -3531,6 +3702,12 @@ function normalizeReview(review) {
     references: [],
   };
   cloned.derived_parameters ||= {};
+  cloned.parameter_reasonableness ||= {
+    status: "not_applicable",
+    summary: "当前尚未生成参数合理性诊断。",
+    issues: [],
+  };
+  cloned.parameter_reasonableness_stale ??= false;
   cloned.derived_parameters_stale ??= false;
   cloned.standardization_results ||= [];
   cloned.standardization_apply_history ||= [];
@@ -3604,8 +3781,12 @@ function refreshDerivedStatus(review) {
   const hasBlockingRule = (review.review_results || []).some((rule) => {
     return ["fail", "missing", "need_review"].includes(rule.status);
   });
-  review.human_review_required = hasHumanReview(review);
-  review.erp_ready = !hasBlockingRule && !review.human_review_required && requiredMissing.length === 0;
+  const reasonablenessBlocked = review.parameter_reasonableness?.status === "blocked";
+  review.human_review_required = hasHumanReview(review) || reasonablenessBlocked;
+  review.erp_ready = !hasBlockingRule && !reasonablenessBlocked && !review.human_review_required && requiredMissing.length === 0;
+  if (reasonablenessBlocked) {
+    review.erp_block_reason = review.parameter_reasonableness?.summary || "存在不可用参数。";
+  }
   review.erp_block_reason = review.erp_ready ? "" : review.erp_block_reason || "存在待确认字段或阻断规则。";
   review.drawing_summary.overall_status = review.erp_ready
     ? ((review.review_results || []).some((rule) => rule.status === "warning") ? "warning" : "pass")
@@ -3679,6 +3860,7 @@ function toggleParamConfirmation(param, field, options = {}) {
 function markParamEdited(param, field = "", options = {}) {
   param.need_human_review = true;
   param.source = Array.from(new Set(["human_edited", ...sourceValues(param.source)]));
+  state.review.parameter_reasonableness_stale = true;
   if (!field) return;
   if (options.confirmationField) {
     revokeManualConfirmations(options.confirmationField, "value_edited");

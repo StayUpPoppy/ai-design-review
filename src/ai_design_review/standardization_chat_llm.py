@@ -441,6 +441,7 @@ def _compact_review(review: dict[str, Any]) -> dict[str, Any]:
         "standard_selection": review.get("standard_selection") or {},
         "spring_parameters": _compact_parameters(review.get("spring_parameters") or {}),
         "derived_parameters": review.get("derived_parameters") or {},
+        "parameter_reasonableness": review.get("parameter_reasonableness") or {},
         "standardization_results": [
             {
                 key: item.get(key)

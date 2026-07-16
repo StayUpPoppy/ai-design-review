@@ -10,6 +10,7 @@ from .material_terms import normalize_material
 from .preprocessing import probe_file
 from .rules import REQUIRED_FIELDS, determine_erp_ready, overall_status, run_rule_checks, should_require_human_review
 from .semantic import apply_spring_semantic_mapping
+from .spring_feasibility import assess_parameter_reasonableness
 from .standardizers import standardize_spring
 from .standardizers.coil_counts import apply_company_simple_active_coils
 from .standardizers.stiffness import apply_formula_compression_spring_rate
@@ -132,7 +133,7 @@ class DrawingReviewWorkflow:
         balloons = generate_balloons(spring_parameters, technical_requirements, review_results)
         status = overall_status(review_results)
 
-        return {
+        review = {
             "drawing_summary": {
                 "drawing_name": _value(fused["fields"], "drawing_name", ""),
                 "drawing_no": _value(fused["fields"], "drawing_no", ""),
@@ -164,6 +165,8 @@ class DrawingReviewWorkflow:
             "erp_ready": erp_ready,
             "erp_block_reason": erp_block_reason,
         }
+        _apply_reasonableness_state(review)
+        return review
 
     def _build_spring_parameters(
         self,
@@ -413,7 +416,21 @@ def apply_standardization_to_review(
         review["erp_block_reason"] = review.get("erp_block_reason") or "标准化建议需要人工确认。"
         review.setdefault("drawing_summary", {})
         review["drawing_summary"]["summary"] = "已生成标准化建议，需要人工确认后再导出。"
+    _apply_reasonableness_state(review)
     return standardization
+
+
+def _apply_reasonableness_state(review: dict[str, Any]) -> None:
+    assessment = assess_parameter_reasonableness(review)
+    review["parameter_reasonableness"] = assessment
+    if assessment.get("status") != "blocked":
+        return
+    review["human_review_required"] = True
+    review["erp_ready"] = False
+    review["erp_block_reason"] = assessment.get("summary") or "Parameter reasonableness is blocked."
+    review.setdefault("drawing_summary", {})
+    review["drawing_summary"]["overall_status"] = "need_review"
+    review["drawing_summary"]["summary"] = "识别参数存在无法直接采用的矛盾，请先核对参数合理性诊断后再导出。"
 
 
 def _apply_company_default_accuracy(parameters: dict[str, Any], spring_type: str) -> None:

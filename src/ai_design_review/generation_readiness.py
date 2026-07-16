@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .spring_templates import FIELD_LABELS
+from .spring_feasibility import assess_parameter_reasonableness
 
 
 COMPRESSION_CORE_FIELDS = (
@@ -34,6 +35,13 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
         }
 
     parameters = review.get("spring_parameters") or {}
+    # Generation export is a release boundary, so always recalculate instead of
+    # trusting a diagnostic that may predate an external/manual parameter edit.
+    reasonableness = assess_parameter_reasonableness(review)
+    blocking_reasonableness = [
+        item for item in reasonableness.get("issues", [])
+        if isinstance(item, dict) and item.get("severity") == "blocked"
+    ]
     missing: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
@@ -74,7 +82,10 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
     _append_load_point_state(parameters, missing, pending)
     _append_technical_requirement_state(review, pending)
 
-    if missing:
+    if blocking_reasonableness:
+        status = "blocked"
+        summary = reasonableness.get("summary") or "存在无法直接采用的参数矛盾。"
+    elif missing:
         status = "needs_input"
         summary = f"还缺少 {len(missing)} 项生成必填信息。"
     elif pending:
@@ -95,6 +106,8 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
         "warnings": warnings,
         "confirmed_core_count": confirmed_count,
         "core_field_count": len(COMPRESSION_CORE_FIELDS) + 1,
+        "parameter_reasonableness": reasonableness,
+        "blocking_reasonableness": blocking_reasonableness,
     }
 
 
