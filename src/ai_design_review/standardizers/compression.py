@@ -6,12 +6,17 @@ from typing import Any
 
 from ..io_utils import project_path, read_json
 from .coil_counts import derive_active_coils
+from .stiffness import apply_formula_compression_spring_rate
 
 
 STANDARD_PATH = project_path("config", "spring_standards", "gbt_1239_2_2009.json")
 
 
-def standardize_compression_spring(spring_parameters: dict[str, Any]) -> dict[str, Any]:
+def standardize_compression_spring(
+    spring_parameters: dict[str, Any],
+    spring_features: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    apply_formula_compression_spring_rate(spring_parameters, spring_features)
     rules = load_compression_rules()
     derived = derive_compression_parameters(spring_parameters)
     results = CompressionSpringStandardizer(rules).standardize(spring_parameters, derived)
@@ -31,13 +36,13 @@ def derive_compression_parameters(spring_parameters: dict[str, Any]) -> dict[str
     derived.update(derive_active_coils("compression_spring", spring_parameters))
 
     mean_diameter = recognized_mean
-    source_fields: list[str] = []
-    formula = ""
-    if wire is not None and outer is not None:
+    source_fields: list[str] = ["mean_diameter"] if recognized_mean is not None else []
+    formula = "drawing_or_manual_mean_diameter" if recognized_mean is not None else ""
+    if recognized_mean is None and wire is not None and outer is not None:
         mean_diameter = outer - wire
         source_fields = ["outer_diameter", "wire_diameter"]
         formula = "outer_diameter - wire_diameter"
-    elif wire is not None and inner is not None:
+    elif recognized_mean is None and wire is not None and inner is not None:
         mean_diameter = inner + wire
         source_fields = ["inner_diameter", "wire_diameter"]
         formula = "inner_diameter + wire_diameter"

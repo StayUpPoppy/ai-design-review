@@ -313,6 +313,44 @@
       }
     },
     {
+      "chunk_id": "compression_spring__theoretical_stiffness_formula",
+      "title": "圆柱螺旋压缩弹簧理论刚度公式",
+      "content": "圆丝、圆柱螺旋压缩弹簧在小螺旋角条件下，线刚度 F'=G*d^4/(8*D^3*n)=G*D/(8*C^4*n)。其中 G 为切变模量，d 为线径，D 为中径，n 为有效圈数，C=D/d 为旋绕比。该公式给出理论刚度，不能替代图纸或实测验收要求。",
+      "metadata": {
+        "standard_no": "",
+        "standard_aliases": [],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "",
+        "wire_section": "round",
+        "rule_topic": "theoretical_stiffness_formula",
+        "clause_no": "stiffness_formula",
+        "table_no": "",
+        "target_fields": ["spring_rate", "mean_diameter", "wire_diameter", "active_coils", "material"],
+        "accuracy_grades": []
+      }
+    },
+    {
+      "chunk_id": "compression_spring__stiffness_two_point_method",
+      "title": "圆柱螺旋压缩弹簧两点刚度方法",
+      "content": "压缩弹簧用两个指定高度载荷点反算刚度时，F'=(F2-F1)/(H1-H2)。应避开特性线两端弯曲区；参考载荷点可用于对比，但不应单独作为验收依据。",
+      "metadata": {
+        "standard_no": "",
+        "standard_aliases": [],
+        "spring_category": "compression_spring",
+        "spring_family": "helical",
+        "spring_shape": "cylindrical",
+        "manufacturing_method": "",
+        "wire_section": "round",
+        "rule_topic": "stiffness_two_point_method",
+        "clause_no": "stiffness_test",
+        "table_no": "",
+        "target_fields": ["spring_rate", "load_points", "free_length"],
+        "accuracy_grades": []
+      }
+    },
+    {
       "chunk_id": "compression_spring__symbol_definitions",
       "title": "压缩弹簧符号说明",
       "content": "符号说明：D 表示弹簧中径；D1、D2 表示内径、外径；d 表示材料直径；H0 表示自由高度或自由长度；n、n1 表示有效圈数、总圈数；C 表示旋绕比 D/d；F 表示负荷；F' 表示刚度；f 表示变形量；T' 表示扭转刚度。",

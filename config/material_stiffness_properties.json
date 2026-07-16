@@ -1,0 +1,26 @@
+{
+  "version": "temporary-room-temperature-v1",
+  "description": "Temporary shear modulus values for cylindrical compression spring theoretical stiffness calculations.",
+  "materials": [
+    {
+      "standard_values": ["SUS304", "SUS316"],
+      "display_name": "SUS304/316",
+      "shear_modulus_mpa": 71000
+    },
+    {
+      "standard_values": ["17-7PH"],
+      "display_name": "17-7PH",
+      "shear_modulus_mpa": 78000
+    },
+    {
+      "standard_values": ["Inconel X750", "Inconel X-750"],
+      "display_name": "Inconel X-750",
+      "shear_modulus_mpa": 79000
+    },
+    {
+      "standard_values": ["Inconel 718"],
+      "display_name": "Inconel 718",
+      "shear_modulus_mpa": 78500
+    }
+  ]
+}

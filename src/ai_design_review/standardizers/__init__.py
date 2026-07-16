@@ -5,6 +5,7 @@ from typing import Any
 from ..standard_selector import COLD_COILED_STANDARD, select_standard
 from .coil_counts import derive_active_coils
 from .compression import derive_compression_parameters, standardize_compression_spring
+from .stiffness import apply_formula_compression_spring_rate
 
 
 def standardize_spring(
@@ -14,6 +15,8 @@ def standardize_spring(
     standard_selection_inference: dict[str, Any] | None = None,
     technical_requirements: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    if spring_type == "compression_spring":
+        apply_formula_compression_spring_rate(spring_parameters, spring_features)
     standard_selection = select_standard(
         spring_type,
         spring_parameters,
@@ -23,7 +26,7 @@ def standardize_spring(
     )
     if spring_type == "compression_spring":
         if standard_selection.get("selected_standard") == COLD_COILED_STANDARD:
-            payload = standardize_compression_spring(spring_parameters)
+            payload = standardize_compression_spring(spring_parameters, spring_features)
             _attach_standard_references(payload["standardization_results"], standard_selection)
             if _uses_company_default_accuracy(spring_parameters):
                 _mark_results_using_default_accuracy(payload["standardization_results"], spring_parameters)

@@ -12,6 +12,7 @@ from .rules import REQUIRED_FIELDS, determine_erp_ready, overall_status, run_rul
 from .semantic import apply_spring_semantic_mapping
 from .standardizers import standardize_spring
 from .standardizers.coil_counts import apply_company_simple_active_coils
+from .standardizers.stiffness import apply_formula_compression_spring_rate
 from .spring_templates import (
     classify_spring_type,
     field_default_unit,
@@ -76,6 +77,8 @@ class DrawingReviewWorkflow:
         self._apply_company_default_accuracy(spring_parameters, spring_type)
         apply_company_simple_active_coils(spring_type, spring_parameters)
         spring_features = self._build_spring_features(fused["fields"], spring_type)
+        if spring_type == "compression_spring":
+            apply_formula_compression_spring_rate(spring_parameters, spring_features)
         technical_requirements = self._build_technical_requirements(fused["fields"])
         if run_standardization:
             standardization = standardize_spring(
@@ -386,6 +389,8 @@ def apply_standardization_to_review(
     spring_parameters = review.get("spring_parameters") or {}
     _apply_company_default_accuracy(spring_parameters, spring_type)
     apply_company_simple_active_coils(spring_type, spring_parameters)
+    if spring_type == "compression_spring":
+        apply_formula_compression_spring_rate(spring_parameters, review.get("spring_features") or {})
     standardization = standardize_spring(
         spring_type,
         spring_parameters,

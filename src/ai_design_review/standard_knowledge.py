@@ -88,6 +88,8 @@ def load_standard_knowledge(path: str | Path | None = None) -> list[dict[str, An
 def _standard_matches(metadata: dict[str, Any], standard_no: str) -> bool:
     needle = _normalize_standard_no(standard_no)
     candidates = [metadata.get("standard_no"), *(metadata.get("standard_aliases") or [])]
+    if not any(candidates):
+        return True
     return any(_normalize_standard_no(candidate) == needle for candidate in candidates if candidate)
 
 

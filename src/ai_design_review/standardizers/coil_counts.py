@@ -7,13 +7,21 @@ from typing import Any
 COMPANY_SIMPLE_ACTIVE_COIL_RULE = "COMPANY-SIMPLE-ACTIVE-COILS-V1"
 
 
-def derive_active_coils(spring_type: str, spring_parameters: dict[str, Any]) -> dict[str, Any]:
+def derive_active_coils(
+    spring_type: str,
+    spring_parameters: dict[str, Any],
+    *,
+    refresh_company_derived: bool = False,
+) -> dict[str, Any]:
     """Apply the current company-level fallback for active coil count.
 
     A drawing-recognized or manually entered active coil count remains the
     source of truth. This only supplies a derived value when it is absent.
     """
-    if _number(_param_value(spring_parameters, "active_coils")) is not None:
+    existing = spring_parameters.get("active_coils")
+    if _number(_param_value(spring_parameters, "active_coils")) is not None and not (
+        refresh_company_derived and _can_refresh_company_derived(existing)
+    ):
         return {}
 
     total = _number(_param_value(spring_parameters, "total_coils"))
@@ -57,7 +65,7 @@ def apply_company_simple_active_coils(spring_type: str, spring_parameters: dict[
     standardize raw parameters directly. Workflow callers use this helper so a
     newly uploaded drawing shows the proposed active coil count immediately.
     """
-    derived = derive_active_coils(spring_type, spring_parameters)
+    derived = derive_active_coils(spring_type, spring_parameters, refresh_company_derived=True)
     item = derived.get("active_coils")
     if not item:
         return False
@@ -80,6 +88,16 @@ def apply_company_simple_active_coils(spring_type: str, spring_parameters: dict[
         "source_fields": item["source_fields"],
     }
     return True
+
+
+def _can_refresh_company_derived(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("derived_rule_id") != COMPANY_SIMPLE_ACTIVE_COIL_RULE:
+        return False
+    source = item.get("source", [])
+    values = source if isinstance(source, list) else [source]
+    return not any(str(value or "").lower().startswith("human") for value in values)
 
 
 def _param_value(parameters: dict[str, Any], field: str) -> Any:

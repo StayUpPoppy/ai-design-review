@@ -12,6 +12,7 @@ from ai_design_review.standard_selector import select_standard
 def main() -> None:
     _assert_cold_diameter_chunk_retrieval()
     _assert_hot_alias_retrieval()
+    _assert_formula_chunk_retrieval()
     _assert_standard_selector_references_are_available()
     print("standard knowledge test passed")
 
@@ -41,6 +42,22 @@ def _assert_hot_alias_retrieval() -> None:
     assert chunks
     assert chunks[0]["chunk_id"] == "gbt_23934_2015__free_length_tolerance__table_4_9"
     assert chunks[0]["metadata"]["standard_no"] == "GB/T 23934-2015"
+
+
+def _assert_formula_chunk_retrieval() -> None:
+    chunks = retrieve_standard_chunks(
+        standard_no="GB/T 1239.2-2009",
+        spring_type="compression_spring",
+        spring_features={
+            "spring_family": {"value": "helical"},
+            "spring_shape": {"value": "cylindrical"},
+            "wire_section": {"value": "round"},
+        },
+        target_fields=["spring_rate"],
+        query="理论刚度 公式 G d D 有效圈数",
+        limit=6,
+    )
+    assert any(item["chunk_id"] == "compression_spring__theoretical_stiffness_formula" for item in chunks)
 
 
 def _assert_standard_selector_references_are_available() -> None:

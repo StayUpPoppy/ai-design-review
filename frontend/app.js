@@ -1155,6 +1155,16 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
   if (param.default_source === "company_default") {
     badges.push("公司默认 / 待确认");
   }
+  if (field === "spring_rate") {
+    const sources = sourceValues(param.source);
+    if (sources.includes("formula_calculation")) {
+      badges.push("公式计算 / 待确认");
+    } else if (sources.some((source) => source.startsWith("human") || source === "manual")) {
+      badges.push("人工填写");
+    } else if (param.value != null && param.value !== "") {
+      badges.push("图纸识别");
+    }
+  }
   return `
     <div class="data-row" data-kind="param" data-field="${escapeHtml(field)}">
       <div class="data-label">

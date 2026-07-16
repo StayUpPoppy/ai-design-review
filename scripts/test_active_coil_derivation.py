@@ -5,7 +5,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_design_review.standardizers.coil_counts import derive_active_coils  # noqa: E402
+from ai_design_review.standardizers.coil_counts import (  # noqa: E402
+    apply_company_simple_active_coils,
+    derive_active_coils,
+)
 from ai_design_review.standardizers import standardize_spring  # noqa: E402
 
 
@@ -17,6 +20,7 @@ def main() -> None:
     assert _standardized_value("torsion_spring", 10) == 10
     assert derive_active_coils("compression_spring", _parameters(10, active=7)) == {}
     assert derive_active_coils("compression_spring", _parameters(2)) == {}
+    _assert_company_default_refreshes_with_total_coils()
     print("active coil derivation tests passed")
 
 
@@ -35,6 +39,20 @@ def _parameters(total: float, *, active: float | None = None) -> dict:
     if active is not None:
         parameters["active_coils"] = {"value": active, "unit": "turns"}
     return parameters
+
+
+def _assert_company_default_refreshes_with_total_coils() -> None:
+    parameters = _parameters(10)
+    assert apply_company_simple_active_coils("compression_spring", parameters) is True
+    assert parameters["active_coils"]["value"] == 8
+    parameters["total_coils"]["value"] = 12
+    assert apply_company_simple_active_coils("compression_spring", parameters) is True
+    assert parameters["active_coils"]["value"] == 10
+
+    parameters["active_coils"]["value"] = 9
+    parameters["active_coils"]["source"] = ["company_simple_rule", "human_edited"]
+    assert apply_company_simple_active_coils("compression_spring", parameters) is False
+    assert parameters["active_coils"]["value"] == 9
 
 
 if __name__ == "__main__":
