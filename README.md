@@ -193,6 +193,11 @@ Werk24 不再作为默认产品方案。项目仍保留 `Werk24Engine`，仅用�
 
 如果确实要单独评估 Werk24，可以配置环境变量：
 
+## rag向量数据库
+
+Embedding 模型 bge-large-zh-v1.5 https://www.modelscope.cn/models/AI-ModelScope/bge-large-zh-v1.5/
+
+
 ```powershell
 $env:W24TECHREAD_AUTH_TOKEN="你的 Werk24 token"
 $env:W24TECHREAD_AUTH_REGION="eu"
