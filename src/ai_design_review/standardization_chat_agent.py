@@ -7,7 +7,7 @@ from typing import Any
 from .generation_readiness import assess_generation_readiness
 from .spring_feasibility import assess_parameter_change_set, assess_parameter_reasonableness
 from .spring_templates import FIELD_LABELS
-from .standard_knowledge import retrieve_standard_chunks
+from .standard_knowledge import chunk_reference, retrieve_standard_chunks
 from .standardization_chat_llm import StandardizationChatLLMEngine
 
 
@@ -780,17 +780,7 @@ def _retrieve_references(review: dict[str, Any], target: str | None, query: str)
         query=query,
         limit=3,
     )
-    return [
-        {
-            "chunk_id": chunk.get("chunk_id"),
-            "title": chunk.get("title"),
-            "standard_no": chunk.get("metadata", {}).get("standard_no"),
-            "table_no": chunk.get("metadata", {}).get("table_no"),
-            "rule_topic": chunk.get("metadata", {}).get("rule_topic"),
-            "score": chunk.get("score"),
-        }
-        for chunk in chunks
-    ]
+    return [chunk_reference(chunk, standard_no=selected_standard) for chunk in chunks]
 
 
 def _retrieve_plan_references(review: dict[str, Any], query: str, target_fields: list[str]) -> list[dict[str, Any]]:
@@ -805,17 +795,7 @@ def _retrieve_plan_references(review: dict[str, Any], query: str, target_fields:
         query=f"{query} 标准化 公差 精度 完整方案",
         limit=6,
     )
-    return [
-        {
-            "chunk_id": chunk.get("chunk_id"),
-            "title": chunk.get("title"),
-            "standard_no": chunk.get("metadata", {}).get("standard_no"),
-            "table_no": chunk.get("metadata", {}).get("table_no"),
-            "rule_topic": chunk.get("metadata", {}).get("rule_topic"),
-            "score": chunk.get("score"),
-        }
-        for chunk in chunks
-    ]
+    return [chunk_reference(chunk, standard_no=selected_standard) for chunk in chunks]
 
 
 def _plan_target_fields(review: dict[str, Any]) -> list[str]:

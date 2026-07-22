@@ -44,7 +44,7 @@ def _assert_engine_generates_hot_coiled_suggestions_from_rag_chunks() -> None:
     payload = LLMStandardizationEngine(completion_fn=fake_completion).standardize_review(review)
     assert payload["status"] == "generated"
     assert payload["retrieved_chunks"]
-    assert seen_request["standard_no"] == "GB/T 23934-2014"
+    assert seen_request["standard_no"] == "GB/T 23934-2015"
 
     item = payload["standardization_results"][0]
     assert item["target_field"] == "free_length"
@@ -69,7 +69,7 @@ def _hot_review() -> dict:
             "pitch_type": {"value": "constant"},
         },
         "standard_selection": {
-            "selected_standard": "GB/T 23934-2014",
+            "selected_standard": "GB/T 23934-2015",
             "status": "rules_pending",
             "need_human_review": True,
         },

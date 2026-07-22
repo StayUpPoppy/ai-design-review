@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from .llm_standardization import normalize_llm_standardization_results
 from .spring_templates import template_field_keys
-from .standard_knowledge import retrieve_standard_chunks
+from .standard_knowledge import chunk_reference, retrieve_standard_chunks
 
 
 DEFAULT_LLM_STANDARDIZATION_MODEL = "qwen3.7-plus"
@@ -296,17 +296,7 @@ def _allowed_target_fields(review: dict[str, Any]) -> list[str]:
 
 
 def _chunk_references(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "chunk_id": chunk.get("chunk_id"),
-            "title": chunk.get("title"),
-            "standard_no": chunk.get("metadata", {}).get("standard_no"),
-            "table_no": chunk.get("metadata", {}).get("table_no"),
-            "rule_topic": chunk.get("metadata", {}).get("rule_topic"),
-            "score": chunk.get("score"),
-        }
-        for chunk in chunks
-    ]
+    return [chunk_reference(chunk) for chunk in chunks]
 
 
 def _message_content(raw_response: dict[str, Any]) -> Any:

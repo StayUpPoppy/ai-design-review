@@ -501,9 +501,9 @@ def _extract_standard_context(text: str, anchor: dict[str, Any] | None) -> list[
         candidates.append(_candidate("standard_no", "GB/T 1239.2-2009", anchor, standard.group(0), 0.86))
         candidates.append(_candidate("manufacturing_method", "cold_coiled", anchor, standard.group(0), 0.82))
 
-    hot_standard = _search(r"GB\s*/?\s*T\s*23934\s*[-—－]?\s*2014", text)
+    hot_standard = _search(r"GB\s*/?\s*T\s*23934\s*[-—－]?\s*(?:2014|2015)", text)
     if hot_standard:
-        candidates.append(_candidate("standard_no", "GB/T 23934-2014", anchor, hot_standard.group(0), 0.86))
+        candidates.append(_candidate("standard_no", "GB/T 23934-2015", anchor, hot_standard.group(0), 0.86))
         candidates.append(_candidate("manufacturing_method", "hot_coiled", anchor, hot_standard.group(0), 0.82))
 
     if _search(r"(圆柱螺旋|圆柱\s*压缩|cylindrical\s+compression)", text):

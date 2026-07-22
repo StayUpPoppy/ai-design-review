@@ -209,9 +209,9 @@ def _parse_standard_context(text: str, note_anchor: dict[str, Any] | None) -> li
         mapped.append(_from_note("standard_no", "GB/T 1239.2-2009", note_anchor, standard.group(0), confidence=0.78))
         mapped.append(_from_note("manufacturing_method", "cold_coiled", note_anchor, standard.group(0), confidence=0.76))
 
-    hot_standard = re.search(r"GB\s*/?\s*T\s*23934\s*[-—－]?\s*2014", text, re.IGNORECASE)
+    hot_standard = re.search(r"GB\s*/?\s*T\s*23934\s*[-—－]?\s*(?:2014|2015)", text, re.IGNORECASE)
     if hot_standard:
-        mapped.append(_from_note("standard_no", "GB/T 23934-2014", note_anchor, hot_standard.group(0), confidence=0.78))
+        mapped.append(_from_note("standard_no", "GB/T 23934-2015", note_anchor, hot_standard.group(0), confidence=0.78))
         mapped.append(_from_note("manufacturing_method", "hot_coiled", note_anchor, hot_standard.group(0), confidence=0.76))
 
     if re.search(r"(圆柱螺旋|圆柱\s*压缩|cylindrical\s+compression)", text, re.IGNORECASE):

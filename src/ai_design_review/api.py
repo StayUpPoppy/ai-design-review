@@ -26,7 +26,7 @@ from .engines.werk24_adapter import Werk24Engine
 from .io_utils import project_path, read_json, write_json
 from .llm_standardization_engine import LLMStandardizationEngine, llm_standardization_runtime_status
 from .preprocessing import IMAGE_EXTENSIONS, probe_file, render_pdf_with_pdftoppm
-from .standard_knowledge import retrieve_standard_chunks
+from .standard_knowledge import ragflow_runtime_status, retrieve_standard_chunks
 from .standardization_chat_agent import chat_about_standardization, standardization_chat_context_needs_refresh
 from .standardization_chat_llm import standardization_chat_llm_runtime_status
 from .spring_feasibility import assess_parameter_reasonableness
@@ -50,6 +50,7 @@ FRONTEND_ORIGINS = [
 ]
 
 app = FastAPI(title="AI Spring Drawing Review API", version="0.1.0")
+RAGFLOW_STARTUP_STATUS = ragflow_runtime_status()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=FRONTEND_ORIGINS,
@@ -64,6 +65,12 @@ app.mount("/outputs", StaticFiles(directory=str(OUTPUT_ROOT)), name="outputs")
 if TMP_PDF_ROOT.exists():
     app.mount("/tmp_pdf_pages", StaticFiles(directory=str(TMP_PDF_ROOT)), name="tmp_pdf_pages")
 app.mount("/artifacts", StaticFiles(directory=str(API_RUN_ROOT)), name="artifacts")
+
+
+@app.on_event("startup")
+def refresh_ragflow_startup_status() -> None:
+    global RAGFLOW_STARTUP_STATUS
+    RAGFLOW_STARTUP_STATUS = ragflow_runtime_status(check_health=True)
 
 
 @app.get("/")
@@ -88,6 +95,7 @@ def health() -> dict[str, Any]:
         "qwen_runtime": qwen_runtime_status(),
         "llm_standardization_runtime": llm_standardization_runtime_status(),
         "standardization_chat_runtime": standardization_chat_llm_runtime_status(),
+        "ragflow_runtime": RAGFLOW_STARTUP_STATUS,
         "ocr_runtime": ocr_runtime_status(),
         "geometry_runtime": {"status": "ready", "engine": "geometry"},
         "vlm_runtime": {"status": "not_configured", "mode": "optional_review_only"},

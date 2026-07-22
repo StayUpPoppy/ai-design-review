@@ -79,7 +79,7 @@ def _assert_cold_standard_no_selects_local_rules() -> None:
 
 def _assert_hot_standard_no_is_rules_pending() -> None:
     payload = standardize_spring("compression_spring", _base_parameters("GB/T 23934-2014"), _features())
-    assert payload["standard_selection"]["selected_standard"] == "GB/T 23934-2014"
+    assert payload["standard_selection"]["selected_standard"] == "GB/T 23934-2015"
     assert payload["standard_selection"]["status"] == "rules_pending"
     assert payload["standardization_results"] == []
     assert payload["derived_parameters"]["mean_diameter"]["value"] == 18
@@ -99,9 +99,9 @@ def _assert_wire_diameter_boundary() -> None:
     hot_at_boundary = select_standard("compression_spring", _base_parameters(wire_diameter=8), _features())
     hot = select_standard("compression_spring", _base_parameters(wire_diameter=12), _features())
     assert cold["selected_standard"] == "GB/T 1239.2-2009"
-    assert hot_at_boundary["selected_standard"] == "GB/T 23934-2014"
+    assert hot_at_boundary["selected_standard"] == "GB/T 23934-2015"
     assert hot_at_boundary["status"] == "rules_pending"
-    assert hot["selected_standard"] == "GB/T 23934-2014"
+    assert hot["selected_standard"] == "GB/T 23934-2015"
 
 
 def _assert_standard_no_conflict_requires_review() -> None:

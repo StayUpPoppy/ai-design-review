@@ -1013,7 +1013,7 @@ function renderStandardSelectionHtml(review) {
     <span>${escapeHtml(item.standard_no || "")}${item.rules_available ? "" : " · 规则待接入"}</span>
   `).join("");
   const referenceRows = references.map((item) => `
-    <small>${escapeHtml(item.standard_no || "")} · ${escapeHtml(item.source || "RAG")} · ${escapeHtml(item.status || "")}</small>
+    <small title="${escapeHtml(referenceDetailLabel(item))}">${escapeHtml(referenceSummaryLabel(item))}</small>
   `).join("");
   const thresholdHtml = thresholdRows.map((item) => `<span>${escapeHtml(item)}</span>`).join("");
   const auxiliaryHtml = auxiliaryEvidence.map((item) => `<small>${escapeHtml(item)}</small>`).join("");
@@ -1688,11 +1688,52 @@ function renderStandardizationHtml(review) {
             </div>
             <p>${escapeHtml(item.basis || "")}</p>
             <button type="button" data-role="confirm-standard" ${canConfirmStandardization(item) ? "" : "disabled"}>${item.status === "human_confirmed" ? "已应用" : "确认建议"}</button>
+            ${renderStandardizationResultReferencesHtml(item)}
           </div>
         `).join("")}
       </div>
     </section>
   `;
+}
+
+function standardizationReferences(item) {
+  const metadata = item?.metadata || {};
+  const references = metadata.rag_references || metadata.standard_references || [];
+  return Array.isArray(references) ? references.filter((reference) => reference && typeof reference === "object") : [];
+}
+
+function renderStandardizationResultReferencesHtml(item) {
+  const references = standardizationReferences(item);
+  if (!references.length) return "";
+  return `
+    <div class="standardization-result-references">
+      ${references.map((reference) => `<small title="${escapeHtml(referenceDetailLabel(reference))}">${escapeHtml(referenceSummaryLabel(reference))}</small>`).join("")}
+    </div>
+  `;
+}
+
+function referenceSummaryLabel(reference) {
+  const source = reference.source === "ragflow" ? "RAGFlow" : "本地知识兜底";
+  const documentName = reference.document_name || reference.title || "标准资料";
+  const tableNo = reference.table_no || reference.metadata?.table_no;
+  const status = reference.status === "fallback" ? "已降级" : "";
+  return [source, documentName, tableNo, status].filter(Boolean).join(" · ");
+}
+
+function referenceDetailLabel(reference) {
+  const positions = Array.isArray(reference.positions) ? reference.positions : [];
+  const firstPosition = Array.isArray(positions[0]) ? positions[0][0] : null;
+  const score = reference.similarity ?? reference.score;
+  const details = [
+    reference.dataset_name ? `知识库：${reference.dataset_name}` : "",
+    reference.document_name ? `文件：${reference.document_name}` : "",
+    reference.standard_no ? `标准：${reference.standard_no}` : "",
+    reference.chunk_id ? `分块：${reference.chunk_id}` : "",
+    firstPosition != null ? `页码：${firstPosition}` : "",
+    Number.isFinite(Number(score)) ? `相似度：${Math.round(Number(score) * 100)}%` : "",
+    reference.retrieval_reason ? `状态：${reference.retrieval_reason}` : "",
+  ];
+  return details.filter(Boolean).join("；");
 }
 
 function standardizationBatchPlan(review) {
@@ -1804,7 +1845,9 @@ function renderStandardizationChatReferencesHtml(turn) {
           const parts = [reference.standard_no, reference.table_no, reference.rule_topic]
             .filter(Boolean)
             .map((item) => String(item));
-          return `<li><strong>${escapeHtml(title)}</strong>${parts.length ? `<span>${escapeHtml(parts.join(" · "))}</span>` : ""}</li>`;
+          const detail = referenceDetailLabel(reference);
+          const summary = referenceSummaryLabel(reference);
+          return `<li title="${escapeHtml(detail)}"><strong>${escapeHtml(title)}</strong><span>${escapeHtml([summary, ...parts].filter(Boolean).join(" · "))}</span></li>`;
         }).join("")}
       </ul>
     </details>

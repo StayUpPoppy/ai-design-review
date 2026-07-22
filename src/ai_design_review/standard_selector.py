@@ -7,7 +7,7 @@ from .standard_knowledge import standard_references
 
 
 COLD_COILED_STANDARD = "GB/T 1239.2-2009"
-HOT_COILED_STANDARD = "GB/T 23934-2014"
+HOT_COILED_STANDARD = "GB/T 23934-2015"
 
 COLD_COILED_LABEL = "冷卷圆柱螺旋压缩弹簧"
 HOT_COILED_LABEL = "热卷圆柱螺旋压缩弹簧"
@@ -487,7 +487,7 @@ def _is_cold_standard(text: str) -> bool:
 
 
 def _is_hot_standard(text: str) -> bool:
-    return bool(re.search(r"GB\s*/?\s*T\s*23934(?:\s*[-—－]?\s*2014)?", text, re.IGNORECASE))
+    return bool(re.search(r"GB\s*/?\s*T\s*23934(?:\s*[-—－]?\s*(?:2014|2015))?", text, re.IGNORECASE))
 
 
 def _normalized_method(value: Any) -> str:
