@@ -160,6 +160,7 @@ const COMPRESSION_CORE_PARAMETER_FIELDS = new Set([
   "free_length",
   "total_coils",
   "active_coils",
+  "solid_height",
   "handedness",
   "end_grinding",
 ]);
@@ -1229,12 +1230,19 @@ function getParameterFieldGroups(params, review) {
     return { core: fields, advanced: [] };
   }
   return {
-    core: fields.filter((field) => COMPRESSION_CORE_PARAMETER_FIELDS.has(field)),
+    core: fields.filter((field) => (
+      COMPRESSION_CORE_PARAMETER_FIELDS.has(field)
+      && (field !== "solid_height" || shouldShowSolidHeightCore(params[field]))
+    )),
     advanced: fields.filter((field) => {
       if (COMPRESSION_CORE_PARAMETER_FIELDS.has(field)) return false;
       return shouldShowAdvancedParameter(field, params[field], review);
     }),
   };
+}
+
+function shouldShowSolidHeightCore(param) {
+  return hasParameterContent(param);
 }
 
 function shouldShowAdvancedParameter(field, param, review) {
@@ -1284,20 +1292,30 @@ function isCompressionSpringReview(review) {
 
 function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)) {
   const evidence = param.evidence || param.suggested_region || "";
-  const label = meta.label || FIELD_LABELS[field] || field;
+  let label = meta.label || FIELD_LABELS[field] || field;
   const requiredMark = meta.required ? " *" : "";
   const badges = [];
+  const sources = sourceValues(param.source);
   if (param.default_source === "company_default") {
     badges.push("公司默认 / 待确认");
   }
   if (field === "spring_rate") {
-    const sources = sourceValues(param.source);
     if (sources.includes("formula_calculation")) {
       badges.push("公式计算 / 待确认");
     } else if (sources.some((source) => source.startsWith("human") || source === "manual")) {
       badges.push("人工填写");
     } else if (param.value != null && param.value !== "") {
       badges.push("图纸识别");
+    }
+  }
+  if (field === "solid_height") {
+    if (sources.includes("formula_calculation")) {
+      label = `${label}（参考）`;
+      badges.push("公式参考 / 待确认");
+    } else if (sources.some((source) => source.startsWith("human") || source === "manual")) {
+      badges.push("人工值");
+    } else if (param.value != null && param.value !== "") {
+      badges.push("图纸值");
     }
   }
   const reasonablenessSeverity = reasonablenessSeverityForField(state.review, field);

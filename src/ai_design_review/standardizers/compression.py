@@ -10,12 +10,119 @@ from .stiffness import apply_formula_compression_spring_rate
 
 
 STANDARD_PATH = project_path("config", "spring_standards", "gbt_1239_2_2009.json")
+FORMULA_CALCULATION_SOURCE = "formula_calculation"
+SOLID_HEIGHT_FORMULA_GROUND = "Hb = n1 * dmax"
+SOLID_HEIGHT_FORMULA_NOT_GROUND = "Hb = (n1 + 1.5) * dmax"
+
+
+def apply_formula_compression_solid_height(spring_parameters: dict[str, Any]) -> dict[str, Any]:
+    """Populate a reference solid height only when the drawing has no manual value."""
+    existing = spring_parameters.get("solid_height")
+    result = calculate_compression_solid_height(spring_parameters)
+    if not _can_replace_formula_solid_height(existing):
+        return {**result, "applied": False, "preserved_existing_value": True}
+
+    if result["status"] != "calculated":
+        if isinstance(existing, dict):
+            existing.update(
+                {
+                    "value": None,
+                    "unit": "mm",
+                    "source": [],
+                    "evidence": "",
+                    "suggested_region": "",
+                    "formula_calculation_kind": "solid_height",
+                    "formula_calculation_status": result["status"],
+                    "formula_calculation_missing_fields": result["missing_fields"],
+                    "formula_calculation_reason": result["reason"],
+                }
+            )
+        return {**result, "applied": False}
+
+    spring_parameters["solid_height"] = {
+        "field": "solid_height",
+        "value": result["value"],
+        "unit": "mm",
+        "tolerance_upper": None,
+        "tolerance_lower": None,
+        "source": [FORMULA_CALCULATION_SOURCE],
+        "evidence": result["basis"],
+        "confidence": 0.88,
+        "page": 1,
+        "position": None,
+        "suggested_region": "formula_computed_solid_height",
+        "need_human_review": True,
+        "formula": result["formula"],
+        "source_fields": result["source_fields"],
+        "formula_calculation_kind": "solid_height",
+        "formula_calculation_status": result["status"],
+        "formula_calculation_inputs": result["inputs"],
+    }
+    return {**result, "applied": True}
+
+
+def calculate_compression_solid_height(spring_parameters: dict[str, Any]) -> dict[str, Any]:
+    """Calculate the GB/T 1239.2 reference solid height from drawing inputs."""
+    total = _number(_param_value(spring_parameters, "total_coils"))
+    wire = _number(_param_value(spring_parameters, "wire_diameter"))
+    end_mode = solid_height_mode(_param_value(spring_parameters, "end_grinding"))
+
+    missing_fields: list[str] = []
+    if total is None or total <= 0:
+        missing_fields.append("total_coils")
+    if wire is None or wire <= 0:
+        missing_fields.append("wire_diameter")
+    if not end_mode:
+        missing_fields.append("end_grinding")
+    if missing_fields:
+        return {
+            "status": "missing_context",
+            "value": None,
+            "unit": "mm",
+            "formula": "",
+            "basis": "缺少总圈数、线径或端面磨削方式，无法计算压并高度参考值。",
+            "missing_fields": missing_fields,
+            "reason": "缺少压并高度公式输入：" + ", ".join(missing_fields),
+            "source_fields": [],
+            "inputs": {},
+        }
+
+    wire_item = spring_parameters.get("wire_diameter") or {}
+    wire_upper = _number(wire_item.get("tolerance_upper")) if isinstance(wire_item, dict) else None
+    max_wire = wire + max(0, wire_upper or 0)
+    if end_mode == "ground":
+        formula = SOLID_HEIGHT_FORMULA_GROUND
+        value = total * max_wire
+        basis = "端面磨削：压并高度参考 Hb = n1 * dmax。"
+    else:
+        formula = SOLID_HEIGHT_FORMULA_NOT_GROUND
+        value = (total + 1.5) * max_wire
+        basis = "两端不磨：压并高度参考 Hb = (n1 + 1.5) * dmax。"
+
+    return {
+        "status": "calculated",
+        "value": _round(value),
+        "unit": "mm",
+        "formula": formula,
+        "basis": f"{basis} n1={total:g}, dmax={max_wire:g} mm。",
+        "missing_fields": [],
+        "reason": "",
+        "source_fields": ["total_coils", "wire_diameter", "end_grinding"],
+        "inputs": {
+            "total_coils": _round(total),
+            "wire_diameter_mm": _round(wire),
+            "wire_tolerance_upper_mm": _round(wire_upper or 0),
+            "max_wire_diameter_mm": _round(max_wire),
+            "end_mode": end_mode,
+        },
+    }
 
 
 def standardize_compression_spring(
     spring_parameters: dict[str, Any],
     spring_features: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    apply_formula_compression_solid_height(spring_parameters)
     apply_formula_compression_spring_rate(spring_parameters, spring_features)
     rules = load_compression_rules()
     derived = derive_compression_parameters(spring_parameters)
@@ -322,43 +429,21 @@ class CompressionSpringStandardizer:
         )
 
     def _solid_height_result(self, spring_parameters: dict[str, Any]) -> dict[str, Any]:
-        total = _number(_param_value(spring_parameters, "total_coils"))
-        wire = _number(_param_value(spring_parameters, "wire_diameter"))
-        end_mode = solid_height_mode(_param_value(spring_parameters, "end_grinding"))
-        if total is None or wire is None:
-            missing_fields = []
-            if total is None:
-                missing_fields.append("total_coils")
-            if wire is None:
-                missing_fields.append("wire_diameter")
+        calculation = calculate_compression_solid_height(spring_parameters)
+        if calculation["status"] != "calculated":
             return self._need_context(
                 "solid_height",
                 "GBT1239.2-SOLID",
-                "缺少总圈数或线径，无法计算压并高度参考值。",
-                missing_fields=missing_fields,
+                calculation["basis"],
+                missing_fields=calculation["missing_fields"],
             )
-        if not end_mode:
-            return self._need_context(
-                "solid_height",
-                "GBT1239.2-SOLID",
-                "缺少端面磨削方式，无法选择压并高度参考公式。",
-                missing_fields=["end_grinding"],
-            )
-        wire_upper = _number(spring_parameters.get("wire_diameter", {}).get("tolerance_upper")) or 0
-        max_wire = wire + max(0, wire_upper)
-        if end_mode == "ground":
-            value = total * max_wire
-            basis = "端面磨削 3/4 圈：Hb = n1 * dmax。"
-        else:
-            value = (total + 1.5) * max_wire
-            basis = "两端不磨：Hb = (n1 + 1.5) * dmax。"
         return _result(
             target_field="solid_height",
             rule_id="GBT1239.2-SOLID",
             standard_no=self.standard_no,
-            basis=basis,
+            basis=calculation["basis"],
             status="suggested",
-            suggested_value=_round(value),
+            suggested_value=calculation["value"],
             unit="mm",
         )
 
@@ -639,8 +724,25 @@ def _param_value(mapping: dict[str, Any], field: str) -> Any:
     return value
 
 
+def _can_replace_formula_solid_height(existing: Any) -> bool:
+    if not isinstance(existing, dict):
+        return existing in (None, "")
+    if existing.get("value") in (None, ""):
+        return True
+    sources = _source_values(existing.get("source"))
+    return (
+        FORMULA_CALCULATION_SOURCE in sources
+        and existing.get("formula_calculation_kind") in (None, "solid_height")
+    )
+
+
+def _source_values(value: Any) -> list[str]:
+    values = value if isinstance(value, list) else [value]
+    return [str(item or "").strip().lower() for item in values if item]
+
+
 def _number(value: Any) -> float | None:
-    if value in (None, ""):
+    if isinstance(value, bool) or value in (None, ""):
         return None
     try:
         return float(value)

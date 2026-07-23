@@ -277,3 +277,6 @@ scripts\run_frontend.cmd
 ```
 
 传入文件格式DWG PDF 图片
+
+## ragflow公网网址
+http://111.170.173.2:18080/
