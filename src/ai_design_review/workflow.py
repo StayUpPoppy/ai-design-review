@@ -14,6 +14,7 @@ from .spring_feasibility import assess_parameter_reasonableness
 from .standardizers import standardize_spring
 from .standardizers.coil_counts import apply_company_simple_active_coils
 from .standardizers.compression import apply_formula_compression_solid_height
+from .standardizers.diameters import apply_formula_compression_diameter_completion
 from .standardizers.stiffness import apply_formula_compression_spring_rate
 from .spring_templates import (
     classify_spring_type,
@@ -77,6 +78,8 @@ class DrawingReviewWorkflow:
         spring_template = template_for(spring_type)
         spring_parameters = self._build_spring_parameters(fused["fields"], fused["load_points"], spring_type)
         self._apply_company_default_accuracy(spring_parameters, spring_type)
+        if spring_type == "compression_spring":
+            apply_formula_compression_diameter_completion(spring_parameters)
         apply_company_simple_active_coils(spring_type, spring_parameters)
         spring_features = self._build_spring_features(fused["fields"], spring_type)
         if spring_type == "compression_spring":
@@ -393,6 +396,8 @@ def apply_standardization_to_review(
     spring_type = spring_type or review.get("spring_template", {}).get("spring_type") or "unknown_spring"
     spring_parameters = review.get("spring_parameters") or {}
     _apply_company_default_accuracy(spring_parameters, spring_type)
+    if spring_type == "compression_spring":
+        apply_formula_compression_diameter_completion(spring_parameters)
     apply_company_simple_active_coils(spring_type, spring_parameters)
     if spring_type == "compression_spring":
         apply_formula_compression_solid_height(spring_parameters)

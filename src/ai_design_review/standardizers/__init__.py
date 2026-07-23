@@ -9,6 +9,7 @@ from .compression import (
     derive_compression_parameters,
     standardize_compression_spring,
 )
+from .diameters import apply_formula_compression_diameter_completion
 from .stiffness import apply_formula_compression_spring_rate
 
 
@@ -20,6 +21,7 @@ def standardize_spring(
     technical_requirements: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if spring_type == "compression_spring":
+        apply_formula_compression_diameter_completion(spring_parameters)
         apply_formula_compression_solid_height(spring_parameters)
         apply_formula_compression_spring_rate(spring_parameters, spring_features)
     standard_selection = select_standard(

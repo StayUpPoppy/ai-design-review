@@ -6,6 +6,7 @@ from typing import Any
 
 from ..io_utils import project_path, read_json
 from .coil_counts import derive_active_coils
+from .diameters import apply_formula_compression_diameter_completion
 from .stiffness import apply_formula_compression_spring_rate
 
 
@@ -122,6 +123,7 @@ def standardize_compression_spring(
     spring_parameters: dict[str, Any],
     spring_features: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    apply_formula_compression_diameter_completion(spring_parameters)
     apply_formula_compression_solid_height(spring_parameters)
     apply_formula_compression_spring_rate(spring_parameters, spring_features)
     rules = load_compression_rules()

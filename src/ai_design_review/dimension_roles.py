@@ -85,8 +85,7 @@ def _select_outer_diameter(
     pool = [
         _choice(candidate, _number(candidate.get("value")), field=str(candidate.get("field") or ""))
         for candidate in candidates
-        if str(candidate.get("field") or "") in {"outer_diameter", "mean_diameter", "inner_diameter", "free_length"}
-        and not _is_surface_roughness_candidate(candidate)
+        if _is_eligible_outer_candidate(candidate)
     ]
     pool = [item for item in pool if item["value"] is not None and 5 <= float(item["value"]) <= 200]
     pool.extend(_diameter_text_choices(text))
@@ -132,6 +131,20 @@ def _select_outer_diameter(
     if not _has_outer_geometry_anchor(best["candidate"]):
         return None
     return best
+
+
+def _is_eligible_outer_candidate(candidate: dict[str, Any]) -> bool:
+    field = str(candidate.get("field") or "")
+    if field not in {"outer_diameter", "mean_diameter", "inner_diameter", "free_length"}:
+        return False
+    if _is_surface_roughness_candidate(candidate):
+        return False
+    # A dimension explicitly labelled as inner or mean diameter is not an
+    # ambiguous OCR number and must not be reclassified as an outer diameter.
+    return not (
+        field in {"inner_diameter", "mean_diameter"}
+        and _has_explicit_diameter_role_anchor(candidate, field)
+    )
 
 
 def _select_free_length(
@@ -208,6 +221,9 @@ def _diameter_text_choices(text: str) -> list[dict[str, Any]]:
     ]
     for pattern in patterns:
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            context = text[max(0, match.start() - 12) : min(len(text), match.end() + 12)]
+            if _has_inner_or_mean_dimension_text(context):
+                continue
             value = _number(match.group(1))
             if value is None or not 5 <= value <= 200:
                 continue
@@ -372,6 +388,25 @@ def _has_axis_length_anchor(candidate: dict[str, Any]) -> bool:
         return False
     width, height = _position_size(candidate.get("position"))
     return width is not None and height is not None and width >= height * 1.35
+
+
+def _has_explicit_diameter_role_anchor(candidate: dict[str, Any], field: str) -> bool:
+    text = _candidate_text(candidate)
+    patterns = {
+        "inner_diameter": r"(?:\u5185\u5f84|\u5167\u5f91|\bID\b|\bI\.D\.)",
+        "mean_diameter": r"(?:\u4e2d\u5f84|\u4e2d\u5f91|MEAN\s*DIA|AVERAGE\s*DIA)",
+    }
+    return bool(re.search(patterns.get(field, r"$^"), text, re.IGNORECASE))
+
+
+def _has_inner_or_mean_dimension_text(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:\u5185\u5f84|\u5167\u5f91|\u4e2d\u5f84|\u4e2d\u5f91|\bID\b|\bI\.D\.|MEAN\s*DIA)",
+            text,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _position_size(position: Any) -> tuple[float | None, float | None]:

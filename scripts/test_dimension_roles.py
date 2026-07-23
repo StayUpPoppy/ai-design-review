@@ -13,6 +13,7 @@ def main() -> None:
     test_reassigns_vertical_diameter_and_axis_length()
     test_excludes_surface_roughness_from_uqd04_dimensions()
     test_preserves_explicit_labeled_dimensions()
+    test_does_not_reclassify_explicit_inner_diameter()
     test_skips_non_compression_context()
     print("dimension role tests passed")
 
@@ -107,6 +108,20 @@ def test_preserves_explicit_labeled_dimensions() -> None:
     fused = fuse_candidates(apply_compression_dimension_role_ranking(candidates))
     assert fused["fields"]["outer_diameter"]["value"] == 12.5, fused["fields"]["outer_diameter"]
     assert fused["fields"]["free_length"]["value"] == 20, fused["fields"]["free_length"]
+
+
+def test_does_not_reclassify_explicit_inner_diameter() -> None:
+    candidates = [
+        _note("压缩弹簧 内径 φ16 线径 φ2.3"),
+        _candidate("wire_diameter", 2.3, "qwen_vision", "图纸标注线径 φ2.3", 0.95),
+        _candidate("inner_diameter", 16, "qwen_vision", "图纸标注内径 φ16", 0.95),
+        _candidate("mean_diameter", 18.3, "qwen_vision", "由内径16+线径2.3计算得出", 0.68),
+        _candidate("outer_diameter", 20.6, "qwen_vision", "由内径16+2×线径2.3计算得出，图纸未直接标注外径", 0.68),
+    ]
+
+    fused = fuse_candidates(apply_compression_dimension_role_ranking(candidates))
+    assert fused["fields"]["outer_diameter"]["value"] == 20.6, fused["fields"]["outer_diameter"]
+    assert fused["fields"]["inner_diameter"]["value"] == 16, fused["fields"]["inner_diameter"]
 
 
 def test_skips_non_compression_context() -> None:
