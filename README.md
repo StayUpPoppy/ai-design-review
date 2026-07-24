@@ -173,6 +173,8 @@ API 上传时默认运行 Qwen3.7 视觉识别。OCR 和几何分析可在高级
 
 ## CentOS 7 Docker 部署
 
+完整的 PostgreSQL、审查修改留痕和 Nginx 部署步骤见 [docs/deployment_centos7.md](docs/deployment_centos7.md)。CentOS 7 宿主机无需更换，运行环境全部由 Docker 容器提供。
+
 生产服务器使用 Docker 运行 Python 3.11，避免 CentOS 7 宿主机旧版系统库影响 ONNX Runtime：
 
 ```bash
@@ -280,3 +282,7 @@ scripts\run_frontend.cmd
 
 ## ragflow公网网址
 http://111.170.173.2:18080/
+
+## docker
+docker compose up -d
+docker compose down

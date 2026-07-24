@@ -2,7 +2,7 @@ const state = {
   apiBaseUrl: normalizeBaseUrl(
     new URLSearchParams(window.location.search).get("api")
       || localStorage.getItem("aiDesignReviewApiBaseUrl")
-      || "http://127.0.0.1:8770",
+      || defaultApiBaseUrl(),
   ),
   selectedFile: null,
   imageUrl: null,
@@ -29,6 +29,12 @@ const state = {
   standardizationChatTypingTimer: null,
   reasonablenessRefreshTimer: null,
   reasonablenessRequestSerial: 0,
+  reviewPersistenceTimer: null,
+  reviewPersistenceSaving: false,
+  reviewPersistencePromise: null,
+  pendingReviewAuditEvents: [],
+  recentReviews: [],
+  recentReviewsLoading: false,
 };
 
 const REQUIRED_FIELDS = [
@@ -360,6 +366,9 @@ const useWerk24Input = document.getElementById("useWerk24Input");
 const confirmWerk24Input = document.getElementById("confirmWerk24Input");
 const useCachedWerk24Input = document.getElementById("useCachedWerk24Input");
 const useSampleOcrInput = document.getElementById("useSampleOcrInput");
+const recentReviews = document.getElementById("recentReviews");
+const recentReviewList = document.getElementById("recentReviewList");
+const refreshRecentReviewsButton = document.getElementById("refreshRecentReviewsButton");
 const compareOverlay = createCompareOverlay();
 
 apiBaseInput.value = state.apiBaseUrl;
@@ -378,6 +387,9 @@ submitButton.addEventListener("click", () => submitSelectedFile());
 useOcrInput.addEventListener("change", syncOcrProviderState);
 useVlmInput?.addEventListener("change", syncVlmProviderState);
 demoButton.addEventListener("click", loadDemoReview);
+refreshRecentReviewsButton?.addEventListener("click", () => {
+  void loadRecentReviews();
+});
 exportButton.addEventListener("click", () => {
   if (!state.review) return;
   downloadJson(makeExportReview(), "spring_review_confirmed.json");
@@ -385,6 +397,7 @@ exportButton.addEventListener("click", () => {
 
 syncOcrProviderState();
 syncVlmProviderState();
+void loadRecentReviews();
 
 function syncOcrProviderState() {
   ocrProviderInput.disabled = !useOcrInput.checked;
@@ -507,6 +520,7 @@ async function submitSelectedFile() {
     setReview(normalizeReview(payload.review), toBackendAssetUrl(payload.image_url));
     appendReviewMessage(makeCompletionText(payload));
     openCompareOverlay();
+    void loadRecentReviews();
   } catch (error) {
     replaceMessage(thinkingId, error.message || String(error), true);
   } finally {
@@ -517,6 +531,7 @@ async function submitSelectedFile() {
 async function runStandardization(messageId = state.activeReviewMessageId) {
   if (!state.review || state.busy) return false;
   activateReviewContext(messageId);
+  await flushReviewPersistence();
   const scrollState = captureReviewScrollState();
   setBusy(true);
   const endpoint = state.lastJob?.job_id
@@ -534,6 +549,7 @@ async function runStandardization(messageId = state.activeReviewMessageId) {
       body: JSON.stringify({
         review: state.review,
         use_llm_standardization: useLlmStandardizationInput?.checked ? true : false,
+        expected_revision: state.lastJob?.review_revision ?? undefined,
       }),
     });
     const payload = await response.json();
@@ -571,6 +587,7 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
   const text = String(message || "").trim();
   if (!state.review || !text || state.standardizationChatBusy) return;
   activateReviewContext(messageId);
+  await flushReviewPersistence();
   const requestReview = normalizeReview(structuredClone(state.review));
   markSubmittedMissingChatActions(requestReview, options.submittedMissingActions);
   const pendingTurnId = appendPendingStandardizationChatTurn(text, messageId);
@@ -589,13 +606,18 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
         message: text,
         use_llm: Boolean(useLlm),
         supplements: options.supplements || undefined,
+        expected_revision: state.lastJob?.review_revision ?? undefined,
       }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || "标准化对话失败");
 
     if (payload.job_id) {
-      state.lastJob = { ...(state.lastJob || {}), job_id: payload.job_id };
+      state.lastJob = {
+        ...(state.lastJob || {}),
+        job_id: payload.job_id,
+        review_revision: payload.review_revision ?? state.lastJob?.review_revision ?? null,
+      };
     }
     const normalized = normalizeReview(payload.review);
     const finalTurnIndex = Math.max((normalized.standardization_chat || []).length - 1, 0);
@@ -720,6 +742,125 @@ function restoreReviewScrollState(scrollState) {
   requestAnimationFrame(() => {
     restore();
     requestAnimationFrame(restore);
+  });
+}
+
+function parameterAuditState(param) {
+  return {
+    value: param?.value ?? null,
+    unit: param?.unit ?? null,
+    tolerance_upper: param?.tolerance_upper ?? null,
+    tolerance_lower: param?.tolerance_lower ?? null,
+    need_human_review: Boolean(param?.need_human_review),
+  };
+}
+
+function loadPointAuditState(point) {
+  return {
+    height: point?.height ?? null,
+    force: point?.force ?? null,
+    load_tolerance_upper: point?.load_tolerance_upper ?? null,
+    load_tolerance_lower: point?.load_tolerance_lower ?? null,
+    load_tolerance_percent: point?.load_tolerance_percent ?? null,
+    need_human_review: Boolean(point?.need_human_review),
+  };
+}
+
+function queueReviewAuditEvent(event) {
+  if (!state.review || !event) return;
+  const entry = {
+    client_event_id: createAuditEventId(),
+    event_type: event.event_type || "manual_review_updated",
+    target_field: event.target_field || null,
+    source: event.source || "manual",
+    reason: event.reason || "人工在审查界面修改",
+    before_state: event.before_state || null,
+    after_state: event.after_state || null,
+    metadata: event.metadata || {},
+    created_at: new Date().toISOString(),
+    sync_status: state.lastJob?.job_id ? "pending" : "local_only",
+  };
+  state.review.change_history ||= [];
+  state.review.change_history.unshift(entry);
+  if (state.lastJob?.job_id) {
+    state.pendingReviewAuditEvents.push(entry);
+    scheduleReviewPersistence();
+  }
+  refreshReviewChangeHistory();
+}
+
+function createAuditEventId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `audit_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function scheduleReviewPersistence() {
+  clearTimeout(state.reviewPersistenceTimer);
+  state.reviewPersistenceTimer = setTimeout(() => {
+    persistReviewChanges();
+  }, 450);
+}
+
+async function flushReviewPersistence() {
+  clearTimeout(state.reviewPersistenceTimer);
+  if (state.reviewPersistenceSaving && state.reviewPersistencePromise) {
+    await state.reviewPersistencePromise;
+  }
+  if (state.pendingReviewAuditEvents.length) {
+    await persistReviewChanges();
+  }
+}
+
+async function persistReviewChanges() {
+  if (state.reviewPersistenceSaving || !state.lastJob?.job_id || !state.pendingReviewAuditEvents.length || !state.review) return;
+  const events = state.pendingReviewAuditEvents.splice(0);
+  const reviewSnapshot = normalizeReview(structuredClone(state.review));
+  state.reviewPersistenceSaving = true;
+  state.reviewPersistencePromise = (async () => {
+    try {
+      const response = await fetch(apiUrl(`/api/reviews/${encodeURIComponent(state.lastJob.job_id)}`), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          review: reviewSnapshot,
+          expected_revision: state.lastJob?.review_revision ?? undefined,
+          events,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        if (response.status === 409 && Number.isFinite(Number(payload?.detail?.current_revision))) {
+          state.lastJob.review_revision = Number(payload.detail.current_revision);
+        }
+        throw new Error(typeof payload.detail === "string" ? payload.detail : "审查数据保存失败");
+      }
+      if (payload.review_revision != null) state.lastJob.review_revision = payload.review_revision;
+      const persistedIds = new Set((payload.events || []).map((item) => item.client_event_id).filter(Boolean));
+      (state.review.change_history || []).forEach((entry) => {
+        if (events.some((item) => item.client_event_id === entry.client_event_id)) {
+          entry.sync_status = persistedIds.has(entry.client_event_id) ? "saved" : "saved_local";
+        }
+      });
+      refreshReviewChangeHistory();
+    } catch (error) {
+      state.pendingReviewAuditEvents.unshift(...events);
+      (state.review.change_history || []).forEach((entry) => {
+        if (events.some((item) => item.client_event_id === entry.client_event_id)) entry.sync_status = "pending";
+      });
+      refreshReviewChangeHistory();
+    } finally {
+      state.reviewPersistenceSaving = false;
+      state.reviewPersistencePromise = null;
+    }
+  })();
+  await state.reviewPersistencePromise;
+}
+
+function refreshReviewChangeHistory() {
+  if (!state.review) return;
+  document.querySelectorAll('[data-kind="review-change-history"]').forEach((node) => {
+    const wasOpen = node.open;
+    node.outerHTML = renderReviewChangeHistoryHtml(state.review, wasOpen);
   });
 }
 
@@ -879,6 +1020,103 @@ async function checkApiHealth() {
   }
 }
 
+async function loadRecentReviews() {
+  if (!recentReviews || !recentReviewList || state.recentReviewsLoading) return;
+  state.recentReviewsLoading = true;
+  if (refreshRecentReviewsButton) refreshRecentReviewsButton.disabled = true;
+  try {
+    const response = await fetch(apiUrl("/api/reviews?limit=20"));
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || "无法读取已保存的审图记录");
+    state.recentReviews = Array.isArray(payload.reviews) ? payload.reviews : [];
+    renderRecentReviews();
+  } catch (error) {
+    state.recentReviews = [];
+    renderRecentReviews();
+  } finally {
+    state.recentReviewsLoading = false;
+    if (refreshRecentReviewsButton) refreshRecentReviewsButton.disabled = false;
+  }
+}
+
+function renderRecentReviews() {
+  if (!recentReviews || !recentReviewList) return;
+  const reviews = state.recentReviews || [];
+  recentReviews.hidden = reviews.length === 0;
+  recentReviewList.innerHTML = reviews.map((item) => {
+    const title = item.drawing_name || item.drawing_no || `审图 ${String(item.job_id || "").slice(0, 8)}`;
+    const type = SPRING_TYPE_LABELS[item.spring_type] || item.spring_type || "未知类型";
+    const status = recentReviewStatusLabel(item.overall_status);
+    const revision = item.revision ? `版本 ${item.revision}` : "本地文件";
+    const updatedAt = formatRecentReviewTime(item.updated_at);
+    const details = [item.drawing_no, type, status, revision, updatedAt].filter(Boolean).join(" · ");
+    return `
+      <article class="recent-review-item">
+        <div class="recent-review-copy">
+          <strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
+          <span>${escapeHtml(details)}</span>
+        </div>
+        <button type="button" data-role="open-recent-review" data-job-id="${escapeHtml(item.job_id)}">打开</button>
+      </article>
+    `;
+  }).join("");
+  recentReviewList.querySelectorAll('[data-role="open-recent-review"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      void openPersistedReview(button.dataset.jobId || "");
+    });
+  });
+}
+
+async function openPersistedReview(jobId) {
+  if (!jobId || state.busy) return;
+  const item = state.recentReviews.find((review) => review.job_id === jobId);
+  setBusy(true);
+  const thinkingId = appendAssistantText("正在恢复已保存的审图记录...");
+  try {
+    const response = await fetch(apiUrl(`/api/reviews/${encodeURIComponent(jobId)}`));
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || "无法恢复该审图记录");
+    removeMessage(thinkingId);
+    state.lastJob = {
+      job_id: jobId,
+      review_revision: payload.review_revision ?? item?.revision ?? null,
+      persistence: { mode: item?.revision ? "postgresql" : "json_fallback" },
+    };
+    setReview(normalizeReview(payload), toBackendAssetUrl(item?.image_url));
+    appendUserMessage(`打开已保存审图：${item?.drawing_name || item?.drawing_no || jobId}`);
+    appendReviewMessage("已恢复审图结果，可继续确认、标准化或与 AI 对话。");
+    openCompareOverlay();
+  } catch (error) {
+    replaceMessage(thinkingId, error.message || String(error), true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function recentReviewStatusLabel(status) {
+  const labels = {
+    pass: "通过",
+    warning: "有风险",
+    blocked: "需处理",
+    need_review: "待确认",
+    needs_input: "待补充",
+  };
+  return labels[status] || status || "待确认";
+}
+
+function formatRecentReviewTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
 function appendReviewMessage(title) {
   const message = createMessage("assistant");
   const body = message.querySelector(".message-body");
@@ -921,6 +1159,10 @@ function renderReviewBody(body, title, context = activeReviewContext(), messageI
     activateReviewContext(messageId);
     confirmAllFields();
     acknowledgeScannedInput();
+    queueReviewAuditEvent({
+      event_type: "all_fields_confirmed",
+      after_state: { confirmed_at: new Date().toISOString() },
+    });
     updateLatestReviewMessage("已全部确认，当前审查状态已刷新。");
   });
   body.querySelector('[data-action="export"]').addEventListener("click", () => {
@@ -1189,8 +1431,80 @@ function renderParameterTableHtml(review) {
           </div>
         </details>
       ` : ""}
+      ${renderReviewChangeHistoryHtml(review)}
     </section>
   `;
+}
+
+function renderReviewChangeHistoryHtml(review, forceOpen = false) {
+  const entries = Array.isArray(review?.change_history) ? review.change_history.slice(0, 20) : [];
+  const rows = entries.length
+    ? entries.map((entry) => `
+      <li class="review-change-history-item">
+        <div>
+          <strong>${escapeHtml(auditTargetLabel(entry.target_field))}</strong>
+          <span>${escapeHtml(auditEventLabel(entry.event_type))}</span>
+        </div>
+        <p>${escapeHtml(auditStateText(entry.before_state))} <b>→</b> ${escapeHtml(auditStateText(entry.after_state))}</p>
+        <small>${escapeHtml(formatAuditTime(entry.created_at))}${entry.sync_status === "pending" ? " · 待保存" : ""}</small>
+      </li>
+    `).join("")
+    : `<li class="review-change-history-empty">暂未产生人工修改记录。</li>`;
+  return `
+    <details class="review-change-history" data-kind="review-change-history"${forceOpen ? " open" : ""}>
+      <summary>
+        <span>修改记录</span>
+        <small>${entries.length ? `最近 ${entries.length} 条` : "暂无"}</small>
+      </summary>
+      <ol>${rows}</ol>
+    </details>
+  `;
+}
+
+function auditTargetLabel(target) {
+  const value = String(target || "");
+  if (value.startsWith("load_points.")) return `载荷点 ${value.slice("load_points.".length)}`;
+  return targetFieldLabel(value) || value || "审查数据";
+}
+
+function auditEventLabel(eventType) {
+  const labels = {
+    parameter_value_updated: "修改数值",
+    parameter_tolerance_updated: "修改公差",
+    parameter_confirmed: "确认参数",
+    parameter_reopened: "重新编辑",
+    load_point_value_updated: "修改载荷点",
+    load_point_tolerance_updated: "修改载荷公差",
+    load_point_confirmed: "确认载荷点",
+    load_point_reopened: "重新编辑",
+    standardization_suggestion_applied: "应用标准化建议",
+    standardization_suggestions_applied: "批量应用标准化建议",
+    standardization_application_reverted: "撤销标准化建议",
+    standard_selection_confirmed: "确认适用标准",
+    all_fields_confirmed: "全部确认",
+  };
+  return labels[eventType] || "更新审查数据";
+}
+
+function auditStateText(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return "无";
+  const parts = [];
+  if (snapshot.value != null && snapshot.value !== "") parts.push(String(snapshot.value));
+  if (snapshot.height != null && snapshot.height !== "") parts.push(`H=${snapshot.height}`);
+  if (snapshot.force != null && snapshot.force !== "") parts.push(`F=${snapshot.force}`);
+  const upper = snapshot.tolerance_upper ?? snapshot.load_tolerance_upper;
+  const lower = snapshot.tolerance_lower ?? snapshot.load_tolerance_lower;
+  const percent = snapshot.load_tolerance_percent;
+  if (upper != null || lower != null) parts.push(`公差 ${upper ?? ""}/${lower ?? ""}`);
+  if (percent != null && percent !== "") parts.push(`公差 ${percent}%`);
+  if (!parts.length && snapshot.confirmed != null) parts.push(snapshot.confirmed ? "已确认" : "待确认");
+  return parts.join("，") || "无";
+}
+
+function formatAuditTime(value) {
+  const date = new Date(value || "");
+  if (Number.isNaN(date.getTime())) return "刚刚";
+  return date.toLocaleString("zh-CN", { hour12: false });
 }
 
 function dataTableHeadHtml(nameLabel, primaryLabel, secondaryLabel) {
@@ -2371,26 +2685,47 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     });
     valueInput.addEventListener("change", (event) => {
       activateReviewContext(messageId);
+      const beforeState = parameterAuditState(param);
       param.value = parseValue(event.target.value, param.value);
       markParamEdited(param, field);
       syncBubbleValue(field, param.value);
       refreshCompressionDesignChecks(root, review);
+      queueReviewAuditEvent({
+        event_type: "parameter_value_updated",
+        target_field: field,
+        before_state: beforeState,
+        after_state: parameterAuditState(param),
+      });
       scheduleParameterReasonablenessRefresh(messageId);
     });
     row.querySelector('[data-role="tolerance"]').addEventListener("change", (event) => {
       activateReviewContext(messageId);
+      const beforeState = parameterAuditState(param);
       applyTolerance(param, event.target.value);
       markParamEdited(param, field);
+      queueReviewAuditEvent({
+        event_type: "parameter_tolerance_updated",
+        target_field: field,
+        before_state: beforeState,
+        after_state: parameterAuditState(param),
+      });
       scheduleParameterReasonablenessRefresh(messageId);
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
+      const beforeState = parameterAuditState(param);
       const action = toggleParamConfirmation(param, field);
       const button = row.querySelector('[data-role="confirm"]');
       if (button) {
         button.classList.toggle("confirmed", action === "confirmed");
         button.textContent = confirmationActionLabel(param);
       }
+      queueReviewAuditEvent({
+        event_type: action === "confirmed" ? "parameter_confirmed" : "parameter_reopened",
+        target_field: field,
+        before_state: beforeState,
+        after_state: parameterAuditState(param),
+      });
       scheduleParameterReasonablenessRefresh(messageId);
     });
   });
@@ -2400,30 +2735,58 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     const pointField = `load_points.${point?.label || `F${Number(row.dataset.index) + 1}`}`;
     row.querySelector('[data-role="height"]').addEventListener("change", (event) => {
       activateReviewContext(messageId);
+      const beforeState = loadPointAuditState(point);
       point.height = parseValue(event.target.value, point.height);
       markParamEdited(point, pointField, { confirmationField: `load_points_${row.dataset.index}` });
+      queueReviewAuditEvent({
+        event_type: "load_point_value_updated",
+        target_field: pointField,
+        before_state: beforeState,
+        after_state: loadPointAuditState(point),
+      });
       scheduleParameterReasonablenessRefresh(messageId);
     });
     row.querySelector('[data-role="force"]').addEventListener("change", (event) => {
       activateReviewContext(messageId);
+      const beforeState = loadPointAuditState(point);
       point.force = parseValue(event.target.value, point.force);
       markParamEdited(point, pointField, { confirmationField: `load_points_${row.dataset.index}` });
+      queueReviewAuditEvent({
+        event_type: "load_point_value_updated",
+        target_field: pointField,
+        before_state: beforeState,
+        after_state: loadPointAuditState(point),
+      });
       scheduleParameterReasonablenessRefresh(messageId);
     });
     row.querySelector('[data-role="load-tolerance"]').addEventListener("change", (event) => {
       activateReviewContext(messageId);
+      const beforeState = loadPointAuditState(point);
       applyLoadPointTolerance(point, event.target.value);
       markParamEdited(point, pointField, { confirmationField: `load_points_${row.dataset.index}` });
+      queueReviewAuditEvent({
+        event_type: "load_point_tolerance_updated",
+        target_field: pointField,
+        before_state: beforeState,
+        after_state: loadPointAuditState(point),
+      });
       scheduleParameterReasonablenessRefresh(messageId);
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
+      const beforeState = loadPointAuditState(point);
       const action = toggleParamConfirmation(point, `load_points_${row.dataset.index}`, { invalidationField: pointField });
       const button = row.querySelector('[data-role="confirm"]');
       if (button) {
         button.classList.toggle("confirmed", action === "confirmed");
         button.textContent = confirmationActionLabel(point);
       }
+      queueReviewAuditEvent({
+        event_type: action === "confirmed" ? "load_point_confirmed" : "load_point_reopened",
+        target_field: pointField,
+        before_state: beforeState,
+        after_state: loadPointAuditState(point),
+      });
       scheduleParameterReasonablenessRefresh(messageId);
     });
   });
@@ -2432,8 +2795,18 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     const item = review.standardization_results[Number(row.dataset.index)];
     row.querySelector('[data-role="confirm-standard"]')?.addEventListener("click", () => {
       activateReviewContext(messageId);
+      const beforeState = { status: item.status, suggested_value: item.suggested_value ?? null };
       const applied = applyStandardizationResults([item], { mode: "single" });
-      if (applied.count) scheduleParameterReasonablenessRefresh(messageId);
+      if (applied.count) {
+        queueReviewAuditEvent({
+          event_type: "standardization_suggestion_applied",
+          target_field: item.target_field,
+          source: "standardization",
+          before_state: beforeState,
+          after_state: { status: item.status, applied_count: applied.count },
+        });
+        scheduleParameterReasonablenessRefresh(messageId);
+      }
       updateLatestReviewMessage(applied.count ? "已应用标准化建议，请继续核对导出数据。" : "该建议当前无法应用，请重新标准化后再试。");
     });
   });
@@ -2442,14 +2815,29 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     activateReviewContext(messageId);
     const plan = standardizationBatchPlan(state.review);
     const applied = applyStandardizationResults(plan.items.map(({ item }) => item), { mode: "batch" });
-    if (applied.count) scheduleParameterReasonablenessRefresh(messageId);
+    if (applied.count) {
+      queueReviewAuditEvent({
+        event_type: "standardization_suggestions_applied",
+        source: "standardization",
+        after_state: { applied_count: applied.count },
+        metadata: { targets: plan.items.map(({ item }) => item.target_field).filter(Boolean) },
+      });
+      scheduleParameterReasonablenessRefresh(messageId);
+    }
     updateLatestReviewMessage(applied.count ? `已应用 ${applied.count} 项标准化建议，可继续修改或导出。` : "暂无可批量应用的标准化建议。");
   });
 
   root.querySelector('[data-action="undo-standardization-batch"]')?.addEventListener("click", () => {
     activateReviewContext(messageId);
     const reverted = undoLastStandardizationApplication();
-    if (reverted) scheduleParameterReasonablenessRefresh(messageId);
+    if (reverted) {
+      queueReviewAuditEvent({
+        event_type: "standardization_application_reverted",
+        source: "standardization",
+        after_state: { reverted_count: reverted.applied_count },
+      });
+      scheduleParameterReasonablenessRefresh(messageId);
+    }
     updateLatestReviewMessage(reverted ? `已撤销上次应用的 ${reverted.applied_count} 项标准化建议。` : "没有可撤销的标准化应用记录。");
   });
 
@@ -2462,7 +2850,14 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
 
   root.querySelector('[data-action="confirm-standard-selection"]')?.addEventListener("click", () => {
     activateReviewContext(messageId);
+    const beforeState = structuredClone(state.review.standard_selection || {});
     confirmStandardSelection();
+    queueReviewAuditEvent({
+      event_type: "standard_selection_confirmed",
+      target_field: "standard_no",
+      before_state: beforeState,
+      after_state: structuredClone(state.review.standard_selection || {}),
+    });
     updateLatestReviewMessage("已确认标准选择判断，请继续核对尺寸和标准化建议。");
   });
 
@@ -3429,6 +3824,10 @@ function renderCompareOverlay() {
   compareOverlay.querySelector('[data-action="confirm-all"]').addEventListener("click", () => {
     confirmAllFields();
     acknowledgeScannedInput();
+    queueReviewAuditEvent({
+      event_type: "all_fields_confirmed",
+      after_state: { confirmed_at: new Date().toISOString() },
+    });
     updateLatestReviewMessage("已全部确认，当前审查状态已刷新。");
   });
   bindCompareTabs(compareOverlay);
@@ -3834,6 +4233,17 @@ function normalizeBaseUrl(url) {
   return String(url || "http://127.0.0.1:8770").trim().replace(/\/+$/, "");
 }
 
+function defaultApiBaseUrl() {
+  const protocol = window.location.protocol;
+  const host = window.location.hostname;
+  const port = window.location.port;
+  if (!protocol.startsWith("http") || !host) return "http://127.0.0.1:8770";
+  if (["127.0.0.1", "localhost"].includes(host) && port === "5173") {
+    return `${protocol}//${host}:8770`;
+  }
+  return window.location.origin;
+}
+
 function normalizeReview(review) {
   const cloned = structuredClone(review);
   cloned.drawing_summary ||= {};
@@ -3866,6 +4276,7 @@ function normalizeReview(review) {
   cloned.confirmation_history ||= [];
   cloned.standardization_chat ||= [];
   cloned.agent_actions ||= [];
+  cloned.change_history ||= [];
   cloned.technical_requirements ||= [];
   cloned.review_results ||= [];
   cloned.balloons ||= [];

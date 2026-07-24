@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_design_review}
+      POSTGRES_USER: ${POSTGRES_USER:-ai_design_review}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ai_review_internal
+
+  api:
+    build:
+      context: .
+      args:
+        DEBIAN_APT_MIRROR: ${DEBIAN_APT_MIRROR:-mirrors.aliyun.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://ai_design_review:${POSTGRES_PASSWORD}@postgres:5432/ai_design_review}
+    volumes:
+      - review_outputs:/app/outputs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${AI_REVIEW_API_PORT:-8770}:8770"
+    networks:
+      - ai_review_internal
+
+  web:
+    image: nginx:1.26-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${AI_REVIEW_WEB_PORT:-8088}:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - ai_review_internal
+
+volumes:
+  postgres_data:
+  review_outputs:
+
+networks:
+  ai_review_internal:
+    driver: bridge

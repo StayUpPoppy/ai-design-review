@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>弹簧图纸 AI 审查助手</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="./styles.css?v=20260712-scroll-retention">
+    <link rel="stylesheet" href="./styles.css?v=20260724-review-resume">
   </head>
   <body>
     <main class="app-shell">
@@ -31,6 +31,16 @@
               <p>上传 PDF 或图片后，我会提取弹簧图纸里的结构化尺寸数据，并在这里等待你确认或修改。</p>
             </div>
           </article>
+          <section id="recentReviews" class="recent-reviews" aria-live="polite" hidden>
+            <div class="recent-reviews-head">
+              <div>
+                <h2>最近审图</h2>
+                <p>刷新页面后，可从这里继续之前的审图。</p>
+              </div>
+              <button id="refreshRecentReviewsButton" class="recent-reviews-refresh" type="button">刷新</button>
+            </div>
+            <div id="recentReviewList" class="recent-review-list"></div>
+          </section>
         </section>
 
         <div class="composer" aria-label="图纸上传">
@@ -127,6 +137,6 @@
       </div>
     </main>
 
-    <script src="./app.js?v=20260712-load-tolerance-standardization"></script>
+    <script src="./app.js?v=20260724-review-resume"></script>
   </body>
 </html>

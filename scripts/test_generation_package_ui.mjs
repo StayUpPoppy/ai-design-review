@@ -36,7 +36,10 @@ assert.equal(packageData.generation_parameters.technical_requirements[0].content
 
 review.spring_parameters.active_coils.value = null;
 assert.equal(context.assessGenerationReadiness(review).status, "needs_input");
-assert.equal(context.makeGenerationParameterPackage(review), null);
+const incompletePackage = context.makeGenerationParameterPackage(review);
+assert.ok(incompletePackage);
+assert.equal(incompletePackage.generation_parameters.spring_parameters.active_coils, undefined);
+assert.equal(incompletePackage.standardization_trace.readiness.status, "needs_input");
 
 console.log("generation package UI test passed");
 

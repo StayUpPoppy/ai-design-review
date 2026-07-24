@@ -4,6 +4,7 @@ import shutil
 import uuid
 import os
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from .engines.werk24_adapter import Werk24Engine
 from .io_utils import project_path, read_json, write_json
 from .llm_standardization_engine import LLMStandardizationEngine, llm_standardization_runtime_status
 from .preprocessing import IMAGE_EXTENSIONS, probe_file, render_pdf_with_pdftoppm
+from .review_persistence import PersistenceError, ReviewPersistence, RevisionConflictError
 from .standard_knowledge import ragflow_runtime_status, retrieve_standard_chunks
 from .standardization_chat_agent import chat_about_standardization, standardization_chat_context_needs_refresh
 from .standardization_chat_llm import standardization_chat_llm_runtime_status
@@ -51,6 +53,8 @@ FRONTEND_ORIGINS = [
 
 app = FastAPI(title="AI Spring Drawing Review API", version="0.1.0")
 RAGFLOW_STARTUP_STATUS = ragflow_runtime_status()
+REVIEW_PERSISTENCE = ReviewPersistence()
+DATABASE_STARTUP_STATUS = REVIEW_PERSISTENCE.health()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=FRONTEND_ORIGINS,
@@ -68,9 +72,15 @@ app.mount("/artifacts", StaticFiles(directory=str(API_RUN_ROOT)), name="artifact
 
 
 @app.on_event("startup")
-def refresh_ragflow_startup_status() -> None:
-    global RAGFLOW_STARTUP_STATUS
+def refresh_runtime_startup_status() -> None:
+    global RAGFLOW_STARTUP_STATUS, DATABASE_STARTUP_STATUS
     RAGFLOW_STARTUP_STATUS = ragflow_runtime_status(check_health=True)
+    DATABASE_STARTUP_STATUS = REVIEW_PERSISTENCE.health(check_connection=True)
+
+
+@app.on_event("shutdown")
+def close_runtime_resources() -> None:
+    REVIEW_PERSISTENCE.dispose()
 
 
 @app.get("/")
@@ -96,6 +106,7 @@ def health() -> dict[str, Any]:
         "llm_standardization_runtime": llm_standardization_runtime_status(),
         "standardization_chat_runtime": standardization_chat_llm_runtime_status(),
         "ragflow_runtime": RAGFLOW_STARTUP_STATUS,
+        "persistence_runtime": DATABASE_STARTUP_STATUS,
         "ocr_runtime": ocr_runtime_status(),
         "geometry_runtime": {"status": "ready", "engine": "geometry"},
         "vlm_runtime": {"status": "not_configured", "mode": "optional_review_only"},
@@ -361,6 +372,12 @@ async def create_review(
     write_json(job_dir / "review.json", review)
     write_json(job_dir / "file_info.json", uploaded_file_info)
     write_json(job_dir / "warnings.json", {"warnings": warnings})
+    persistence = _create_review_persistence(
+        job_id,
+        review,
+        file_info=uploaded_file_info,
+        artifact_dir=str(job_dir),
+    )
 
     return {
         "job_id": job_id,
@@ -375,7 +392,30 @@ async def create_review(
         "llm_standardization_url": _artifact_url(job_id, Path("llm_standardization_raw.json")) if llm_standardization_payload and llm_standardization_payload.get("standardization_results") else None,
         "geometry_url": _artifact_url(job_id, Path("geometry_evidence.json")) if "geometry" in raw_payloads else None,
         "warnings": warnings,
+        "review_revision": persistence.get("revision"),
+        "persistence": _persistence_response(persistence),
         "review": review,
+    }
+
+
+@app.get("/api/reviews")
+def list_reviews(limit: int = 20) -> dict[str, Any]:
+    bounded_limit = min(max(limit, 1), 100)
+    if REVIEW_PERSISTENCE.configured:
+        try:
+            reviews = REVIEW_PERSISTENCE.list_reviews(limit=bounded_limit)
+        except PersistenceError as exc:
+            raise _persistence_http_error(exc) from exc
+        for item in reviews:
+            item["image_url"] = _review_preview_url(item["job_id"])
+        return {
+            "persistence": _persistence_response({"mode": "postgresql"}),
+            "reviews": reviews,
+        }
+
+    return {
+        "persistence": _persistence_response({"mode": "json_fallback"}),
+        "reviews": _list_local_reviews(limit=bounded_limit),
     }
 
 
@@ -418,9 +458,7 @@ async def standardize_existing_review(
     body = payload or {}
     review = body.get("review")
     if not isinstance(review, dict):
-        if not review_path.exists():
-            raise HTTPException(status_code=404, detail="Review not found.")
-        review = read_json(review_path)
+        review, _ = _load_persisted_review(job_id, review_path)
 
     warnings: list[str] = []
     llm_standardization_payload = await _run_standardization_stage(
@@ -429,7 +467,20 @@ async def standardize_existing_review(
         use_llm_standardization=bool(body.get("use_llm_standardization")),
         job_dir=job_dir,
     )
-    write_json(review_path, review)
+    persistence = _save_review_persistence(
+        job_id,
+        review,
+        review_path=review_path,
+        expected_revision=body.get("expected_revision"),
+        events=[
+            {
+                "event_type": "standardization_completed",
+                "source": "standardization_tool",
+                "reason": "已根据当前审查参数生成标准化建议",
+                "metadata": {"use_llm_standardization": bool(body.get("use_llm_standardization"))},
+            }
+        ],
+    )
     if warnings:
         write_json(job_dir / "standardization_warnings.json", {"warnings": warnings})
 
@@ -439,6 +490,8 @@ async def standardize_existing_review(
         if llm_standardization_payload and llm_standardization_payload.get("standardization_results")
         else None,
         "warnings": warnings,
+        "review_revision": persistence.get("revision"),
+        "persistence": _persistence_response(persistence),
         "llm_standardization": _llm_standardization_summary(llm_standardization_payload),
         "review": review,
     }
@@ -479,9 +532,7 @@ async def standardization_chat_existing_review(
     if not message:
         raise HTTPException(status_code=400, detail="standardization chat requires a message.")
     if not isinstance(review, dict):
-        if not review_path.exists():
-            raise HTTPException(status_code=404, detail="Review not found.")
-        review = read_json(review_path)
+        review, _ = _load_persisted_review(job_id, review_path)
     try:
         context = await _prepare_standardization_chat_context(review, message)
         result = chat_about_standardization(
@@ -493,11 +544,81 @@ async def standardization_chat_existing_review(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = _attach_standardization_chat_context(result, context)
-    write_json(review_path, result["review"])
+    persistence = _save_review_persistence(
+        job_id,
+        result["review"],
+        review_path=review_path,
+        expected_revision=body.get("expected_revision"),
+        events=[
+            {
+                "event_type": "standardization_chat_completed",
+                "source": "ai_chat",
+                "reason": "已完成一次标准化对话",
+                "metadata": {"use_llm": bool(body.get("use_llm"))},
+            }
+        ],
+    )
     write_json(job_dir / "standardization_chat.json", {"turns": result["review"].get("standardization_chat", [])})
     return {
         "job_id": job_id,
+        "review_revision": persistence.get("revision"),
+        "persistence": _persistence_response(persistence),
         **result,
+    }
+
+
+@app.patch("/api/reviews/{job_id}")
+def save_existing_review(
+    job_id: str,
+    payload: dict[str, Any] | None = Body(None),
+) -> dict[str, Any]:
+    body = payload or {}
+    review = body.get("review")
+    if not isinstance(review, dict):
+        raise HTTPException(status_code=400, detail="review must be an object.")
+    job_dir = _job_dir(job_id)
+    review_path = job_dir / "review.json"
+    persistence = _save_review_persistence(
+        job_id,
+        review,
+        review_path=review_path,
+        expected_revision=body.get("expected_revision"),
+        events=_audit_events_from_payload(body),
+        actor=_audit_actor_from_payload(body),
+    )
+    return {
+        "job_id": job_id,
+        "review_revision": persistence.get("revision"),
+        "persistence": _persistence_response(persistence),
+        "events": persistence.get("events", []),
+    }
+
+
+@app.get("/api/reviews/{job_id}/changes")
+def get_review_changes(job_id: str, limit: int = 100) -> dict[str, Any]:
+    job_dir = _job_dir(job_id)
+    review_path = job_dir / "review.json"
+    if REVIEW_PERSISTENCE.configured:
+        try:
+            stored = REVIEW_PERSISTENCE.get_review(job_id)
+            if stored is not None:
+                return {
+                    "job_id": job_id,
+                    "review_revision": stored["revision"],
+                    "persistence": _persistence_response({"mode": "postgresql", "revision": stored["revision"]}),
+                    "events": REVIEW_PERSISTENCE.list_change_events(job_id, limit=limit),
+                }
+        except PersistenceError as exc:
+            raise _persistence_http_error(exc) from exc
+    if not review_path.exists():
+        raise HTTPException(status_code=404, detail="Review not found.")
+    review = read_json(review_path)
+    history = review.get("change_history") if isinstance(review.get("change_history"), list) else []
+    return {
+        "job_id": job_id,
+        "review_revision": None,
+        "persistence": _persistence_response({"mode": "json_fallback", "revision": None}),
+        "events": list(reversed(history[-min(max(limit, 1), 500) :])),
     }
 
 
@@ -505,9 +626,10 @@ async def standardization_chat_existing_review(
 def get_review(job_id: str) -> dict[str, Any]:
     job_dir = _job_dir(job_id)
     review_path = job_dir / "review.json"
-    if not review_path.exists():
-        raise HTTPException(status_code=404, detail="Review not found.")
-    return read_json(review_path)
+    review, revision = _load_persisted_review(job_id, review_path)
+    if revision is not None:
+        review["review_revision"] = revision
+    return review
 
 
 @app.get("/api/reviews/{job_id}/candidates")
@@ -526,6 +648,189 @@ def download_review(job_id: str) -> FileResponse:
     if not review_path.exists():
         raise HTTPException(status_code=404, detail="Review not found.")
     return FileResponse(str(review_path), filename=f"{job_id}_review.json")
+
+
+def _create_review_persistence(
+    job_id: str,
+    review: dict[str, Any],
+    *,
+    file_info: dict[str, Any],
+    artifact_dir: str,
+) -> dict[str, Any]:
+    try:
+        return REVIEW_PERSISTENCE.create_review(
+            job_id,
+            review,
+            file_info=file_info,
+            artifact_dir=artifact_dir,
+        )
+    except PersistenceError as exc:
+        raise _persistence_http_error(exc) from exc
+
+
+def _load_persisted_review(job_id: str, review_path: Path) -> tuple[dict[str, Any], int | None]:
+    if REVIEW_PERSISTENCE.configured:
+        try:
+            stored = REVIEW_PERSISTENCE.get_review(job_id)
+        except PersistenceError as exc:
+            raise _persistence_http_error(exc) from exc
+        if stored is not None:
+            return stored["review"], stored["revision"]
+    if not review_path.exists():
+        raise HTTPException(status_code=404, detail="Review not found.")
+    return read_json(review_path), None
+
+
+def _save_review_persistence(
+    job_id: str,
+    review: dict[str, Any],
+    *,
+    review_path: Path,
+    expected_revision: Any = None,
+    events: list[dict[str, Any]] | None = None,
+    actor: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    revision = _expected_review_revision(expected_revision)
+    audit_events = events or []
+    history_status = "saved" if REVIEW_PERSISTENCE.configured else "saved_local"
+    fallback_events = _merge_audit_events_into_review_history(review, audit_events, status=history_status)
+    try:
+        result = REVIEW_PERSISTENCE.save_review(
+            job_id,
+            review,
+            expected_revision=revision,
+            events=audit_events,
+            actor=actor,
+            artifact_dir=str(review_path.parent),
+        )
+    except RevisionConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "当前审查数据已被其他操作更新，请刷新后重试。",
+                "current_revision": exc.current_revision,
+            },
+        ) from exc
+    except PersistenceError as exc:
+        raise _persistence_http_error(exc) from exc
+    if result.get("mode") == "json_fallback":
+        result["events"] = fallback_events
+    write_json(review_path, review)
+    return result
+
+
+def _expected_review_revision(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        raise HTTPException(status_code=400, detail="expected_revision must be an integer.")
+    try:
+        revision = int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="expected_revision must be an integer.") from exc
+    if revision < 1:
+        raise HTTPException(status_code=400, detail="expected_revision must be greater than zero.")
+    return revision
+
+
+def _audit_actor_from_payload(body: dict[str, Any]) -> dict[str, Any] | None:
+    raw = body.get("actor")
+    if not isinstance(raw, dict):
+        return None
+    allowed = ("erp_user_id", "username", "department_id", "display_name")
+    actor = {
+        key: str(raw[key]).strip()[:256]
+        for key in allowed
+        if raw.get(key) not in (None, "") and str(raw[key]).strip()
+    }
+    return actor or None
+
+
+def _audit_events_from_payload(body: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_events = body.get("events")
+    if not isinstance(raw_events, list):
+        return []
+    events: list[dict[str, Any]] = []
+    for raw in raw_events[:100]:
+        if not isinstance(raw, dict):
+            continue
+        event_type = str(raw.get("event_type") or "manual_review_updated").strip()[:96]
+        event: dict[str, Any] = {
+            "event_type": event_type or "manual_review_updated",
+            "target_field": _audit_text(raw.get("target_field"), 192),
+            "source": _audit_text(raw.get("source"), 64) or "manual",
+            "reason": _audit_text(raw.get("reason"), 2000),
+            "before_state": raw.get("before_state") if isinstance(raw.get("before_state"), dict) else None,
+            "after_state": raw.get("after_state") if isinstance(raw.get("after_state"), dict) else None,
+            "metadata": raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {},
+        }
+        client_event_id = _audit_text(raw.get("client_event_id"), 128)
+        if client_event_id:
+            event["metadata"]["client_event_id"] = client_event_id
+        events.append(event)
+    return events
+
+
+def _audit_text(value: Any, limit: int) -> str | None:
+    text_value = str(value or "").strip()
+    return text_value[:limit] if text_value else None
+
+
+def _merge_audit_events_into_review_history(
+    review: dict[str, Any],
+    events: list[dict[str, Any]],
+    *,
+    status: str,
+) -> list[dict[str, Any]]:
+    if not events:
+        return []
+    history = review.setdefault("change_history", [])
+    if not isinstance(history, list):
+        history = []
+        review["change_history"] = history
+    existing_by_client_id = {
+        str(item.get("client_event_id")): item
+        for item in history
+        if isinstance(item, dict) and item.get("client_event_id")
+    }
+    normalized: list[dict[str, Any]] = []
+    for event in events:
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        client_event_id = metadata.get("client_event_id")
+        item = {
+            "client_event_id": client_event_id,
+            "event_type": event.get("event_type"),
+            "target_field": event.get("target_field"),
+            "source": event.get("source"),
+            "reason": event.get("reason"),
+            "before_state": event.get("before_state"),
+            "after_state": event.get("after_state"),
+            "metadata": metadata,
+            "created_at": datetime.now(UTC).isoformat(),
+            "sync_status": status,
+        }
+        existing = existing_by_client_id.get(str(client_event_id)) if client_event_id else None
+        if existing is not None:
+            existing["sync_status"] = status
+            item = existing
+        else:
+            history.insert(0, item)
+        normalized.append(item)
+    return normalized
+
+
+def _persistence_response(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "mode": result.get("mode") or "json_fallback",
+        "revision": result.get("revision"),
+    }
+
+
+def _persistence_http_error(exc: PersistenceError) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="审查数据存储暂不可用，请检查 PostgreSQL 连接和数据库迁移。",
+    )
 
 
 async def _run_standardization_stage(
@@ -771,6 +1076,54 @@ def _werk24_license_status() -> dict[str, str]:
 
 def _artifact_url(job_id: str, relative: Path) -> str:
     return "/artifacts/" + job_id + "/" + relative.as_posix()
+
+
+def _review_preview_url(job_id: str) -> str | None:
+    job_dir = _job_dir(job_id)
+    page_dir = job_dir / "pages"
+    if not page_dir.exists():
+        return None
+    supported_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+    candidates = sorted(
+        (
+            path
+            for path in page_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() in supported_suffixes
+        ),
+        key=lambda path: path.as_posix(),
+    )
+    if not candidates:
+        return None
+    return _artifact_url(job_id, candidates[0].relative_to(job_dir))
+
+
+def _list_local_reviews(*, limit: int) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for review_path in API_RUN_ROOT.glob("*/review.json"):
+        try:
+            review = read_json(review_path)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(review, dict):
+            continue
+        job_id = review_path.parent.name
+        summary = review.get("drawing_summary") if isinstance(review.get("drawing_summary"), dict) else {}
+        modified_at = datetime.fromtimestamp(review_path.stat().st_mtime, UTC).isoformat()
+        items.append(
+            {
+                "job_id": job_id,
+                "drawing_no": summary.get("drawing_no"),
+                "drawing_name": summary.get("drawing_name"),
+                "spring_type": summary.get("spring_type"),
+                "overall_status": summary.get("overall_status"),
+                "revision": None,
+                "created_at": modified_at,
+                "updated_at": modified_at,
+                "image_url": _review_preview_url(job_id),
+            }
+        )
+    items.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return items[:limit]
 
 
 def _job_dir(job_id: str) -> Path:

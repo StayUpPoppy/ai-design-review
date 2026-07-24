@@ -16,6 +16,9 @@ python-multipart>=0.0.9
 Pillow>=10.0
 pypdf>=4.0
 pdf2image>=1.17
+SQLAlchemy>=2.0,<2.1
+psycopg[binary]>=3.2,<4
+alembic>=1.13,<2
 
 # Optional legacy adapter. The default product path no longer uses Werk24.
 # werk24>=2.0
