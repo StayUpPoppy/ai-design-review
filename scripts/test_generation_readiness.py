@@ -19,6 +19,10 @@ def main() -> None:
 
 def _assert_ready_review_builds_confirmed_package() -> None:
     review = _ready_review()
+    review["derived_parameters"].update({
+        "spring_index": {"value": 8, "unit": None},
+        "slenderness_ratio": {"value": 3, "unit": None},
+    })
     readiness = assess_generation_readiness(review)
     assert readiness["status"] == "ready"
     package = build_generation_parameter_package(review)
@@ -26,6 +30,10 @@ def _assert_ready_review_builds_confirmed_package() -> None:
     assert package["generation_parameters"]["spring_parameters"]["material"]["value"] == "SUS304"
     assert package["generation_parameters"]["spring_parameters"]["outer_diameter"]["value"] == 20
     assert package["generation_parameters"]["load_points"][0]["label"] == "F1"
+    assert package["derived_parameters"]["mean_diameter"]["value"] == 18
+    assert package["derived_parameters"]["spring_index"]["value"] == 9
+    assert package["derived_parameters"]["slenderness_ratio"]["value"] == round(40 / 18, 4)
+    assert package["derived_parameters"]["spring_index"]["source"] == ["derived", "generation_export"]
 
 
 def _assert_missing_core_field_is_omitted_but_package_exports() -> None:
@@ -49,6 +57,9 @@ def _assert_pending_field_is_omitted_but_package_exports() -> None:
     package = build_generation_parameter_package(review)
     assert "outer_diameter" not in package["generation_parameters"]["spring_parameters"]
     assert package["generation_parameters"]["spring_parameters"]["wire_diameter"]["value"] == 2
+    assert "mean_diameter" not in package["derived_parameters"]
+    assert "spring_index" not in package["derived_parameters"]
+    assert "slenderness_ratio" not in package["derived_parameters"]
 
 
 def _assert_agent_answers_generation_readiness() -> None:

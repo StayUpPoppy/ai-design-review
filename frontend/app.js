@@ -1167,6 +1167,7 @@ function renderParameterTableHtml(review) {
         ${dataTableHeadHtml("参数", "数值", "公差")}
         ${parameterRows.join("")}
       </div>
+      ${renderCompressionDesignCheckHtml(review)}
       ${loadPointRows.length ? `
         <div class="data-subsection">
           <div class="data-subsection-head">载荷点</div>
@@ -1201,6 +1202,96 @@ function dataTableHeadHtml(nameLabel, primaryLabel, secondaryLabel) {
       <span>操作</span>
     </div>
   `;
+}
+
+function renderCompressionDesignCheckHtml(review) {
+  if (!isCompressionSpringReview(review)) return "";
+  const values = compressionDesignCheckValues(review.spring_parameters || {});
+  return `
+    <section class="compression-design-check" data-kind="compression-design-check">
+      <div class="compression-design-check-head">
+        <strong>设计校核值</strong>
+        <small>自动计算</small>
+      </div>
+      <div class="compression-design-check-grid">
+        ${compressionDesignCheckMetricHtml("旋绕比 C", "spring_index", values.spring_index, "C = D / d", values.spring_index_missing)}
+        ${compressionDesignCheckMetricHtml("细长比 b", "slenderness_ratio", values.slenderness_ratio, "b = H0 / D", values.slenderness_ratio_missing)}
+      </div>
+    </section>
+  `;
+}
+
+function compressionDesignCheckMetricHtml(label, metric, value, formula, missingFields) {
+  const valueText = value == null ? "--" : formatCompactNumber(value);
+  const missingText = value == null && missingFields.length
+    ? `待补充：${missingFields.map((field) => targetFieldLabel(field)).join("、")}`
+    : formula;
+  return `
+    <div class="compression-design-check-metric">
+      <span>${escapeHtml(label)}</span>
+      <strong data-role="design-check-value" data-metric="${escapeHtml(metric)}">${escapeHtml(valueText)}</strong>
+      <small data-role="design-check-basis" data-metric="${escapeHtml(metric)}">${escapeHtml(missingText)}</small>
+    </div>
+  `;
+}
+
+function compressionDesignCheckValues(params, overrides = {}) {
+  const valueFor = (field) => {
+    const raw = Object.prototype.hasOwnProperty.call(overrides, field)
+      ? overrides[field]
+      : params[field]?.value;
+    if (raw == null || String(raw).trim() === "") return null;
+    const numeric = Number(raw);
+    return Number.isFinite(numeric) ? numeric : null;
+  };
+  const wire = valueFor("wire_diameter");
+  const outer = valueFor("outer_diameter");
+  const inner = valueFor("inner_diameter");
+  const recognizedMean = valueFor("mean_diameter");
+  const freeLength = valueFor("free_length");
+  const mean = recognizedMean ?? (wire != null && outer != null ? outer - wire : null) ?? (wire != null && inner != null ? inner + wire : null);
+  const meanMissing = mean == null ? ["mean_diameter", "outer_diameter", "inner_diameter", "wire_diameter"] : [];
+  const springIndex = mean != null && wire != null && wire !== 0 ? mean / wire : null;
+  const slendernessRatio = mean != null && mean !== 0 && freeLength != null ? freeLength / mean : null;
+  return {
+    spring_index: springIndex,
+    spring_index_missing: springIndex == null ? (wire == null || wire === 0 ? ["wire_diameter"] : meanMissing) : [],
+    slenderness_ratio: slendernessRatio,
+    slenderness_ratio_missing: slendernessRatio == null
+      ? (freeLength == null ? ["free_length"] : meanMissing)
+      : [],
+  };
+}
+
+function designCheckInputOverrides(root) {
+  const overrides = {};
+  root.querySelectorAll('[data-kind="param"][data-field]').forEach((row) => {
+    const input = row.querySelector('[data-role="value"]');
+    if (input) overrides[row.dataset.field] = input.value;
+  });
+  return overrides;
+}
+
+function refreshCompressionDesignChecks(root, review) {
+  const containers = root.querySelectorAll('[data-kind="compression-design-check"]');
+  if (!containers.length) return;
+  const values = compressionDesignCheckValues(review.spring_parameters || {}, designCheckInputOverrides(root));
+  const metrics = {
+    spring_index: { value: values.spring_index, formula: "C = D / d", missing: values.spring_index_missing },
+    slenderness_ratio: { value: values.slenderness_ratio, formula: "b = H0 / D", missing: values.slenderness_ratio_missing },
+  };
+  containers.forEach((container) => {
+    Object.entries(metrics).forEach(([metric, item]) => {
+      const value = container.querySelector(`[data-role="design-check-value"][data-metric="${metric}"]`);
+      const basis = container.querySelector(`[data-role="design-check-basis"][data-metric="${metric}"]`);
+      if (value) value.textContent = item.value == null ? "--" : formatCompactNumber(item.value);
+      if (basis) {
+        basis.textContent = item.value == null && item.missing.length
+          ? `待补充：${item.missing.map((field) => targetFieldLabel(field)).join("、")}`
+          : item.formula;
+      }
+    });
+  });
 }
 
 function loadPointTableHeadHtml() {
@@ -2274,11 +2365,16 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     const fieldMeta = getFieldMeta(field, review);
     const param = review.spring_parameters[field] || blankParam(fieldMeta.unit);
     review.spring_parameters[field] = param;
-    row.querySelector('[data-role="value"]').addEventListener("change", (event) => {
+    const valueInput = row.querySelector('[data-role="value"]');
+    valueInput.addEventListener("input", () => {
+      refreshCompressionDesignChecks(root, review);
+    });
+    valueInput.addEventListener("change", (event) => {
       activateReviewContext(messageId);
       param.value = parseValue(event.target.value, param.value);
       markParamEdited(param, field);
       syncBubbleValue(field, param.value);
+      refreshCompressionDesignChecks(root, review);
       scheduleParameterReasonablenessRefresh(messageId);
     });
     row.querySelector('[data-role="tolerance"]').addEventListener("change", (event) => {
@@ -4048,11 +4144,75 @@ function makeGenerationParameterPackage(review = state.review) {
       torque_points: structuredClone((review.spring_parameters?.torque_points || []).filter((point) => !point?.need_human_review)),
       technical_requirements: requirements,
     },
-    derived_parameters: structuredClone(review.derived_parameters || {}),
+    derived_parameters: generationDerivedParameters(review),
     standardization_trace: {
       results: structuredClone(review.standardization_results || []),
       readiness,
     },
+  };
+}
+
+function generationDerivedParameters(review) {
+  const derived = structuredClone(review.derived_parameters || {});
+  ["mean_diameter", "spring_index", "slenderness_ratio"].forEach((field) => delete derived[field]);
+  const params = review.spring_parameters || {};
+  const confirmedNumber = (field) => {
+    if (generationParameterState(params[field]) !== "confirmed") return null;
+    const value = Number(params[field]?.value);
+    return Number.isFinite(value) ? value : null;
+  };
+  const wire = confirmedNumber("wire_diameter");
+  const outer = confirmedNumber("outer_diameter");
+  const inner = confirmedNumber("inner_diameter");
+  const recognizedMean = confirmedNumber("mean_diameter");
+  const freeLength = confirmedNumber("free_length");
+  let mean = recognizedMean;
+  let meanFormula = recognizedMean != null ? "drawing_or_manual_mean_diameter" : "";
+  let meanSources = recognizedMean != null ? ["mean_diameter"] : [];
+  if (mean == null && wire != null && outer != null) {
+    mean = outer - wire;
+    meanFormula = "outer_diameter - wire_diameter";
+    meanSources = ["outer_diameter", "wire_diameter"];
+  } else if (mean == null && wire != null && inner != null) {
+    mean = inner + wire;
+    meanFormula = "inner_diameter + wire_diameter";
+    meanSources = ["inner_diameter", "wire_diameter"];
+  }
+  if (mean != null) {
+    derived.mean_diameter = generationDerivedParameter("mean_diameter", mean, "mm", meanFormula, meanSources);
+  }
+  if (mean != null && wire != null && wire !== 0) {
+    derived.spring_index = generationDerivedParameter(
+      "spring_index",
+      mean / wire,
+      null,
+      "mean_diameter / wire_diameter",
+      ["mean_diameter", "wire_diameter"],
+    );
+  }
+  if (mean != null && mean !== 0 && freeLength != null) {
+    derived.slenderness_ratio = generationDerivedParameter(
+      "slenderness_ratio",
+      freeLength / mean,
+      null,
+      "free_length / mean_diameter",
+      ["free_length", "mean_diameter"],
+    );
+  }
+  return derived;
+}
+
+function generationDerivedParameter(field, value, unit, formula, sourceFields) {
+  const rounded = Number(Number(value).toFixed(4));
+  return {
+    field,
+    value: rounded,
+    unit,
+    source: ["derived", "generation_export"],
+    formula,
+    source_fields: sourceFields,
+    confidence: 0.99,
+    need_human_review: false,
   };
 }
 

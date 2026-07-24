@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Any
 
 from .spring_templates import FIELD_LABELS
@@ -159,7 +160,7 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
             "torque_points": _confirmed_load_points(parameters.get("torque_points") or []),
             "technical_requirements": technical_requirements,
         },
-        "derived_parameters": deepcopy(review.get("derived_parameters") or {}),
+        "derived_parameters": _export_derived_parameters(review, parameters),
         "standardization_trace": {
             "results": deepcopy(review.get("standardization_results") or []),
             "readiness": readiness,
@@ -248,6 +249,83 @@ def _generation_parameter(item: dict[str, Any], field: str) -> dict[str, Any]:
         "tolerance_upper": item.get("tolerance_upper"),
         "tolerance_lower": item.get("tolerance_lower"),
         "confirmation_source": "human_confirmed",
+    }
+
+
+def _export_derived_parameters(review: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
+    """Refresh geometry-derived values from confirmed source fields at export time."""
+    derived = deepcopy(review.get("derived_parameters") or {})
+    for field in ("mean_diameter", "spring_index", "slenderness_ratio"):
+        derived.pop(field, None)
+
+    wire = _confirmed_number(parameters, "wire_diameter")
+    outer = _confirmed_number(parameters, "outer_diameter")
+    inner = _confirmed_number(parameters, "inner_diameter")
+    recognized_mean = _confirmed_number(parameters, "mean_diameter")
+    free_length = _confirmed_number(parameters, "free_length")
+
+    mean = recognized_mean
+    mean_formula = "drawing_or_manual_mean_diameter" if recognized_mean is not None else ""
+    mean_sources = ["mean_diameter"] if recognized_mean is not None else []
+    if mean is None and wire is not None and outer is not None:
+        mean = outer - wire
+        mean_formula = "outer_diameter - wire_diameter"
+        mean_sources = ["outer_diameter", "wire_diameter"]
+    elif mean is None and wire is not None and inner is not None:
+        mean = inner + wire
+        mean_formula = "inner_diameter + wire_diameter"
+        mean_sources = ["inner_diameter", "wire_diameter"]
+
+    if mean is not None:
+        derived["mean_diameter"] = _export_derived_parameter(
+            "mean_diameter", mean, "mm", mean_formula, mean_sources
+        )
+    if mean is not None and wire not in (None, 0):
+        derived["spring_index"] = _export_derived_parameter(
+            "spring_index",
+            mean / wire,
+            None,
+            "mean_diameter / wire_diameter",
+            ["mean_diameter", "wire_diameter"],
+        )
+    if mean not in (None, 0) and free_length is not None:
+        derived["slenderness_ratio"] = _export_derived_parameter(
+            "slenderness_ratio",
+            free_length / mean,
+            None,
+            "free_length / mean_diameter",
+            ["free_length", "mean_diameter"],
+        )
+    return derived
+
+
+def _confirmed_number(parameters: dict[str, Any], field: str) -> float | None:
+    if _parameter_state(parameters, field) != "confirmed":
+        return None
+    try:
+        value = float(parameters[field]["value"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return value if isfinite(value) else None
+
+
+def _export_derived_parameter(
+    field: str,
+    value: float,
+    unit: str | None,
+    formula: str,
+    source_fields: list[str],
+) -> dict[str, Any]:
+    rounded = round(float(value), 4)
+    return {
+        "field": field,
+        "value": int(rounded) if rounded.is_integer() else rounded,
+        "unit": unit,
+        "source": ["derived", "generation_export"],
+        "formula": formula,
+        "source_fields": source_fields,
+        "confidence": 0.99,
+        "need_human_review": False,
     }
 
 
