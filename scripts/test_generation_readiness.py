@@ -11,8 +11,8 @@ from ai_design_review.standardization_chat_agent import chat_about_standardizati
 
 def main() -> None:
     _assert_ready_review_builds_confirmed_package()
-    _assert_missing_core_field_blocks_package()
-    _assert_pending_field_blocks_package()
+    _assert_missing_core_field_is_omitted_but_package_exports()
+    _assert_pending_field_is_omitted_but_package_exports()
     _assert_agent_answers_generation_readiness()
     print("generation readiness test passed")
 
@@ -28,26 +28,27 @@ def _assert_ready_review_builds_confirmed_package() -> None:
     assert package["generation_parameters"]["load_points"][0]["label"] == "F1"
 
 
-def _assert_missing_core_field_blocks_package() -> None:
+def _assert_missing_core_field_is_omitted_but_package_exports() -> None:
     review = _ready_review()
     review["spring_parameters"]["active_coils"]["value"] = None
     readiness = assess_generation_readiness(review)
     assert readiness["status"] == "needs_input"
     assert any(item["field"] == "active_coils" for item in readiness["missing_fields"])
-    try:
-        build_generation_parameter_package(review)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("missing core fields must block generation parameter package export")
+    package = build_generation_parameter_package(review)
+    assert "active_coils" not in package["generation_parameters"]["spring_parameters"]
+    assert package["standardization_trace"]["readiness"]["status"] == "needs_input"
+    assert package["export_policy"]["readiness_is_advisory"] is True
 
 
-def _assert_pending_field_blocks_package() -> None:
+def _assert_pending_field_is_omitted_but_package_exports() -> None:
     review = _ready_review()
     review["spring_parameters"]["outer_diameter"]["need_human_review"] = True
     readiness = assess_generation_readiness(review)
     assert readiness["status"] == "needs_confirmation"
     assert any(item["field"] == "outer_diameter" for item in readiness["pending_fields"])
+    package = build_generation_parameter_package(review)
+    assert "outer_diameter" not in package["generation_parameters"]["spring_parameters"]
+    assert package["generation_parameters"]["spring_parameters"]["wire_diameter"]["value"] == 2
 
 
 def _assert_agent_answers_generation_readiness() -> None:

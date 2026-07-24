@@ -1514,7 +1514,6 @@ function renderGenerationReadinessHtml(review) {
     blocked: "存在不可用参数",
     not_applicable: "暂不适用",
   };
-  const ready = ["ready", "ready_with_warnings"].includes(readiness.status);
   return `
     <section class="review-block generation-readiness-block">
       <div class="block-head">
@@ -1527,8 +1526,8 @@ function renderGenerationReadinessHtml(review) {
       ${renderGenerationReadinessIssues("需要确认", readiness.pending_fields, "pending")}
       ${renderGenerationReadinessIssues("风险提示", readiness.warnings, "warning")}
       <div class="generation-package-actions">
-        <button type="button" data-action="export-generation-package" ${ready ? "" : "disabled"}>导出参数包</button>
-        <small>仅包含已确认主参数；派生参数和标准化依据单独保留用于追溯。</small>
+        <button type="button" data-action="export-generation-package">导出参数包</button>
+        <small>仅包含当前已确认参数；完整性提示不影响导出。</small>
       </div>
     </section>
   `;
@@ -2361,12 +2360,8 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   root.querySelector('[data-action="export-generation-package"]')?.addEventListener("click", () => {
     activateReviewContext(messageId);
     const packageData = makeGenerationParameterPackage(state.review);
-    if (!packageData) {
-      updateLatestReviewMessage("当前仍有缺失或待确认的生图参数，暂不能导出参数包。");
-      return;
-    }
     downloadJson(packageData, "compression_spring_generation_parameters.json");
-    updateLatestReviewMessage("已导出已确认的生图参数包，可作为后续重新生图的唯一主参数输入。");
+    updateLatestReviewMessage("已导出当前已确认的生图参数包；待确认或空缺字段未包含。");
   });
 
   root.querySelector('[data-action="confirm-standard-selection"]')?.addEventListener("click", () => {
@@ -4006,7 +4001,6 @@ function makeExportReview() {
 
 function makeGenerationParameterPackage(review = state.review) {
   const readiness = assessGenerationReadiness(review);
-  if (!["ready", "ready_with_warnings"].includes(readiness.status)) return null;
   const confirmedParameters = {};
   Object.entries(review.spring_parameters || {}).forEach(([field, param]) => {
     if (["load_points", "torque_points"].includes(field) || generationParameterState(param) !== "confirmed") return;
@@ -4033,6 +4027,10 @@ function makeGenerationParameterPackage(review = state.review) {
     schema_version: "spring_generation_parameters/v1",
     package_type: "confirmed_compression_spring_generation_input",
     generated_at: new Date().toISOString(),
+    export_policy: {
+      parameter_filter: "human_confirmed_only",
+      readiness_is_advisory: true,
+    },
     source: {
       drawing_no: summary.drawing_no || null,
       drawing_name: summary.drawing_name || null,
@@ -4047,6 +4045,7 @@ function makeGenerationParameterPackage(review = state.review) {
     generation_parameters: {
       spring_parameters: confirmedParameters,
       load_points: structuredClone((review.spring_parameters?.load_points || []).filter((point) => !point?.need_human_review)),
+      torque_points: structuredClone((review.spring_parameters?.torque_points || []).filter((point) => !point?.need_human_review)),
       technical_requirements: requirements,
     },
     derived_parameters: structuredClone(review.derived_parameters || {}),

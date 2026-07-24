@@ -112,9 +112,12 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]:
+    """Build an exportable package from the fields the reviewer has confirmed.
+
+    Readiness remains visible as advice for the next drawing stage, but does not
+    prevent a reviewer from exporting the confirmed subset for a specific order.
+    """
     readiness = assess_generation_readiness(review)
-    if readiness["status"] not in {"ready", "ready_with_warnings"}:
-        raise ValueError("generation parameters are not ready")
 
     parameters = review.get("spring_parameters") or {}
     confirmed_parameters = {
@@ -135,6 +138,10 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
         "schema_version": "spring_generation_parameters/v1",
         "package_type": "confirmed_compression_spring_generation_input",
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "export_policy": {
+            "parameter_filter": "human_confirmed_only",
+            "readiness_is_advisory": True,
+        },
         "source": {
             "drawing_no": summary.get("drawing_no"),
             "drawing_name": summary.get("drawing_name"),
@@ -149,6 +156,7 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
         "generation_parameters": {
             "spring_parameters": confirmed_parameters,
             "load_points": _confirmed_load_points(parameters.get("load_points") or []),
+            "torque_points": _confirmed_load_points(parameters.get("torque_points") or []),
             "technical_requirements": technical_requirements,
         },
         "derived_parameters": deepcopy(review.get("derived_parameters") or {}),

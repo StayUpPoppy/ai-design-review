@@ -2132,6 +2132,21 @@ textarea {
   justify-self: start;
 }
 
+.advanced-popover-qwen-only {
+  left: auto;
+  width: min(320px, calc(100vw - 32px));
+}
+
+.advanced-grid-qwen-only {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+}
+
+.advanced-grid-qwen-only > :not(.qwen-option) {
+  display: none !important;
+}
+
 .check-control {
   display: inline-flex;
   gap: 7px;
