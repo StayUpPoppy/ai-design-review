@@ -266,6 +266,22 @@ class ReviewPersistence:
         except SQLAlchemyError as exc:
             raise PersistenceError(f"Unable to list reviews: {_safe_error(exc)}") from exc
 
+    def delete_review(self, job_id: str) -> bool:
+        """Delete a review and its cascade-owned audit events."""
+        if not self.configured:
+            return False
+        with self._session() as session:
+            try:
+                record = session.get(ReviewRecord, job_id)
+                if record is None:
+                    return False
+                session.delete(record)
+                session.commit()
+                return True
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise PersistenceError(f"Unable to delete review: {_safe_error(exc)}") from exc
+
     def _session(self) -> Session:
         if not self._session_factory:
             raise PersistenceError("DATABASE_URL is not configured.")

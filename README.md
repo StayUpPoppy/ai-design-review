@@ -286,3 +286,5 @@ http://111.170.173.2:18080/
 ## docker
 docker compose up -d
 docker compose down
+http://127.0.0.1:8088
+http://127.0.0.1:8088/api/health

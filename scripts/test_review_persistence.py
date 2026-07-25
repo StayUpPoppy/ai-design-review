@@ -74,6 +74,11 @@ def main() -> None:
             assert recent[0]["drawing_no"] == "YD-002"
             assert recent[0]["overall_status"] == "need_review"
 
+            assert repository.delete_review("job002") is True
+            assert repository.get_review("job002") is None
+            assert repository.delete_review("job002") is False
+            assert all(item["job_id"] != "job002" for item in repository.list_reviews())
+
             try:
                 repository.save_review("job001", updated_review, expected_revision=1)
             except RevisionConflictError as exc:

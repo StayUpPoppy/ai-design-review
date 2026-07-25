@@ -594,6 +594,38 @@ def save_existing_review(
     }
 
 
+@app.delete("/api/reviews/{job_id}")
+def delete_existing_review(job_id: str) -> dict[str, Any]:
+    job_dir = _job_dir(job_id)
+    if REVIEW_PERSISTENCE.configured:
+        try:
+            deleted = REVIEW_PERSISTENCE.delete_review(job_id)
+        except PersistenceError as exc:
+            raise _persistence_http_error(exc) from exc
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Review not found.")
+        persistence = _persistence_response({"mode": "postgresql"})
+    else:
+        if not job_dir.exists():
+            raise HTTPException(status_code=404, detail="Review not found.")
+        persistence = _persistence_response({"mode": "json_fallback"})
+
+    artifact_cleanup = "not_found"
+    if job_dir.exists():
+        try:
+            shutil.rmtree(job_dir)
+            artifact_cleanup = "deleted"
+        except OSError:
+            artifact_cleanup = "pending"
+
+    return {
+        "job_id": job_id,
+        "deleted": True,
+        "persistence": persistence,
+        "artifact_cleanup": artifact_cleanup,
+    }
+
+
 @app.get("/api/reviews/{job_id}/changes")
 def get_review_changes(job_id: str, limit: int = 100) -> dict[str, Any]:
     job_dir = _job_dir(job_id)

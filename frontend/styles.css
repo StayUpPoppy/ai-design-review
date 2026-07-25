@@ -93,7 +93,6 @@ button:disabled {
 }
 
 .app-topbar h1,
-.app-topbar p,
 .message p,
 .review-block h2 {
   margin: 0;
@@ -103,17 +102,6 @@ button:disabled {
   font-size: 17px;
   font-weight: 700;
   text-align: center;
-}
-
-.app-topbar p {
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 11px;
-  text-align: center;
-}
-
-.app-topbar p.error {
-  color: var(--fail);
 }
 
 .topbar-actions {
@@ -134,6 +122,289 @@ button:disabled {
 .topbar-actions button:hover:not(:disabled) {
   border-color: var(--line);
   background: #f8faff;
+}
+
+.app-workspace {
+  display: grid;
+  grid-template-columns: 252px minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.history-sidebar {
+  min-width: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: #f8faff;
+  padding: 18px 12px;
+}
+
+.history-new-review-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: calc(100% - 12px);
+  min-height: 36px;
+  margin: 0 6px 16px;
+  border-color: #c8d8f7;
+  background: #fff;
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.history-new-review-button > span {
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.history-new-review-button:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.history-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 6px 12px;
+}
+
+.history-sidebar h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.history-refresh-button {
+  min-height: 28px;
+  border-color: transparent;
+  background: transparent;
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.history-refresh-button:hover:not(:disabled) {
+  border-color: var(--line);
+  background: #fff;
+}
+
+.history-order-list {
+  display: grid;
+  gap: 4px;
+}
+
+.history-empty {
+  margin: 4px 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.history-order-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 58px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  padding: 0;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.history-order-item:hover {
+  background: #fff;
+  border-color: #dce6f7;
+}
+
+.history-order-item.active {
+  border-color: #cddcff;
+  background: var(--primary-soft);
+}
+
+.history-select-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 56px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 8px 2px 8px 10px;
+  text-align: left;
+}
+
+.history-select-button:hover:not(:disabled) {
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.history-order-copy {
+  display: block;
+  min-width: 0;
+}
+
+.history-order-copy > strong,
+.history-order-copy > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-order-copy > strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.history-order-copy > span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.history-order-item.active .history-order-copy strong {
+  color: #1f49bd;
+}
+
+.history-order-arrow {
+  color: #8ba0c5;
+  font-size: 20px;
+  line-height: 1;
+  text-align: center;
+}
+
+.history-order-item.active .history-order-arrow {
+  color: var(--primary);
+}
+
+.history-delete-button {
+  position: relative;
+  display: grid;
+  width: 28px;
+  min-height: 28px;
+  place-items: center;
+  border-color: transparent;
+  background: transparent;
+  padding: 0;
+  color: #8b99ad;
+}
+
+.history-delete-button:hover:not(:disabled) {
+  border-color: #f0c8c4;
+  background: #fff7f6;
+  color: var(--fail);
+}
+
+.history-delete-icon {
+  position: relative;
+  display: block;
+  width: 10px;
+  height: 11px;
+  border: 1.4px solid currentColor;
+  border-top: 0;
+}
+
+.history-delete-icon::before,
+.history-delete-icon::after {
+  position: absolute;
+  content: "";
+}
+
+.history-delete-icon::before {
+  top: -4px;
+  left: -2px;
+  width: 12px;
+  border-top: 1.4px solid currentColor;
+}
+
+.history-delete-icon::after {
+  top: -6px;
+  left: 3px;
+  width: 3px;
+  height: 2px;
+  border: 1.4px solid currentColor;
+  border-bottom: 0;
+}
+
+.delete-review-dialog {
+  width: min(408px, calc(100vw - 32px));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 24px 64px rgb(29 47 74 / 24%);
+  color: var(--ink);
+  padding: 0;
+}
+
+.delete-review-dialog::backdrop {
+  background: rgb(23 32 51 / 32%);
+}
+
+.delete-review-dialog-content {
+  padding: 22px;
+}
+
+.delete-review-dialog h2,
+.delete-review-dialog p {
+  margin: 0;
+}
+
+.delete-review-dialog h2 {
+  font-size: 16px;
+}
+
+.delete-review-dialog p {
+  margin-top: 10px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.delete-review-dialog .delete-review-dialog-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.delete-review-dialog .delete-review-dialog-error {
+  color: var(--fail);
+}
+
+.delete-review-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.delete-review-dialog-actions button {
+  min-height: 34px;
+  padding: 0 13px;
+  font-size: 13px;
+}
+
+.delete-review-dialog-actions .delete-review-confirm-button {
+  border-color: var(--fail);
+  background: var(--fail);
+  color: #fff;
+}
+
+.delete-review-dialog-actions .delete-review-confirm-button:hover:not(:disabled) {
+  border-color: #8f1c15;
+  background: #8f1c15;
+  color: #fff;
 }
 
 .review-actions button:first-child {
@@ -228,89 +499,6 @@ button:disabled {
   color: var(--ink);
   font-size: 15px;
   line-height: 1.7;
-}
-
-.recent-reviews {
-  width: min(100%, 1050px);
-  margin: 0 auto;
-  border-top: 1px solid var(--line);
-  padding-top: 16px;
-}
-
-.recent-reviews-head,
-.recent-review-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-}
-
-.recent-reviews h2,
-.recent-reviews p {
-  margin: 0;
-}
-
-.recent-reviews h2 {
-  color: var(--ink);
-  font-size: 14px;
-}
-
-.recent-reviews p,
-.recent-review-copy span {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.recent-reviews p {
-  margin-top: 4px;
-}
-
-.recent-reviews-refresh {
-  min-height: 30px;
-  padding: 0 9px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.recent-review-list {
-  display: grid;
-  gap: 6px;
-  margin-top: 12px;
-}
-
-.recent-review-item {
-  min-height: 48px;
-  border-bottom: 1px solid #edf1f7;
-  padding: 6px 0;
-}
-
-.recent-review-copy {
-  min-width: 0;
-}
-
-.recent-review-copy strong,
-.recent-review-copy span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.recent-review-copy strong {
-  color: var(--ink);
-  font-size: 13px;
-}
-
-.recent-review-copy span {
-  margin-top: 3px;
-}
-
-.recent-review-item button {
-  min-height: 30px;
-  flex: 0 0 auto;
-  padding: 0 10px;
-  color: var(--primary);
-  font-size: 12px;
 }
 
 .summary-strip {
@@ -2396,6 +2584,19 @@ textarea {
     justify-content: center;
   }
 
+  .app-workspace {
+    grid-template-columns: 216px minmax(0, 1fr);
+  }
+
+  .history-sidebar {
+    padding: 14px 8px;
+  }
+
+  .history-sidebar-head {
+    padding-right: 4px;
+    padding-left: 4px;
+  }
+
   .conversation {
     padding: 18px 16px 14px;
     scroll-padding-bottom: 14px;
@@ -2404,10 +2605,6 @@ textarea {
   .message,
   .message.user {
     grid-template-columns: 1fr;
-    width: 100%;
-  }
-
-  .recent-reviews {
     width: 100%;
   }
 
@@ -2529,6 +2726,36 @@ textarea {
 }
 
 @media (max-width: 640px) {
+  .app-workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(102px, 24vh) minmax(0, 1fr);
+  }
+
+  .history-sidebar {
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 10px 12px;
+  }
+
+  .history-sidebar-head {
+    padding: 0 2px 8px;
+  }
+
+  .history-order-list {
+    grid-auto-columns: minmax(210px, 72vw);
+    grid-auto-flow: column;
+    grid-template-columns: none;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .history-order-item,
+  .history-select-button {
+    min-height: 52px;
+  }
+
   .app-topbar h1 {
     font-size: 16px;
   }

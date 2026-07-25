@@ -343,9 +343,7 @@ const LOCAL_SPRING_TEMPLATES = {
 };
 
 const conversation = document.getElementById("conversation");
-const backendStatus = document.getElementById("backendStatus");
 const apiBaseInput = document.getElementById("apiBaseInput");
-const checkApiButton = document.getElementById("checkApiButton");
 const demoButton = document.getElementById("demoButton");
 const exportButton = document.getElementById("exportButton");
 const drawingInput = document.getElementById("drawingInput");
@@ -366,6 +364,7 @@ const useWerk24Input = document.getElementById("useWerk24Input");
 const confirmWerk24Input = document.getElementById("confirmWerk24Input");
 const useCachedWerk24Input = document.getElementById("useCachedWerk24Input");
 const useSampleOcrInput = document.getElementById("useSampleOcrInput");
+const newReviewButton = document.getElementById("newReviewButton");
 const recentReviews = document.getElementById("recentReviews");
 const recentReviewList = document.getElementById("recentReviewList");
 const refreshRecentReviewsButton = document.getElementById("refreshRecentReviewsButton");
@@ -377,13 +376,14 @@ apiBaseInput.addEventListener("change", () => {
   state.apiBaseUrl = normalizeBaseUrl(apiBaseInput.value || state.apiBaseUrl);
   apiBaseInput.value = state.apiBaseUrl;
   localStorage.setItem("aiDesignReviewApiBaseUrl", state.apiBaseUrl);
-  setBackendStatus(`后端地址已切换为 ${state.apiBaseUrl}`);
 });
 
-checkApiButton.addEventListener("click", checkApiHealth);
 chooseFileButton.addEventListener("click", () => drawingInput.click());
 loadReviewJsonButton.addEventListener("click", () => reviewJsonInput.click());
 submitButton.addEventListener("click", () => submitSelectedFile());
+newReviewButton?.addEventListener("click", () => {
+  void startNewReview();
+});
 useOcrInput.addEventListener("change", syncOcrProviderState);
 useVlmInput?.addEventListener("change", syncVlmProviderState);
 demoButton.addEventListener("click", loadDemoReview);
@@ -996,30 +996,6 @@ async function loadDemoReview() {
   }
 }
 
-async function checkApiHealth() {
-  setBackendStatus("正在检查后端...");
-  try {
-    const response = await fetch(apiUrl("/api/health"));
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || "后端健康检查失败");
-    const qwenStatus = payload.qwen_runtime?.status || "unknown";
-    const qwenModel = payload.qwen_runtime?.model || "qwen3.7-plus";
-    const ocrRuntime = payload.ocr_runtime || {};
-    const defaultProvider = ocrRuntime.default_provider || "unknown";
-    const baiduStatus = ocrRuntime.baidu_ocr?.status || "unknown";
-    const baiduVlStatus = ocrRuntime.baidu_paddleocr_vl?.status || "unknown";
-    const rapidStatus = ocrRuntime.rapidocr?.status || "unknown";
-    const llmStandardizationStatus = payload.llm_standardization_runtime?.status || "unknown";
-    const standardizationChatStatus = payload.standardization_chat_runtime?.status || "unknown";
-    const vlmStatus = payload.vlm_runtime?.status || "unknown";
-    setBackendStatus(
-      `后端正常 · Qwen ${qwenModel} ${qwenStatus} · OCR ${defaultProvider} · 百度 ${baiduStatus} · 百度VL ${baiduVlStatus} · RapidOCR ${rapidStatus} · 标准化LLM ${llmStandardizationStatus} · 对话LLM ${standardizationChatStatus} · VLM ${vlmStatus}`,
-    );
-  } catch (error) {
-    setBackendStatus(`后端不可用：${error.message || String(error)}`, true);
-  }
-}
-
 async function loadRecentReviews() {
   if (!recentReviews || !recentReviewList || state.recentReviewsLoading) return;
   state.recentReviewsLoading = true;
@@ -1042,7 +1018,10 @@ async function loadRecentReviews() {
 function renderRecentReviews() {
   if (!recentReviews || !recentReviewList) return;
   const reviews = state.recentReviews || [];
-  recentReviews.hidden = reviews.length === 0;
+  if (!reviews.length) {
+    recentReviewList.innerHTML = '<p class="history-empty">暂无历史订单。上传并完成审图后，记录会自动保存在这里。</p>';
+    return;
+  }
   recentReviewList.innerHTML = reviews.map((item) => {
     const title = item.drawing_name || item.drawing_no || `审图 ${String(item.job_id || "").slice(0, 8)}`;
     const type = SPRING_TYPE_LABELS[item.spring_type] || item.spring_type || "未知类型";
@@ -1050,19 +1029,31 @@ function renderRecentReviews() {
     const revision = item.revision ? `版本 ${item.revision}` : "本地文件";
     const updatedAt = formatRecentReviewTime(item.updated_at);
     const details = [item.drawing_no, type, status, revision, updatedAt].filter(Boolean).join(" · ");
+    const isActive = item.job_id === state.lastJob?.job_id;
     return `
-      <article class="recent-review-item">
-        <div class="recent-review-copy">
-          <strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
-          <span>${escapeHtml(details)}</span>
-        </div>
-        <button type="button" data-role="open-recent-review" data-job-id="${escapeHtml(item.job_id)}">打开</button>
+      <article class="history-order-item${isActive ? " active" : ""}">
+        <button class="history-select-button" type="button" data-role="open-recent-review" data-job-id="${escapeHtml(item.job_id)}">
+          <span class="history-order-copy">
+            <strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
+            <span>${escapeHtml(details)}</span>
+          </span>
+          <span class="history-order-arrow" aria-hidden="true">›</span>
+        </button>
+        <button class="history-delete-button" type="button" data-role="delete-recent-review" data-job-id="${escapeHtml(item.job_id)}" title="删除订单" aria-label="删除订单">
+          <span class="history-delete-icon" aria-hidden="true"></span>
+        </button>
       </article>
     `;
   }).join("");
   recentReviewList.querySelectorAll('[data-role="open-recent-review"]').forEach((button) => {
     button.addEventListener("click", () => {
       void openPersistedReview(button.dataset.jobId || "");
+    });
+  });
+  recentReviewList.querySelectorAll('[data-role="delete-recent-review"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      const item = state.recentReviews.find((review) => review.job_id === button.dataset.jobId);
+      if (item) showDeleteReviewDialog(item);
     });
   });
 }
@@ -1083,6 +1074,7 @@ async function openPersistedReview(jobId) {
       persistence: { mode: item?.revision ? "postgresql" : "json_fallback" },
     };
     setReview(normalizeReview(payload), toBackendAssetUrl(item?.image_url));
+    renderRecentReviews();
     appendUserMessage(`打开已保存审图：${item?.drawing_name || item?.drawing_no || jobId}`);
     appendReviewMessage("已恢复审图结果，可继续确认、标准化或与 AI 对话。");
     openCompareOverlay();
@@ -1091,6 +1083,127 @@ async function openPersistedReview(jobId) {
   } finally {
     setBusy(false);
   }
+}
+
+function showDeleteReviewDialog(item) {
+  if (!item?.job_id || document.querySelector(".delete-review-dialog[open]")) return;
+  const title = item.drawing_name || item.drawing_no || item.job_id;
+  const dialog = document.createElement("dialog");
+  dialog.className = "delete-review-dialog";
+  dialog.innerHTML = `
+    <div class="delete-review-dialog-content">
+      <h2>删除历史订单？</h2>
+      <p>“${escapeHtml(title)}”将从历史订单中移除。</p>
+      <p class="delete-review-dialog-note">审图记录、修改留痕和本地识别产物会一并删除，删除后无法恢复。</p>
+      <p class="delete-review-dialog-error" data-role="delete-review-error" hidden></p>
+      <div class="delete-review-dialog-actions">
+        <button type="button" data-role="cancel-delete-review">取消</button>
+        <button class="delete-review-confirm-button" type="button" data-role="confirm-delete-review">删除</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(dialog);
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  dialog.querySelector('[data-role="cancel-delete-review"]').addEventListener("click", () => dialog.close());
+  dialog.querySelector('[data-role="confirm-delete-review"]').addEventListener("click", () => {
+    void deletePersistedReview(item, dialog);
+  });
+  dialog.showModal();
+}
+
+async function deletePersistedReview(item, dialog) {
+  if (!item?.job_id || state.busy) return;
+  const confirmButton = dialog.querySelector('[data-role="confirm-delete-review"]');
+  const cancelButton = dialog.querySelector('[data-role="cancel-delete-review"]');
+  const errorNode = dialog.querySelector('[data-role="delete-review-error"]');
+  confirmButton.disabled = true;
+  cancelButton.disabled = true;
+  setBusy(true);
+  await flushReviewPersistence();
+  try {
+    const response = await fetch(apiUrl(`/api/reviews/${encodeURIComponent(item.job_id)}`), { method: "DELETE" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || "删除历史订单失败");
+    const title = item.drawing_name || item.drawing_no || item.job_id;
+    const deletedCurrentReview = state.lastJob?.job_id === item.job_id;
+    state.recentReviews = state.recentReviews.filter((review) => review.job_id !== item.job_id);
+    if (deletedCurrentReview) resetDeletedReviewState();
+    renderRecentReviews();
+    dialog.close();
+    appendAssistantText(`已删除历史订单：${title}`);
+  } catch (error) {
+    errorNode.hidden = false;
+    errorNode.textContent = error.message || String(error);
+    confirmButton.disabled = false;
+    cancelButton.disabled = false;
+  } finally {
+    setBusy(false);
+  }
+}
+
+function resetDeletedReviewState() {
+  clearTimeout(state.reviewPersistenceTimer);
+  state.pendingReviewAuditEvents = [];
+  if (state.compareOpen) closeCompareOverlay();
+  const deletedReview = state.review;
+  Object.entries(state.reviewContexts).forEach(([messageId, context]) => {
+    if (context.review === deletedReview) {
+      removeMessage(messageId);
+      delete state.reviewContexts[messageId];
+    }
+  });
+  state.review = null;
+  state.imageUrl = null;
+  state.lastJob = null;
+  state.activeReviewMessageId = null;
+  state.selectedBubbleId = null;
+  exportButton.disabled = true;
+}
+
+async function startNewReview() {
+  if (state.busy) return;
+  setBusy(true);
+  try {
+    await flushReviewPersistence();
+    clearTimeout(state.reviewPersistenceTimer);
+    clearTimeout(state.reasonablenessRefreshTimer);
+    clearTimeout(state.standardizationChatTypingTimer);
+    state.reasonablenessRequestSerial += 1;
+    state.pendingReviewAuditEvents = [];
+    state.reviewContexts = {};
+    state.review = null;
+    state.imageUrl = null;
+    state.lastJob = null;
+    state.activeReviewMessageId = null;
+    state.selectedBubbleId = null;
+    state.selectedFile = null;
+    drawingInput.value = "";
+    reviewJsonInput.value = "";
+    selectedFileName.textContent = "未选择文件";
+    advancedOptions.open = false;
+    if (state.compareOpen) closeCompareOverlay();
+    exportButton.disabled = true;
+    renderEmptyConversation();
+    renderRecentReviews();
+  } catch (error) {
+    appendAssistantText(`无法保存当前审图记录：${error.message || String(error)}`, true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function renderEmptyConversation() {
+  conversation.replaceChildren();
+  const message = createMessage("assistant");
+  message.querySelector(".message-body").innerHTML = `
+    <div class="message-meta">助手 · 图纸审查</div>
+    <p>上传 PDF 或图片后，我会提取弹簧图纸里的结构化尺寸数据，并在这里等待你确认或修改。</p>
+  `;
+  conversation.appendChild(message);
+  conversation.scrollTop = 0;
 }
 
 function recentReviewStatusLabel(status) {
@@ -4208,14 +4321,10 @@ function setBusy(busy) {
   submitButton.disabled = busy || !state.selectedFile;
   chooseFileButton.disabled = busy;
   demoButton.disabled = busy;
+  if (newReviewButton) newReviewButton.disabled = busy;
   submitButton.classList.toggle("busy", busy);
   submitButton.textContent = busy ? "审查中..." : "↑";
   submitButton.setAttribute("aria-label", busy ? "正在审查" : "开始审查");
-}
-
-function setBackendStatus(text, isError = false) {
-  backendStatus.textContent = text;
-  backendStatus.classList.toggle("error", isError);
 }
 
 function apiUrl(path) {
@@ -4762,5 +4871,3 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 }
-
-checkApiHealth();

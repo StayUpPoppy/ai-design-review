@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>弹簧图纸 AI 审查助手</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="./styles.css?v=20260724-review-resume">
+    <link rel="stylesheet" href="./styles.css?v=20260725-new-review">
   </head>
   <body>
     <main class="app-shell">
@@ -13,16 +13,27 @@
         <div class="topbar-spacer" aria-hidden="true"></div>
         <div class="topbar-brand">
           <h1>弹簧图纸 AI 审查助手</h1>
-          <p id="backendStatus">正在检查后端...</p>
         </div>
         <div class="topbar-actions">
           <button id="demoButton" type="button">加载样例</button>
-          <button id="checkApiButton" type="button">检查后端</button>
           <button id="exportButton" type="button" disabled>导出</button>
         </div>
       </header>
 
-      <div class="chat-stage">
+      <div class="app-workspace">
+        <aside id="recentReviews" class="history-sidebar" aria-label="历史订单">
+          <button id="newReviewButton" class="history-new-review-button" type="button" title="清空当前审图界面，新建一次审图">
+            <span aria-hidden="true">＋</span>
+            新建审图
+          </button>
+          <div class="history-sidebar-head">
+            <h2>历史订单</h2>
+            <button id="refreshRecentReviewsButton" class="history-refresh-button" type="button" title="刷新历史订单" aria-label="刷新历史订单">刷新</button>
+          </div>
+          <div id="recentReviewList" class="history-order-list"></div>
+        </aside>
+
+        <div class="chat-stage">
         <section id="conversation" class="conversation" aria-label="审图对话">
           <article class="message assistant">
             <div class="avatar">AI</div>
@@ -31,16 +42,6 @@
               <p>上传 PDF 或图片后，我会提取弹簧图纸里的结构化尺寸数据，并在这里等待你确认或修改。</p>
             </div>
           </article>
-          <section id="recentReviews" class="recent-reviews" aria-live="polite" hidden>
-            <div class="recent-reviews-head">
-              <div>
-                <h2>最近审图</h2>
-                <p>刷新页面后，可从这里继续之前的审图。</p>
-              </div>
-              <button id="refreshRecentReviewsButton" class="recent-reviews-refresh" type="button">刷新</button>
-            </div>
-            <div id="recentReviewList" class="recent-review-list"></div>
-          </section>
         </section>
 
         <div class="composer" aria-label="图纸上传">
@@ -135,8 +136,9 @@
           </div>
         </div>
       </div>
+      </div>
     </main>
 
-    <script src="./app.js?v=20260724-review-resume"></script>
+    <script src="./app.js?v=20260725-new-review"></script>
   </body>
 </html>
