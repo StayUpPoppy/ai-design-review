@@ -14,6 +14,7 @@ env/
 .env
 .env.*
 !.env.example
+!.env.production.example
 .werk24
 
 # IDE / local editor
@@ -36,6 +37,9 @@ frontend/dist/
 # Generated review outputs
 outputs/
 !outputs/.gitkeep
+
+# PostgreSQL exports produced by deploy/backup_postgres.sh
+backups/
 
 # Uploaded drawings and generated previews
 tmp_pdf_pages/
