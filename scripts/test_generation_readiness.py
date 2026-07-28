@@ -44,7 +44,7 @@ def _assert_missing_core_field_is_omitted_but_package_exports() -> None:
     assert any(item["field"] == "active_coils" for item in readiness["missing_fields"])
     package = build_generation_parameter_package(review)
     assert "active_coils" not in package["generation_parameters"]["spring_parameters"]
-    assert package["standardization_trace"]["readiness"]["status"] == "needs_input"
+    assert "standardization_trace" not in package
     assert package["export_policy"]["readiness_is_advisory"] is True
 
 

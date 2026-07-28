@@ -113,12 +113,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]:
-    """Build an exportable package from the fields the reviewer has confirmed.
-
-    Readiness remains visible as advice for the next drawing stage, but does not
-    prevent a reviewer from exporting the confirmed subset for a specific order.
-    """
-    readiness = assess_generation_readiness(review)
+    """Build a compact drawing package from the fields the reviewer has confirmed."""
 
     parameters = review.get("spring_parameters") or {}
     confirmed_parameters = {
@@ -161,10 +156,6 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
             "technical_requirements": technical_requirements,
         },
         "derived_parameters": _export_derived_parameters(review, parameters),
-        "standardization_trace": {
-            "results": deepcopy(review.get("standardization_results") or []),
-            "readiness": readiness,
-        },
     }
 
 

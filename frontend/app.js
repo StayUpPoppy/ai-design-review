@@ -4616,7 +4616,6 @@ function makeExportReview() {
 }
 
 function makeGenerationParameterPackage(review = state.review) {
-  const readiness = assessGenerationReadiness(review);
   const confirmedParameters = {};
   Object.entries(review.spring_parameters || {}).forEach(([field, param]) => {
     if (["load_points", "torque_points"].includes(field) || generationParameterState(param) !== "confirmed") return;
@@ -4665,10 +4664,6 @@ function makeGenerationParameterPackage(review = state.review) {
       technical_requirements: requirements,
     },
     derived_parameters: generationDerivedParameters(review),
-    standardization_trace: {
-      results: structuredClone(review.standardization_results || []),
-      readiness,
-    },
   };
 }
 
