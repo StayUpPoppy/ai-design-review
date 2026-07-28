@@ -12,7 +12,7 @@ const state = {
   activeReviewMessageId: null,
   reviewContexts: {},
   compareOpen: false,
-  compareTab: "parameters",
+  compareTab: "workbench",
   compareView: {
     initialized: false,
     scale: 1,
@@ -27,6 +27,12 @@ const state = {
   busy: false,
   standardizationChatBusy: false,
   standardizationChatTypingTimer: null,
+  automaticStandardizationTimer: null,
+  accuracyGradeUpdate: {
+    phase: "idle",
+    grade: "",
+    timer: null,
+  },
   reasonablenessRefreshTimer: null,
   reasonablenessRequestSerial: 0,
   reviewPersistenceTimer: null,
@@ -189,6 +195,8 @@ const SPECIALIZED_ACCURACY_PARAMETER_FIELDS = new Set([
   "load_accuracy_grade",
   "stiffness_accuracy_grade",
 ]);
+
+const COMPRESSION_ACCURACY_GRADE_OPTIONS = ["1级", "2级", "3级"];
 
 const STANDARDIZATION_PARAMETER_ASSOCIATIONS = {
   load_points: new Set(["active_coils", "load_accuracy_grade"]),
@@ -426,6 +434,7 @@ reviewJsonInput.addEventListener("change", async (event) => {
   if (!file) return;
   advancedOptions.open = false;
   const review = normalizeReview(JSON.parse(await file.text()));
+  state.compareTab = "workbench";
   setReview(review, null);
   appendUserMessage(`导入审查 JSON：${file.name}`);
   appendReviewMessage("已加载审查结果，请确认结构化尺寸数据。");
@@ -517,6 +526,7 @@ async function submitSelectedFile() {
 
     removeMessage(thinkingId);
     state.lastJob = payload;
+    state.compareTab = "workbench";
     setReview(normalizeReview(payload.review), toBackendAssetUrl(payload.image_url));
     appendReviewMessage(makeCompletionText(payload));
     openCompareOverlay();
@@ -528,8 +538,16 @@ async function submitSelectedFile() {
   }
 }
 
-async function runStandardization(messageId = state.activeReviewMessageId) {
+async function runStandardization(messageId = state.activeReviewMessageId, options = {}) {
   if (!state.review || state.busy) return false;
+  clearTimeout(state.automaticStandardizationTimer);
+  state.automaticStandardizationTimer = null;
+  const accuracyGradeUpdate = options.accuracy_grade_update;
+  if (accuracyGradeUpdate?.grade) {
+    setAccuracyGradeUpdate("loading", accuracyGradeUpdate.grade);
+  } else if (state.accuracyGradeUpdate.phase === "ready") {
+    setAccuracyGradeUpdate();
+  }
   activateReviewContext(messageId);
   await flushReviewPersistence();
   const scrollState = captureReviewScrollState();
@@ -537,11 +555,13 @@ async function runStandardization(messageId = state.activeReviewMessageId) {
   const endpoint = state.lastJob?.job_id
     ? `/api/reviews/${encodeURIComponent(state.lastJob.job_id)}/standardize`
     : "/api/reviews/standardize";
-  const thinkingId = appendAssistantText(
-    "正在根据当前确认/修改后的参数进行标准化...",
-    false,
-    { scroll: false },
-  );
+  const thinkingId = options.silent
+    ? null
+    : appendAssistantText(
+      "正在根据当前确认/修改后的参数进行标准化...",
+      false,
+      { scroll: false },
+    );
   try {
     const response = await fetch(apiUrl(endpoint), {
       method: "POST",
@@ -555,11 +575,11 @@ async function runStandardization(messageId = state.activeReviewMessageId) {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || "标准化失败");
 
-    removeMessage(thinkingId);
+    if (thinkingId) removeMessage(thinkingId);
     if (payload.job_id) {
       state.lastJob = { ...(state.lastJob || {}), ...payload };
     }
-    setReview(normalizeReview(payload.review), state.imageUrl);
+    setReview(normalizeReview(payload.review), state.imageUrl, { preserveAccuracyGradeUpdate: true });
     state.review.standardization_apply_history = [];
     state.review.derived_parameters_stale = false;
     state.review.parameter_reasonableness_stale = false;
@@ -572,10 +592,18 @@ async function runStandardization(messageId = state.activeReviewMessageId) {
     const llmSummary = payload.llm_standardization?.result_count
       ? `，其中 LLM/RAG ${payload.llm_standardization.result_count} 项`
       : "";
-    updateLatestReviewMessage(`标准化完成：生成 ${state.review.standardization_results.length} 项建议${llmSummary}。${warnings}`);
+    const completionPrefix = options.automatic ? "已按最新修改自动更新标准化方案" : "标准化完成";
+    if (accuracyGradeUpdate?.grade) {
+      setAccuracyGradeUpdate("success", accuracyGradeUpdate.grade);
+    }
+    updateLatestReviewMessage(`${completionPrefix}：生成 ${state.review.standardization_results.length} 项建议${llmSummary}。${warnings}`);
     return true;
   } catch (error) {
-    replaceMessage(thinkingId, error.message || String(error), true);
+    if (accuracyGradeUpdate?.grade) {
+      setAccuracyGradeUpdate("error", accuracyGradeUpdate.grade);
+    }
+    if (thinkingId) replaceMessage(thinkingId, error.message || String(error), true);
+    else appendAssistantText(`自动更新标准化方案失败：${error.message || String(error)}`, true, { scroll: false });
     return false;
   } finally {
     setBusy(false);
@@ -752,6 +780,9 @@ function parameterAuditState(param) {
     tolerance_upper: param?.tolerance_upper ?? null,
     tolerance_lower: param?.tolerance_lower ?? null,
     need_human_review: Boolean(param?.need_human_review),
+    source: sourceValues(param?.source),
+    default_source: param?.default_source ?? null,
+    evidence: param?.evidence ?? "",
   };
 }
 
@@ -871,6 +902,75 @@ function scheduleParameterReasonablenessRefresh(messageId = state.activeReviewMe
   }, 180);
 }
 
+function clearAccuracyGradeUpdateTimer() {
+  clearTimeout(state.accuracyGradeUpdate.timer);
+  state.accuracyGradeUpdate.timer = null;
+}
+
+function resetAccuracyGradeUpdate() {
+  clearAccuracyGradeUpdateTimer();
+  state.accuracyGradeUpdate.phase = "idle";
+  state.accuracyGradeUpdate.grade = "";
+  updateAccuracyGradeFeedbackUi();
+}
+
+function accuracyGradeUpdateMessage(phase, grade) {
+  if (phase === "pending") return `已选择 ${grade}，准备更新…`;
+  if (phase === "loading") return `正在按 ${grade} 更新标准化方案…`;
+  if (phase === "success") return `已按 ${grade} 更新成功`;
+  if (phase === "error") return `按 ${grade} 自动更新失败，请点击更新方案重试`;
+  if (phase === "ready") return `已选择 ${grade}，点击生成标准化方案`;
+  return "";
+}
+
+function setAccuracyGradeUpdate(phase = "idle", grade = "") {
+  clearAccuracyGradeUpdateTimer();
+  state.accuracyGradeUpdate.phase = phase;
+  state.accuracyGradeUpdate.grade = grade;
+  updateAccuracyGradeFeedbackUi();
+  if (phase !== "success") return;
+  state.accuracyGradeUpdate.timer = setTimeout(() => {
+    if (state.accuracyGradeUpdate.phase !== "success") return;
+    resetAccuracyGradeUpdate();
+  }, 3000);
+}
+
+function scheduleAutomaticStandardization(messageId = state.activeReviewMessageId, options = {}) {
+  clearTimeout(state.automaticStandardizationTimer);
+  state.automaticStandardizationTimer = null;
+  const results = state.review?.standardization_results || [];
+  const needsRefresh = state.review?.derived_parameters_stale
+    || results.some((item) => item?.status === "stale");
+  const isAccuracyGradeUpdate = options.source === "accuracy_grade";
+  // Upload stays fast: only refresh after the user has already asked for a plan once.
+  if (!state.review || !results.length || !needsRefresh) {
+    if (isAccuracyGradeUpdate) setAccuracyGradeUpdate("ready", options.grade || "");
+    return false;
+  }
+  if (state.busy) {
+    if (isAccuracyGradeUpdate) setAccuracyGradeUpdate("pending", options.grade || "");
+    state.automaticStandardizationTimer = setTimeout(() => {
+      state.automaticStandardizationTimer = null;
+      scheduleAutomaticStandardization(messageId, options);
+    }, 180);
+    return true;
+  }
+  if (isAccuracyGradeUpdate) setAccuracyGradeUpdate("pending", options.grade || "");
+  state.automaticStandardizationTimer = setTimeout(() => {
+    state.automaticStandardizationTimer = null;
+    if (state.busy) {
+      scheduleAutomaticStandardization(messageId, options);
+      return;
+    }
+    runStandardization(messageId, {
+      automatic: true,
+      silent: true,
+      accuracy_grade_update: isAccuracyGradeUpdate ? { grade: options.grade || "" } : null,
+    });
+  }, 900);
+  return true;
+}
+
 async function refreshParameterReasonableness(messageId = state.activeReviewMessageId) {
   if (!state.review) return;
   const requestId = ++state.reasonablenessRequestSerial;
@@ -987,6 +1087,7 @@ async function loadDemoReview() {
     if (!response.ok) throw new Error("样例审查 JSON 加载失败");
     const review = normalizeReview(await response.json());
     removeMessage(thinkingId);
+    state.compareTab = "workbench";
     setReview(review, apiUrl("/tmp_pdf_pages/spring_example_rotated.png"));
     appendReviewMessage("样例已加载，请确认结构化尺寸数据。");
   } catch (error) {
@@ -1073,6 +1174,7 @@ async function openPersistedReview(jobId) {
       review_revision: payload.review_revision ?? item?.revision ?? null,
       persistence: { mode: item?.revision ? "postgresql" : "json_fallback" },
     };
+    state.compareTab = "workbench";
     setReview(normalizeReview(payload), toBackendAssetUrl(item?.image_url));
     renderRecentReviews();
     appendUserMessage(`打开已保存审图：${item?.drawing_name || item?.drawing_no || jobId}`);
@@ -1146,6 +1248,7 @@ async function deletePersistedReview(item, dialog) {
 
 function resetDeletedReviewState() {
   clearTimeout(state.reviewPersistenceTimer);
+  resetAccuracyGradeUpdate();
   state.pendingReviewAuditEvents = [];
   if (state.compareOpen) closeCompareOverlay();
   const deletedReview = state.review;
@@ -1171,9 +1274,13 @@ async function startNewReview() {
     clearTimeout(state.reviewPersistenceTimer);
     clearTimeout(state.reasonablenessRefreshTimer);
     clearTimeout(state.standardizationChatTypingTimer);
+    clearTimeout(state.automaticStandardizationTimer);
+    state.automaticStandardizationTimer = null;
+    resetAccuracyGradeUpdate();
     state.reasonablenessRequestSerial += 1;
     state.pendingReviewAuditEvents = [];
     state.reviewContexts = {};
+    state.compareTab = "workbench";
     state.review = null;
     state.imageUrl = null;
     state.lastJob = null;
@@ -1254,9 +1361,7 @@ function renderReviewBody(body, title, context = activeReviewContext(), messageI
     ${renderSummaryHtml(review)}
     ${renderPreviewHtml(imageUrl)}
     <div class="review-actions">
-      <button type="button" data-action="fullscreen">全屏对比</button>
-      <button type="button" data-action="standardize">${standardizeButtonLabel(review)}</button>
-      <button type="button" data-action="confirm-all">全部确认</button>
+      <button type="button" data-action="fullscreen">进入审图工作台</button>
       <button type="button" data-action="export" ${review ? "" : "disabled"}>导出确认版</button>
     </div>
     ${renderStandardizationChatHtml(review)}
@@ -1264,19 +1369,6 @@ function renderReviewBody(body, title, context = activeReviewContext(), messageI
   body.querySelector('[data-action="fullscreen"]').addEventListener("click", () => {
     activateReviewContext(messageId);
     openCompareOverlay();
-  });
-  body.querySelector('[data-action="standardize"]').addEventListener("click", () => {
-    runStandardization(messageId);
-  });
-  body.querySelector('[data-action="confirm-all"]').addEventListener("click", () => {
-    activateReviewContext(messageId);
-    confirmAllFields();
-    acknowledgeScannedInput();
-    queueReviewAuditEvent({
-      event_type: "all_fields_confirmed",
-      after_state: { confirmed_at: new Date().toISOString() },
-    });
-    updateLatestReviewMessage("已全部确认，当前审查状态已刷新。");
   });
   body.querySelector('[data-action="export"]').addEventListener("click", () => {
     activateReviewContext(messageId);
@@ -1594,6 +1686,7 @@ function auditEventLabel(eventType) {
     standardization_suggestions_applied: "批量应用标准化建议",
     standardization_application_reverted: "撤销标准化建议",
     standard_selection_confirmed: "确认适用标准",
+    safe_fields_confirmed: "批量确认无风险项",
     all_fields_confirmed: "全部确认",
   };
   return labels[eventType] || "更新审查数据";
@@ -1814,7 +1907,7 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
   const requiredMark = meta.required ? " *" : "";
   const badges = [];
   const sources = sourceValues(param.source);
-  if (param.default_source === "company_default") {
+  if (param.default_source === "company_default" && field !== "accuracy_grade") {
     badges.push("公司默认 / 待确认");
   }
   if (field === "spring_rate") {
@@ -1840,16 +1933,17 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
   if (reasonablenessSeverity) {
     badges.push(reasonablenessSeverityLabel(reasonablenessSeverity));
   }
+  const accuracyGradeStatus = field === "accuracy_grade" ? accuracyGradeStatusLabel(param) : "";
   return `
     <div class="data-row${reasonablenessSeverity ? ` parameter-risk-${escapeHtml(reasonablenessSeverity)}` : ""}" data-kind="param" data-field="${escapeHtml(field)}">
       <div class="data-label">
         <strong title="${escapeHtml(label)}">${escapeHtml(label + requiredMark)}</strong>
         ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
-        ${badges.length ? `<div class="parameter-badges">${badges.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
+        ${badges.length || accuracyGradeStatus ? `<div class="parameter-badges">${accuracyGradeStatus ? `<span class="accuracy-grade-source ${accuracyGradeStatusClass(param)}" data-accuracy-grade-source>${escapeHtml(accuracyGradeStatus)}</span>` : ""}${badges.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       </div>
       <label class="data-input-cell data-primary">
         <span class="sr-only">${escapeHtml(label)}数值</span>
-        <input data-role="value" aria-label="${escapeHtml(label)}数值" value="${escapeHtml(formatFieldInput(param))}">
+        ${parameterValueControlHtml(field, param, label)}
       </label>
       <label class="data-input-cell data-secondary">
         <span class="sr-only">${escapeHtml(label)}公差</span>
@@ -2798,6 +2892,10 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     });
     valueInput.addEventListener("change", (event) => {
       activateReviewContext(messageId);
+      if (field === "accuracy_grade") {
+        selectAccuracyGrade(root, review, event.target.value, messageId);
+        return;
+      }
       const beforeState = parameterAuditState(param);
       param.value = parseValue(event.target.value, param.value);
       markParamEdited(param, field);
@@ -2839,7 +2937,15 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         before_state: beforeState,
         after_state: parameterAuditState(param),
       });
+      if (field === "accuracy_grade") syncAccuracyGradeControls(root, param);
       scheduleParameterReasonablenessRefresh(messageId);
+    });
+  });
+
+  root.querySelectorAll('[data-action="select-workbench-accuracy-grade"]').forEach((select) => {
+    select.addEventListener("change", (event) => {
+      activateReviewContext(messageId);
+      selectAccuracyGrade(root, review, event.target.value, messageId);
     });
   });
 
@@ -2904,6 +3010,56 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     });
   });
 
+  root.querySelector('[data-action="run-workbench-standardization"]')?.addEventListener("click", () => {
+    activateReviewContext(messageId);
+    runStandardization(messageId);
+  });
+
+  root.querySelector('[data-action="apply-workbench-standardization"]')?.addEventListener("click", () => {
+    applyAvailableStandardizationSuggestions(messageId);
+  });
+
+  root.querySelector('[data-action="confirm-safe-fields"]')?.addEventListener("click", () => {
+    activateReviewContext(messageId);
+    const confirmed = confirmSafeRecognizedFields();
+    if (confirmed.count) {
+      queueReviewAuditEvent({
+        event_type: "safe_fields_confirmed",
+        source: "manual_batch_confirmation",
+        after_state: { confirmed_count: confirmed.count },
+        metadata: { fields: confirmed.labels },
+      });
+    }
+    updateLatestReviewMessage(confirmed.count ? `已确认 ${confirmed.count} 项无风险识别值，仍请处理风险或默认项。` : "没有可批量确认的无风险识别值。");
+  });
+
+  root.querySelectorAll('[data-action="focus-workbench-field"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      activateReviewContext(messageId);
+      focusMissingStandardizationField(button.dataset.field || "", messageId);
+    });
+  });
+
+  root.querySelectorAll('[data-action="show-workbench-tab"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      const compareRoot = root.closest?.("#compareOverlay") || (root.id === "compareOverlay" ? root : null);
+      if (compareRoot) setCompareTab(compareRoot, button.dataset.targetTab);
+    });
+  });
+
+  root.querySelectorAll('[data-action="workbench-ai"]').forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const input = form.querySelector('[data-role="workbench-ai-input"]');
+      const text = input?.value?.trim() || "";
+      if (!text) return;
+      input.value = "";
+      const compareRoot = root.closest?.("#compareOverlay") || (root.id === "compareOverlay" ? root : null);
+      if (compareRoot) setCompareTab(compareRoot, "assistant");
+      runStandardizationChat(text, messageId, true);
+    });
+  });
+
   root.querySelectorAll('[data-kind="standardization"]').forEach((row) => {
     const item = review.standardization_results[Number(row.dataset.index)];
     row.querySelector('[data-role="confirm-standard"]')?.addEventListener("click", () => {
@@ -2925,19 +3081,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   });
 
   root.querySelector('[data-action="apply-standardization-batch"]')?.addEventListener("click", () => {
-    activateReviewContext(messageId);
-    const plan = standardizationBatchPlan(state.review);
-    const applied = applyStandardizationResults(plan.items.map(({ item }) => item), { mode: "batch" });
-    if (applied.count) {
-      queueReviewAuditEvent({
-        event_type: "standardization_suggestions_applied",
-        source: "standardization",
-        after_state: { applied_count: applied.count },
-        metadata: { targets: plan.items.map(({ item }) => item.target_field).filter(Boolean) },
-      });
-      scheduleParameterReasonablenessRefresh(messageId);
-    }
-    updateLatestReviewMessage(applied.count ? `已应用 ${applied.count} 项标准化建议，可继续修改或导出。` : "暂无可批量应用的标准化建议。");
+    applyAvailableStandardizationSuggestions(messageId);
   });
 
   root.querySelector('[data-action="undo-standardization-batch"]')?.addEventListener("click", () => {
@@ -3905,12 +4049,10 @@ function renderCompareOverlay() {
     <div class="compare-shell">
       <header class="compare-head">
         <div>
-          <h2>图纸核对</h2>
-          <p>左侧查看原图，右侧确认参数、标准化建议和 AI 对话。</p>
+          <h2>审图工作台</h2>
+          <p>左侧查看原图，右侧按待处理事项完成核对、标准化与导出。</p>
         </div>
         <div class="compare-actions">
-          <button type="button" data-action="standardize">${standardizeButtonLabel(state.review)}</button>
-          <button type="button" data-action="confirm-all">全部确认</button>
           <button type="button" data-action="export">导出确认版</button>
           <button type="button" data-action="close">缩小</button>
         </div>
@@ -3930,18 +4072,6 @@ function renderCompareOverlay() {
   compareOverlay.querySelector('[data-action="close"]').addEventListener("click", closeCompareOverlay);
   compareOverlay.querySelector('[data-action="export"]').addEventListener("click", () => {
     downloadJson(makeExportReview(), "spring_review_confirmed.json");
-  });
-  compareOverlay.querySelector('[data-action="standardize"]').addEventListener("click", () => {
-    runStandardization();
-  });
-  compareOverlay.querySelector('[data-action="confirm-all"]').addEventListener("click", () => {
-    confirmAllFields();
-    acknowledgeScannedInput();
-    queueReviewAuditEvent({
-      event_type: "all_fields_confirmed",
-      after_state: { confirmed_at: new Date().toISOString() },
-    });
-    updateLatestReviewMessage("已全部确认，当前审查状态已刷新。");
   });
   bindCompareTabs(compareOverlay);
   bindReviewEditors(compareOverlay);
@@ -3991,8 +4121,364 @@ function restoreComparePanelScrollPositions(positions, options = {}) {
   else requestAnimationFrame(restore);
 }
 
+function safeConfirmableReviewItems(review) {
+  const parameters = review?.spring_parameters || {};
+  const items = [];
+  getParameterFields(parameters, review).forEach((field) => {
+    const param = parameters[field];
+    const sources = sourceValues(param?.source);
+    const hasSystemDefault = param?.default_source === "company_default" || sources.includes("company_default");
+    const isFormulaValue = sources.includes("formula_calculation");
+    const standardStillNeedsReview = field === "standard_no" && review?.standard_selection?.need_human_review;
+    if (!param?.need_human_review || param.value == null || param.value === "") return;
+    if (hasSystemDefault || isFormulaValue || standardStillNeedsReview) return;
+    if (reasonablenessSeverityForField(review, field)) return;
+    items.push({ kind: "parameter", field, param, label: targetFieldLabel(field) });
+  });
+
+  (parameters.load_points || []).forEach((point, index) => {
+    const field = `load_points.${point?.label || `F${index + 1}`}`;
+    if (!point?.need_human_review || point.height == null || point.height === "" || point.force == null || point.force === "") return;
+    if (reasonablenessSeverityForField(review, field)) return;
+    items.push({ kind: "load_point", field, index, point, label: `载荷点 ${point.label || `F${index + 1}`}` });
+  });
+
+  (review?.technical_requirements || []).forEach((item, index) => {
+    if (!item?.need_human_review || !item.content || item.normalization_status === "unmatched") return;
+    items.push({ kind: "technical", field: `technical_requirements.${index + 1}`, index, item, label: TECH_LABELS[item.type] || item.type || "技术要求" });
+  });
+  return items;
+}
+
+function confirmSafeRecognizedFields() {
+  if (!state.review) return { count: 0, labels: [] };
+  const items = safeConfirmableReviewItems(state.review);
+  items.forEach((item) => {
+    if (item.kind === "parameter") confirmParam(item.param, item.field);
+    else if (item.kind === "load_point") confirmParam(item.point, `load_points_${item.index}`);
+    else if (item.kind === "technical") confirmParam(item.item, `technical_${item.index}`);
+  });
+  return { count: items.length, labels: items.map((item) => item.label) };
+}
+
+function applyAvailableStandardizationSuggestions(messageId = state.activeReviewMessageId) {
+  activateReviewContext(messageId);
+  const plan = standardizationBatchPlan(state.review);
+  const applied = applyStandardizationResults(plan.items.map(({ item }) => item), { mode: "batch" });
+  if (applied.count) {
+    queueReviewAuditEvent({
+      event_type: "standardization_suggestions_applied",
+      source: "standardization",
+      after_state: { applied_count: applied.count },
+      metadata: { targets: plan.items.map(({ item }) => item.target_field).filter(Boolean) },
+    });
+    scheduleParameterReasonablenessRefresh(messageId);
+  }
+  updateLatestReviewMessage(applied.count ? `已应用 ${applied.count} 项标准化建议，可继续修改或导出。` : "暂无可批量应用的标准化建议。");
+  return applied;
+}
+
+function normalizeAccuracyGrade(value) {
+  const match = String(value ?? "").match(/([123])\s*级?/);
+  return match ? `${match[1]}级` : "";
+}
+
+function accuracyGradeStatusLabel(param) {
+  const sources = sourceValues(param?.source);
+  if (param?.default_source === "company_default") return "公司默认 / 待确认";
+  if (sources.includes("human_selected")) return "人工选择 / 已确认";
+  if (sources.includes("human_confirmed")) return "人工确认";
+  return param?.need_human_review ? "图纸识别 / 待确认" : "图纸识别";
+}
+
+function accuracyGradeStatusClass(param) {
+  return param?.default_source === "company_default" ? "is-default" : "is-confirmed";
+}
+
+function accuracyGradeFeedbackIsVisible() {
+  return state.accuracyGradeUpdate.phase !== "idle";
+}
+
+function renderAccuracyGradeFeedbackHtml(param) {
+  const feedback = state.accuracyGradeUpdate;
+  const visible = accuracyGradeFeedbackIsVisible();
+  const message = accuracyGradeUpdateMessage(feedback.phase, feedback.grade);
+  return `
+    <span class="workbench-accuracy-status">
+      <small class="${accuracyGradeStatusClass(param)}" data-accuracy-grade-source${visible ? " hidden" : ""}>${escapeHtml(accuracyGradeStatusLabel(param))}</small>
+      <small class="workbench-accuracy-update ${escapeHtml(feedback.phase)}" data-accuracy-grade-update-status role="status" aria-live="polite"${visible ? "" : " hidden"}>${escapeHtml(message)}</small>
+    </span>
+  `;
+}
+
+function accuracyGradeOptionsHtml(param) {
+  const selected = normalizeAccuracyGrade(param?.value);
+  const placeholder = selected ? "" : '<option value="" selected disabled>请选择</option>';
+  return `${placeholder}${COMPRESSION_ACCURACY_GRADE_OPTIONS.map((grade) => `
+    <option value="${grade}"${grade === selected ? " selected" : ""}>${grade}</option>
+  `).join("")}`;
+}
+
+function parameterValueControlHtml(field, param, label) {
+  if (field !== "accuracy_grade") {
+    return `<input data-role="value" aria-label="${escapeHtml(label)}数值" value="${escapeHtml(formatFieldInput(param))}">`;
+  }
+  return `
+    <select data-role="value" data-accuracy-grade-selector aria-label="${escapeHtml(label)}">
+      ${accuracyGradeOptionsHtml(param)}
+    </select>
+  `;
+}
+
+function renderWorkbenchAccuracyGradeSelectorHtml(review) {
+  const param = review?.spring_parameters?.accuracy_grade;
+  if (!param || !isCompressionSpringReview(review)) return "";
+  return `
+    <label class="workbench-accuracy-grade">
+      <span>通用精度等级</span>
+      <select data-action="select-workbench-accuracy-grade" data-accuracy-grade-selector aria-label="通用精度等级">
+        ${accuracyGradeOptionsHtml(param)}
+      </select>
+      ${renderAccuracyGradeFeedbackHtml(param)}
+    </label>
+  `;
+}
+
+function setManualAccuracyGrade(param, grade, messageId = state.activeReviewMessageId) {
+  const normalized = normalizeAccuracyGrade(grade);
+  if (!normalized) return false;
+  revokeManualConfirmations("accuracy_grade", "accuracy_grade_selected");
+  param.value = normalized;
+  param.need_human_review = false;
+  param.confidence = 0.99;
+  param.source = ["human_selected"];
+  param.evidence = `人工选择通用精度等级：${normalized}。`;
+  delete param.default_source;
+  delete param.default_reason;
+  state.review.manual_confirmations ||= {};
+  state.review.manual_confirmations.accuracy_grade = {
+    confirmed: true,
+    value: normalized,
+    confirmed_at: new Date().toISOString(),
+    confirmation_source: "accuracy_grade_selector",
+  };
+  state.review.parameter_reasonableness_stale = true;
+  invalidateStandardizationResults("accuracy_grade");
+  scheduleAutomaticStandardization(messageId, { source: "accuracy_grade", grade: normalized });
+  return true;
+}
+
+function syncAccuracyGradeControls(root, param) {
+  const scope = root?.closest?.("#compareOverlay") || root || document;
+  const value = normalizeAccuracyGrade(param?.value);
+  scope.querySelectorAll("[data-accuracy-grade-selector]").forEach((select) => {
+    select.value = value;
+  });
+  scope.querySelectorAll("[data-accuracy-grade-source]").forEach((element) => {
+    element.textContent = accuracyGradeStatusLabel(param);
+    element.classList.toggle("is-default", param?.default_source === "company_default");
+    element.classList.toggle("is-confirmed", param?.default_source !== "company_default");
+  });
+  scope.querySelectorAll('[data-kind="param"][data-field="accuracy_grade"] [data-role="confirm"]').forEach((button) => {
+    button.classList.toggle("confirmed", !param?.need_human_review);
+    button.textContent = confirmationActionLabel(param);
+  });
+  updateAccuracyGradeFeedbackUi(scope);
+}
+
+function updateAccuracyGradeFeedbackUi(root = document) {
+  const scope = root?.closest?.("#compareOverlay") || root || document;
+  const feedback = state.accuracyGradeUpdate;
+  const visible = accuracyGradeFeedbackIsVisible();
+  const message = accuracyGradeUpdateMessage(feedback.phase, feedback.grade);
+  scope.querySelectorAll(".workbench-accuracy-status [data-accuracy-grade-source]").forEach((element) => {
+    element.hidden = visible;
+  });
+  scope.querySelectorAll(".workbench-accuracy-status [data-accuracy-grade-update-status]").forEach((element) => {
+    element.hidden = !visible;
+    element.textContent = message;
+    element.classList.remove("pending", "loading", "success", "error", "ready");
+    if (visible) element.classList.add(feedback.phase);
+  });
+  scope.querySelectorAll("[data-accuracy-grade-selector]").forEach((select) => {
+    select.disabled = feedback.phase === "loading";
+    select.setAttribute("aria-busy", feedback.phase === "loading" ? "true" : "false");
+  });
+}
+
+function selectAccuracyGrade(root, review, grade, messageId) {
+  const param = review?.spring_parameters?.accuracy_grade;
+  if (!param) return false;
+  const beforeState = parameterAuditState(param);
+  if (!setManualAccuracyGrade(param, grade, messageId)) return false;
+  syncBubbleValue("accuracy_grade", param.value);
+  syncAccuracyGradeControls(root, param);
+  queueReviewAuditEvent({
+    event_type: "accuracy_grade_selected",
+    target_field: "accuracy_grade",
+    before_state: beforeState,
+    after_state: parameterAuditState(param),
+    metadata: { selection_method: "dropdown" },
+  });
+  scheduleParameterReasonablenessRefresh(messageId);
+  return true;
+}
+
+function renderReviewWorkbenchHtml(review) {
+  const reasonableness = review.parameter_reasonableness || {};
+  const issues = Array.isArray(reasonableness.issues) ? reasonableness.issues : [];
+  const blockedIssues = issues.filter((item) => item?.severity === "blocked");
+  const warningIssues = issues.filter((item) => item?.severity === "warning");
+  const inputIssues = issues.filter((item) => item?.severity === "needs_input");
+  const standardizationResults = review.standardization_results || [];
+  const staleCount = standardizationResults.filter((item) => item?.status === "stale").length;
+  const batchPlan = standardizationBatchPlan(review);
+  const safeItems = safeConfirmableReviewItems(review);
+  const readiness = assessGenerationReadiness(review);
+  const needsStandardization = !standardizationResults.length || staleCount > 0;
+  const standardizationLabel = !standardizationResults.length
+    ? "生成标准化方案"
+    : "更新标准化方案";
+  const handlingItems = [
+    ...blockedIssues,
+    ...inputIssues,
+    ...warningIssues,
+  ];
+  const coveredFields = [
+    ...handlingItems.flatMap((item) => Array.isArray(item?.fields) ? item.fields : []),
+    ...safeItems.map((item) => item.field),
+  ];
+  const generationTasks = [...(readiness.missing_fields || []), ...(readiness.pending_fields || [])]
+    .filter((item) => !coveredFields.some((field) => workbenchFieldsOverlap(field, item?.field)));
+  const actionableCount = handlingItems.length + safeItems.length + generationTasks.length;
+  return `
+    <section class="review-workbench" data-kind="review-workbench">
+      <section class="workbench-overview">
+        <div>
+          <span>当前审图</span>
+          <strong>${escapeHtml(workbenchStatusLabel(review, readiness))}</strong>
+          <small>${escapeHtml(workbenchStatusDescription(review, readiness, { blocked: blockedIssues.length, input: inputIssues.length, warning: warningIssues.length }))}</small>
+        </div>
+        <div class="workbench-overview-counts">
+          <span>待处理 <b>${actionableCount}</b></span>
+          <span>风险 <b>${blockedIssues.length + warningIssues.length}</b></span>
+          <span>已确认 <b>${readiness.confirmed_core_count}/${readiness.core_field_count}</b></span>
+        </div>
+      </section>
+
+      <section class="workbench-steps" aria-label="审图步骤">
+        <article class="workbench-step ${blockedIssues.length || inputIssues.length ? "needs-attention" : ""}">
+          <div class="workbench-step-index">1</div>
+          <div>
+            <strong>核对识别结果</strong>
+            <small>${safeItems.length ? `${safeItems.length} 项无风险识别值可批量确认` : "识别值已完成初步核对"}</small>
+          </div>
+          <div class="workbench-step-actions">
+            ${safeItems.length ? `<button type="button" data-action="confirm-safe-fields">确认无风险项</button>` : ""}
+            <button type="button" class="secondary-action" data-action="show-workbench-tab" data-target-tab="parameters">查看参数</button>
+          </div>
+        </article>
+        <article class="workbench-step ${needsStandardization ? "needs-attention" : ""}">
+          <div class="workbench-step-index">2</div>
+          <div>
+            <strong>生成并应用标准化方案</strong>
+            <small>${needsStandardization ? (!standardizationResults.length ? "尚未生成标准化建议" : `${staleCount} 项建议需要按最新参数更新`) : (batchPlan.items.length ? `${batchPlan.items.length} 项建议可一键应用` : "标准化建议已同步")}</small>
+            ${renderWorkbenchAccuracyGradeSelectorHtml(review)}
+          </div>
+          <div class="workbench-step-actions">
+            ${needsStandardization
+              ? `<button type="button" data-action="run-workbench-standardization">${escapeHtml(standardizationLabel)}</button>`
+              : batchPlan.items.length
+                ? `<button type="button" data-action="apply-workbench-standardization">应用 ${batchPlan.items.length} 项建议</button>`
+                : ""}
+            <button type="button" class="secondary-action" data-action="show-workbench-tab" data-target-tab="standards">查看方案</button>
+          </div>
+        </article>
+        <article class="workbench-step">
+          <div class="workbench-step-index">3</div>
+          <div>
+            <strong>导出生图参数包</strong>
+            <small>${escapeHtml(readiness.summary)}</small>
+          </div>
+          <div class="workbench-step-actions">
+            <button type="button" data-action="export-generation-package">导出参数包</button>
+          </div>
+        </article>
+      </section>
+
+      ${handlingItems.length || generationTasks.length ? `
+        <section class="workbench-task-list">
+          <div class="block-head"><h2>优先处理</h2><span>${handlingItems.length + generationTasks.length} 项</span></div>
+          ${handlingItems.slice(0, 4).map((item) => renderWorkbenchIssueHtml(item)).join("")}
+          ${generationTasks.slice(0, 3).map((item) => renderWorkbenchGenerationTaskHtml(item)).join("")}
+        </section>
+      ` : `
+        <section class="workbench-clear-state">
+          <strong>当前没有需要优先处理的参数问题</strong>
+          <span>仍可查看参数详情，或直接导出当前已确认的参数包。</span>
+        </section>
+      `}
+
+      <form class="workbench-ai-form" data-action="workbench-ai">
+        <input data-role="workbench-ai-input" type="text" placeholder="直接提问或修改参数，例如：按一级精度重新出方案">
+        <button type="submit">交给 AI</button>
+      </form>
+    </section>
+  `;
+}
+
+function workbenchFieldsOverlap(left, right) {
+  const first = String(left || "");
+  const second = String(right || "");
+  return Boolean(first && second && (first === second || first.startsWith(`${second}.`) || second.startsWith(`${first}.`)));
+}
+
+function workbenchStatusLabel(review, readiness) {
+  if (review?.parameter_reasonableness?.status === "blocked") return "存在需要先核对的参数";
+  if (!review?.standardization_results?.length) return "等待生成标准化方案";
+  if (review?.derived_parameters_stale || (review?.standardization_results || []).some((item) => item?.status === "stale")) return "参数已修改，方案待更新";
+  if (readiness.status === "ready" || readiness.status === "ready_with_warnings") return "可以导出生图参数包";
+  return "继续处理待确认项目";
+}
+
+function workbenchStatusDescription(review, readiness, counts) {
+  if (counts.blocked) return `${counts.blocked} 项几何或载荷关系需要先人工核对。`;
+  if (counts.input) return `${counts.input} 项信息待补充，补齐后可继续标准化。`;
+  if (counts.warning) return `${counts.warning} 项风险提示不阻断流程，但建议向客户确认。`;
+  if (!review?.standardization_results?.length) return "识别和合理性诊断已完成；生成方案不会覆盖当前识别值。";
+  return readiness.summary;
+}
+
+function renderWorkbenchIssueHtml(item) {
+  const field = Array.isArray(item?.fields) ? item.fields[0] : "";
+  const severity = item?.severity || "warning";
+  return `
+    <article class="workbench-task ${escapeHtml(severity)}">
+      <div>
+        <strong>${escapeHtml(reasonablenessSeverityLabel(severity))}</strong>
+        <span>${escapeHtml(item?.message || item?.explanation || "请核对当前参数。")}</span>
+        ${item?.customer_question ? `<small>建议：${escapeHtml(item.customer_question)}</small>` : ""}
+      </div>
+      ${field ? `<button type="button" class="secondary-action" data-action="focus-workbench-field" data-field="${escapeHtml(field)}">去处理</button>` : ""}
+    </article>
+  `;
+}
+
+function renderWorkbenchGenerationTaskHtml(item) {
+  return `
+    <article class="workbench-task pending">
+      <div>
+        <strong>${escapeHtml(item?.label || targetFieldLabel(item?.field))}</strong>
+        <span>${escapeHtml(item?.reason || "需要补充或确认。")}</span>
+      </div>
+      ${canFocusGenerationIssue(item?.field) ? `<button type="button" class="secondary-action" data-action="focus-workbench-field" data-field="${escapeHtml(item.field)}">去处理</button>` : ""}
+    </article>
+  `;
+}
+
 function renderCompareDataPanelHtml(review, activeTab) {
   const panels = {
+    workbench: renderReviewWorkbenchHtml(review),
     parameters: `
       ${renderTypeSelectorHtml(review)}
       ${renderSummaryHtml(review)}
@@ -4034,6 +4520,7 @@ function renderCompareDataPanelHtml(review, activeTab) {
 
 function renderCompareTabsHtml(activeTab) {
   const tabs = [
+    ["workbench", "待处理"],
     ["parameters", "参数"],
     ["standards", "标准化"],
     ["generation", "生图参数包"],
@@ -4051,26 +4538,33 @@ function renderCompareTabsHtml(activeTab) {
 function bindCompareTabs(root) {
   root.querySelectorAll("[data-compare-tab]").forEach((button) => {
     button.addEventListener("click", () => {
-      const tab = validCompareTab(button.dataset.compareTab);
-      state.compareTab = tab;
-      root.querySelectorAll("[data-compare-tab]").forEach((item) => {
-        item.classList.toggle("active", item.dataset.compareTab === tab);
-      });
-      root.querySelector(".compare-data-top strong").textContent = compareTabTitle(tab);
-      root.querySelector(".compare-data-top small").textContent = compareTabDescription(tab);
-      root.querySelectorAll("[data-compare-panel]").forEach((panel) => {
-        panel.classList.toggle("active", panel.dataset.comparePanel === tab);
-      });
+      setCompareTab(root, button.dataset.compareTab);
     });
   });
 }
 
+function setCompareTab(root, requestedTab) {
+  const tab = validCompareTab(requestedTab);
+  state.compareTab = tab;
+  root.querySelectorAll("[data-compare-tab]").forEach((item) => {
+    item.classList.toggle("active", item.dataset.compareTab === tab);
+  });
+  const title = root.querySelector(".compare-data-top strong");
+  const description = root.querySelector(".compare-data-top small");
+  if (title) title.textContent = compareTabTitle(tab);
+  if (description) description.textContent = compareTabDescription(tab);
+  root.querySelectorAll("[data-compare-panel]").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.comparePanel === tab);
+  });
+}
+
 function validCompareTab(tab) {
-  return ["parameters", "standards", "generation", "assistant"].includes(tab) ? tab : "parameters";
+  return ["workbench", "parameters", "standards", "generation", "assistant"].includes(tab) ? tab : "workbench";
 }
 
 function compareTabTitle(tab) {
   const titles = {
+    workbench: "待处理",
     parameters: "参数确认",
     standards: "标准化",
     generation: "生图参数包",
@@ -4081,6 +4575,7 @@ function compareTabTitle(tab) {
 
 function compareTabDescription(tab) {
   const descriptions = {
+    workbench: "按优先级完成核对、标准化与导出",
     parameters: "核对识别尺寸和技术要求",
     standards: "查看标准选择、建议和派生参数",
     generation: "检查重新生图需要的已确认参数",
@@ -4251,7 +4746,8 @@ function activateReviewContext(messageId = state.activeReviewMessageId) {
   return context;
 }
 
-function setReview(review, imageUrl) {
+function setReview(review, imageUrl, options = {}) {
+  if (!options.preserveAccuracyGradeUpdate) resetAccuracyGradeUpdate();
   state.review = review;
   state.imageUrl = imageUrl;
   exportButton.disabled = false;
@@ -4508,9 +5004,18 @@ function acknowledgeScannedInput() {
 }
 
 function confirmParam(param, field) {
+  const acceptsDefaultAccuracy = field === "accuracy_grade" && param?.default_source === "company_default";
   param.need_human_review = false;
   param.confidence = Math.max(Number(param.confidence) || 0, 0.99);
   param.source = Array.from(new Set(["human_confirmed", ...sourceValues(param.source)]));
+  if (acceptsDefaultAccuracy) {
+    param.source = ["human_confirmed"];
+    param.evidence = `人工确认通用精度等级：${normalizeAccuracyGrade(param.value) || param.value}。`;
+    delete param.default_source;
+    delete param.default_reason;
+    invalidateStandardizationResults("accuracy_grade");
+    scheduleAutomaticStandardization();
+  }
   state.review.manual_confirmations[field] = {
     confirmed: true,
     value: param.value ?? param.content ?? null,
@@ -4533,12 +5038,16 @@ function markParamEdited(param, field = "", options = {}) {
   param.need_human_review = true;
   param.source = Array.from(new Set(["human_edited", ...sourceValues(param.source)]));
   state.review.parameter_reasonableness_stale = true;
-  if (!field) return;
+  if (!field) {
+    scheduleAutomaticStandardization();
+    return;
+  }
   if (options.confirmationField) {
     revokeManualConfirmations(options.confirmationField, "value_edited");
   }
   revokeManualConfirmations(field, "value_edited");
   invalidateStandardizationResults(field);
+  scheduleAutomaticStandardization();
 }
 
 function sourceValues(source) {
