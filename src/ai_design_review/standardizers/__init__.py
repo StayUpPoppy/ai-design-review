@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..end_conditions import normalize_compression_end_conditions
 from ..standard_selector import COLD_COILED_STANDARD, select_standard
-from .coil_counts import derive_active_coils
+from .coil_counts import apply_company_simple_active_coils, derive_active_coils
 from .compression import (
     apply_formula_compression_solid_height,
     derive_compression_parameters,
@@ -21,6 +22,8 @@ def standardize_spring(
     technical_requirements: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if spring_type == "compression_spring":
+        normalize_compression_end_conditions(spring_parameters)
+        apply_company_simple_active_coils(spring_type, spring_parameters)
         apply_formula_compression_diameter_completion(spring_parameters)
         apply_formula_compression_solid_height(spring_parameters)
         apply_formula_compression_spring_rate(spring_parameters, spring_features)

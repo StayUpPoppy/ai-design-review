@@ -15,6 +15,7 @@ def main() -> None:
     _assert_impossible_diameter_is_blocked()
     _assert_inconsistent_diameters_are_a_warning()
     _assert_cold_standard_scope_is_a_warning()
+    _assert_active_coils_need_end_type()
     _assert_load_height_needs_end_context()
     _assert_load_trend_is_a_warning()
     _assert_generation_is_blocked_by_reasonableness()
@@ -52,6 +53,14 @@ def _assert_cold_standard_scope_is_a_warning() -> None:
     result = assess_parameter_reasonableness(review)
     assert result["status"] == "warning"
     assert any(item["rule_id"] == "GBT1239.2-SCOPE-SPRING-INDEX" for item in result["issues"])
+
+
+def _assert_active_coils_need_end_type() -> None:
+    review = _review()
+    review["spring_parameters"]["active_coils"]["value"] = None
+    result = assess_parameter_reasonableness(review)
+    assert result["status"] == "needs_input"
+    assert any(item["rule_id"] == "SPRING-CONTEXT-ACTIVE-COILS" for item in result["issues"])
 
 
 def _assert_load_height_needs_end_context() -> None:

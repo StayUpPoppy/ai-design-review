@@ -2053,8 +2053,28 @@ textarea {
   color: #14735f;
 }
 
+.workbench-accuracy-update.success::before {
+  display: inline-grid;
+  width: 12px;
+  height: 12px;
+  place-items: center;
+  border-radius: 50%;
+  background: #1a8b72;
+  color: #fff;
+  content: "✓";
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .workbench-accuracy-update.error {
   color: #b42318;
+}
+
+.workbench-accuracy-update.error::before {
+  color: #b42318;
+  content: "!";
+  font-weight: 700;
 }
 
 @keyframes accuracy-grade-spin {

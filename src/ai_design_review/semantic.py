@@ -4,6 +4,7 @@ import re
 from copy import deepcopy
 from typing import Any
 
+from .end_conditions import normalize_end_grinding, normalize_end_type
 from .material_terms import normalize_material
 
 
@@ -252,7 +253,15 @@ def _parse_standard_context(text: str, note_anchor: dict[str, Any] | None) -> li
 
     end_grinding = re.search(r"(?:两端|端面|端部)?\s*(?:并紧)?\s*(不磨|未磨|磨削|磨平|磨)", text)
     if end_grinding:
-        mapped.append(_from_note("end_grinding", end_grinding.group(0).strip(), note_anchor, end_grinding.group(0), confidence=0.66))
+        normalized = normalize_end_grinding(end_grinding.group(0))
+        if normalized:
+            mapped.append(_from_note("end_grinding", normalized, note_anchor, end_grinding.group(0), confidence=0.66))
+
+    end_type = re.search(r"(?:端部形式|端部|端型)\s*[:：]?\s*([^\n\r；;,，。]{2,16})", text)
+    if end_type:
+        normalized = normalize_end_type(end_type.group(1))
+        if normalized:
+            mapped.append(_from_note("end_type", normalized, note_anchor, end_type.group(0), confidence=0.66))
 
     spring_rate = re.search(r"(?:刚度|剛度|弹簧刚度|SPRING\s*RATE|RATE)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:N\s*/\s*mm|N/mm)?", text, re.IGNORECASE)
     if spring_rate:

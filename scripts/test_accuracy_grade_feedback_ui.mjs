@@ -65,10 +65,8 @@ assert.equal(context.state.accuracyGradeUpdate.grade, "3级");
 
 context.setAccuracyGradeUpdate("success", "2级");
 assert.equal(context.state.accuracyGradeUpdate.phase, "success");
-const successTimer = timers.filter((timer) => timer.delay === 3000).at(-1);
-assert.ok(successTimer, "success feedback should be transient");
-successTimer.callback();
-assert.equal(context.state.accuracyGradeUpdate.phase, "idle");
+assert.equal(timers.some((timer) => timer.delay === 3000), false, "success feedback should remain visible");
+assert.equal(context.state.accuracyGradeUpdate.phase, "success");
 
 context.setAccuracyGradeUpdate("error", "1级");
 assert.equal(context.state.accuracyGradeUpdate.phase, "error");

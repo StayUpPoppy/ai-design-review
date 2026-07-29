@@ -4,6 +4,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from .end_conditions import normalize_end_grinding, normalize_end_type
 from .generation_readiness import assess_generation_readiness
 from .spring_feasibility import assess_parameter_change_set, assess_parameter_reasonableness
 from .spring_templates import FIELD_LABELS
@@ -19,8 +20,10 @@ FIELD_SYNONYMS: dict[str, tuple[str, ...]] = {
     "free_length": ("自由长度", "自由高度", "自由长", "H0"),
     "total_coils": ("总圈数", "圈数", "n1"),
     "active_coils": ("有效圈数", "工作圈数"),
+    "support_coils": ("支承圈数", "支撑圈数", "单端支承圈数"),
     "solid_height": ("压并高度", "并紧高度"),
-    "end_grinding": ("端面磨削", "端面磨平", "两端磨平", "磨平", "不磨"),
+    "end_type": ("端部形式", "端部", "端型", "并紧", "不并紧", "闭口", "开口"),
+    "end_grinding": ("端面磨削", "端面磨平", "两端磨平", "两端磨削", "两端不磨削", "磨平", "不磨"),
     "spring_rate": ("刚度", "弹簧刚度", "k"),
     "perpendicularity": ("垂直度",),
     "straightness": ("直线度",),
@@ -62,6 +65,9 @@ PLAN_TARGET_FIELDS = (
     "mean_diameter",
     "free_length",
     "total_coils",
+    "active_coils",
+    "support_coils",
+    "end_type",
     "end_grinding",
     "spring_rate",
     "perpendicularity",
@@ -415,11 +421,9 @@ def _coerce_supplement_value(target: str, raw_value: Any) -> Any | None:
         grade = re.search(r"([123])\s*级", text)
         return f"{grade.group(1)}级" if grade else None
     if target == "end_grinding":
-        if "不磨" in text:
-            return "不磨"
-        if "磨" in text:
-            return "两端磨平"
-        return text
+        return normalize_end_grinding(text)
+    if target == "end_type":
+        return normalize_end_type(text)
     if target in NUMERIC_SUPPLEMENT_FIELDS or target.startswith("load_points."):
         matched = re.search(r"-?\d+(?:\.\d+)?", text)
         return _to_number(matched.group(0)) if matched else None
@@ -745,10 +749,9 @@ def _extract_requested_value(text: str, target: str) -> tuple[Any | None, str | 
         if grade:
             return f"{grade.group(1)}级", None
     if target == "end_grinding":
-        if "不磨" in text:
-            return "不磨", None
-        if "磨" in text:
-            return "两端磨平", None
+        return normalize_end_grinding(text), None
+    if target == "end_type":
+        return normalize_end_type(text), None
 
     patterns = (
         r"(?:改成|改为|设置为|设为|调整到|调到|变成|换成|增加到|减小到|降低到|提高到)\s*(-?\d+(?:\.\d+)?)\s*([a-zA-Z/]+|毫米|mm|N/mm|N|圈)?",

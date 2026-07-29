@@ -161,7 +161,7 @@ def _assert_proposes_multiple_structured_supplements() -> None:
         "active_coils",
         "end_grinding",
     ]
-    assert [action["proposed_value"] for action in payload["suggested_actions"]] == [8, "两端磨平"]
+    assert [action["proposed_value"] for action in payload["suggested_actions"]] == [8, "两端磨削"]
     assert "llm_chat" not in payload
     assert review["spring_parameters"]["active_coils"]["value"] is None
 

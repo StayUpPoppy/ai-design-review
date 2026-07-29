@@ -31,8 +31,10 @@ const state = {
   accuracyGradeUpdate: {
     phase: "idle",
     grade: "",
+    operation: "",
     timer: null,
   },
+  pendingAccuracyGrade: "",
   reasonablenessRefreshTimer: null,
   reasonablenessRequestSerial: 0,
   reviewPersistenceTimer: null,
@@ -79,7 +81,7 @@ const FIELD_LABELS = {
   total_coils: "总圈数",
   active_coils: "有效圈数",
   end_coils: "端圈数",
-  support_coils: "支承圈数",
+  support_coils: "支承圈数（单端）",
   handedness: "旋向",
   pitch: "节距",
   end_type: "端部形式",
@@ -174,6 +176,7 @@ const COMPRESSION_CORE_PARAMETER_FIELDS = new Set([
   "active_coils",
   "solid_height",
   "handedness",
+  "end_type",
   "end_grinding",
 ]);
 
@@ -184,6 +187,7 @@ const COMPRESSION_GENERATION_CORE_FIELDS = [
   "total_coils",
   "active_coils",
   "handedness",
+  "end_type",
   "end_grinding",
 ];
 
@@ -197,6 +201,8 @@ const SPECIALIZED_ACCURACY_PARAMETER_FIELDS = new Set([
 ]);
 
 const COMPRESSION_ACCURACY_GRADE_OPTIONS = ["1级", "2级", "3级"];
+const COMPRESSION_END_GRINDING_OPTIONS = ["两端磨削", "两端不磨削"];
+const COMPRESSION_END_TYPE_OPTIONS = ["两端并紧", "两端不并紧"];
 
 const STANDARDIZATION_PARAMETER_ASSOCIATIONS = {
   load_points: new Set(["active_coils", "load_accuracy_grade"]),
@@ -226,7 +232,7 @@ const LOCAL_SPRING_TEMPLATES = {
       { key: "total_coils", label: "总圈数", unit: "turns", required: true },
       { key: "active_coils", label: "有效圈数", unit: "turns" },
       { key: "end_coils", label: "端圈数", unit: "turns" },
-      { key: "support_coils", label: "支承圈数", unit: "turns" },
+      { key: "support_coils", label: "支承圈数（单端）", unit: "turns" },
       { key: "handedness", label: "旋向", required: true },
       { key: "pitch", label: "节距", unit: "mm" },
       { key: "end_type", label: "端部形式" },
@@ -543,13 +549,22 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
   clearTimeout(state.automaticStandardizationTimer);
   state.automaticStandardizationTimer = null;
   const accuracyGradeUpdate = options.accuracy_grade_update;
-  if (accuracyGradeUpdate?.grade) {
-    setAccuracyGradeUpdate("loading", accuracyGradeUpdate.grade);
-  } else if (state.accuracyGradeUpdate.phase === "ready") {
-    setAccuracyGradeUpdate();
-  }
+  const requestedAccuracyGrade = normalizeAccuracyGrade(options.pending_accuracy_grade);
+  const feedbackOperation = options.workbench_feedback
+    ? (requestedAccuracyGrade ? "accuracy" : "manual")
+    : accuracyGradeUpdate?.grade ? "accuracy" : "";
+  const feedbackGrade = requestedAccuracyGrade
+    || normalizeAccuracyGrade(accuracyGradeUpdate?.grade)
+    || normalizeAccuracyGrade(state.review?.spring_parameters?.accuracy_grade?.value);
   activateReviewContext(messageId);
+  if (feedbackOperation) {
+    setAccuracyGradeUpdate("loading", feedbackGrade, feedbackOperation);
+  }
   await flushReviewPersistence();
+  const requestReview = normalizeReview(structuredClone(state.review));
+  const accuracyGradeCommit = requestedAccuracyGrade
+    ? prepareAccuracyGradeCommit(requestReview, requestedAccuracyGrade)
+    : null;
   const scrollState = captureReviewScrollState();
   setBusy(true);
   const endpoint = state.lastJob?.job_id
@@ -567,8 +582,10 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        review: state.review,
-        use_llm_standardization: useLlmStandardizationInput?.checked ? true : false,
+        review: requestReview,
+        // Manual plan generation always enables the RAG/LLM fallback when local rules are pending.
+        // The backend still skips it whenever deterministic local results already exist.
+        use_llm_standardization: true,
         expected_revision: state.lastJob?.review_revision ?? undefined,
       }),
     });
@@ -579,10 +596,24 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
     if (payload.job_id) {
       state.lastJob = { ...(state.lastJob || {}), ...payload };
     }
-    setReview(normalizeReview(payload.review), state.imageUrl, { preserveAccuracyGradeUpdate: true });
+    setReview(normalizeReview(payload.review), state.imageUrl, {
+      preserveAccuracyGradeUpdate: true,
+      preservePendingAccuracyGrade: true,
+    });
     state.review.standardization_apply_history = [];
     state.review.derived_parameters_stale = false;
     state.review.parameter_reasonableness_stale = false;
+    if (accuracyGradeCommit) {
+      state.pendingAccuracyGrade = "";
+      syncBubbleValue("accuracy_grade", accuracyGradeCommit.grade);
+      queueReviewAuditEvent({
+        event_type: "accuracy_grade_selected",
+        target_field: "accuracy_grade",
+        before_state: accuracyGradeCommit.beforeState,
+        after_state: parameterAuditState(state.review.spring_parameters?.accuracy_grade),
+        metadata: { selection_method: "standardization_regeneration" },
+      });
+    }
     const context = getReviewContext(messageId);
     if (context) {
       context.review = state.review;
@@ -593,14 +624,14 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
       ? `，其中 LLM/RAG ${payload.llm_standardization.result_count} 项`
       : "";
     const completionPrefix = options.automatic ? "已按最新修改自动更新标准化方案" : "标准化完成";
-    if (accuracyGradeUpdate?.grade) {
-      setAccuracyGradeUpdate("success", accuracyGradeUpdate.grade);
+    if (feedbackOperation) {
+      setAccuracyGradeUpdate("success", feedbackGrade, feedbackOperation);
     }
     updateLatestReviewMessage(`${completionPrefix}：生成 ${state.review.standardization_results.length} 项建议${llmSummary}。${warnings}`);
     return true;
   } catch (error) {
-    if (accuracyGradeUpdate?.grade) {
-      setAccuracyGradeUpdate("error", accuracyGradeUpdate.grade);
+    if (feedbackOperation) {
+      setAccuracyGradeUpdate("error", feedbackGrade, feedbackOperation);
     }
     if (thinkingId) replaceMessage(thinkingId, error.message || String(error), true);
     else appendAssistantText(`自动更新标准化方案失败：${error.message || String(error)}`, true, { scroll: false });
@@ -911,10 +942,30 @@ function resetAccuracyGradeUpdate() {
   clearAccuracyGradeUpdateTimer();
   state.accuracyGradeUpdate.phase = "idle";
   state.accuracyGradeUpdate.grade = "";
+  state.accuracyGradeUpdate.operation = "";
   updateAccuracyGradeFeedbackUi();
 }
 
-function accuracyGradeUpdateMessage(phase, grade) {
+function resetPendingAccuracyGrade() {
+  state.pendingAccuracyGrade = "";
+}
+
+function pendingAccuracyGradeFor(param) {
+  const pending = normalizeAccuracyGrade(state.pendingAccuracyGrade);
+  const committed = normalizeAccuracyGrade(param?.value);
+  return pending && pending !== committed ? pending : "";
+}
+
+function displayedAccuracyGrade(param) {
+  return pendingAccuracyGradeFor(param) || normalizeAccuracyGrade(param?.value);
+}
+
+function accuracyGradeUpdateMessage(phase, grade, operation = "") {
+  if (operation === "manual") {
+    if (phase === "loading") return "正在生成标准化方案…";
+    if (phase === "success") return "标准化方案已更新";
+    if (phase === "error") return "方案生成失败，请重试";
+  }
   if (phase === "pending") return `已选择 ${grade}，准备更新…`;
   if (phase === "loading") return `正在按 ${grade} 更新标准化方案…`;
   if (phase === "success") return `已按 ${grade} 更新成功`;
@@ -923,16 +974,12 @@ function accuracyGradeUpdateMessage(phase, grade) {
   return "";
 }
 
-function setAccuracyGradeUpdate(phase = "idle", grade = "") {
+function setAccuracyGradeUpdate(phase = "idle", grade = "", operation = "") {
   clearAccuracyGradeUpdateTimer();
   state.accuracyGradeUpdate.phase = phase;
   state.accuracyGradeUpdate.grade = grade;
+  state.accuracyGradeUpdate.operation = operation;
   updateAccuracyGradeFeedbackUi();
-  if (phase !== "success") return;
-  state.accuracyGradeUpdate.timer = setTimeout(() => {
-    if (state.accuracyGradeUpdate.phase !== "success") return;
-    resetAccuracyGradeUpdate();
-  }, 3000);
 }
 
 function scheduleAutomaticStandardization(messageId = state.activeReviewMessageId, options = {}) {
@@ -943,7 +990,7 @@ function scheduleAutomaticStandardization(messageId = state.activeReviewMessageI
     || results.some((item) => item?.status === "stale");
   const isAccuracyGradeUpdate = options.source === "accuracy_grade";
   // Upload stays fast: only refresh after the user has already asked for a plan once.
-  if (!state.review || !results.length || !needsRefresh) {
+  if (!state.review || (!options.force && (!results.length || !needsRefresh))) {
     if (isAccuracyGradeUpdate) setAccuracyGradeUpdate("ready", options.grade || "");
     return false;
   }
@@ -1249,6 +1296,7 @@ async function deletePersistedReview(item, dialog) {
 function resetDeletedReviewState() {
   clearTimeout(state.reviewPersistenceTimer);
   resetAccuracyGradeUpdate();
+  resetPendingAccuracyGrade();
   state.pendingReviewAuditEvents = [];
   if (state.compareOpen) closeCompareOverlay();
   const deletedReview = state.review;
@@ -1277,6 +1325,7 @@ async function startNewReview() {
     clearTimeout(state.automaticStandardizationTimer);
     state.automaticStandardizationTimer = null;
     resetAccuracyGradeUpdate();
+    resetPendingAccuracyGrade();
     state.reasonablenessRequestSerial += 1;
     state.pendingReviewAuditEvents = [];
     state.reviewContexts = {};
@@ -2287,10 +2336,22 @@ function renderStandardizationHtml(review) {
   const canUndo = Boolean(lastStandardizationApplyHistory(review));
   const staleCount = results.filter((item) => item.status === "stale").length;
   if (!results.length) {
+    const selection = review.standard_selection || {};
+    const standard = selection.selected_standard || "未选择";
+    const reason = selection.reason || "当前缺少可用于生成标准化建议的条件。";
+    const statusText = selection.status === "rules_pending"
+      ? "已完成标准选择，正在等待热卷规则或 RAG/LLM 待确认建议。"
+      : selection.status === "not_applicable"
+        ? "当前标准不适用于已接入的圆柱螺旋压缩弹簧规则。"
+        : "尚未生成可应用的标准化建议。";
     return `
       <section class="review-block">
         <div class="block-head"><h2>标准化建议</h2><span>0 项</span></div>
-        <div class="empty-line">请先确认或修改识别参数，再点击“标准化”生成建议。</div>
+        <div class="empty-line">
+          <strong>${escapeHtml(statusText)}</strong>
+          <span>适用标准：${escapeHtml(standard)}</span>
+          <small>${escapeHtml(reason)}</small>
+        </div>
       </section>
     `;
   }
@@ -3012,7 +3073,10 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
 
   root.querySelector('[data-action="run-workbench-standardization"]')?.addEventListener("click", () => {
     activateReviewContext(messageId);
-    runStandardization(messageId);
+    runStandardization(messageId, {
+      workbench_feedback: true,
+      pending_accuracy_grade: pendingAccuracyGradeFor(state.review?.spring_parameters?.accuracy_grade),
+    });
   });
 
   root.querySelector('[data-action="apply-workbench-standardization"]')?.addEventListener("click", () => {
@@ -4202,7 +4266,7 @@ function accuracyGradeFeedbackIsVisible() {
 function renderAccuracyGradeFeedbackHtml(param) {
   const feedback = state.accuracyGradeUpdate;
   const visible = accuracyGradeFeedbackIsVisible();
-  const message = accuracyGradeUpdateMessage(feedback.phase, feedback.grade);
+  const message = accuracyGradeUpdateMessage(feedback.phase, feedback.grade, feedback.operation);
   return `
     <span class="workbench-accuracy-status">
       <small class="${accuracyGradeStatusClass(param)}" data-accuracy-grade-source${visible ? " hidden" : ""}>${escapeHtml(accuracyGradeStatusLabel(param))}</small>
@@ -4212,7 +4276,7 @@ function renderAccuracyGradeFeedbackHtml(param) {
 }
 
 function accuracyGradeOptionsHtml(param) {
-  const selected = normalizeAccuracyGrade(param?.value);
+  const selected = displayedAccuracyGrade(param);
   const placeholder = selected ? "" : '<option value="" selected disabled>请选择</option>';
   return `${placeholder}${COMPRESSION_ACCURACY_GRADE_OPTIONS.map((grade) => `
     <option value="${grade}"${grade === selected ? " selected" : ""}>${grade}</option>
@@ -4220,14 +4284,34 @@ function accuracyGradeOptionsHtml(param) {
 }
 
 function parameterValueControlHtml(field, param, label) {
-  if (field !== "accuracy_grade") {
-    return `<input data-role="value" aria-label="${escapeHtml(label)}数值" value="${escapeHtml(formatFieldInput(param))}">`;
+  if (field === "accuracy_grade") {
+    return `
+      <select data-role="value" data-accuracy-grade-selector aria-label="${escapeHtml(label)}">
+        ${accuracyGradeOptionsHtml(param)}
+      </select>
+    `;
+  }
+  const endOptions = field === "end_grinding"
+    ? COMPRESSION_END_GRINDING_OPTIONS
+    : field === "end_type" ? COMPRESSION_END_TYPE_OPTIONS : null;
+  if (endOptions) {
+    return `
+      <select data-role="value" aria-label="${escapeHtml(label)}">
+        ${endConditionOptionsHtml(endOptions, param)}
+      </select>
+    `;
   }
   return `
-    <select data-role="value" data-accuracy-grade-selector aria-label="${escapeHtml(label)}">
-      ${accuracyGradeOptionsHtml(param)}
-    </select>
+    <input data-role="value" aria-label="${escapeHtml(label)}数值" value="${escapeHtml(formatFieldInput(param))}">
   `;
+}
+
+function endConditionOptionsHtml(options, param) {
+  const selected = String(param?.value || "").trim();
+  const placeholder = selected ? "" : '<option value="" selected>未识别</option>';
+  return `${placeholder}${options.map((option) => `
+    <option value="${escapeHtml(option)}"${option === selected ? " selected" : ""}>${escapeHtml(option)}</option>
+  `).join("")}`;
 }
 
 function renderWorkbenchAccuracyGradeSelectorHtml(review) {
@@ -4244,10 +4328,12 @@ function renderWorkbenchAccuracyGradeSelectorHtml(review) {
   `;
 }
 
-function setManualAccuracyGrade(param, grade, messageId = state.activeReviewMessageId) {
+function prepareAccuracyGradeCommit(review, grade) {
   const normalized = normalizeAccuracyGrade(grade);
-  if (!normalized) return false;
-  revokeManualConfirmations("accuracy_grade", "accuracy_grade_selected");
+  const param = review?.spring_parameters?.accuracy_grade;
+  if (!normalized || !param || normalized === normalizeAccuracyGrade(param.value)) return null;
+  const beforeState = parameterAuditState(param);
+  revokeManualConfirmations("accuracy_grade", "accuracy_grade_selected", review);
   param.value = normalized;
   param.need_human_review = false;
   param.confidence = 0.99;
@@ -4255,22 +4341,19 @@ function setManualAccuracyGrade(param, grade, messageId = state.activeReviewMess
   param.evidence = `人工选择通用精度等级：${normalized}。`;
   delete param.default_source;
   delete param.default_reason;
-  state.review.manual_confirmations ||= {};
-  state.review.manual_confirmations.accuracy_grade = {
+  review.manual_confirmations ||= {};
+  review.manual_confirmations.accuracy_grade = {
     confirmed: true,
     value: normalized,
     confirmed_at: new Date().toISOString(),
     confirmation_source: "accuracy_grade_selector",
   };
-  state.review.parameter_reasonableness_stale = true;
-  invalidateStandardizationResults("accuracy_grade");
-  scheduleAutomaticStandardization(messageId, { source: "accuracy_grade", grade: normalized });
-  return true;
+  return { grade: normalized, beforeState };
 }
 
 function syncAccuracyGradeControls(root, param) {
   const scope = root?.closest?.("#compareOverlay") || root || document;
-  const value = normalizeAccuracyGrade(param?.value);
+  const value = displayedAccuracyGrade(param);
   scope.querySelectorAll("[data-accuracy-grade-selector]").forEach((select) => {
     select.value = value;
   });
@@ -4290,7 +4373,7 @@ function updateAccuracyGradeFeedbackUi(root = document) {
   const scope = root?.closest?.("#compareOverlay") || root || document;
   const feedback = state.accuracyGradeUpdate;
   const visible = accuracyGradeFeedbackIsVisible();
-  const message = accuracyGradeUpdateMessage(feedback.phase, feedback.grade);
+  const message = accuracyGradeUpdateMessage(feedback.phase, feedback.grade, feedback.operation);
   scope.querySelectorAll(".workbench-accuracy-status [data-accuracy-grade-source]").forEach((element) => {
     element.hidden = visible;
   });
@@ -4304,23 +4387,26 @@ function updateAccuracyGradeFeedbackUi(root = document) {
     select.disabled = feedback.phase === "loading";
     select.setAttribute("aria-busy", feedback.phase === "loading" ? "true" : "false");
   });
+  scope.querySelectorAll('[data-action="run-workbench-standardization"]').forEach((button) => {
+    button.disabled = feedback.phase === "loading";
+    button.setAttribute("aria-busy", feedback.phase === "loading" ? "true" : "false");
+  });
 }
 
 function selectAccuracyGrade(root, review, grade, messageId) {
   const param = review?.spring_parameters?.accuracy_grade;
   if (!param) return false;
-  const beforeState = parameterAuditState(param);
-  if (!setManualAccuracyGrade(param, grade, messageId)) return false;
-  syncBubbleValue("accuracy_grade", param.value);
+  const selected = normalizeAccuracyGrade(grade);
+  if (!selected) return false;
+  const committed = normalizeAccuracyGrade(param.value);
+  state.pendingAccuracyGrade = selected === committed ? "" : selected;
+  setAccuracyGradeUpdate(
+    state.pendingAccuracyGrade ? "ready" : "idle",
+    state.pendingAccuracyGrade,
+    state.pendingAccuracyGrade ? "accuracy" : "",
+  );
   syncAccuracyGradeControls(root, param);
-  queueReviewAuditEvent({
-    event_type: "accuracy_grade_selected",
-    target_field: "accuracy_grade",
-    before_state: beforeState,
-    after_state: parameterAuditState(param),
-    metadata: { selection_method: "dropdown" },
-  });
-  scheduleParameterReasonablenessRefresh(messageId);
+  refreshReviewSurfaces();
   return true;
 }
 
@@ -4335,8 +4421,13 @@ function renderReviewWorkbenchHtml(review) {
   const batchPlan = standardizationBatchPlan(review);
   const safeItems = safeConfirmableReviewItems(review);
   const readiness = assessGenerationReadiness(review);
+  const pendingAccuracyGrade = pendingAccuracyGradeFor(review.spring_parameters?.accuracy_grade);
+  const hasPendingAccuracyGrade = Boolean(pendingAccuracyGrade);
   const needsStandardization = !standardizationResults.length || staleCount > 0;
-  const standardizationLabel = !standardizationResults.length
+  const shouldGenerateStandardization = needsStandardization || hasPendingAccuracyGrade;
+  const standardizationLabel = hasPendingAccuracyGrade
+    ? "重新生成标准化方案"
+    : !standardizationResults.length
     ? "生成标准化方案"
     : "更新标准化方案";
   const handlingItems = [
@@ -4378,15 +4469,15 @@ function renderReviewWorkbenchHtml(review) {
             <button type="button" class="secondary-action" data-action="show-workbench-tab" data-target-tab="parameters">查看参数</button>
           </div>
         </article>
-        <article class="workbench-step ${needsStandardization ? "needs-attention" : ""}">
+        <article class="workbench-step ${needsStandardization || hasPendingAccuracyGrade ? "needs-attention" : ""}">
           <div class="workbench-step-index">2</div>
           <div>
             <strong>生成并应用标准化方案</strong>
-            <small>${needsStandardization ? (!standardizationResults.length ? "尚未生成标准化建议" : `${staleCount} 项建议需要按最新参数更新`) : (batchPlan.items.length ? `${batchPlan.items.length} 项建议可一键应用` : "标准化建议已同步")}</small>
+            <small>${hasPendingAccuracyGrade ? `已选择 ${pendingAccuracyGrade}，点击重新生成标准化方案后才会写入` : (needsStandardization ? (!standardizationResults.length ? "尚未生成标准化建议" : `${staleCount} 项建议需要按最新参数更新`) : (batchPlan.items.length ? `${batchPlan.items.length} 项建议可一键应用` : "标准化建议已同步"))}</small>
             ${renderWorkbenchAccuracyGradeSelectorHtml(review)}
           </div>
           <div class="workbench-step-actions">
-            ${needsStandardization
+            ${shouldGenerateStandardization
               ? `<button type="button" data-action="run-workbench-standardization">${escapeHtml(standardizationLabel)}</button>`
               : batchPlan.items.length
                 ? `<button type="button" data-action="apply-workbench-standardization">应用 ${batchPlan.items.length} 项建议</button>`
@@ -4738,16 +4829,21 @@ function activeReviewContext() {
   };
 }
 
-function activateReviewContext(messageId = state.activeReviewMessageId) {
+function activateReviewContext(messageId = state.activeReviewMessageId, options = {}) {
   const context = getReviewContext(messageId);
   if (!context) return null;
+  const isCurrentReview = state.review === context.review;
   state.activeReviewMessageId = messageId;
-  setReview(context.review, context.imageUrl);
+  setReview(context.review, context.imageUrl, {
+    preserveAccuracyGradeUpdate: options.preserveAccuracyGradeUpdate ?? isCurrentReview,
+    preservePendingAccuracyGrade: options.preservePendingAccuracyGrade ?? isCurrentReview,
+  });
   return context;
 }
 
 function setReview(review, imageUrl, options = {}) {
   if (!options.preserveAccuracyGradeUpdate) resetAccuracyGradeUpdate();
+  if (!options.preservePendingAccuracyGrade) resetPendingAccuracyGrade();
   state.review = review;
   state.imageUrl = imageUrl;
   exportButton.disabled = false;
@@ -5047,7 +5143,9 @@ function markParamEdited(param, field = "", options = {}) {
   }
   revokeManualConfirmations(field, "value_edited");
   invalidateStandardizationResults(field);
-  scheduleAutomaticStandardization();
+  scheduleAutomaticStandardization(undefined, {
+    force: ["total_coils", "end_type", "support_coils"].includes(field),
+  });
 }
 
 function sourceValues(source) {
@@ -5055,14 +5153,14 @@ function sourceValues(source) {
   return source ? [source] : [];
 }
 
-function revokeManualConfirmations(field, reason) {
-  if (!state.review || !field) return false;
-  const confirmations = state.review.manual_confirmations ||= {};
+function revokeManualConfirmations(field, reason, review = state.review) {
+  if (!review || !field) return false;
+  const confirmations = review.manual_confirmations ||= {};
   let revoked = false;
   Object.entries(confirmations).forEach(([key, entry]) => {
     if (!entry?.confirmed || !confirmationMatchesField(key, entry, field)) return;
-    state.review.confirmation_history ||= [];
-    state.review.confirmation_history.push({
+    review.confirmation_history ||= [];
+    review.confirmation_history.push({
       event: "confirmation_reopened",
       field,
       confirmation_key: key,

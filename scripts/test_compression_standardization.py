@@ -27,6 +27,7 @@ def _base_parameters() -> dict:
         "free_length": {"value": 30, "unit": "mm"},
         "total_coils": {"value": 12, "unit": "turns"},
         "active_coils": {"value": 8, "unit": "turns"},
+        "end_type": {"value": "两端并紧"},
         "accuracy_grade": {"value": "2级"},
         "diameter_accuracy_grade": {"value": "1级"},
         "free_length_accuracy_grade": {"value": "2级"},
@@ -46,7 +47,7 @@ def _assert_derived_parameters() -> None:
     payload = standardize_compression_spring(parameters)
     derived = payload["derived_parameters"]
     assert derived["active_coils"]["value"] == 10
-    assert derived["active_coils"]["formula"] == "total_coils - 2"
+    assert derived["active_coils"]["formula"] == "total_coils - 2 * support_coils"
     assert derived["mean_diameter"]["value"] == 18
     assert derived["spring_index"]["value"] == 9
     assert derived["slenderness_ratio"]["value"] == 1.6667
@@ -95,9 +96,9 @@ def _assert_need_context_exposes_missing_fields() -> None:
     results = standardize_compression_spring(parameters)["standardization_results"]
     by_rule = {item["rule_id"]: item for item in results}
     assert by_rule["GBT1239.2-LOAD"]["status"] == "suggested"
-    assert by_rule["GBT1239.2-LOAD"]["metadata"]["active_coils_source"] == "company_simple_rule"
+    assert by_rule["GBT1239.2-LOAD"]["metadata"]["active_coils_source"] == "company_end_condition_rule"
     assert by_rule["GBT1239.2-STIFF"]["status"] == "suggested"
-    assert by_rule["GBT1239.2-STIFF"]["metadata"]["active_coils_source"] == "company_simple_rule"
+    assert by_rule["GBT1239.2-STIFF"]["metadata"]["active_coils_source"] == "company_end_condition_rule"
     assert by_rule["GBT1239.2-SOLID"]["metadata"]["missing_fields"] == ["end_grinding"]
 
 
@@ -166,8 +167,7 @@ def _assert_workflow_can_defer_standardization() -> None:
     assert result["standard_selection"]["status"] == "not_started"
     assert result["standardization_results"] == []
     assert result["derived_parameters"] == {}
-    assert result["spring_parameters"]["active_coils"]["value"] == 2
-    assert result["spring_parameters"]["active_coils"]["derived_rule_id"] == "COMPANY-SIMPLE-ACTIVE-COILS-V1"
+    assert result["spring_parameters"]["active_coils"]["value"] is None
 
     apply_standardization_to_review(result)
     assert result["standard_selection"]["selected_standard"] == "GB/T 1239.2-2009"

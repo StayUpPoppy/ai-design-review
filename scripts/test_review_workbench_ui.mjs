@@ -3,6 +3,9 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 const appSource = fs.readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
+assert.match(appSource, /"end_type",\s*\n\s*"end_grinding"/);
+assert.match(appSource, /COMPRESSION_END_GRINDING_OPTIONS = \["两端磨削", "两端不磨削"\]/);
+assert.match(appSource, /COMPRESSION_END_TYPE_OPTIONS = \["两端并紧", "两端不并紧"\]/);
 const start = appSource.indexOf("function safeConfirmableReviewItems");
 const end = appSource.indexOf("function renderCompareDataPanelHtml", start);
 const confirmationStart = appSource.indexOf("function confirmParam");
@@ -18,8 +21,17 @@ const invalidatedFields = [];
 const context = {
   TECH_LABELS: { surface: "表面处理" },
   COMPRESSION_ACCURACY_GRADE_OPTIONS: ["1级", "2级", "3级"],
-  state: { review: null, accuracyGradeUpdate: { phase: "idle", grade: "", timer: null } },
+  state: {
+    review: null,
+    pendingAccuracyGrade: "",
+    accuracyGradeUpdate: { phase: "idle", grade: "", operation: "", timer: null },
+  },
   sourceValues: (value) => Array.isArray(value) ? value : value ? [value] : [],
+  parameterAuditState: (param) => ({
+    value: param?.value ?? null,
+    source: Array.isArray(param?.source) ? param.source : [],
+    need_human_review: Boolean(param?.need_human_review),
+  }),
   isCompressionSpringReview: () => true,
   getParameterFields: (params) => Object.keys(params).filter((field) => field !== "load_points" && field !== "torque_points"),
   targetFieldLabel: (field) => ({
@@ -51,9 +63,19 @@ const context = {
   canFocusGenerationIssue: () => true,
   accuracyGradeFeedbackIsVisible: () => false,
   accuracyGradeUpdateMessage: () => "",
+  pendingAccuracyGradeFor: (param) => {
+    const pending = context.state.pendingAccuracyGrade;
+    return pending && pending !== param?.value ? pending : "";
+  },
+  displayedAccuracyGrade: (param) => context.pendingAccuracyGradeFor(param) || param?.value || "",
+  setAccuracyGradeUpdate: (phase, grade, operation = "") => {
+    context.state.accuracyGradeUpdate = { ...context.state.accuracyGradeUpdate, phase, grade, operation };
+  },
   updateAccuracyGradeFeedbackUi: () => {},
+  refreshReviewSurfaces: () => {},
   clearTimeout: () => {},
   setTimeout: () => 1,
+  document: { querySelectorAll: () => [] },
 };
 vm.createContext(context);
 vm.runInContext(appSource.slice(start, end), context);
@@ -90,14 +112,22 @@ assert.match(html, /aria-live="polite"/);
 assert.match(html, /外径需要核对/);
 
 context.state.review = review;
-const selected = context.setManualAccuracyGrade(review.spring_parameters.accuracy_grade, "1级");
+const selected = context.selectAccuracyGrade({ closest: () => ({ querySelectorAll: () => [] }) }, review, "1级");
 assert.equal(selected, true);
+assert.equal(review.spring_parameters.accuracy_grade.value, "2级");
+assert.equal(context.state.pendingAccuracyGrade, "1级");
+assert.equal(context.state.accuracyGradeUpdate.phase, "ready");
+assert.deepEqual(invalidatedFields, []);
+assert.match(context.renderReviewWorkbenchHtml(review), /重新生成标准化方案/);
+
+const commit = context.prepareAccuracyGradeCommit(review, "1级");
+assert.equal(commit.grade, "1级");
 assert.equal(review.spring_parameters.accuracy_grade.value, "1级");
 assert.equal(review.spring_parameters.accuracy_grade.default_source, undefined);
 assert.deepEqual(Array.from(review.spring_parameters.accuracy_grade.source), ["human_selected"]);
 assert.equal(review.spring_parameters.accuracy_grade.need_human_review, false);
 assert.equal(review.manual_confirmations.accuracy_grade.confirmed, true);
-assert.deepEqual(invalidatedFields, ["accuracy_grade"]);
+assert.deepEqual(invalidatedFields, []);
 
 const defaultAccuracy = {
   value: "2级",
@@ -113,6 +143,6 @@ assert.equal(defaultAccuracy.default_reason, undefined);
 assert.deepEqual(Array.from(defaultAccuracy.source), ["human_confirmed"]);
 assert.equal(defaultAccuracy.need_human_review, false);
 assert.equal(context.state.review.manual_confirmations.accuracy_grade.confirmed, true);
-assert.deepEqual(invalidatedFields, ["accuracy_grade", "accuracy_grade"]);
+assert.deepEqual(invalidatedFields, ["accuracy_grade"]);
 
 console.log("review workbench UI test passed");

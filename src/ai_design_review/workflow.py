@@ -4,6 +4,7 @@ from typing import Any
 
 from .balloons import generate_balloons
 from .dimension_roles import apply_compression_dimension_role_ranking
+from .end_conditions import normalize_compression_end_conditions
 from .fusion import fuse_candidates
 from .llm_standardization import LLM_STANDARDIZATION_FIELD, normalize_llm_standardization_results
 from .material_terms import normalize_material
@@ -77,6 +78,8 @@ class DrawingReviewWorkflow:
         spring_type = classification["spring_type"]
         spring_template = template_for(spring_type)
         spring_parameters = self._build_spring_parameters(fused["fields"], fused["load_points"], spring_type)
+        if spring_type == "compression_spring":
+            normalize_compression_end_conditions(spring_parameters)
         self._apply_company_default_accuracy(spring_parameters, spring_type)
         if spring_type == "compression_spring":
             apply_formula_compression_diameter_completion(spring_parameters)
@@ -395,6 +398,8 @@ def apply_standardization_to_review(
     spring_type = review.get("drawing_summary", {}).get("spring_type")
     spring_type = spring_type or review.get("spring_template", {}).get("spring_type") or "unknown_spring"
     spring_parameters = review.get("spring_parameters") or {}
+    if spring_type == "compression_spring":
+        normalize_compression_end_conditions(spring_parameters)
     _apply_company_default_accuracy(spring_parameters, spring_type)
     if spring_type == "compression_spring":
         apply_formula_compression_diameter_completion(spring_parameters)

@@ -15,6 +15,7 @@ def main() -> None:
     _assert_wire_diameter_threshold_selects_standard()
     _assert_wire_diameter_boundary()
     _assert_standard_no_conflict_requires_review()
+    _assert_material_standard_does_not_override_wire_rule()
     _assert_low_confidence_wire_requires_review()
     _assert_llm_low_confidence_requires_review()
     _assert_non_cylindrical_is_not_applicable()
@@ -110,6 +111,20 @@ def _assert_standard_no_conflict_requires_review() -> None:
     assert selection["status"] == "need_review"
     assert selection["need_human_review"] is True
     assert selection["metadata"]["conflicts"]
+
+
+def _assert_material_standard_does_not_override_wire_rule() -> None:
+    parameters = _base_parameters("GB/T 4357-2009", wire_diameter=8)
+    parameters["material"] = {
+        "value": "弹簧钢丝 GB/T 4357-2009 SH",
+        "evidence": "材料：弹簧钢丝 GB/T 4357-2009 SH",
+    }
+    parameters["standard_no"]["evidence"] = "材料：弹簧钢丝 GB/T 4357-2009 SH"
+    selection = select_standard("compression_spring", parameters, _features())
+    assert selection["selected_standard"] == "GB/T 23934-2015"
+    assert selection["status"] == "rules_pending"
+    assert selection["selection_source"] == "wire_diameter_threshold"
+    assert selection["metadata"]["ignored_material_standard_no"] == "GB/T 4357-2009"
 
 
 def _assert_low_confidence_wire_requires_review() -> None:

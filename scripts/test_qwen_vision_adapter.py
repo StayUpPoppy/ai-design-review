@@ -68,6 +68,18 @@ def main() -> None:
     assert fields["spring_shape"]["value"] == "cylindrical"
     assert fields["standard_selection_inference"]["value"]["selected_standard"] == "GB/T 1239.2-2009"
 
+    end_candidates = qwen_payload_to_candidates(
+        {
+            "parameters": {
+                "end_grinding": {"value": "两端磨平", "evidence": "两端磨平"},
+                "end_type": {"value": "闭口", "evidence": "端部闭口"},
+            }
+        }
+    )
+    end_fields = {item["field"]: item for item in end_candidates}
+    assert end_fields["end_grinding"]["value"] == "两端磨削"
+    assert end_fields["end_type"]["value"] == "两端并紧"
+
     rules = read_json("config/factory_rules.json")
     review = DrawingReviewWorkflow(rules).run(None, candidates)
     assert review["drawing_summary"]["spring_type"] == "torsion_spring"

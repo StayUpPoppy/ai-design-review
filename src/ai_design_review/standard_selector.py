@@ -68,7 +68,11 @@ def select_standard(
             metadata={},
         )
 
-    standard_no = _standard_no(_param_value(spring_parameters, "standard_no"))
+    raw_standard_no = _standard_no(_param_value(spring_parameters, "standard_no"))
+    ignored_material_standard = _is_material_standard_reference(spring_parameters, raw_standard_no)
+    standard_no = None if ignored_material_standard else raw_standard_no
+    if ignored_material_standard and raw_standard_no:
+        evidence.append(f"已忽略材料标准号：{raw_standard_no}；它不作为弹簧通用技术标准参与选择。")
     if standard_no:
         evidence.append(f"图纸标准号：{standard_no}")
         if _is_cold_standard(standard_no):
@@ -114,11 +118,15 @@ def select_standard(
         )
 
     if wire_rule:
-        return _by_wire_diameter(
+        selection = _by_wire_diameter(
             wire_rule,
             auxiliary=auxiliary,
             candidate_standards=candidate_standards,
         )
+        if ignored_material_standard and raw_standard_no:
+            selection.setdefault("metadata", {})["ignored_material_standard_no"] = raw_standard_no
+            selection["evidence"] = [*evidence, *(selection.get("evidence") or [])]
+        return selection
 
     method = _normalized_method(_feature_value(features, "manufacturing_method"))
     method_confidence = _feature_confidence(features, "manufacturing_method", default=0.7)
@@ -480,6 +488,28 @@ def _standard_no(value: Any) -> str | None:
     if _is_hot_standard(text):
         return HOT_COILED_STANDARD
     return text
+
+
+def _is_material_standard_reference(spring_parameters: dict[str, Any], standard_no: str | None) -> bool:
+    """Do not let a material/wire standard override the spring technical standard."""
+    if not standard_no:
+        return False
+    standard_item = spring_parameters.get("standard_no") or {}
+    material_item = spring_parameters.get("material") or {}
+    context = " ".join(
+        str(value or "")
+        for value in (
+            material_item.get("value") if isinstance(material_item, dict) else material_item,
+            material_item.get("raw_value") if isinstance(material_item, dict) else "",
+            material_item.get("evidence") if isinstance(material_item, dict) else "",
+            standard_item.get("evidence") if isinstance(standard_item, dict) else "",
+        )
+    )
+    if not re.search(r"(?:材料|材质|钢丝|弹簧钢|不锈钢|SUS|SWP|65Mn|material|spring\s*steel|wire)", context, re.IGNORECASE):
+        return False
+    compact_standard = re.sub(r"[^a-z0-9]", "", standard_no.lower())
+    compact_context = re.sub(r"[^a-z0-9]", "", context.lower())
+    return bool(compact_standard and compact_standard in compact_context)
 
 
 def _is_cold_standard(text: str) -> bool:

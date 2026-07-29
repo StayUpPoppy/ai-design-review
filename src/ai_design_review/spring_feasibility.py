@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from .end_conditions import normalize_end_type
 from .standardizers.compression import derive_compression_parameters, solid_height_mode
 
 
@@ -174,6 +175,22 @@ def _compression_issues(
             explanation="当前圈数关系不成立，无法据此计算刚度或载荷。",
             customer_question="请客户确认总圈数和有效圈数，或补充端部形式。",
         )
+
+    if include_missing_context and total is not None and total > 0 and active is None:
+        end_type = normalize_end_type(_value(parameters, "end_type"))
+        if end_type is None:
+            _issue(
+                issues,
+                "needs_input",
+                "missing_context",
+                "SPRING-CONTEXT-ACTIVE-COILS",
+                ["active_coils", "end_type", "total_coils"],
+                "缺少有效圈数且端部形式未明确，无法按端部规则推导有效圈数。",
+                calculation=f"当前总圈数={total:g} 圈；端部形式未识别。",
+                basis="压缩弹簧有效圈数需以图纸值为准；缺失时仅可按明确的端部形式推导。",
+                explanation="系统不会再默认按“总圈数 - 2”推导，以免把不同端部结构当成同一种结构。",
+                customer_question="请客户确认端部为两端并紧还是两端不并紧，或直接提供有效圈数。",
+            )
 
     selected_standard = _normalized_standard((review.get("standard_selection") or {}).get("selected_standard"))
     spring_index = derived_mean / wire if derived_mean is not None and wire not in (None, 0) else None
@@ -491,5 +508,7 @@ def _label(field: str) -> str:
         "free_length": "自由长度",
         "total_coils": "总圈数",
         "active_coils": "有效圈数",
+        "support_coils": "支承圈数（单端）",
+        "end_type": "端部形式",
     }
     return labels.get(field, field)

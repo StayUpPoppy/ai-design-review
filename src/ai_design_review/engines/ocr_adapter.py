@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from ..end_conditions import normalize_end_grinding, normalize_end_type
 from .base import RecognitionEngine
 from ..io_utils import project_path, read_json, write_json
 from ..preprocessing import IMAGE_EXTENSIONS, render_pdf_with_pdftoppm
@@ -544,11 +545,15 @@ def _extract_standard_context(text: str, anchor: dict[str, Any] | None) -> list[
 
     end_grinding = _search(r"(?:两端|端面|端部)?\s*(?:并紧)?\s*(不磨|未磨|磨削|磨平|磨)", text)
     if end_grinding:
-        candidates.append(_candidate("end_grinding", end_grinding.group(0).strip(), anchor, end_grinding.group(0), 0.72))
+        normalized = normalize_end_grinding(end_grinding.group(0))
+        if normalized:
+            candidates.append(_candidate("end_grinding", normalized, anchor, end_grinding.group(0), 0.72))
 
     end_type = _search(r"(?:端部形式|端部|端型)\s*[:：]?\s*([^\n\r；;,，。]{2,16})", text)
     if end_type:
-        candidates.append(_candidate("end_type", end_type.group(1).strip(), anchor, end_type.group(0), 0.7))
+        normalized = normalize_end_type(end_type.group(1))
+        if normalized:
+            candidates.append(_candidate("end_type", normalized, anchor, end_type.group(0), 0.7))
     return candidates
 
 

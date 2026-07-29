@@ -29,6 +29,7 @@ def _assert_ready_review_builds_confirmed_package() -> None:
     assert package["package_type"] == "confirmed_compression_spring_generation_input"
     assert package["generation_parameters"]["spring_parameters"]["material"]["value"] == "SUS304"
     assert package["generation_parameters"]["spring_parameters"]["outer_diameter"]["value"] == 20
+    assert package["generation_parameters"]["spring_parameters"]["end_type"]["value"] == "两端并紧"
     assert package["generation_parameters"]["load_points"][0]["label"] == "F1"
     assert package["derived_parameters"]["mean_diameter"]["value"] == 18
     assert package["derived_parameters"]["spring_index"]["value"] == 9
@@ -96,6 +97,7 @@ def _ready_review() -> dict:
             "total_coils": param(12, "turns"),
             "active_coils": param(10, "turns"),
             "handedness": param("右旋"),
+            "end_type": param("两端并紧"),
             "end_grinding": param("两端磨平"),
             "load_points": [{"label": "F1", "height": 25, "force": 100, "need_human_review": False}],
         },

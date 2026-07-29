@@ -52,7 +52,7 @@ def _assert_geometry_resolution() -> None:
     assert result["inputs"]["mean_diameter_mm"] == 9
     assert "inner_diameter" in result["source_fields"]
 
-    active_default = _parameters(material="SUS304", active=None, total=7)
+    active_default = _parameters(material="SUS304", active=None, total=7, end_type="两端并紧")
     result = calculate_compression_spring_rate(active_default)
     assert result["inputs"]["active_coils"] == 5
     assert "total_coils" in result["source_fields"]
@@ -132,6 +132,7 @@ def _assert_deferred_workflow_populates_formula_rate() -> None:
             _candidate("outer_diameter", 10, unit="mm"),
             _candidate("free_length", 20, unit="mm"),
             _candidate("total_coils", 7, unit="turns"),
+            _candidate("end_type", "两端并紧"),
             _candidate("handedness", "右旋"),
         ],
         run_standardization=False,
@@ -150,6 +151,7 @@ def _parameters(
     mean: float | None = None,
     total: float = 7,
     active: float | None = 5,
+    end_type: str | None = None,
 ) -> dict:
     parameters = {
         "material": {"value": material, "standard_value": material},
@@ -164,6 +166,8 @@ def _parameters(
         parameters["mean_diameter"] = {"value": mean, "unit": "mm"}
     if active is not None:
         parameters["active_coils"] = {"value": active, "unit": "turns"}
+    if end_type is not None:
+        parameters["end_type"] = {"value": end_type}
     return parameters
 
 

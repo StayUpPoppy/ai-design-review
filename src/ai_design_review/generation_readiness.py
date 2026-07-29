@@ -16,6 +16,7 @@ COMPRESSION_CORE_FIELDS = (
     "total_coils",
     "active_coils",
     "handedness",
+    "end_type",
     "end_grinding",
 )
 CONTROLLED_DIAMETER_FIELDS = ("outer_diameter", "inner_diameter", "mean_diameter")

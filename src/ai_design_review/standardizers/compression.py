@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from ..io_utils import project_path, read_json
-from .coil_counts import derive_active_coils
+from ..end_conditions import normalize_end_grinding
+from .coil_counts import COMPANY_ACTIVE_COIL_RULE, derive_active_coils
 from .diameters import apply_formula_compression_diameter_completion
 from .stiffness import apply_formula_compression_spring_rate
 
@@ -643,15 +644,18 @@ def _active_coils(
     spring_parameters: dict[str, Any],
     derived_parameters: dict[str, Any],
 ) -> tuple[float | None, str | None]:
+    direct_item = spring_parameters.get("active_coils")
     direct = _number(_param_value(spring_parameters, "active_coils"))
     if direct is not None:
+        if isinstance(direct_item, dict) and direct_item.get("derived_rule_id") == COMPANY_ACTIVE_COIL_RULE:
+            return direct, "company_end_condition_rule"
         return direct, "drawing_or_manual"
     derived = _number(_param_value(derived_parameters, "active_coils"))
-    return (derived, "company_simple_rule") if derived is not None else (None, None)
+    return (derived, "company_end_condition_rule") if derived is not None else (None, None)
 
 
 def _active_coil_note(active_source: str | None, derived_parameters: dict[str, Any]) -> str:
-    if active_source != "company_simple_rule":
+    if active_source != "company_end_condition_rule":
         return ""
     basis = str((derived_parameters.get("active_coils") or {}).get("basis") or "")
     return basis
@@ -764,6 +768,11 @@ def _grade(spring_parameters: dict[str, Any], specific_field: str) -> str | None
 
 
 def solid_height_mode(value: Any) -> str | None:
+    normalized_end_grinding = normalize_end_grinding(value)
+    if normalized_end_grinding == "两端不磨削":
+        return "not_ground"
+    if normalized_end_grinding == "两端磨削":
+        return "ground"
     text = str(value or "").strip()
     if not text:
         return None
