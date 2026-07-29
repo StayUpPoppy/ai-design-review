@@ -158,7 +158,7 @@ STANDARDIZATION_CHAT_SYSTEM_PROMPT = """你是弹簧标准化对话 Agent。你�
 1. 只输出 JSON，不要输出 Markdown。
 2. 不要直接修改参数，不要声称已写回系统。
 3. 只能把修改表达为 suggested_actions，apply_policy 必须是 manual_confirm_required。
-4. target_field 只能使用 allowed_target_fields 中的字段；载荷点只能用 load_points.<label>.force。
+4. target_field 只能使用 allowed_target_fields 中的字段；载荷测试点只能用 load_points.<label>.force。
 5. 如果用户表达模糊，status=need_clarification，并在 reply 中追问。
 6. 如果解释标准依据，只能引用输入 review.standardization_results 或 chunks，不要编造标准条款。
 7. 如果需要重新标准化，要说明受影响字段，但不要自己调用工具。
@@ -364,7 +364,7 @@ def _normalize_unchanged_load_value_action(
     action["suggested_tolerance_upper"] = result.get("suggested_tolerance_upper")
     action["suggested_tolerance_lower"] = result.get("suggested_tolerance_lower")
     action["unit"] = result.get("unit") or point.get("force_unit") or "N"
-    action["target_label"] = f"载荷点 {match.group(1)} 负荷公差"
+    action["target_label"] = f"载荷测试点 {match.group(1)} 负荷公差"
     action["reason"] = result.get("basis") or action.get("reason") or "按当前标准化结果更新负荷公差。"
     action["affected_fields"] = [f"{target}_tolerance"]
     action.setdefault("metadata", {})["normalized_from_unchanged_force_patch"] = True

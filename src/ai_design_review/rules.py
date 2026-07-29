@@ -131,10 +131,10 @@ def _check_free_length_vs_load_heights(spring_parameters: dict[str, Any]) -> dic
     free_length = spring_parameters.get("free_length", {}).get("value")
     load_points = spring_parameters.get("load_points", [])
     if free_length is None or not load_points:
-        return _result("LOAD-001", "自由长度与压缩高度", "need_review", "自由长度或载荷点缺失，无法判断压缩高度关系。", ["free_length", "load_points"], "high")
+        return _result("LOAD-001", "自由长度与压缩高度", "need_review", "自由长度或载荷测试点缺失，无法判断压缩高度关系。", ["free_length", "load_points"], "high")
     bad = [p for p in load_points if p.get("height") is not None and float(p["height"]) >= float(free_length)]
     if bad:
-        return _result("LOAD-002", "自由长度与压缩高度", "fail", "存在压缩高度大于或等于自由长度的载荷点。", ["free_length", "load_points"], "critical")
+        return _result("LOAD-002", "自由长度与压缩高度", "fail", "存在压缩高度大于或等于自由长度的载荷测试点。", ["free_length", "load_points"], "critical")
     return _result("LOAD-000", "自由长度与压缩高度", "pass", "自由长度大于已识别压缩高度。", ["free_length", "load_points"], "low")
 
 
@@ -145,7 +145,7 @@ def _check_load_monotonicity(spring_parameters: dict[str, Any]) -> dict[str, Any
         if p.get("height") is not None and p.get("force") is not None
     ]
     if free_length is None or len(load_points) < 2:
-        return _result("LOAD-101", "载荷随压缩量递增", "need_review", "载荷点不足，无法判断载荷曲线趋势。", ["load_points"], "medium")
+        return _result("LOAD-101", "载荷随压缩量递增", "need_review", "载荷测试点不足，无法判断载荷曲线趋势。", ["load_points"], "medium")
 
     ordered = sorted(load_points, key=lambda p: float(free_length) - float(p["height"]))
     for left, right in zip(ordered, ordered[1:]):

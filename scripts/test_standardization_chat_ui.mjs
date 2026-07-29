@@ -120,7 +120,7 @@ assert.deepEqual(
   JSON.parse(JSON.stringify(context.parseLoadPointTarget("load_points.F2.force"))),
   { label: "F2", field: "force" },
 );
-assert.equal(context.targetFieldLabel("load_points.F1.height"), "载荷点 F1 高度");
+assert.equal(context.targetFieldLabel("load_points.F1.height"), "载荷测试点 F1 高度");
 
 const standardizedPoint = {
   label: "F1",

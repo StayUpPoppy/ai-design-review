@@ -42,7 +42,7 @@ SPRING_TEMPLATES: dict[str, dict[str, Any]] = {
             {"key": "straightness", "label": "直线度", "unit": "mm"},
             {"key": "permanent_set_limit", "label": "永久变形限值", "unit": "mm"},
         ],
-        "collections": [{"key": "load_points", "label": "载荷点"}],
+        "collections": [{"key": "load_points", "label": "载荷测试点"}],
     },
     "torsion_spring": {
         "spring_type": "torsion_spring",
@@ -152,7 +152,7 @@ SPRING_TEMPLATES: dict[str, dict[str, Any]] = {
             {"key": "opening_width", "label": "开口宽度", "unit": "mm"},
             {"key": "thickness", "label": "厚度", "unit": "mm"},
         ],
-        "collections": [{"key": "load_points", "label": "载荷点"}],
+        "collections": [{"key": "load_points", "label": "载荷测试点"}],
     },
 }
 

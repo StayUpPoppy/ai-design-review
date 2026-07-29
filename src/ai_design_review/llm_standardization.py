@@ -165,7 +165,7 @@ def _validate_target_field(
         label = match.group(1)
         labels = _load_point_labels(spring_parameters)
         if labels and label not in labels:
-            return target_field, True, f"载荷点 {label} 当前未在识别结果中找到，确认前需人工核对。"
+            return target_field, True, f"载荷测试点 {label} 当前未在识别结果中找到，确认前需人工核对。"
         return target_field, True, ""
 
     return target_field, False, f"字段 {target_field} 不在当前弹簧模板中，已标记为未映射。"

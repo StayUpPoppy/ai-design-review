@@ -32,6 +32,7 @@ assert.equal(readiness.status, "ready");
 const packageData = context.makeGenerationParameterPackage(review);
 assert.equal(packageData.generation_parameters.spring_parameters.material.value, "SUS304");
 assert.equal(packageData.generation_parameters.spring_parameters.outer_diameter.value, 20);
+assert.equal(packageData.generation_parameters.load_points_label, "载荷测试点");
 assert.equal(packageData.generation_parameters.technical_requirements[0].content, "公司内部镀锌");
 
 review.spring_parameters.active_coils.value = null;

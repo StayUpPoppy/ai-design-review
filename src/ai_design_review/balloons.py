@@ -62,14 +62,14 @@ def _load_point_balloon(index: int, item: dict[str, Any]) -> dict[str, Any]:
     return {
         "bubble_id": f"B{index:02d}",
         "field": "load_point",
-        "label": f"载荷点 {label}",
+        "label": f"载荷测试点 {label}",
         "value": f"{item.get('height')}mm / {item.get('force')}N±{item.get('force_tolerance_percent')}%",
         "status": "need_review" if item.get("need_human_review") else "pass",
         "page": item.get("page", 1),
         "position": _position(item.get("position")),
         "suggested_region": item.get("suggested_region", "主视图载荷标注"),
         "evidence": item.get("evidence", ""),
-        "message": "载荷点需与原图和检验标准复核",
+        "message": "载荷测试点需与原图和检验标准复核",
     }
 
 
@@ -130,4 +130,3 @@ def _status_by_field(review_results: list[dict[str, Any]]) -> dict[str, str]:
             if priority.get(status, 0) > priority.get(mapped.get(field, ""), 0):
                 mapped[field] = status
     return mapped
-

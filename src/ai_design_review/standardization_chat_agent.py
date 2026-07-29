@@ -547,7 +547,7 @@ def _handle_explain(review: dict[str, Any], message: str, target: str | None) ->
 def _handle_change(review: dict[str, Any], message: str, target: str | None) -> dict[str, Any]:
     if not target:
         return _response(
-            "我能感觉到你想调整尺寸，但还没定位到具体字段。请说明要改外径、内径、自由长度、线径、载荷点还是其他参数。",
+            "我能感觉到你想调整尺寸，但还没定位到具体字段。请说明要改外径、内径、自由长度、线径、载荷测试点还是其他参数。",
             intent_type="parameter_change_request",
             target_field="",
             status="need_clarification",
@@ -907,10 +907,10 @@ def _target_label(field: str | None) -> str:
     if field.startswith("load_points."):
         parts = field.split(".")
         if len(parts) > 2 and parts[2] == "height":
-            return f"载荷点 {parts[1]} 高度"
+            return f"载荷测试点 {parts[1]} 高度"
         if len(parts) > 2 and parts[2] == "force":
-            return f"载荷点 {parts[1]} 力值"
-        return f"载荷点 {parts[1]}" if len(parts) > 1 else "载荷点"
+            return f"载荷测试点 {parts[1]} 力值"
+        return f"载荷测试点 {parts[1]}" if len(parts) > 1 else "载荷测试点"
     labels = {
         "standard_selection": "标准选择",
         "derived_parameters": "派生参数",

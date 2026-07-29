@@ -152,6 +152,7 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
         },
         "generation_parameters": {
             "spring_parameters": confirmed_parameters,
+            "load_points_label": "载荷测试点",
             "load_points": _confirmed_load_points(parameters.get("load_points") or []),
             "torque_points": _confirmed_load_points(parameters.get("torque_points") or []),
             "technical_requirements": technical_requirements,
@@ -197,9 +198,9 @@ def _append_load_point_state(
         label = str(point.get("label") or f"F{index}")
         target = f"load_points.{label}.force"
         if point.get("height") in (None, "") or point.get("force") in (None, ""):
-            missing.append(_field_issue(target, f"{label} 的高度和力值需要完整填写。", label=f"载荷点 {label}"))
+            missing.append(_field_issue(target, f"{label} 的高度和力值需要完整填写。", label=f"载荷测试点 {label}"))
         elif point.get("need_human_review"):
-            pending.append(_field_issue(target, f"载荷点 {label} 尚未人工确认。", label=f"载荷点 {label}"))
+            pending.append(_field_issue(target, f"载荷测试点 {label} 尚未人工确认。", label=f"载荷测试点 {label}"))
 
 
 def _append_technical_requirement_state(review: dict[str, Any], pending: list[dict[str, Any]]) -> None:

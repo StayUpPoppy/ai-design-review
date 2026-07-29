@@ -1097,6 +1097,63 @@ button:disabled {
   font-size: 12px;
 }
 
+.standard-selection-details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.standard-selection-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.standard-selection-summary-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.standard-selection-summary-title strong {
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.standard-selection-summary-title small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.standard-selection-summary-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.standard-selection-disclosure {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid #6f7e93;
+  border-bottom: 1.5px solid #6f7e93;
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 160ms ease;
+}
+
+.standard-selection-details[open] .standard-selection-disclosure {
+  transform: rotate(225deg) translate(-2px, -1px);
+}
+
+.standard-selection-details[open] > summary {
+  margin-bottom: 8px;
+}
+
 .standard-selection-main {
   display: grid;
   grid-template-columns: minmax(130px, 1fr) minmax(90px, 0.45fr) 82px;

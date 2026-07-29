@@ -249,7 +249,7 @@ def _compression_issues(
             "missing_context",
             "SPRING-CONTEXT-END-CONDITION",
             ["end_grinding", "solid_height"],
-            "缺少端部形式或压并高度，无法完整判断载荷点是否进入压并状态。",
+            "缺少端部形式或压并高度，无法完整判断载荷测试点是否进入压并状态。",
             calculation="压并高度需根据端部形式和最大线径计算。",
             basis="压簧压并高度公式依赖端部形式。",
             explanation="没有端部形式时，系统不会猜测“两端磨平”或“两端不磨”。",
@@ -342,8 +342,8 @@ def _append_load_relation_issues(issues: list[dict[str, Any]], load_points: list
                     f"{left_label} 与 {right_label} 的试验高度相同但力值不同，需复核测试条件。",
                     calculation=f"{left_label}: H={left_height:g} mm, F={left_force:g} N；{right_label}: H={right_height:g} mm, F={right_force:g} N",
                     basis="同一弹簧、相同测试条件下，同一高度应对应同一载荷。",
-                    explanation="可能是载荷点、工况标注或识别归属不一致。",
-                    customer_question="请客户确认两个载荷点是否采用相同测试工况。",
+                    explanation="可能是载荷测试点、工况标注或识别归属不一致。",
+                    customer_question="请客户确认两个载荷测试点是否采用相同测试工况。",
                 )
             elif (left_height - right_height) * (left_force - right_force) > 0:
                 _issue(
@@ -354,8 +354,8 @@ def _append_load_relation_issues(issues: list[dict[str, Any]], load_points: list
                     f"{left_label} 与 {right_label} 的高度/载荷趋势相反，压缩更多时载荷不应更低。",
                     calculation=f"{left_label}: H={left_height:g} mm, F={left_force:g} N；{right_label}: H={right_height:g} mm, F={right_force:g} N",
                     basis="线性压簧在同一测试条件下，压缩量增大时载荷应增大。",
-                    explanation="这通常意味着某个载荷点的高度、力值或工况需要复核。",
-                    customer_question="请客户确认各载荷点的高度、力值及是否属于同一测试工况。",
+                    explanation="这通常意味着某个载荷测试点的高度、力值或工况需要复核。",
+                    customer_question="请客户确认各载荷测试点的高度、力值及是否属于同一测试工况。",
                 )
 
 

@@ -242,7 +242,7 @@ const LOCAL_SPRING_TEMPLATES = {
       { key: "straightness", label: "直线度", unit: "mm" },
       { key: "permanent_set_limit", label: "永久变形限值", unit: "mm" },
     ],
-    collections: [{ key: "load_points", label: "载荷点" }],
+    collections: [{ key: "load_points", label: "载荷测试点" }],
   },
   torsion_spring: {
     spring_type: "torsion_spring",
@@ -352,7 +352,7 @@ const LOCAL_SPRING_TEMPLATES = {
       { key: "opening_width", label: "开口宽度", unit: "mm" },
       { key: "thickness", label: "厚度", unit: "mm" },
     ],
-    collections: [{ key: "load_points", label: "载荷点" }],
+    collections: [{ key: "load_points", label: "载荷测试点" }],
   },
 };
 
@@ -1517,35 +1517,43 @@ function renderStandardSelectionHtml(review) {
   const conflictHtml = conflicts.map((item) => `<small>${escapeHtml(item)}</small>`).join("");
   return `
     <section class="review-block standard-selection-block">
-      <div class="block-head">
-        <h2>标准选择判断</h2>
-        <span class="normalization-status ${escapeHtml(status)}">${escapeHtml(standardSelectionStatusLabel(status))}</span>
-      </div>
-      <div class="standard-selection-card">
-        <div class="standard-selection-main">
-          <div>
-            <span>推荐标准</span>
-            <strong>${escapeHtml(selected)}</strong>
-            ${selection.standard_label ? `<small>${escapeHtml(selection.standard_label)}</small>` : ""}
+      <details class="standard-selection-details">
+        <summary>
+          <span class="standard-selection-summary-title">
+            <strong>标准选择判断</strong>
+            <small>${escapeHtml(`推荐 ${selected} · 置信度 ${confidence}`)}</small>
+          </span>
+          <span class="standard-selection-summary-status">
+            <span class="normalization-status ${escapeHtml(status)}">${escapeHtml(standardSelectionStatusLabel(status))}</span>
+            <span class="standard-selection-disclosure" aria-hidden="true"></span>
+          </span>
+        </summary>
+        <div class="standard-selection-card">
+          <div class="standard-selection-main">
+            <div>
+              <span>推荐标准</span>
+              <strong>${escapeHtml(selected)}</strong>
+              ${selection.standard_label ? `<small>${escapeHtml(selection.standard_label)}</small>` : ""}
+            </div>
+            <div>
+              <span>置信度</span>
+              <strong>${escapeHtml(confidence)}</strong>
+              <small>${escapeHtml(selectionSourceLabel(selection.selection_source))}</small>
+            </div>
+            <button type="button" data-action="confirm-standard-selection" ${selection.need_human_review ? "" : "disabled"}>
+              ${selection.need_human_review ? "确认判断" : "已确认"}
+            </button>
           </div>
-          <div>
-            <span>置信度</span>
-            <strong>${escapeHtml(confidence)}</strong>
-            <small>${escapeHtml(selectionSourceLabel(selection.selection_source))}</small>
-          </div>
-          <button type="button" data-action="confirm-standard-selection" ${selection.need_human_review ? "" : "disabled"}>
-            ${selection.need_human_review ? "确认判断" : "已确认"}
-          </button>
+          <div class="standard-features">${featureRows}</div>
+          ${selection.reason ? `<p>${escapeHtml(selection.reason)}</p>` : ""}
+          ${thresholdHtml ? `<div class="standard-selection-metadata">${thresholdHtml}</div>` : ""}
+          ${evidence.length ? `<div class="standard-selection-evidence">${evidence.map((item) => `<small>${escapeHtml(item)}</small>`).join("")}</div>` : ""}
+          ${auxiliaryHtml ? `<div class="standard-selection-auxiliary">${auxiliaryHtml}</div>` : ""}
+          ${conflictHtml ? `<div class="standard-selection-conflicts">${conflictHtml}</div>` : ""}
+          ${candidateRows ? `<div class="standard-selection-candidates">${candidateRows}</div>` : ""}
+          ${referenceRows ? `<div class="standard-selection-references">${referenceRows}</div>` : ""}
         </div>
-        <div class="standard-features">${featureRows}</div>
-        ${selection.reason ? `<p>${escapeHtml(selection.reason)}</p>` : ""}
-        ${thresholdHtml ? `<div class="standard-selection-metadata">${thresholdHtml}</div>` : ""}
-        ${evidence.length ? `<div class="standard-selection-evidence">${evidence.map((item) => `<small>${escapeHtml(item)}</small>`).join("")}</div>` : ""}
-        ${auxiliaryHtml ? `<div class="standard-selection-auxiliary">${auxiliaryHtml}</div>` : ""}
-        ${conflictHtml ? `<div class="standard-selection-conflicts">${conflictHtml}</div>` : ""}
-        ${candidateRows ? `<div class="standard-selection-candidates">${candidateRows}</div>` : ""}
-        ${referenceRows ? `<div class="standard-selection-references">${referenceRows}</div>` : ""}
-      </div>
+      </details>
     </section>
   `;
 }
@@ -1666,7 +1674,7 @@ function renderParameterTableHtml(review) {
       ${renderCompressionDesignCheckHtml(review)}
       ${loadPointRows.length ? `
         <div class="data-subsection">
-          <div class="data-subsection-head">载荷点</div>
+          <div class="data-subsection-head">载荷测试点</div>
           <div class="data-table load-point-table">
             ${loadPointTableHeadHtml()}
             ${loadPointRows.join("")}
@@ -1717,7 +1725,7 @@ function renderReviewChangeHistoryHtml(review, forceOpen = false) {
 
 function auditTargetLabel(target) {
   const value = String(target || "");
-  if (value.startsWith("load_points.")) return `载荷点 ${value.slice("load_points.".length)}`;
+  if (value.startsWith("load_points.")) return `载荷测试点 ${value.slice("load_points.".length)}`;
   return targetFieldLabel(value) || value || "审查数据";
 }
 
@@ -1727,9 +1735,9 @@ function auditEventLabel(eventType) {
     parameter_tolerance_updated: "修改公差",
     parameter_confirmed: "确认参数",
     parameter_reopened: "重新编辑",
-    load_point_value_updated: "修改载荷点",
+    load_point_value_updated: "修改载荷测试点",
     load_point_tolerance_updated: "修改载荷公差",
-    load_point_confirmed: "确认载荷点",
+    load_point_confirmed: "确认载荷测试点",
     load_point_reopened: "重新编辑",
     standardization_suggestion_applied: "应用标准化建议",
     standardization_suggestions_applied: "批量应用标准化建议",
@@ -2142,7 +2150,7 @@ function renderDerivedParametersHtml(review) {
   const loadDeflections = Array.isArray(derived.load_point_deflections) ? derived.load_point_deflections : [];
   const loadRows = loadDeflections.map((item) => `
     <div class="derived-row">
-      <strong>${escapeHtml(item.label || "载荷点")}</strong>
+      <strong>${escapeHtml(item.label || "载荷测试点")}</strong>
       <span>${escapeHtml(formatStandardValue(item.deflection, item.deflection_unit))}</span>
       <small>${escapeHtml(item.formula || "")}</small>
     </div>
@@ -2272,9 +2280,9 @@ function assessGenerationReadiness(review) {
     const label = point.label || `F${index + 1}`;
     const field = `load_points.${label}.force`;
     if (point.height == null || point.height === "" || point.force == null || point.force === "") {
-      missing.push(generationIssue(field, `${label} 的高度和力值需要完整填写。`, `载荷点 ${label}`));
+      missing.push(generationIssue(field, `${label} 的高度和力值需要完整填写。`, `载荷测试点 ${label}`));
     } else if (point.need_human_review) {
-      pending.push(generationIssue(field, `载荷点 ${label} 尚未人工确认。`, `载荷点 ${label}`));
+      pending.push(generationIssue(field, `载荷测试点 ${label} 尚未人工确认。`, `载荷测试点 ${label}`));
     }
   });
   (review.technical_requirements || []).forEach((item, index) => {
@@ -2898,7 +2906,7 @@ function canConfirmStandardization(item) {
 function targetFieldLabel(targetField) {
   const text = String(targetField || "");
   const loadTarget = parseLoadPointTarget(text);
-  if (loadTarget) return `载荷点 ${loadTarget.label} ${loadTarget.field === "height" ? "高度" : "力值"}`;
+  if (loadTarget) return `载荷测试点 ${loadTarget.label} ${loadTarget.field === "height" ? "高度" : "力值"}`;
   return FIELD_LABELS[text] || text;
 }
 
@@ -3452,7 +3460,7 @@ function validateStandardizationChatBatch(turn) {
     return {
       ok: false,
       candidates,
-      message: "本轮存在缺少目标字段、建议值或载荷点的建议，需要逐条处理。",
+      message: "本轮存在缺少目标字段、建议值或载荷测试点的建议，需要逐条处理。",
     };
   }
   if (duplicateTargets.length) {
@@ -3560,7 +3568,7 @@ function applyStandardizationChatActions(actions, turn, options = {}) {
   }
   const invalid = list.filter((action) => !canApplyStandardizationChatAction(action));
   if (invalid.length) {
-    return { ok: false, message: "存在缺少目标字段、建议值或载荷点的建议，暂时无法应用。" };
+    return { ok: false, message: "存在缺少目标字段、建议值或载荷测试点的建议，暂时无法应用。" };
   }
   const duplicateTargets = duplicateStandardizationChatTargets(list);
   if (duplicateTargets.length) {
@@ -3614,8 +3622,8 @@ function applyStandardizationChatAction(action, turn, options = {}) {
       return String(candidate.label || "") === label;
     });
     if (!point) {
-      action.apply_error = `未找到载荷点 ${label}`;
-      return { ok: false, message: `未找到载荷点 ${label}，请先在载荷点表中补充。` };
+      action.apply_error = `未找到载荷测试点 ${label}`;
+      return { ok: false, message: `未找到载荷测试点 ${label}，请先在载荷测试点表中补充。` };
     }
     const unitKey = field === "height" ? "height_unit" : "force_unit";
     unit = unit || point[unitKey] || (field === "height" ? "mm" : "N");
@@ -3690,8 +3698,8 @@ function applyStandardizationChatToleranceAction(action, turn, options = {}) {
       return String(candidate.label || "") === label;
     });
     if (!point) {
-      action.apply_error = `未找到载荷点 ${label}`;
-      return { ok: false, message: `未找到载荷点 ${label}，请先在载荷点表中补充。` };
+      action.apply_error = `未找到载荷测试点 ${label}`;
+      return { ok: false, message: `未找到载荷测试点 ${label}，请先在载荷测试点表中补充。` };
     }
     applyStandardizedLoadTolerance(point, tolerance.upper, tolerance.lower, { basis: action.reason || "" });
     point.need_human_review = false;
@@ -4204,7 +4212,7 @@ function safeConfirmableReviewItems(review) {
     const field = `load_points.${point?.label || `F${index + 1}`}`;
     if (!point?.need_human_review || point.height == null || point.height === "" || point.force == null || point.force === "") return;
     if (reasonablenessSeverityForField(review, field)) return;
-    items.push({ kind: "load_point", field, index, point, label: `载荷点 ${point.label || `F${index + 1}`}` });
+    items.push({ kind: "load_point", field, index, point, label: `载荷测试点 ${point.label || `F${index + 1}`}` });
   });
 
   (review?.technical_requirements || []).forEach((item, index) => {
@@ -5266,6 +5274,7 @@ function makeGenerationParameterPackage(review = state.review) {
     },
     generation_parameters: {
       spring_parameters: confirmedParameters,
+      load_points_label: "载荷测试点",
       load_points: structuredClone((review.spring_parameters?.load_points || []).filter((point) => !point?.need_human_review)),
       torque_points: structuredClone((review.spring_parameters?.torque_points || []).filter((point) => !point?.need_human_review)),
       technical_requirements: requirements,

@@ -98,7 +98,7 @@ const review = {
 };
 
 const safeItems = context.safeConfirmableReviewItems(review);
-assert.deepEqual(Array.from(safeItems, (item) => item.label), ["线径", "载荷点 F1", "表面处理"]);
+assert.deepEqual(Array.from(safeItems, (item) => item.label), ["线径", "载荷测试点 F1", "表面处理"]);
 
 const html = context.renderReviewWorkbenchHtml(review);
 assert.match(html, /待处理/);
