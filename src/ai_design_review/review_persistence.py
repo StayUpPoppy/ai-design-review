@@ -5,7 +5,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
@@ -29,17 +29,27 @@ class RevisionConflictError(PersistenceError):
         self.current_revision = current_revision
 
 
+class ReviewAccessError(PersistenceError):
+    pass
+
+
 class Base(DeclarativeBase):
     pass
 
 
 class ReviewRecord(Base):
     __tablename__ = "drawing_reviews"
+    __table_args__ = (Index("ix_drawing_reviews_owner_updated", "owner_erp_user_id", "updated_at"),)
 
     job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     drawing_no: Mapped[str | None] = mapped_column(String(128), nullable=True)
     drawing_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
     spring_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    owner_erp_user_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    owner_username: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    owner_real_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    owner_org_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    owner_org_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     artifact_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
     file_info: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     review_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
@@ -131,6 +141,7 @@ class ReviewPersistence:
         file_info: dict[str, Any] | None = None,
         artifact_dir: str | None = None,
         actor: dict[str, Any] | None = None,
+        owner: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not self.configured:
             return {"mode": "json_fallback", "revision": None, "events": []}
@@ -139,7 +150,7 @@ class ReviewPersistence:
                 existing = session.get(ReviewRecord, job_id)
                 if existing is not None:
                     return {"mode": "postgresql", "revision": existing.revision, "events": []}
-                record = self._new_record(job_id, review, file_info=file_info, artifact_dir=artifact_dir)
+                record = self._new_record(job_id, review, file_info=file_info, artifact_dir=artifact_dir, owner=owner)
                 session.add(record)
                 event = self._make_event(
                     record,
@@ -159,13 +170,13 @@ class ReviewPersistence:
                 session.rollback()
                 raise PersistenceError(f"Unable to create review: {_safe_error(exc)}") from exc
 
-    def get_review(self, job_id: str) -> dict[str, Any] | None:
+    def get_review(self, job_id: str, *, owner_user_id: str | None = None) -> dict[str, Any] | None:
         if not self.configured:
             return None
         try:
             with self._session() as session:
                 record = session.get(ReviewRecord, job_id)
-                if record is None:
+                if record is None or not _record_matches_owner(record, owner_user_id):
                     return None
                 return {
                     "review": copy.deepcopy(record.review_snapshot),
@@ -185,19 +196,20 @@ class ReviewPersistence:
         file_info: dict[str, Any] | None = None,
         artifact_dir: str | None = None,
         actor: dict[str, Any] | None = None,
+        owner: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not self.configured:
             return {"mode": "json_fallback", "revision": None, "events": []}
         with self._session() as session:
             try:
-                record = session.execute(
-                    select(ReviewRecord).where(ReviewRecord.job_id == job_id).with_for_update()
-                ).scalar_one_or_none()
+                record = session.execute(select(ReviewRecord).where(ReviewRecord.job_id == job_id).with_for_update()).scalar_one_or_none()
                 if record is None:
-                    record = self._new_record(job_id, review, file_info=file_info, artifact_dir=artifact_dir)
+                    record = self._new_record(job_id, review, file_info=file_info, artifact_dir=artifact_dir, owner=owner)
                     session.add(record)
                     revision_before = 0
                 else:
+                    if not _record_matches_owner(record, _owner_user_id(owner)):
+                        raise ReviewAccessError("Review not found.")
                     if expected_revision is not None and expected_revision != record.revision:
                         raise RevisionConflictError(record.revision)
                     revision_before = record.revision
@@ -234,7 +246,7 @@ class ReviewPersistence:
                 session.rollback()
                 raise PersistenceError(f"Unable to save review: {_safe_error(exc)}") from exc
 
-    def list_change_events(self, job_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    def list_change_events(self, job_id: str, *, limit: int = 100, owner_user_id: str | None = None) -> list[dict[str, Any]]:
         if not self.configured:
             return []
         bounded_limit = min(max(limit, 1), 500)
@@ -242,7 +254,11 @@ class ReviewPersistence:
             with self._session() as session:
                 rows = session.execute(
                     select(ReviewChangeEvent)
-                    .where(ReviewChangeEvent.review_job_id == job_id)
+                    .join(ReviewRecord, ReviewChangeEvent.review_job_id == ReviewRecord.job_id)
+                    .where(
+                        ReviewChangeEvent.review_job_id == job_id,
+                        *_owner_filter_clauses(owner_user_id),
+                    )
                     .order_by(ReviewChangeEvent.sequence.desc())
                     .limit(bounded_limit)
                 ).scalars()
@@ -250,7 +266,7 @@ class ReviewPersistence:
         except SQLAlchemyError as exc:
             raise PersistenceError(f"Unable to read audit events: {_safe_error(exc)}") from exc
 
-    def list_reviews(self, *, limit: int = 30) -> list[dict[str, Any]]:
+    def list_reviews(self, *, limit: int = 30, owner_user_id: str | None = None) -> list[dict[str, Any]]:
         """Return lightweight review metadata for the resume list, newest first."""
         if not self.configured:
             return []
@@ -259,6 +275,7 @@ class ReviewPersistence:
             with self._session() as session:
                 rows = session.execute(
                     select(ReviewRecord)
+                    .where(*_owner_filter_clauses(owner_user_id))
                     .order_by(ReviewRecord.updated_at.desc())
                     .limit(bounded_limit)
                 ).scalars()
@@ -266,14 +283,14 @@ class ReviewPersistence:
         except SQLAlchemyError as exc:
             raise PersistenceError(f"Unable to list reviews: {_safe_error(exc)}") from exc
 
-    def delete_review(self, job_id: str) -> bool:
+    def delete_review(self, job_id: str, *, owner_user_id: str | None = None) -> bool:
         """Delete a review and its cascade-owned audit events."""
         if not self.configured:
             return False
         with self._session() as session:
             try:
                 record = session.get(ReviewRecord, job_id)
-                if record is None:
+                if record is None or not _record_matches_owner(record, owner_user_id):
                     return False
                 session.delete(record)
                 session.commit()
@@ -294,6 +311,7 @@ class ReviewPersistence:
         *,
         file_info: dict[str, Any] | None,
         artifact_dir: str | None,
+        owner: dict[str, Any] | None,
     ) -> ReviewRecord:
         summary = review.get("drawing_summary") if isinstance(review.get("drawing_summary"), dict) else {}
         return ReviewRecord(
@@ -301,6 +319,11 @@ class ReviewPersistence:
             drawing_no=_optional_text(summary.get("drawing_no")),
             drawing_name=_optional_text(summary.get("drawing_name")),
             spring_type=_optional_text(summary.get("spring_type")),
+            owner_erp_user_id=_owner_user_id(owner),
+            owner_username=_owner_text(owner, "username"),
+            owner_real_name=_owner_text(owner, "real_name"),
+            owner_org_id=_owner_text(owner, "org_id"),
+            owner_org_name=_owner_text(owner, "org_name"),
             artifact_dir=artifact_dir,
             file_info=copy.deepcopy(file_info),
             review_snapshot=copy.deepcopy(review),
@@ -374,6 +397,28 @@ def _apply_summary(record: ReviewRecord, review: dict[str, Any]) -> None:
     record.drawing_no = _optional_text(summary.get("drawing_no"))
     record.drawing_name = _optional_text(summary.get("drawing_name"))
     record.spring_type = _optional_text(summary.get("spring_type"))
+
+
+def _owner_filter_clauses(owner_user_id: str | None) -> tuple[Any, ...]:
+    if not owner_user_id:
+        return ()
+    return (ReviewRecord.owner_erp_user_id == owner_user_id,)
+
+
+def _record_matches_owner(record: ReviewRecord, owner_user_id: str | None) -> bool:
+    if not owner_user_id:
+        return True
+    return record.owner_erp_user_id == owner_user_id
+
+
+def _owner_user_id(owner: dict[str, Any] | None) -> str | None:
+    return _owner_text(owner, "user_id")
+
+
+def _owner_text(owner: dict[str, Any] | None, key: str) -> str | None:
+    if not isinstance(owner, dict):
+        return None
+    return _optional_text(owner.get(key), 256)
 
 
 def _optional_text(value: Any, limit: int | None = None) -> str | None:

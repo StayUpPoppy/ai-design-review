@@ -7,12 +7,12 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from .engines.geometry_adapter import GeometryEngine
 from .engines.ocr_adapter import OcrJsonEngine
@@ -24,10 +24,11 @@ from .engines.ocr_providers import (
 )
 from .engines.qwen_vision_adapter import QwenVisionEngine, qwen_runtime_status
 from .engines.werk24_adapter import Werk24Engine
+from .identity import IdentityContext, IdentityError, resolve_request_identity
 from .io_utils import project_path, read_json, write_json
 from .llm_standardization_engine import LLMStandardizationEngine, llm_standardization_runtime_status
 from .preprocessing import IMAGE_EXTENSIONS, probe_file, render_pdf_with_pdftoppm
-from .review_persistence import PersistenceError, ReviewPersistence, RevisionConflictError
+from .review_persistence import PersistenceError, ReviewAccessError, ReviewPersistence, RevisionConflictError
 from .standard_knowledge import ragflow_runtime_status, retrieve_standard_chunks
 from .standardization_chat_agent import chat_about_standardization, standardization_chat_context_needs_refresh
 from .standardization_chat_llm import standardization_chat_llm_runtime_status
@@ -59,16 +60,12 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=FRONTEND_ORIGINS,
     allow_origin_regex=r"https?://(127\.0\.0\.1|localhost):\d+",
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 API_RUN_ROOT.mkdir(parents=True, exist_ok=True)
-app.mount("/outputs", StaticFiles(directory=str(OUTPUT_ROOT)), name="outputs")
-if TMP_PDF_ROOT.exists():
-    app.mount("/tmp_pdf_pages", StaticFiles(directory=str(TMP_PDF_ROOT)), name="tmp_pdf_pages")
-app.mount("/artifacts", StaticFiles(directory=str(API_RUN_ROOT)), name="artifacts")
 
 
 @app.on_event("startup")
@@ -114,6 +111,34 @@ def health() -> dict[str, Any]:
     }
 
 
+def require_identity(request: Request) -> IdentityContext:
+    try:
+        return resolve_request_identity(request)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail="ERP identity is required to use the drawing review assistant.") from exc
+
+
+@app.get("/api/session")
+def get_session(identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    return {"identity": identity.as_public_dict()}
+
+
+@app.get("/api/samples/mixed-review")
+def get_mixed_review_sample(identity: IdentityContext = Depends(require_identity)) -> FileResponse:
+    sample_path = OUTPUT_ROOT / "mixed_review.json"
+    if not sample_path.is_file():
+        raise HTTPException(status_code=404, detail="Sample review not found.")
+    return FileResponse(str(sample_path), media_type="application/json")
+
+
+@app.get("/api/samples/spring-preview")
+def get_spring_preview_sample(identity: IdentityContext = Depends(require_identity)) -> FileResponse:
+    sample_path = TMP_PDF_ROOT / "spring_example_rotated.png"
+    if not sample_path.is_file():
+        raise HTTPException(status_code=404, detail="Sample preview not found.")
+    return FileResponse(str(sample_path))
+
+
 @app.get("/api/standard-knowledge/search")
 def search_standard_knowledge(
     standard_no: str | None = None,
@@ -121,6 +146,7 @@ def search_standard_knowledge(
     target_fields: str | None = None,
     query: str | None = None,
     limit: int = 6,
+    _: IdentityContext = Depends(require_identity),
 ) -> dict[str, Any]:
     fields = [
         item.strip()
@@ -161,6 +187,7 @@ async def create_review(
     vision_provider: str | None = Form("none"),
     use_paddleocr: bool = Form(False),
     use_sample_ocr: bool = Form(False),
+    identity: IdentityContext = Depends(require_identity),
 ) -> dict[str, Any]:
     if use_werk24 and not confirm_upload_to_werk24:
         raise HTTPException(
@@ -372,11 +399,13 @@ async def create_review(
     write_json(job_dir / "review.json", review)
     write_json(job_dir / "file_info.json", uploaded_file_info)
     write_json(job_dir / "warnings.json", {"warnings": warnings})
+    write_json(job_dir / "owner.json", identity.as_owner_dict())
     persistence = _create_review_persistence(
         job_id,
         review,
         file_info=uploaded_file_info,
         artifact_dir=str(job_dir),
+        identity=identity,
     )
 
     return {
@@ -399,11 +428,11 @@ async def create_review(
 
 
 @app.get("/api/reviews")
-def list_reviews(limit: int = 20) -> dict[str, Any]:
+def list_reviews(limit: int = 20, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     bounded_limit = min(max(limit, 1), 100)
     if REVIEW_PERSISTENCE.configured:
         try:
-            reviews = REVIEW_PERSISTENCE.list_reviews(limit=bounded_limit)
+            reviews = REVIEW_PERSISTENCE.list_reviews(limit=bounded_limit, owner_user_id=identity.user_id)
         except PersistenceError as exc:
             raise _persistence_http_error(exc) from exc
         for item in reviews:
@@ -415,12 +444,15 @@ def list_reviews(limit: int = 20) -> dict[str, Any]:
 
     return {
         "persistence": _persistence_response({"mode": "json_fallback"}),
-        "reviews": _list_local_reviews(limit=bounded_limit),
+        "reviews": _list_local_reviews(limit=bounded_limit, owner_user_id=identity.user_id),
     }
 
 
 @app.post("/api/reviews/standardize")
-async def standardize_review_payload(payload: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
+async def standardize_review_payload(
+    payload: dict[str, Any] | None = Body(None),
+    _: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
     body = payload or {}
     review = body.get("review")
     if not isinstance(review, dict):
@@ -439,7 +471,10 @@ async def standardize_review_payload(payload: dict[str, Any] | None = Body(None)
 
 
 @app.post("/api/reviews/reasonableness")
-def assess_review_reasonableness(payload: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
+def assess_review_reasonableness(
+    payload: dict[str, Any] | None = Body(None),
+    _: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
     """Return a lightweight deterministic diagnostic for the caller's current review state."""
     review = (payload or {}).get("review")
     if not isinstance(review, dict):
@@ -452,13 +487,15 @@ def assess_review_reasonableness(payload: dict[str, Any] | None = Body(None)) ->
 async def standardize_existing_review(
     job_id: str,
     payload: dict[str, Any] | None = Body(None),
+    identity: IdentityContext = Depends(require_identity),
 ) -> dict[str, Any]:
     job_dir = _job_dir(job_id)
     review_path = job_dir / "review.json"
     body = payload or {}
     review = body.get("review")
+    _ensure_review_owned(job_id, review_path, identity)
     if not isinstance(review, dict):
-        review, _ = _load_persisted_review(job_id, review_path)
+        review, _ = _load_persisted_review(job_id, review_path, identity)
 
     warnings: list[str] = []
     llm_standardization_payload = await _run_standardization_stage(
@@ -472,6 +509,7 @@ async def standardize_existing_review(
         review,
         review_path=review_path,
         expected_revision=body.get("expected_revision"),
+        identity=identity,
         events=[
             {
                 "event_type": "standardization_completed",
@@ -498,7 +536,10 @@ async def standardize_existing_review(
 
 
 @app.post("/api/reviews/standardization-chat")
-async def standardization_chat_payload(payload: dict[str, Any] | None = Body(None)) -> dict[str, Any]:
+async def standardization_chat_payload(
+    payload: dict[str, Any] | None = Body(None),
+    _: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
     body = payload or {}
     review = body.get("review")
     message = str(body.get("message") or "").strip()
@@ -523,6 +564,7 @@ async def standardization_chat_payload(payload: dict[str, Any] | None = Body(Non
 async def standardization_chat_existing_review(
     job_id: str,
     payload: dict[str, Any] | None = Body(None),
+    identity: IdentityContext = Depends(require_identity),
 ) -> dict[str, Any]:
     job_dir = _job_dir(job_id)
     review_path = job_dir / "review.json"
@@ -531,8 +573,9 @@ async def standardization_chat_existing_review(
     message = str(body.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="standardization chat requires a message.")
+    _ensure_review_owned(job_id, review_path, identity)
     if not isinstance(review, dict):
-        review, _ = _load_persisted_review(job_id, review_path)
+        review, _ = _load_persisted_review(job_id, review_path, identity)
     try:
         context = await _prepare_standardization_chat_context(review, message)
         result = chat_about_standardization(
@@ -549,6 +592,7 @@ async def standardization_chat_existing_review(
         result["review"],
         review_path=review_path,
         expected_revision=body.get("expected_revision"),
+        identity=identity,
         events=[
             {
                 "event_type": "standardization_chat_completed",
@@ -571,6 +615,7 @@ async def standardization_chat_existing_review(
 def save_existing_review(
     job_id: str,
     payload: dict[str, Any] | None = Body(None),
+    identity: IdentityContext = Depends(require_identity),
 ) -> dict[str, Any]:
     body = payload or {}
     review = body.get("review")
@@ -578,13 +623,14 @@ def save_existing_review(
         raise HTTPException(status_code=400, detail="review must be an object.")
     job_dir = _job_dir(job_id)
     review_path = job_dir / "review.json"
+    _ensure_review_owned(job_id, review_path, identity)
     persistence = _save_review_persistence(
         job_id,
         review,
         review_path=review_path,
         expected_revision=body.get("expected_revision"),
         events=_audit_events_from_payload(body),
-        actor=_audit_actor_from_payload(body),
+        identity=identity,
     )
     return {
         "job_id": job_id,
@@ -595,18 +641,18 @@ def save_existing_review(
 
 
 @app.delete("/api/reviews/{job_id}")
-def delete_existing_review(job_id: str) -> dict[str, Any]:
+def delete_existing_review(job_id: str, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     job_dir = _job_dir(job_id)
     if REVIEW_PERSISTENCE.configured:
         try:
-            deleted = REVIEW_PERSISTENCE.delete_review(job_id)
+            deleted = REVIEW_PERSISTENCE.delete_review(job_id, owner_user_id=identity.user_id)
         except PersistenceError as exc:
             raise _persistence_http_error(exc) from exc
         if not deleted:
             raise HTTPException(status_code=404, detail="Review not found.")
         persistence = _persistence_response({"mode": "postgresql"})
     else:
-        if not job_dir.exists():
+        if not _local_job_owned(job_dir, identity.user_id):
             raise HTTPException(status_code=404, detail="Review not found.")
         persistence = _persistence_response({"mode": "json_fallback"})
 
@@ -627,22 +673,26 @@ def delete_existing_review(job_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/reviews/{job_id}/changes")
-def get_review_changes(job_id: str, limit: int = 100) -> dict[str, Any]:
+def get_review_changes(
+    job_id: str,
+    limit: int = 100,
+    identity: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
     job_dir = _job_dir(job_id)
     review_path = job_dir / "review.json"
     if REVIEW_PERSISTENCE.configured:
         try:
-            stored = REVIEW_PERSISTENCE.get_review(job_id)
+            stored = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id)
             if stored is not None:
                 return {
                     "job_id": job_id,
                     "review_revision": stored["revision"],
                     "persistence": _persistence_response({"mode": "postgresql", "revision": stored["revision"]}),
-                    "events": REVIEW_PERSISTENCE.list_change_events(job_id, limit=limit),
+                    "events": REVIEW_PERSISTENCE.list_change_events(job_id, limit=limit, owner_user_id=identity.user_id),
                 }
         except PersistenceError as exc:
             raise _persistence_http_error(exc) from exc
-    if not review_path.exists():
+    if not _local_job_owned(job_dir, identity.user_id) or not review_path.exists():
         raise HTTPException(status_code=404, detail="Review not found.")
     review = read_json(review_path)
     history = review.get("change_history") if isinstance(review.get("change_history"), list) else []
@@ -655,31 +705,51 @@ def get_review_changes(job_id: str, limit: int = 100) -> dict[str, Any]:
 
 
 @app.get("/api/reviews/{job_id}")
-def get_review(job_id: str) -> dict[str, Any]:
+def get_review(job_id: str, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     job_dir = _job_dir(job_id)
     review_path = job_dir / "review.json"
-    review, revision = _load_persisted_review(job_id, review_path)
+    review, revision = _load_persisted_review(job_id, review_path, identity)
     if revision is not None:
         review["review_revision"] = revision
     return review
 
 
 @app.get("/api/reviews/{job_id}/candidates")
-def get_candidates(job_id: str) -> dict[str, Any]:
+def get_candidates(job_id: str, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     job_dir = _job_dir(job_id)
     candidates_path = job_dir / "candidates.json"
+    _ensure_review_owned(job_id, job_dir / "review.json", identity)
     if not candidates_path.exists():
         raise HTTPException(status_code=404, detail="Candidates not found.")
     return read_json(candidates_path)
 
 
 @app.get("/api/reviews/{job_id}/download")
-def download_review(job_id: str) -> FileResponse:
+def download_review(job_id: str, identity: IdentityContext = Depends(require_identity)) -> FileResponse:
     job_dir = _job_dir(job_id)
     review_path = job_dir / "review.json"
+    _ensure_review_owned(job_id, review_path, identity)
     if not review_path.exists():
         raise HTTPException(status_code=404, detail="Review not found.")
     return FileResponse(str(review_path), filename=f"{job_id}_review.json")
+
+
+@app.get("/api/reviews/{job_id}/artifacts/{relative_path:path}")
+def get_review_artifact(
+    job_id: str,
+    relative_path: str,
+    identity: IdentityContext = Depends(require_identity),
+) -> FileResponse:
+    job_dir = _job_dir(job_id)
+    _ensure_review_owned(job_id, job_dir / "review.json", identity)
+    requested = (job_dir / relative_path).resolve()
+    try:
+        requested.relative_to(job_dir.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Artifact not found.") from exc
+    if not requested.is_file():
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+    return FileResponse(str(requested))
 
 
 def _create_review_persistence(
@@ -688,6 +758,7 @@ def _create_review_persistence(
     *,
     file_info: dict[str, Any],
     artifact_dir: str,
+    identity: IdentityContext,
 ) -> dict[str, Any]:
     try:
         return REVIEW_PERSISTENCE.create_review(
@@ -695,22 +766,33 @@ def _create_review_persistence(
             review,
             file_info=file_info,
             artifact_dir=artifact_dir,
+            owner=identity.as_owner_dict(),
+            actor=identity.as_audit_actor(),
         )
     except PersistenceError as exc:
         raise _persistence_http_error(exc) from exc
 
 
-def _load_persisted_review(job_id: str, review_path: Path) -> tuple[dict[str, Any], int | None]:
+def _load_persisted_review(
+    job_id: str,
+    review_path: Path,
+    identity: IdentityContext,
+) -> tuple[dict[str, Any], int | None]:
     if REVIEW_PERSISTENCE.configured:
         try:
-            stored = REVIEW_PERSISTENCE.get_review(job_id)
+            stored = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id)
         except PersistenceError as exc:
             raise _persistence_http_error(exc) from exc
-        if stored is not None:
-            return stored["review"], stored["revision"]
-    if not review_path.exists():
+        if stored is None:
+            raise HTTPException(status_code=404, detail="Review not found.")
+        return stored["review"], stored["revision"]
+    if not _local_job_owned(review_path.parent, identity.user_id) or not review_path.exists():
         raise HTTPException(status_code=404, detail="Review not found.")
     return read_json(review_path), None
+
+
+def _ensure_review_owned(job_id: str, review_path: Path, identity: IdentityContext) -> None:
+    _load_persisted_review(job_id, review_path, identity)
 
 
 def _save_review_persistence(
@@ -720,10 +802,14 @@ def _save_review_persistence(
     review_path: Path,
     expected_revision: Any = None,
     events: list[dict[str, Any]] | None = None,
-    actor: dict[str, Any] | None = None,
+    identity: IdentityContext,
 ) -> dict[str, Any]:
     revision = _expected_review_revision(expected_revision)
-    audit_events = events or []
+    audit_events = []
+    for raw_event in events or []:
+        event = dict(raw_event)
+        event["actor"] = identity.as_audit_actor()
+        audit_events.append(event)
     history_status = "saved" if REVIEW_PERSISTENCE.configured else "saved_local"
     fallback_events = _merge_audit_events_into_review_history(review, audit_events, status=history_status)
     try:
@@ -732,8 +818,9 @@ def _save_review_persistence(
             review,
             expected_revision=revision,
             events=audit_events,
-            actor=actor,
+            actor=identity.as_audit_actor(),
             artifact_dir=str(review_path.parent),
+            owner=identity.as_owner_dict(),
         )
     except RevisionConflictError as exc:
         raise HTTPException(
@@ -743,6 +830,8 @@ def _save_review_persistence(
                 "current_revision": exc.current_revision,
             },
         ) from exc
+    except ReviewAccessError as exc:
+        raise HTTPException(status_code=404, detail="Review not found.") from exc
     except PersistenceError as exc:
         raise _persistence_http_error(exc) from exc
     if result.get("mode") == "json_fallback":
@@ -838,6 +927,7 @@ def _merge_audit_events_into_review_history(
             "before_state": event.get("before_state"),
             "after_state": event.get("after_state"),
             "metadata": metadata,
+            "actor": event.get("actor") if isinstance(event.get("actor"), dict) else None,
             "created_at": datetime.now(UTC).isoformat(),
             "sync_status": status,
         }
@@ -1107,7 +1197,7 @@ def _werk24_license_status() -> dict[str, str]:
 
 
 def _artifact_url(job_id: str, relative: Path) -> str:
-    return "/artifacts/" + job_id + "/" + relative.as_posix()
+    return "/api/reviews/" + quote(job_id, safe="") + "/artifacts/" + quote(relative.as_posix(), safe="/")
 
 
 def _review_preview_url(job_id: str) -> str | None:
@@ -1129,7 +1219,7 @@ def _review_preview_url(job_id: str) -> str | None:
     return _artifact_url(job_id, candidates[0].relative_to(job_dir))
 
 
-def _list_local_reviews(*, limit: int) -> list[dict[str, Any]]:
+def _list_local_reviews(*, limit: int, owner_user_id: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for review_path in API_RUN_ROOT.glob("*/review.json"):
         try:
@@ -1139,6 +1229,8 @@ def _list_local_reviews(*, limit: int) -> list[dict[str, Any]]:
         if not isinstance(review, dict):
             continue
         job_id = review_path.parent.name
+        if not _local_job_owned(review_path.parent, owner_user_id):
+            continue
         summary = review.get("drawing_summary") if isinstance(review.get("drawing_summary"), dict) else {}
         modified_at = datetime.fromtimestamp(review_path.stat().st_mtime, UTC).isoformat()
         items.append(
@@ -1156,6 +1248,17 @@ def _list_local_reviews(*, limit: int) -> list[dict[str, Any]]:
         )
     items.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
     return items[:limit]
+
+
+def _local_job_owned(job_dir: Path, owner_user_id: str) -> bool:
+    owner_path = job_dir / "owner.json"
+    if not owner_path.exists():
+        return False
+    try:
+        owner = read_json(owner_path)
+    except (OSError, ValueError):
+        return False
+    return isinstance(owner, dict) and str(owner.get("user_id") or "").strip() == owner_user_id
 
 
 def _job_dir(job_id: str) -> Path:

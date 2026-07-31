@@ -106,8 +106,49 @@ button:disabled {
 
 .topbar-actions {
   display: flex;
+  align-items: center;
   gap: 6px;
   justify-content: flex-end;
+}
+
+.identity-profile {
+  display: grid;
+  min-width: 0;
+  max-width: 220px;
+  margin-right: 6px;
+  padding: 4px 10px;
+  border-right: 1px solid var(--line);
+  color: var(--ink);
+  line-height: 1.2;
+  text-align: right;
+}
+
+.identity-profile-name,
+.identity-profile-org {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.identity-profile-name {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.identity-profile-org,
+.identity-profile-source {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.identity-profile-source {
+  color: var(--accent);
+}
+
+@media (max-width: 720px) {
+  .identity-profile {
+    display: none !important;
+  }
 }
 
 .topbar-actions button {

@@ -43,6 +43,9 @@ const state = {
   pendingReviewAuditEvents: [],
   recentReviews: [],
   recentReviewsLoading: false,
+  identity: null,
+  identityReady: false,
+  identityError: "",
 };
 
 const REQUIRED_FIELDS = [
@@ -382,6 +385,10 @@ const newReviewButton = document.getElementById("newReviewButton");
 const recentReviews = document.getElementById("recentReviews");
 const recentReviewList = document.getElementById("recentReviewList");
 const refreshRecentReviewsButton = document.getElementById("refreshRecentReviewsButton");
+const identityProfile = document.getElementById("identityProfile");
+const identityProfileName = document.getElementById("identityProfileName");
+const identityProfileOrg = document.getElementById("identityProfileOrg");
+const identityProfileSource = document.getElementById("identityProfileSource");
 const compareOverlay = createCompareOverlay();
 
 apiBaseInput.value = state.apiBaseUrl;
@@ -411,7 +418,46 @@ exportButton.addEventListener("click", () => {
 
 syncOcrProviderState();
 syncVlmProviderState();
-void loadRecentReviews();
+void initializeIdentity();
+
+async function initializeIdentity() {
+  state.identityReady = false;
+  state.identityError = "";
+  refreshIdentityUi();
+  setBusy(state.busy);
+  try {
+    const response = await apiFetch("/api/session");
+    const payload = await response.json();
+    if (!response.ok || !payload?.identity) {
+      throw new Error(payload?.detail || "无法读取 ERP 登录身份");
+    }
+    state.identity = payload.identity;
+    state.identityReady = true;
+    refreshIdentityUi();
+    setBusy(false);
+    void loadRecentReviews();
+  } catch (error) {
+    state.identity = null;
+    state.identityReady = false;
+    state.identityError = error.message || "请从 ERP 登录后进入审图助手";
+    refreshIdentityUi();
+    setBusy(false);
+  }
+}
+
+function refreshIdentityUi() {
+  const identity = state.identity;
+  const showIdentity = Boolean(identity?.identity_display_enabled);
+  if (identityProfile) identityProfile.hidden = !showIdentity;
+  if (showIdentity) {
+    identityProfileName.textContent = identity.username || "-";
+    identityProfileOrg.textContent = identity.org_name || "-";
+    identityProfileSource.textContent = identity.is_mock ? "开发模拟" : "ERP 已同步";
+  }
+  if (!state.identityReady && state.identityError) {
+    selectedFileName.textContent = "请从 ERP 登录后进入审图助手";
+  }
+}
 
 function syncOcrProviderState() {
   ocrProviderInput.disabled = !useOcrInput.checked;
@@ -487,6 +533,7 @@ window.addEventListener("click", (event) => {
 });
 
 function selectDrawingFile(file) {
+  if (!state.identityReady) return;
   if (!isSupportedDrawing(file)) {
     appendAssistantText("当前仅支持 PDF 或常见图片格式。");
     return;
@@ -497,7 +544,7 @@ function selectDrawingFile(file) {
 }
 
 async function submitSelectedFile() {
-  if (!state.selectedFile || state.busy) return;
+  if (!state.selectedFile || state.busy || !state.identityReady) return;
   if (useWerk24Input?.checked && !confirmWerk24Input?.checked) {
     appendAssistantText("调用 Werk24 前必须勾选“确认上传到 Werk24”。");
     return;
@@ -526,7 +573,7 @@ async function submitSelectedFile() {
     form.append("use_cached_werk24", useCachedWerk24Input?.checked ? "true" : "false");
     form.append("use_sample_ocr", useSampleOcrInput.checked ? "true" : "false");
 
-    const response = await fetch(apiUrl("/api/reviews"), { method: "POST", body: form });
+    const response = await apiFetch("/api/reviews", { method: "POST", body: form });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || "后端审查失败");
 
@@ -578,7 +625,7 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
       { scroll: false },
     );
   try {
-    const response = await fetch(apiUrl(endpoint), {
+    const response = await apiFetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -657,7 +704,7 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
     : "/api/reviews/standardization-chat";
   let isTypingFinalReply = false;
   try {
-    const response = await fetch(apiUrl(endpoint), {
+    const response = await apiFetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -880,7 +927,7 @@ async function persistReviewChanges() {
   state.reviewPersistenceSaving = true;
   state.reviewPersistencePromise = (async () => {
     try {
-      const response = await fetch(apiUrl(`/api/reviews/${encodeURIComponent(state.lastJob.job_id)}`), {
+      const response = await apiFetch(`/api/reviews/${encodeURIComponent(state.lastJob.job_id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1023,7 +1070,7 @@ async function refreshParameterReasonableness(messageId = state.activeReviewMess
   const requestId = ++state.reasonablenessRequestSerial;
   const requestReview = normalizeReview(structuredClone(state.review));
   try {
-    const response = await fetch(apiUrl("/api/reviews/reasonableness"), {
+    const response = await apiFetch("/api/reviews/reasonableness", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ review: requestReview }),
@@ -1126,16 +1173,17 @@ function scrollStandardizationChatToBottom() {
 }
 
 async function loadDemoReview() {
+  if (!state.identityReady) return;
   setBusy(true);
   appendUserMessage("加载样例审查结果");
   const thinkingId = appendAssistantText("正在加载样例...");
   try {
-    const response = await fetch(apiUrl("/outputs/mixed_review.json"));
+    const response = await apiFetch("/api/samples/mixed-review");
     if (!response.ok) throw new Error("样例审查 JSON 加载失败");
     const review = normalizeReview(await response.json());
     removeMessage(thinkingId);
     state.compareTab = "workbench";
-    setReview(review, apiUrl("/tmp_pdf_pages/spring_example_rotated.png"));
+    setReview(review, apiUrl("/api/samples/spring-preview"));
     appendReviewMessage("样例已加载，请确认结构化尺寸数据。");
   } catch (error) {
     replaceMessage(thinkingId, error.message || String(error), true);
@@ -1145,11 +1193,11 @@ async function loadDemoReview() {
 }
 
 async function loadRecentReviews() {
-  if (!recentReviews || !recentReviewList || state.recentReviewsLoading) return;
+  if (!state.identityReady || !recentReviews || !recentReviewList || state.recentReviewsLoading) return;
   state.recentReviewsLoading = true;
   if (refreshRecentReviewsButton) refreshRecentReviewsButton.disabled = true;
   try {
-    const response = await fetch(apiUrl("/api/reviews?limit=20"));
+    const response = await apiFetch("/api/reviews?limit=20");
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || "无法读取已保存的审图记录");
     state.recentReviews = Array.isArray(payload.reviews) ? payload.reviews : [];
@@ -1212,7 +1260,7 @@ async function openPersistedReview(jobId) {
   setBusy(true);
   const thinkingId = appendAssistantText("正在恢复已保存的审图记录...");
   try {
-    const response = await fetch(apiUrl(`/api/reviews/${encodeURIComponent(jobId)}`));
+    const response = await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || "无法恢复该审图记录");
     removeMessage(thinkingId);
@@ -1273,7 +1321,7 @@ async function deletePersistedReview(item, dialog) {
   setBusy(true);
   await flushReviewPersistence();
   try {
-    const response = await fetch(apiUrl(`/api/reviews/${encodeURIComponent(item.job_id)}`), { method: "DELETE" });
+    const response = await apiFetch(`/api/reviews/${encodeURIComponent(item.job_id)}`, { method: "DELETE" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || "删除历史订单失败");
     const title = item.drawing_name || item.drawing_no || item.job_id;
@@ -1315,7 +1363,7 @@ function resetDeletedReviewState() {
 }
 
 async function startNewReview() {
-  if (state.busy) return;
+  if (state.busy || !state.identityReady) return;
   setBusy(true);
   try {
     await flushReviewPersistence();
@@ -4918,10 +4966,11 @@ function createMessageId() {
 
 function setBusy(busy) {
   state.busy = busy;
-  submitButton.disabled = busy || !state.selectedFile;
-  chooseFileButton.disabled = busy;
-  demoButton.disabled = busy;
-  if (newReviewButton) newReviewButton.disabled = busy;
+  const disabled = busy || !state.identityReady;
+  submitButton.disabled = disabled || !state.selectedFile;
+  chooseFileButton.disabled = disabled;
+  demoButton.disabled = disabled;
+  if (newReviewButton) newReviewButton.disabled = disabled;
   submitButton.classList.toggle("busy", busy);
   submitButton.textContent = busy ? "审查中..." : "↑";
   submitButton.setAttribute("aria-label", busy ? "正在审查" : "开始审查");
@@ -4930,6 +4979,10 @@ function setBusy(busy) {
 function apiUrl(path) {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   return `${state.apiBaseUrl}${normalizedPath}`;
+}
+
+function apiFetch(path, options = {}) {
+  return fetch(apiUrl(path), { ...options, credentials: "include" });
 }
 
 function toBackendAssetUrl(path) {

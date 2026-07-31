@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>弹簧图纸 AI 审查助手</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="./styles.css?v=20260728-accuracy-feedback">
+    <link rel="stylesheet" href="./styles.css?v=20260730-erp-identity">
   </head>
   <body>
     <main class="app-shell">
@@ -15,6 +15,11 @@
           <h1>弹簧图纸 AI 审查助手</h1>
         </div>
         <div class="topbar-actions">
+          <div id="identityProfile" class="identity-profile" hidden aria-live="polite">
+            <span id="identityProfileName" class="identity-profile-name"></span>
+            <span id="identityProfileOrg" class="identity-profile-org"></span>
+            <small id="identityProfileSource" class="identity-profile-source"></small>
+          </div>
           <button id="demoButton" type="button">加载样例</button>
           <button id="exportButton" type="button" disabled>导出</button>
         </div>
@@ -139,6 +144,6 @@
       </div>
     </main>
 
-    <script src="./app.js?v=20260728-accuracy-feedback"></script>
+    <script src="./app.js?v=20260730-erp-identity"></script>
   </body>
 </html>
