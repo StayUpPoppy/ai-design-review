@@ -60,6 +60,7 @@ function createContext({ responseOk = true } = {}) {
     restoreReviewScrollState: () => {},
     setBusy: (busy) => { context.state.busy = busy; },
     apiUrl: (path) => path,
+    apiFetch: (path, options) => context.fetch(path, options),
     appendAssistantText: () => "thinking-1",
     removeMessage: () => {},
     fetch: async (_url, options) => {

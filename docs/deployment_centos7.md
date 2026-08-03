@@ -14,6 +14,9 @@ AI_REVIEW_WEB_PORT=8088
 AI_REVIEW_API_PORT=8770
 DEBIAN_APT_MIRROR=mirrors.aliyun.com
 PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+RECOGNITION_WORKER_CONCURRENCY=2
+RECOGNITION_JOB_POLL_SECONDS=1
+RECOGNITION_JOB_LEASE_SECONDS=900
 ```
 
 `DATABASE_URL` 可以留空，Compose 会自动连接内部 PostgreSQL。若使用公司已有 PostgreSQL，再显式配置：
@@ -33,10 +36,14 @@ RAGFlow 位于其他服务器时，`RAGFLOW_BASE_URL` 必须是 API 容器可访
 ```bash
 docker compose up -d postgres
 docker compose run --rm api alembic upgrade head
-docker compose up -d api web
+docker compose up -d api worker web
 docker compose ps
 curl http://127.0.0.1:8088/api/health
 ```
+
+`worker` 是识别队列的必需服务，没有对外端口；它从 PostgreSQL 领取图纸任务。
+首期保持一个 Worker 服务和 `RECOGNITION_WORKER_CONCURRENCY=2`，即可同时识别两份图纸。
+可通过 `docker compose logs -f worker` 查看排队、失败或取消的识别任务。
 
 浏览器访问 `http://服务器地址:8088`。API 只绑定到宿主机 `127.0.0.1:8770`，外部访问统一经 Nginx 的 8088 端口；公司现有反向代理可再转发到这个端口。
 
@@ -60,9 +67,9 @@ docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > "ba
 ## 4. 更新与回滚
 
 ```bash
-docker compose build api
+docker compose build api worker
 docker compose run --rm api alembic upgrade head
-docker compose up -d api web
+docker compose up -d api worker web
 docker compose logs -f api
 ```
 

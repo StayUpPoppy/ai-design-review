@@ -271,6 +271,10 @@ button:disabled {
   background: var(--primary-soft);
 }
 
+.history-order-item.has-retry {
+  grid-template-columns: minmax(0, 1fr) 42px 32px;
+}
+
 .history-select-button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 16px;
@@ -347,6 +351,20 @@ button:disabled {
   border-color: #f0c8c4;
   background: #fff7f6;
   color: var(--fail);
+}
+
+.history-retry-button {
+  min-height: 28px;
+  border-color: transparent;
+  background: transparent;
+  padding: 0 4px;
+  color: var(--primary);
+  font-size: 11px;
+}
+
+.history-retry-button:hover:not(:disabled) {
+  border-color: #c8d8f7;
+  background: #fff;
 }
 
 .history-delete-icon {

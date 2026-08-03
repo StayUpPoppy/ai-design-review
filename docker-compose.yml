@@ -37,6 +37,26 @@ services:
     networks:
       - ai_review_internal
 
+  worker:
+    build:
+      context: .
+      args:
+        DEBIAN_APT_MIRROR: ${DEBIAN_APT_MIRROR:-mirrors.aliyun.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
+    restart: unless-stopped
+    command: ["python", "-m", "ai_design_review.recognition_worker"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://ai_design_review:${POSTGRES_PASSWORD}@postgres:5432/ai_design_review}
+    volumes:
+      - review_outputs:/app/outputs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ai_review_internal
+
   web:
     image: nginx:1.26-alpine
     restart: unless-stopped

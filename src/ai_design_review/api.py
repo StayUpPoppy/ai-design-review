@@ -4,6 +4,7 @@ import shutil
 import uuid
 import os
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from urllib.parse import quote
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from .engines.geometry_adapter import GeometryEngine
 from .engines.ocr_adapter import OcrJsonEngine
@@ -68,6 +69,10 @@ app.add_middleware(
 API_RUN_ROOT.mkdir(parents=True, exist_ok=True)
 
 
+class RecognitionCancelled(RuntimeError):
+    """Raised by the worker progress callback after a user cancels a job."""
+
+
 @app.on_event("startup")
 def refresh_runtime_startup_status() -> None:
     global RAGFLOW_STARTUP_STATUS, DATABASE_STARTUP_STATUS
@@ -104,6 +109,11 @@ def health() -> dict[str, Any]:
         "standardization_chat_runtime": standardization_chat_llm_runtime_status(),
         "ragflow_runtime": RAGFLOW_STARTUP_STATUS,
         "persistence_runtime": DATABASE_STARTUP_STATUS,
+        "recognition_queue_runtime": {
+            "status": "available" if REVIEW_PERSISTENCE.configured else "not_configured",
+            "backend": "postgresql",
+            "configured_concurrency": _configured_recognition_concurrency(),
+        },
         "ocr_runtime": ocr_runtime_status(),
         "geometry_runtime": {"status": "ready", "engine": "geometry"},
         "vlm_runtime": {"status": "not_configured", "mode": "optional_review_only"},
@@ -116,6 +126,13 @@ def require_identity(request: Request) -> IdentityContext:
         return resolve_request_identity(request)
     except IdentityError as exc:
         raise HTTPException(status_code=401, detail="ERP identity is required to use the drawing review assistant.") from exc
+
+
+def _configured_recognition_concurrency() -> int:
+    try:
+        return min(max(int(os.getenv("RECOGNITION_WORKER_CONCURRENCY", "2")), 1), 8)
+    except (TypeError, ValueError):
+        return 2
 
 
 @app.get("/api/session")
@@ -170,8 +187,7 @@ def search_standard_knowledge(
     }
 
 
-@app.post("/api/reviews")
-async def create_review(
+async def run_recognition_execution(
     drawing: UploadFile = File(...),
     candidate_json: UploadFile | None = File(None),
     ocr_json: UploadFile | None = File(None),
@@ -187,25 +203,31 @@ async def create_review(
     vision_provider: str | None = Form("none"),
     use_paddleocr: bool = Form(False),
     use_sample_ocr: bool = Form(False),
-    identity: IdentityContext = Depends(require_identity),
+    identity: IdentityContext | None = None,
+    job_id: str | None = None,
+    progress_callback: Callable[[str, int], None] | None = None,
 ) -> dict[str, Any]:
+    if identity is None:
+        raise RuntimeError("Recognition execution requires an identity context.")
     if use_werk24 and not confirm_upload_to_werk24:
         raise HTTPException(
             status_code=400,
             detail="Werk24 upload requires confirm_upload_to_werk24=true.",
         )
 
-    job_id = uuid.uuid4().hex[:12]
+    job_id = job_id or uuid.uuid4().hex[:12]
     job_dir = API_RUN_ROOT / job_id
     input_dir = job_dir / "inputs"
     page_dir = job_dir / "pages"
     input_dir.mkdir(parents=True, exist_ok=True)
     page_dir.mkdir(parents=True, exist_ok=True)
 
+    _report_recognition_progress(progress_callback, "preparing_file", 5)
     drawing_path = input_dir / _safe_filename(drawing.filename or "drawing")
     await _save_upload(drawing, drawing_path)
 
     warnings: list[str] = []
+    _report_recognition_progress(progress_callback, "rendering_preview", 15)
     images = _make_preview_images(drawing_path, page_dir, warnings)
     uploaded_file_info = probe_file(drawing_path)
     image_url = _artifact_url(job_id, Path(images[0]).relative_to(job_dir)) if images else None
@@ -233,6 +255,7 @@ async def create_review(
             warnings.append("Cached Werk24 candidates not found: outputs/werk24_candidates.json")
 
     if use_werk24:
+        _report_recognition_progress(progress_callback, "werk24", 25)
         try:
             werk24_payload = await run_in_threadpool(Werk24Engine().extract_with_raw, drawing_path)
             candidates.extend(werk24_payload.get("candidates", []))
@@ -242,6 +265,7 @@ async def create_review(
             warnings.append(f"Werk24 extraction failed: {exc}")
 
     if use_qwen:
+        _report_recognition_progress(progress_callback, "qwen_vision", 35)
         try:
             qwen_payload = await run_in_threadpool(
                 QwenVisionEngine(work_dir=job_dir / "qwen_pages").extract_with_raw,
@@ -256,6 +280,7 @@ async def create_review(
             warnings.append(f"Qwen vision extraction failed: {type(exc).__name__}: {exc}")
 
     if _needs_dimension_grounding_ocr(candidates, uploaded_file_info, candidate_sources):
+        _report_recognition_progress(progress_callback, "dimension_ocr", 55)
         try:
             warnings.append(
                 "Qwen 核心尺寸缺少可定位依据，已自动调用本地 RapidOCR 做坐标交叉复核。"
@@ -280,6 +305,7 @@ async def create_review(
             warnings.append(f"Dimension-grounding OCR failed: {type(exc).__name__}: {exc}")
 
     if use_geometry:
+        _report_recognition_progress(progress_callback, "geometry_review", 65)
         try:
             geometry_payload = await run_in_threadpool(
                 GeometryEngine(work_dir=job_dir / "geometry_pages").extract_with_raw,
@@ -296,6 +322,7 @@ async def create_review(
 
     should_use_ocr = use_ocr or use_paddleocr or ocr_provider is not None
     if should_use_ocr:
+        _report_recognition_progress(progress_callback, "ocr_review", 70)
         try:
             requested_provider = normalize_ocr_provider(
                 ocr_provider or ("auto" if use_paddleocr else os.getenv("OCR_PROVIDER", "auto"))
@@ -350,6 +377,7 @@ async def create_review(
         )
 
     if _needs_ocr_fallback(candidates, uploaded_file_info, candidate_sources):
+        _report_recognition_progress(progress_callback, "ocr_fallback", 78)
         try:
             warnings.append("No structured candidates were produced from the selected engines; trying local RapidOCR fallback.")
             ocr_payload = await run_in_threadpool(
@@ -382,12 +410,14 @@ async def create_review(
             "dimension fields need Qwen, OCR, imported OCR JSON, or manual confirmation."
         )
 
+    _report_recognition_progress(progress_callback, "building_review", 88)
     rules = read_json(project_path("config", "factory_rules.json"))
     review = DrawingReviewWorkflow(rules).run(str(drawing_path), candidates, run_standardization=False)
     llm_standardization_payload: dict[str, Any] | None = None
     if use_llm_standardization:
         warnings.append("LLM/RAG 标准化已改为点击“标准化”按钮后执行，本次上传仅完成识别。")
 
+    _report_recognition_progress(progress_callback, "saving_result", 95)
     candidates_payload = {
         "job_id": job_id,
         "sources": candidate_sources,
@@ -427,14 +457,136 @@ async def create_review(
     }
 
 
+@app.post("/api/reviews", status_code=202)
+async def create_review(
+    drawing: UploadFile = File(...),
+    candidate_json: UploadFile | None = File(None),
+    ocr_json: UploadFile | None = File(None),
+    use_werk24: bool = Form(False),
+    confirm_upload_to_werk24: bool = Form(False),
+    use_cached_werk24: bool = Form(False),
+    use_ocr: bool = Form(False),
+    ocr_provider: str | None = Form(None),
+    use_qwen: bool = Form(True),
+    use_geometry: bool = Form(False),
+    use_vlm: bool = Form(False),
+    use_llm_standardization: bool = Form(False),
+    vision_provider: str | None = Form("none"),
+    use_paddleocr: bool = Form(False),
+    use_sample_ocr: bool = Form(False),
+    identity: IdentityContext = Depends(require_identity),
+) -> JSONResponse:
+    """Persist the upload and enqueue it without waiting for OCR or Qwen."""
+    if not REVIEW_PERSISTENCE.configured:
+        raise HTTPException(status_code=503, detail="PostgreSQL is required for background recognition jobs.")
+    if use_werk24 and not confirm_upload_to_werk24:
+        raise HTTPException(status_code=400, detail="Werk24 upload requires confirm_upload_to_werk24=true.")
+
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = API_RUN_ROOT / job_id
+    incoming_dir = job_dir / "incoming"
+    incoming_dir.mkdir(parents=True, exist_ok=True)
+    source_drawing_name = _safe_filename(drawing.filename or "drawing")
+    drawing_path = incoming_dir / source_drawing_name
+    await _save_upload(drawing, drawing_path)
+    queued_file_info = {
+        "filename": drawing.filename or source_drawing_name,
+        "content_type": drawing.content_type,
+        "size_bytes": drawing_path.stat().st_size,
+    }
+
+    options: dict[str, Any] = {
+        "drawing_path": str(drawing_path.relative_to(job_dir)),
+        "use_werk24": use_werk24,
+        "confirm_upload_to_werk24": confirm_upload_to_werk24,
+        "use_cached_werk24": use_cached_werk24,
+        "use_ocr": use_ocr,
+        "ocr_provider": ocr_provider,
+        "use_qwen": use_qwen,
+        "use_geometry": use_geometry,
+        "use_vlm": use_vlm,
+        "use_llm_standardization": use_llm_standardization,
+        "vision_provider": vision_provider,
+        "use_paddleocr": use_paddleocr,
+        "use_sample_ocr": use_sample_ocr,
+    }
+    if candidate_json is not None and candidate_json.filename:
+        candidate_path = incoming_dir / f"candidate_{_safe_filename(candidate_json.filename)}"
+        await _save_upload(candidate_json, candidate_path)
+        options["candidate_json_path"] = str(candidate_path.relative_to(job_dir))
+    if ocr_json is not None and ocr_json.filename:
+        ocr_path = incoming_dir / f"ocr_{_safe_filename(ocr_json.filename)}"
+        await _save_upload(ocr_json, ocr_path)
+        options["ocr_json_path"] = str(ocr_path.relative_to(job_dir))
+
+    try:
+        job = REVIEW_PERSISTENCE.create_recognition_job(
+            job_id,
+            drawing_name=drawing.filename or source_drawing_name,
+            artifact_dir=str(job_dir),
+            input_filename=source_drawing_name,
+            options=options,
+            file_info=queued_file_info,
+            owner=identity.as_owner_dict(),
+        )
+    except PersistenceError as exc:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise _persistence_http_error(exc) from exc
+    return JSONResponse(
+        status_code=202,
+        content={
+            "job_id": job_id,
+            "drawing_name": job.get("drawing_name"),
+            "recognition_status": job.get("status"),
+            "recognition_stage": job.get("stage"),
+            "recognition_progress": job.get("progress"),
+            "queue_position": job.get("queue_position"),
+            "message": "Drawing uploaded and queued for background recognition.",
+        },
+    )
+
+
 @app.get("/api/reviews")
 def list_reviews(limit: int = 20, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     bounded_limit = min(max(limit, 1), 100)
     if REVIEW_PERSISTENCE.configured:
         try:
             reviews = REVIEW_PERSISTENCE.list_reviews(limit=bounded_limit, owner_user_id=identity.user_id)
+            recognition_jobs = REVIEW_PERSISTENCE.list_recognition_jobs(limit=bounded_limit, owner_user_id=identity.user_id)
         except PersistenceError as exc:
             raise _persistence_http_error(exc) from exc
+        reviews_by_id = {str(item.get("job_id")): item for item in reviews}
+        for job in recognition_jobs:
+            job_id = str(job.get("job_id") or "")
+            if not job_id:
+                continue
+            existing = reviews_by_id.get(job_id)
+            if existing is None:
+                existing = {
+                    "job_id": job_id,
+                    "drawing_name": job.get("drawing_name"),
+                    "drawing_no": None,
+                    "spring_type": None,
+                    "overall_status": None,
+                    "revision": None,
+                    "created_at": job.get("created_at"),
+                    "updated_at": job.get("updated_at"),
+                }
+                reviews.append(existing)
+                reviews_by_id[job_id] = existing
+            existing.update(
+                {
+                    "recognition_status": job.get("status"),
+                    "recognition_stage": job.get("stage"),
+                    "recognition_progress": job.get("progress"),
+                    "recognition_error": job.get("error_message"),
+                    "queue_position": job.get("queue_position"),
+                    "recognition_attempt_count": job.get("attempt_count"),
+                    "updated_at": job.get("updated_at") or existing.get("updated_at"),
+                }
+            )
+        reviews.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        reviews = reviews[:bounded_limit]
         for item in reviews:
             item["image_url"] = _review_preview_url(item["job_id"])
         return {
@@ -645,10 +797,19 @@ def delete_existing_review(job_id: str, identity: IdentityContext = Depends(requ
     job_dir = _job_dir(job_id)
     if REVIEW_PERSISTENCE.configured:
         try:
+            task_result = REVIEW_PERSISTENCE.request_recognition_job_deletion(job_id, owner_user_id=identity.user_id)
+            if task_result and task_result.get("action") == "cancelling":
+                return {
+                    "job_id": job_id,
+                    "deleted": True,
+                    "status": "cancelling",
+                    "persistence": _persistence_response({"mode": "postgresql"}),
+                    "artifact_cleanup": "pending_worker_cancellation",
+                }
             deleted = REVIEW_PERSISTENCE.delete_review(job_id, owner_user_id=identity.user_id)
         except PersistenceError as exc:
             raise _persistence_http_error(exc) from exc
-        if not deleted:
+        if not deleted and task_result is None:
             raise HTTPException(status_code=404, detail="Review not found.")
         persistence = _persistence_response({"mode": "postgresql"})
     else:
@@ -670,6 +831,36 @@ def delete_existing_review(job_id: str, identity: IdentityContext = Depends(requ
         "persistence": persistence,
         "artifact_cleanup": artifact_cleanup,
     }
+
+
+@app.get("/api/reviews/{job_id}/recognition-status")
+def get_recognition_status(job_id: str, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    if not REVIEW_PERSISTENCE.configured:
+        raise HTTPException(status_code=404, detail="Recognition job not found.")
+    try:
+        job = REVIEW_PERSISTENCE.get_recognition_job(job_id, owner_user_id=identity.user_id)
+    except PersistenceError as exc:
+        raise _persistence_http_error(exc) from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail="Recognition job not found.")
+    # The frontend may open a review as soon as this poll reports completion,
+    # before its history refresh has supplied the preview URL.
+    if job.get("status") == "completed":
+        job["image_url"] = _review_preview_url(job_id)
+    return {"job_id": job_id, "recognition": job}
+
+
+@app.post("/api/reviews/{job_id}/retry", status_code=202)
+def retry_recognition_job(job_id: str, identity: IdentityContext = Depends(require_identity)) -> JSONResponse:
+    if not REVIEW_PERSISTENCE.configured:
+        raise HTTPException(status_code=404, detail="Recognition job not found.")
+    try:
+        job = REVIEW_PERSISTENCE.retry_recognition_job(job_id, owner_user_id=identity.user_id)
+    except PersistenceError as exc:
+        raise _persistence_http_error(exc) from exc
+    if job is None:
+        raise HTTPException(status_code=409, detail="Only failed recognition jobs can be retried.")
+    return JSONResponse(status_code=202, content={"job_id": job_id, "recognition": job})
 
 
 @app.get("/api/reviews/{job_id}/changes")
@@ -708,6 +899,13 @@ def get_review_changes(
 def get_review(job_id: str, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     job_dir = _job_dir(job_id)
     review_path = job_dir / "review.json"
+    if REVIEW_PERSISTENCE.configured:
+        try:
+            job = REVIEW_PERSISTENCE.get_recognition_job(job_id, owner_user_id=identity.user_id)
+        except PersistenceError as exc:
+            raise _persistence_http_error(exc) from exc
+        if job is not None and job.get("status") != "completed":
+            raise HTTPException(status_code=409, detail={"message": "Recognition is not complete.", "recognition": job})
     review, revision = _load_persisted_review(job_id, review_path, identity)
     if revision is not None:
         review["review_revision"] = revision
@@ -953,6 +1151,109 @@ def _persistence_http_error(exc: PersistenceError) -> HTTPException:
         status_code=503,
         detail="审查数据存储暂不可用，请检查 PostgreSQL 连接和数据库迁移。",
     )
+
+
+async def run_recognition_job_record(
+    job: dict[str, Any],
+    *,
+    progress_callback: Callable[[str, int], None] | None = None,
+) -> dict[str, Any]:
+    """Execute a durable queued job using the original recognition pipeline."""
+    job_id = str(job.get("job_id") or "")
+    job_dir = _job_dir(job_id)
+    options = job.get("options") if isinstance(job.get("options"), dict) else {}
+    owner = job.get("owner") if isinstance(job.get("owner"), dict) else {}
+    identity = IdentityContext(
+        user_id=str(owner.get("user_id") or ""),
+        username=str(owner.get("username") or ""),
+        real_name=str(owner.get("real_name") or owner.get("username") or ""),
+        org_id=str(owner.get("org_id") or ""),
+        org_name=str(owner.get("org_name") or ""),
+        source="recognition_worker",
+    )
+    if not all((identity.user_id, identity.username, identity.org_id, identity.org_name)):
+        raise RuntimeError("Recognition job is missing its ERP ownership context.")
+
+    drawing_path = _job_relative_input_path(job_dir, options.get("drawing_path"))
+    candidate_path = _job_relative_input_path(job_dir, options.get("candidate_json_path"), required=False)
+    ocr_path = _job_relative_input_path(job_dir, options.get("ocr_json_path"), required=False)
+    opened_files = []
+    uploads: list[UploadFile] = []
+    try:
+        drawing_handle = drawing_path.open("rb")
+        opened_files.append(drawing_handle)
+        drawing_upload = UploadFile(filename=str(job.get("input_filename") or drawing_path.name), file=drawing_handle)
+        uploads.append(drawing_upload)
+        candidate_upload = None
+        if candidate_path is not None:
+            candidate_handle = candidate_path.open("rb")
+            opened_files.append(candidate_handle)
+            candidate_upload = UploadFile(filename=candidate_path.name, file=candidate_handle)
+            uploads.append(candidate_upload)
+        ocr_upload = None
+        if ocr_path is not None:
+            ocr_handle = ocr_path.open("rb")
+            opened_files.append(ocr_handle)
+            ocr_upload = UploadFile(filename=ocr_path.name, file=ocr_handle)
+            uploads.append(ocr_upload)
+        return await run_recognition_execution(
+            drawing=drawing_upload,
+            candidate_json=candidate_upload,
+            ocr_json=ocr_upload,
+            use_werk24=bool(options.get("use_werk24")),
+            confirm_upload_to_werk24=bool(options.get("confirm_upload_to_werk24")),
+            use_cached_werk24=bool(options.get("use_cached_werk24")),
+            use_ocr=bool(options.get("use_ocr")),
+            ocr_provider=_text_or_none(options.get("ocr_provider")),
+            use_qwen=bool(options.get("use_qwen", True)),
+            use_geometry=bool(options.get("use_geometry")),
+            use_vlm=bool(options.get("use_vlm")),
+            use_llm_standardization=bool(options.get("use_llm_standardization")),
+            vision_provider=_text_or_none(options.get("vision_provider")) or "none",
+            use_paddleocr=bool(options.get("use_paddleocr")),
+            use_sample_ocr=bool(options.get("use_sample_ocr")),
+            identity=identity,
+            job_id=job_id,
+            progress_callback=progress_callback,
+        )
+    finally:
+        for upload in uploads:
+            await upload.close()
+        for handle in opened_files:
+            if not handle.closed:
+                handle.close()
+
+
+def _job_relative_input_path(job_dir: Path, relative_path: Any, *, required: bool = True) -> Path | None:
+    raw = str(relative_path or "").strip()
+    if not raw:
+        if required:
+            raise RuntimeError("Recognition job is missing an uploaded drawing.")
+        return None
+    path = (job_dir / raw).resolve()
+    try:
+        path.relative_to(job_dir.resolve())
+    except ValueError as exc:
+        raise RuntimeError("Recognition job input path is invalid.") from exc
+    if not path.is_file():
+        if required:
+            raise RuntimeError("Recognition job upload is no longer available.")
+        return None
+    return path
+
+
+def _report_recognition_progress(
+    callback: Callable[[str, int], None] | None,
+    stage: str,
+    progress: int,
+) -> None:
+    if callback is not None:
+        callback(stage, progress)
+
+
+def _text_or_none(value: Any) -> str | None:
+    text_value = str(value or "").strip()
+    return text_value or None
 
 
 async def _run_standardization_stage(

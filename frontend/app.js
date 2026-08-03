@@ -43,6 +43,8 @@ const state = {
   pendingReviewAuditEvents: [],
   recentReviews: [],
   recentReviewsLoading: false,
+  recognitionPollers: {},
+  recognitionMessageIds: {},
   identity: null,
   identityReady: false,
   identityError: "",
@@ -557,7 +559,7 @@ async function submitSelectedFile() {
   const activeEngineLabel = useQwenInput?.checked
     ? "Qwen3.7 视觉识别（必要时自动坐标复核）"
     : providerLabel;
-  const thinkingId = appendAssistantText(`正在识别图纸，当前引擎：${activeEngineLabel}...`);
+  const thinkingId = appendAssistantText(`正在上传图纸，识别引擎：${activeEngineLabel}...`);
 
   try {
     const form = new FormData();
@@ -577,12 +579,18 @@ async function submitSelectedFile() {
     const payload = await readUploadResponsePayload(response);
     if (!response.ok) throw new Error(payload.detail || "后端审查失败");
 
-    removeMessage(thinkingId);
     state.lastJob = payload;
-    state.compareTab = "workbench";
-    setReview(normalizeReview(payload.review), toBackendAssetUrl(payload.image_url));
-    appendReviewMessage(makeCompletionText(payload));
-    openCompareOverlay();
+    state.selectedFile = null;
+    drawingInput.value = "";
+    selectedFileName.textContent = "图纸已加入识别队列";
+    state.recognitionMessageIds[payload.job_id] = thinkingId;
+    replaceMessage(thinkingId, recognitionProgressText({
+      status: payload.recognition_status,
+      stage: payload.recognition_stage,
+      progress: payload.recognition_progress,
+      queue_position: payload.queue_position,
+    }));
+    trackRecognitionJob(payload.job_id, thinkingId);
     void loadRecentReviews();
   } catch (error) {
     replaceMessage(thinkingId, error.message || String(error), true);
@@ -1202,6 +1210,9 @@ async function loadRecentReviews() {
     if (!response.ok) throw new Error(payload.detail || "无法读取已保存的审图记录");
     state.recentReviews = Array.isArray(payload.reviews) ? payload.reviews : [];
     renderRecentReviews();
+    state.recentReviews
+      .filter((item) => ["queued", "processing", "cancel_requested"].includes(item.recognition_status))
+      .forEach((item) => trackRecognitionJob(item.job_id));
   } catch (error) {
     state.recentReviews = [];
     renderRecentReviews();
@@ -1209,6 +1220,120 @@ async function loadRecentReviews() {
     state.recentReviewsLoading = false;
     if (refreshRecentReviewsButton) refreshRecentReviewsButton.disabled = false;
   }
+}
+
+function recognitionProgressText(recognition = {}) {
+  const status = recognition.status || recognition.recognition_status || "queued";
+  const progress = Number(recognition.progress ?? recognition.recognition_progress ?? 0);
+  const queuePosition = recognition.queue_position;
+  const stage = recognition.stage || recognition.recognition_stage || "queued";
+  const stageLabels = {
+    queued: "排队中",
+    preparing: "准备文件",
+    preparing_file: "准备文件",
+    rendering_preview: "生成图纸预览",
+    qwen_vision: "Qwen 视觉识别",
+    dimension_ocr: "OCR 尺寸复核",
+    ocr_review: "OCR 识别",
+    ocr_fallback: "OCR 兜底识别",
+    geometry_review: "几何复核",
+    werk24: "Werk24 识别",
+    building_review: "生成审图结果",
+    saving_result: "保存审图结果",
+    completed: "识别完成",
+    failed: "识别失败",
+    cancel_requested: "正在取消",
+    cancelled: "已取消",
+  };
+  if (status === "queued") {
+    return queuePosition ? `图纸已排队，当前第 ${queuePosition} 位。` : "图纸已排队，等待识别。";
+  }
+  if (status === "failed") return `图纸识别失败：${recognition.error_message || recognition.recognition_error || "请稍后重试。"}`;
+  if (status === "cancel_requested" || status === "cancelled") return "图纸识别已取消。";
+  if (status === "completed") return "图纸识别完成，正在打开审图结果。";
+  return `正在${stageLabels[stage] || "识别图纸"}，${Math.max(0, Math.min(progress, 99))}%...`;
+}
+
+function recognitionStatusLabel(item = {}) {
+  const status = item.recognition_status;
+  if (!status) return "";
+  if (status === "queued") return item.queue_position ? `排队中 · 第${item.queue_position}位` : "排队中";
+  if (status === "processing") return `${Math.max(0, Number(item.recognition_progress || 0))}% · 识别中`;
+  if (status === "completed") return "已完成";
+  if (status === "failed") return "识别失败";
+  if (status === "cancel_requested") return "取消中";
+  if (status === "cancelled") return "已取消";
+  return status;
+}
+
+function trackRecognitionJob(jobId, messageId = null) {
+  if (!jobId || state.recognitionPollers[jobId]) return;
+  if (messageId) state.recognitionMessageIds[jobId] = messageId;
+  const poll = async () => {
+    try {
+      const response = await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}/recognition-status`);
+      const payload = await response.json();
+      if (response.status === 404) {
+        stopTrackingRecognitionJob(jobId);
+        return;
+      }
+      if (!response.ok) throw new Error(payload.detail || "无法读取识别进度");
+      const recognition = payload.recognition || {};
+      mergeRecognitionStatus(jobId, recognition);
+      const progressMessageId = state.recognitionMessageIds[jobId];
+      if (progressMessageId) replaceMessage(progressMessageId, recognitionProgressText(recognition), recognition.status === "failed");
+      if (["queued", "processing", "cancel_requested"].includes(recognition.status)) return;
+      stopTrackingRecognitionJob(jobId);
+      if (recognition.status === "completed" && state.lastJob?.job_id === jobId) {
+        if (progressMessageId) removeMessage(progressMessageId);
+        delete state.recognitionMessageIds[jobId];
+        await openPersistedReview(jobId, { recognitionCompleted: true });
+      }
+    } catch (error) {
+      const progressMessageId = state.recognitionMessageIds[jobId];
+      if (progressMessageId) replaceMessage(progressMessageId, `识别进度读取失败：${error.message || String(error)}`, true);
+      stopTrackingRecognitionJob(jobId);
+    }
+  };
+  state.recognitionPollers[jobId] = window.setInterval(() => { void poll(); }, 2000);
+  void poll();
+}
+
+function stopTrackingRecognitionJob(jobId) {
+  const timer = state.recognitionPollers[jobId];
+  if (timer) window.clearInterval(timer);
+  delete state.recognitionPollers[jobId];
+}
+
+function mergeRecognitionStatus(jobId, recognition) {
+  const index = state.recentReviews.findIndex((item) => item.job_id === jobId);
+  if (index >= 0) {
+    state.recentReviews[index] = {
+      ...state.recentReviews[index],
+      recognition_status: recognition.status,
+      recognition_stage: recognition.stage,
+      recognition_progress: recognition.progress,
+      recognition_error: recognition.error_message,
+      queue_position: recognition.queue_position,
+      recognition_attempt_count: recognition.attempt_count,
+      image_url: recognition.image_url || state.recentReviews[index].image_url || null,
+      updated_at: recognition.updated_at || state.recentReviews[index].updated_at,
+    };
+  } else {
+    state.recentReviews.unshift({
+      job_id: jobId,
+      drawing_name: recognition.drawing_name,
+      recognition_status: recognition.status,
+      recognition_stage: recognition.stage,
+      recognition_progress: recognition.progress,
+      recognition_error: recognition.error_message,
+      queue_position: recognition.queue_position,
+      recognition_attempt_count: recognition.attempt_count,
+      image_url: recognition.image_url || null,
+      updated_at: recognition.updated_at,
+    });
+  }
+  renderRecentReviews();
 }
 
 function renderRecentReviews() {
@@ -1221,13 +1346,14 @@ function renderRecentReviews() {
   recentReviewList.innerHTML = reviews.map((item) => {
     const title = item.drawing_name || item.drawing_no || `审图 ${String(item.job_id || "").slice(0, 8)}`;
     const type = SPRING_TYPE_LABELS[item.spring_type] || item.spring_type || "未知类型";
-    const status = recentReviewStatusLabel(item.overall_status);
+    const status = recognitionStatusLabel(item) || recentReviewStatusLabel(item.overall_status);
     const revision = item.revision ? `版本 ${item.revision}` : "本地文件";
     const updatedAt = formatRecentReviewTime(item.updated_at);
     const details = [item.drawing_no, type, status, revision, updatedAt].filter(Boolean).join(" · ");
     const isActive = item.job_id === state.lastJob?.job_id;
+    const canRetry = item.recognition_status === "failed";
     return `
-      <article class="history-order-item${isActive ? " active" : ""}">
+      <article class="history-order-item${isActive ? " active" : ""}${canRetry ? " has-retry" : ""}">
         <button class="history-select-button" type="button" data-role="open-recent-review" data-job-id="${escapeHtml(item.job_id)}">
           <span class="history-order-copy">
             <strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
@@ -1235,6 +1361,7 @@ function renderRecentReviews() {
           </span>
           <span class="history-order-arrow" aria-hidden="true">›</span>
         </button>
+        ${canRetry ? `<button class="history-retry-button" type="button" data-role="retry-recognition" data-job-id="${escapeHtml(item.job_id)}" title="重新识别">重试</button>` : ""}
         <button class="history-delete-button" type="button" data-role="delete-recent-review" data-job-id="${escapeHtml(item.job_id)}" title="删除订单" aria-label="删除订单">
           <span class="history-delete-icon" aria-hidden="true"></span>
         </button>
@@ -1252,11 +1379,29 @@ function renderRecentReviews() {
       if (item) showDeleteReviewDialog(item);
     });
   });
+  recentReviewList.querySelectorAll('[data-role="retry-recognition"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      void retryRecognitionJob(button.dataset.jobId || "");
+    });
+  });
 }
 
-async function openPersistedReview(jobId) {
+async function openPersistedReview(jobId, options = {}) {
   if (!jobId || state.busy) return;
   const item = state.recentReviews.find((review) => review.job_id === jobId);
+  if (["queued", "processing", "cancel_requested"].includes(item?.recognition_status)) {
+    const messageId = appendAssistantText(recognitionProgressText(item), false);
+    trackRecognitionJob(jobId, messageId);
+    return;
+  }
+  if (item?.recognition_status === "failed") {
+    appendAssistantText(`该图纸识别失败：${item.recognition_error || "请点击历史订单右侧的重试。"}`, true);
+    return;
+  }
+  if (item?.recognition_status === "cancelled") {
+    appendAssistantText("该图纸识别已取消。", true);
+    return;
+  }
   setBusy(true);
   const thinkingId = appendAssistantText("正在恢复已保存的审图记录...");
   try {
@@ -1272,13 +1417,31 @@ async function openPersistedReview(jobId) {
     state.compareTab = "workbench";
     setReview(normalizeReview(payload), toBackendAssetUrl(item?.image_url));
     renderRecentReviews();
-    appendUserMessage(`打开已保存审图：${item?.drawing_name || item?.drawing_no || jobId}`);
+    if (!options.recognitionCompleted) appendUserMessage(`打开已保存审图：${item?.drawing_name || item?.drawing_no || jobId}`);
     appendReviewMessage("已恢复审图结果，可继续确认、标准化或与 AI 对话。");
     openCompareOverlay();
   } catch (error) {
     replaceMessage(thinkingId, error.message || String(error), true);
   } finally {
     setBusy(false);
+  }
+}
+
+async function retryRecognitionJob(jobId) {
+  if (!jobId || state.busy) return;
+  const item = state.recentReviews.find((review) => review.job_id === jobId);
+  try {
+    const response = await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}/retry`, { method: "POST" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || "重新识别失败");
+    const recognition = payload.recognition || {};
+    state.lastJob = { ...(state.lastJob || {}), job_id: jobId };
+    const messageId = appendAssistantText(`正在重新识别：${item?.drawing_name || jobId}`);
+    state.recognitionMessageIds[jobId] = messageId;
+    mergeRecognitionStatus(jobId, recognition);
+    trackRecognitionJob(jobId, messageId);
+  } catch (error) {
+    appendAssistantText(`无法重新识别：${error.message || String(error)}`, true);
   }
 }
 
@@ -1326,6 +1489,10 @@ async function deletePersistedReview(item, dialog) {
     if (!response.ok) throw new Error(payload.detail || "删除历史订单失败");
     const title = item.drawing_name || item.drawing_no || item.job_id;
     const deletedCurrentReview = state.lastJob?.job_id === item.job_id;
+    stopTrackingRecognitionJob(item.job_id);
+    const progressMessageId = state.recognitionMessageIds[item.job_id];
+    if (progressMessageId) removeMessage(progressMessageId);
+    delete state.recognitionMessageIds[item.job_id];
     state.recentReviews = state.recentReviews.filter((review) => review.job_id !== item.job_id);
     if (deletedCurrentReview) resetDeletedReviewState();
     renderRecentReviews();

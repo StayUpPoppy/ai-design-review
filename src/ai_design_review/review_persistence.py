@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import copy
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
@@ -62,6 +62,39 @@ class ReviewRecord(Base):
         back_populates="review",
         cascade="all, delete-orphan",
     )
+
+
+class RecognitionJobRecord(Base):
+    __tablename__ = "recognition_jobs"
+    __table_args__ = (
+        Index("ix_recognition_jobs_status_created", "status", "created_at"),
+        Index("ix_recognition_jobs_owner_updated", "owner_erp_user_id", "updated_at"),
+        Index("ix_recognition_jobs_lease", "status", "lease_expires_at"),
+    )
+
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    drawing_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    artifact_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    options: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    file_info: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    owner_erp_user_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    owner_username: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    owner_real_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    owner_org_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    owner_org_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    stage: Mapped[str] = mapped_column(String(64), nullable=False, default="queued")
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancellation_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
 
 class ReviewChangeEvent(Base):
@@ -299,6 +332,355 @@ class ReviewPersistence:
                 session.rollback()
                 raise PersistenceError(f"Unable to delete review: {_safe_error(exc)}") from exc
 
+    def create_recognition_job(
+        self,
+        job_id: str,
+        *,
+        drawing_name: str | None,
+        artifact_dir: str,
+        input_filename: str,
+        options: dict[str, Any],
+        file_info: dict[str, Any] | None = None,
+        owner: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self.configured:
+            raise PersistenceError("PostgreSQL is required for background recognition jobs.")
+        with self._session() as session:
+            try:
+                record = RecognitionJobRecord(
+                    job_id=job_id,
+                    drawing_name=_optional_text(drawing_name, 512),
+                    artifact_dir=artifact_dir,
+                    input_filename=_optional_text(input_filename, 512),
+                    options=copy.deepcopy(options),
+                    file_info=copy.deepcopy(file_info),
+                    owner_erp_user_id=_owner_user_id(owner),
+                    owner_username=_owner_text(owner, "username"),
+                    owner_real_name=_owner_text(owner, "real_name"),
+                    owner_org_id=_owner_text(owner, "org_id"),
+                    owner_org_name=_owner_text(owner, "org_name"),
+                    status="queued",
+                    stage="queued",
+                    progress=0,
+                )
+                session.add(record)
+                session.commit()
+                return self._serialize_recognition_job(record, queue_position=self._queue_position(session, record))
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise PersistenceError(f"Unable to create recognition job: {_safe_error(exc)}") from exc
+
+    def get_recognition_job(self, job_id: str, *, owner_user_id: str | None = None) -> dict[str, Any] | None:
+        if not self.configured:
+            return None
+        try:
+            with self._session() as session:
+                record = session.get(RecognitionJobRecord, job_id)
+                if record is None or not _recognition_job_matches_owner(record, owner_user_id):
+                    return None
+                return self._serialize_recognition_job(record, queue_position=self._queue_position(session, record))
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Unable to read recognition job: {_safe_error(exc)}") from exc
+
+    def list_recognition_jobs(self, *, limit: int = 30, owner_user_id: str | None = None) -> list[dict[str, Any]]:
+        if not self.configured:
+            return []
+        bounded_limit = min(max(limit, 1), 100)
+        try:
+            with self._session() as session:
+                rows = session.execute(
+                    select(RecognitionJobRecord)
+                    .where(*_recognition_job_owner_filter_clauses(owner_user_id))
+                    .order_by(RecognitionJobRecord.updated_at.desc())
+                    .limit(bounded_limit)
+                ).scalars()
+                return [self._serialize_recognition_job(row, queue_position=self._queue_position(session, row)) for row in rows]
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Unable to list recognition jobs: {_safe_error(exc)}") from exc
+
+    def claim_next_recognition_job(self, worker_id: str, *, lease_seconds: int = 900) -> dict[str, Any] | None:
+        if not self.configured:
+            return None
+        lease_seconds = max(int(lease_seconds), 60)
+        now = _utcnow()
+        try:
+            with self._session() as session:
+                expired_rows = session.execute(
+                    select(RecognitionJobRecord)
+                    .where(
+                        RecognitionJobRecord.status == "processing",
+                        RecognitionJobRecord.lease_expires_at.is_not(None),
+                        RecognitionJobRecord.lease_expires_at < now,
+                    )
+                    .with_for_update(skip_locked=True)
+                ).scalars()
+                for expired in expired_rows:
+                    if expired.cancellation_requested:
+                        expired.status = "cancelled"
+                        expired.stage = "cancelled"
+                        expired.completed_at = now
+                    else:
+                        expired.status = "queued"
+                        expired.stage = "queued"
+                        expired.progress = 0
+                        expired.worker_id = None
+                        expired.lease_expires_at = None
+                    expired.updated_at = now
+
+                record = session.execute(
+                    select(RecognitionJobRecord)
+                    .where(
+                        RecognitionJobRecord.status == "queued",
+                        RecognitionJobRecord.cancellation_requested.is_(False),
+                    )
+                    .order_by(RecognitionJobRecord.created_at.asc())
+                    .with_for_update(skip_locked=True)
+                    .limit(1)
+                ).scalar_one_or_none()
+                if record is None:
+                    session.commit()
+                    return None
+                record.status = "processing"
+                record.stage = "preparing"
+                record.progress = max(record.progress, 5)
+                record.attempt_count += 1
+                record.worker_id = worker_id[:128]
+                record.started_at = record.started_at or now
+                record.lease_expires_at = now + timedelta(seconds=lease_seconds)
+                record.updated_at = now
+                session.commit()
+                return self._serialize_recognition_job(record, include_execution_details=True)
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Unable to claim recognition job: {_safe_error(exc)}") from exc
+
+    def update_recognition_job_progress(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        stage: str,
+        progress: int,
+        lease_seconds: int = 900,
+    ) -> bool:
+        if not self.configured:
+            return False
+        now = _utcnow()
+        try:
+            with self._session() as session:
+                record = session.execute(
+                    select(RecognitionJobRecord)
+                    .where(RecognitionJobRecord.job_id == job_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if record is None or record.worker_id != worker_id or record.status != "processing" or record.cancellation_requested:
+                    return False
+                record.stage = str(stage or "processing")[:64]
+                record.progress = min(max(int(progress), 0), 99)
+                record.lease_expires_at = now + timedelta(seconds=max(int(lease_seconds), 60))
+                record.updated_at = now
+                session.commit()
+                return True
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Unable to update recognition job: {_safe_error(exc)}") from exc
+
+    def recognition_job_cancel_requested(self, job_id: str, *, worker_id: str | None = None) -> bool:
+        if not self.configured:
+            return True
+        try:
+            with self._session() as session:
+                record = session.get(RecognitionJobRecord, job_id)
+                if record is None:
+                    return True
+                if worker_id and record.worker_id not in {None, worker_id}:
+                    return True
+                return bool(record.cancellation_requested or record.status in {"cancel_requested", "cancelled"})
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Unable to inspect recognition job: {_safe_error(exc)}") from exc
+
+    def complete_recognition_job(self, job_id: str, *, worker_id: str) -> bool:
+        return self._finish_recognition_job(job_id, worker_id=worker_id, status="completed", stage="completed", progress=100)
+
+    def fail_recognition_job(self, job_id: str, *, worker_id: str, error_message: str) -> bool:
+        if not self.configured:
+            return False
+        now = _utcnow()
+        try:
+            with self._session() as session:
+                record = session.execute(
+                    select(RecognitionJobRecord)
+                    .where(RecognitionJobRecord.job_id == job_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if record is None or record.worker_id != worker_id:
+                    return False
+                if record.cancellation_requested:
+                    record.status = "cancelled"
+                    record.stage = "cancelled"
+                    record.error_message = None
+                else:
+                    record.status = "failed"
+                    record.stage = "failed"
+                    record.error_message = _optional_text(error_message, 2000)
+                record.completed_at = now
+                record.lease_expires_at = None
+                record.updated_at = now
+                session.commit()
+                return True
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Unable to fail recognition job: {_safe_error(exc)}") from exc
+
+    def request_recognition_job_deletion(self, job_id: str, *, owner_user_id: str | None = None) -> dict[str, Any] | None:
+        if not self.configured:
+            return None
+        now = _utcnow()
+        try:
+            with self._session() as session:
+                record = session.execute(
+                    select(RecognitionJobRecord)
+                    .where(RecognitionJobRecord.job_id == job_id, *_recognition_job_owner_filter_clauses(owner_user_id))
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if record is None:
+                    return None
+                if record.status == "processing":
+                    record.cancellation_requested = True
+                    record.status = "cancel_requested"
+                    record.stage = "cancel_requested"
+                    record.updated_at = now
+                    session.commit()
+                    return {"action": "cancelling", "artifact_dir": record.artifact_dir}
+                artifact_dir = record.artifact_dir
+                session.delete(record)
+                session.commit()
+                return {"action": "deleted", "artifact_dir": artifact_dir}
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Unable to delete recognition job: {_safe_error(exc)}") from exc
+
+    def finalize_cancelled_recognition_job(self, job_id: str, *, worker_id: str) -> str | None:
+        if not self.configured:
+            return None
+        try:
+            with self._session() as session:
+                record = session.execute(
+                    select(RecognitionJobRecord)
+                    .where(RecognitionJobRecord.job_id == job_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if record is None or record.worker_id != worker_id or not record.cancellation_requested:
+                    return None
+                artifact_dir = record.artifact_dir
+                session.delete(record)
+                session.commit()
+                return artifact_dir
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Unable to finalize cancelled recognition job: {_safe_error(exc)}") from exc
+
+    def retry_recognition_job(self, job_id: str, *, owner_user_id: str | None = None) -> dict[str, Any] | None:
+        if not self.configured:
+            return None
+        now = _utcnow()
+        try:
+            with self._session() as session:
+                record = session.execute(
+                    select(RecognitionJobRecord)
+                    .where(RecognitionJobRecord.job_id == job_id, *_recognition_job_owner_filter_clauses(owner_user_id))
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if record is None or record.status != "failed":
+                    return None
+                record.status = "queued"
+                record.stage = "queued"
+                record.progress = 0
+                record.error_message = None
+                record.cancellation_requested = False
+                record.worker_id = None
+                record.lease_expires_at = None
+                record.completed_at = None
+                record.updated_at = now
+                session.commit()
+                return self._serialize_recognition_job(record, queue_position=self._queue_position(session, record))
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Unable to retry recognition job: {_safe_error(exc)}") from exc
+
+    def _finish_recognition_job(self, job_id: str, *, worker_id: str, status: str, stage: str, progress: int) -> bool:
+        if not self.configured:
+            return False
+        now = _utcnow()
+        try:
+            with self._session() as session:
+                record = session.execute(
+                    select(RecognitionJobRecord)
+                    .where(RecognitionJobRecord.job_id == job_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if record is None or record.worker_id != worker_id:
+                    return False
+                if record.cancellation_requested:
+                    record.status = "cancelled"
+                    record.stage = "cancelled"
+                else:
+                    record.status = status
+                    record.stage = stage
+                    record.progress = progress
+                record.completed_at = now
+                record.lease_expires_at = None
+                record.updated_at = now
+                session.commit()
+                return not record.cancellation_requested
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Unable to finish recognition job: {_safe_error(exc)}") from exc
+
+    @staticmethod
+    def _queue_position(session: Session, record: RecognitionJobRecord) -> int | None:
+        if record.status != "queued":
+            return None
+        earlier = session.execute(
+            select(RecognitionJobRecord.job_id).where(
+                RecognitionJobRecord.status == "queued",
+                RecognitionJobRecord.cancellation_requested.is_(False),
+                RecognitionJobRecord.created_at < record.created_at,
+            )
+        ).all()
+        return len(earlier) + 1
+
+    @staticmethod
+    def _serialize_recognition_job(
+        record: RecognitionJobRecord,
+        *,
+        queue_position: int | None = None,
+        include_execution_details: bool = False,
+    ) -> dict[str, Any]:
+        result = {
+            "job_id": record.job_id,
+            "drawing_name": record.drawing_name,
+            "status": record.status,
+            "stage": record.stage,
+            "progress": record.progress,
+            "queue_position": queue_position,
+            "error_message": record.error_message,
+            "attempt_count": record.attempt_count,
+            "created_at": record.created_at.isoformat() if record.created_at else None,
+            "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+            "started_at": record.started_at.isoformat() if record.started_at else None,
+            "completed_at": record.completed_at.isoformat() if record.completed_at else None,
+        }
+        if include_execution_details:
+            result.update(
+                {
+                    "artifact_dir": record.artifact_dir,
+                    "input_filename": record.input_filename,
+                    "options": copy.deepcopy(record.options),
+                    "owner": {
+                        "user_id": record.owner_erp_user_id,
+                        "username": record.owner_username,
+                        "real_name": record.owner_real_name,
+                        "org_id": record.owner_org_id,
+                        "org_name": record.owner_org_name,
+                    },
+                }
+            )
+        return result
+
     def _session(self) -> Session:
         if not self._session_factory:
             raise PersistenceError("DATABASE_URL is not configured.")
@@ -406,6 +788,18 @@ def _owner_filter_clauses(owner_user_id: str | None) -> tuple[Any, ...]:
 
 
 def _record_matches_owner(record: ReviewRecord, owner_user_id: str | None) -> bool:
+    if not owner_user_id:
+        return True
+    return record.owner_erp_user_id == owner_user_id
+
+
+def _recognition_job_owner_filter_clauses(owner_user_id: str | None) -> tuple[Any, ...]:
+    if not owner_user_id:
+        return ()
+    return (RecognitionJobRecord.owner_erp_user_id == owner_user_id,)
+
+
+def _recognition_job_matches_owner(record: RecognitionJobRecord, owner_user_id: str | None) -> bool:
     if not owner_user_id:
         return True
     return record.owner_erp_user_id == owner_user_id
