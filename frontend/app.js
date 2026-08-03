@@ -574,7 +574,7 @@ async function submitSelectedFile() {
     form.append("use_sample_ocr", useSampleOcrInput.checked ? "true" : "false");
 
     const response = await apiFetch("/api/reviews", { method: "POST", body: form });
-    const payload = await response.json();
+    const payload = await readUploadResponsePayload(response);
     if (!response.ok) throw new Error(payload.detail || "后端审查失败");
 
     removeMessage(thinkingId);
@@ -4983,6 +4983,21 @@ function apiUrl(path) {
 
 function apiFetch(path, options = {}) {
   return fetch(apiUrl(path), { ...options, credentials: "include" });
+}
+
+async function readUploadResponsePayload(response) {
+  const body = await response.text();
+  try {
+    return body ? JSON.parse(body) : {};
+  } catch {
+    if (response.status === 413) {
+      return { detail: "上传文件超过网关允许的大小，请压缩 PDF 后重试或联系管理员调整上传限制。" };
+    }
+    if ([502, 503, 504].includes(response.status)) {
+      return { detail: "上传识别请求等待后端服务超时。请稍后重试；若持续出现，请联系管理员检查网关/API 代理超时配置。" };
+    }
+    return { detail: `上传服务返回了非 JSON 响应（HTTP ${response.status || "未知"}）。请联系管理员检查 API 代理配置。` };
+  }
 }
 
 function toBackendAssetUrl(path) {
