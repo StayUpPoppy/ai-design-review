@@ -1189,6 +1189,10 @@ async function loadDemoReview() {
     const response = await apiFetch("/api/samples/mixed-review");
     if (!response.ok) throw new Error("样例审查 JSON 加载失败");
     const review = normalizeReview(await response.json());
+    // A demo must never retain the ID of a previously opened real order.
+    await flushReviewPersistence();
+    state.lastJob = null;
+    state.pendingReviewAuditEvents = [];
     removeMessage(thinkingId);
     state.compareTab = "workbench";
     setReview(review, apiUrl("/api/samples/spring-preview"));

@@ -1,0 +1,3623 @@
+{
+  "drawing_summary": {
+    "drawing_name": "UQD06外弹簧(钢珠型)",
+    "drawing_no": "YD4765020175",
+    "version": "A0",
+    "spring_type": "compression_spring",
+    "spring_type_label": "压缩弹簧",
+    "spring_type_confidence": 0.98,
+    "material": "SUS304",
+    "unit": "mm",
+    "overall_status": "need_review",
+    "summary": "已生成标准化建议，需要人工确认后再导出。"
+  },
+  "spring_type_detection": {
+    "spring_type": "compression_spring",
+    "label": "压缩弹簧",
+    "confidence": 0.98,
+    "scores": {
+      "compression_spring": 2.5,
+      "torsion_spring": 0,
+      "extension_spring": 0,
+      "retaining_ring": 0.38
+    },
+    "evidence": [
+      {
+        "spring_type": "compression_spring",
+        "points": 0.95,
+        "reason": "keyword:压缩弹簧",
+        "source": "title_or_ocr"
+      },
+      {
+        "spring_type": "compression_spring",
+        "points": 0.85,
+        "reason": "load point labels H/F",
+        "source": "dimension_text"
+      },
+      {
+        "spring_type": "compression_spring",
+        "points": 0.45,
+        "reason": "recognized load_point field",
+        "source": "candidate_field"
+      },
+      {
+        "spring_type": "retaining_ring",
+        "points": 0.38,
+        "reason": "slot/section wording",
+        "source": "dimension_text"
+      },
+      {
+        "spring_type": "compression_spring",
+        "points": 0.25,
+        "reason": "force value present",
+        "source": "dimension_text"
+      }
+    ],
+    "need_human_review": false
+  },
+  "spring_template": {
+    "spring_type": "compression_spring",
+    "label": "压缩弹簧",
+    "fields": [
+      {
+        "key": "material",
+        "label": "材料",
+        "required": true
+      },
+      {
+        "key": "standard_no",
+        "label": "标准号"
+      },
+      {
+        "key": "accuracy_grade",
+        "label": "通用精度等级"
+      },
+      {
+        "key": "diameter_accuracy_grade",
+        "label": "直径精度等级"
+      },
+      {
+        "key": "free_length_accuracy_grade",
+        "label": "自由高度精度等级"
+      },
+      {
+        "key": "load_accuracy_grade",
+        "label": "载荷精度等级"
+      },
+      {
+        "key": "stiffness_accuracy_grade",
+        "label": "刚度精度等级"
+      },
+      {
+        "key": "wire_diameter",
+        "label": "线径",
+        "unit": "mm",
+        "required": true
+      },
+      {
+        "key": "outer_diameter",
+        "label": "外径",
+        "unit": "mm",
+        "required": true
+      },
+      {
+        "key": "inner_diameter",
+        "label": "内径",
+        "unit": "mm"
+      },
+      {
+        "key": "mean_diameter",
+        "label": "中径",
+        "unit": "mm"
+      },
+      {
+        "key": "controlled_diameter_field",
+        "label": "受控直径"
+      },
+      {
+        "key": "free_length",
+        "label": "自由长度",
+        "unit": "mm",
+        "required": true
+      },
+      {
+        "key": "body_length",
+        "label": "弹体长度",
+        "unit": "mm"
+      },
+      {
+        "key": "solid_height",
+        "label": "压并高度",
+        "unit": "mm"
+      },
+      {
+        "key": "total_coils",
+        "label": "总圈数",
+        "unit": "turns",
+        "required": true
+      },
+      {
+        "key": "active_coils",
+        "label": "有效圈数",
+        "unit": "turns"
+      },
+      {
+        "key": "end_coils",
+        "label": "端圈数",
+        "unit": "turns"
+      },
+      {
+        "key": "support_coils",
+        "label": "支承圈数（单端）",
+        "unit": "turns"
+      },
+      {
+        "key": "handedness",
+        "label": "旋向",
+        "required": true
+      },
+      {
+        "key": "pitch",
+        "label": "节距",
+        "unit": "mm"
+      },
+      {
+        "key": "end_type",
+        "label": "端部形式"
+      },
+      {
+        "key": "end_grinding",
+        "label": "端面磨削"
+      },
+      {
+        "key": "spring_rate",
+        "label": "刚度",
+        "unit": "N/mm"
+      },
+      {
+        "key": "perpendicularity",
+        "label": "垂直度",
+        "unit": "mm"
+      },
+      {
+        "key": "straightness",
+        "label": "直线度",
+        "unit": "mm"
+      },
+      {
+        "key": "permanent_set_limit",
+        "label": "永久变形限值",
+        "unit": "mm"
+      }
+    ],
+    "collections": [
+      {
+        "key": "load_points",
+        "label": "载荷测试点"
+      }
+    ]
+  },
+  "file_info": {
+    "path": "/app/outputs/api_runs/f5d96035c29a/inputs/订单1.pdf",
+    "exists": true,
+    "extension": ".pdf",
+    "size_bytes": 1932305,
+    "kind": "pdf",
+    "pdf_text_chars": 0,
+    "pdf_text": "",
+    "has_text_layer": false,
+    "is_scanned_like": true
+  },
+  "spring_parameters": {
+    "material": {
+      "value": "SUS304",
+      "unit": null,
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [
+        "qwen_vision",
+        "rapidocr"
+      ],
+      "evidence": "技术要求1：材质：SUS304；标题栏材料栏：SUS304 | SUS304",
+      "confidence": 0.954,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen vision recognition",
+      "raw_value": "SUS304",
+      "standard_value": "SUS304",
+      "normalization_status": "matched",
+      "normalization_source": "material_terms",
+      "normalization_confidence": 1,
+      "normalization_reason": "命中标准材质。"
+    },
+    "standard_no": {
+      "value": "GB/T 1239.2-2009",
+      "unit": null,
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [
+        "human_confirmed"
+      ],
+      "evidence": "",
+      "confidence": 0.99,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "accuracy_grade": {
+      "value": "2级",
+      "unit": null,
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [
+        "human_confirmed"
+      ],
+      "evidence": "人工确认通用精度等级：2级。",
+      "confidence": 0.99,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "diameter_accuracy_grade": {
+      "value": null,
+      "unit": null,
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [],
+      "evidence": "",
+      "confidence": 0,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "free_length_accuracy_grade": {
+      "value": null,
+      "unit": null,
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [],
+      "evidence": "",
+      "confidence": 0,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "load_accuracy_grade": {
+      "value": null,
+      "unit": null,
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [],
+      "evidence": "",
+      "confidence": 0,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "stiffness_accuracy_grade": {
+      "value": null,
+      "unit": null,
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [],
+      "evidence": "",
+      "confidence": 0,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "wire_diameter": {
+      "value": 1.5,
+      "unit": "mm",
+      "tolerance_upper": 0.05,
+      "tolerance_lower": -0.05,
+      "source": [
+        "qwen_vision",
+        "rapidocr",
+        "rapidocr"
+      ],
+      "evidence": "技术要求1：线径Φ1.5±0.05 | 线径Φ1.5±0.05 | 线径Φ1.5",
+      "confidence": 0.983,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen vision recognition"
+    },
+    "outer_diameter": {
+      "value": 25,
+      "unit": "mm",
+      "tolerance_upper": 0.75,
+      "tolerance_lower": -0.75,
+      "source": [
+        "human_confirmed",
+        "dimension_role_ranker",
+        "qwen_vision"
+      ],
+      "evidence": "按压缩弹簧尺寸角色重排：优先采用带直径/竖排/外径公差证据的外径候选。 候选依据：图纸右侧直径尺寸线标注 25 0/-0.02 | 图纸右侧直径尺寸线标注 25 0/-0.02",
+      "confidence": 0.99,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Compression spring dimension role ranking"
+    },
+    "inner_diameter": {
+      "field": "inner_diameter",
+      "value": 22,
+      "unit": "mm",
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [
+        "human_confirmed",
+        "formula_calculation"
+      ],
+      "evidence": "公式推导：Di = Do - 2d。",
+      "confidence": 0.99,
+      "page": 1,
+      "position": null,
+      "suggested_region": "formula_computed_diameter",
+      "need_human_review": false,
+      "formula": "Di = Do - 2d",
+      "source_fields": [
+        "outer_diameter",
+        "wire_diameter"
+      ],
+      "formula_calculation_kind": "diameter_completion",
+      "formula_calculation_status": "calculated"
+    },
+    "mean_diameter": {
+      "field": "mean_diameter",
+      "value": 23.5,
+      "unit": "mm",
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [
+        "human_confirmed",
+        "formula_calculation"
+      ],
+      "evidence": "公式推导：D = (Do + Di) / 2。",
+      "confidence": 0.99,
+      "page": 1,
+      "position": null,
+      "suggested_region": "formula_computed_diameter",
+      "need_human_review": false,
+      "formula": "D = (Do + Di) / 2",
+      "source_fields": [
+        "outer_diameter",
+        "inner_diameter"
+      ],
+      "formula_calculation_kind": "diameter_completion",
+      "formula_calculation_status": "calculated"
+    },
+    "controlled_diameter_field": {
+      "value": null,
+      "unit": null,
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [],
+      "evidence": "",
+      "confidence": 0,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "free_length": {
+      "value": 15,
+      "unit": "mm",
+      "tolerance_upper": 0.8,
+      "tolerance_lower": -0.8,
+      "source": [
+        "human_confirmed",
+        "dimension_role_ranker",
+        "qwen_vision",
+        "rapidocr"
+      ],
+      "evidence": "按压缩弹簧尺寸角色重排：自由长度应优先采用轴向长度，并应大于载荷测试高度。 候选依据：自由长度15 | 图纸标注总长度尺寸线 15 | 020",
+      "confidence": 0.99,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Compression spring dimension role ranking"
+    },
+    "body_length": {
+      "value": null,
+      "unit": "mm",
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [],
+      "evidence": "",
+      "confidence": 0,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "solid_height": {
+      "field": "solid_height",
+      "value": 6.2,
+      "unit": "mm",
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [
+        "human_confirmed",
+        "formula_calculation"
+      ],
+      "evidence": "端面磨削：压并高度参考 Hb = n1 * dmax。 n1=4, dmax=1.55 mm。",
+      "confidence": 0.99,
+      "page": 1,
+      "position": null,
+      "suggested_region": "formula_computed_solid_height",
+      "need_human_review": false,
+      "formula": "Hb = n1 * dmax",
+      "source_fields": [
+        "total_coils",
+        "wire_diameter",
+        "end_grinding"
+      ],
+      "formula_calculation_kind": "solid_height",
+      "formula_calculation_status": "calculated",
+      "formula_calculation_inputs": {
+        "total_coils": 4,
+        "wire_diameter_mm": 1.5,
+        "wire_tolerance_upper_mm": 0.05,
+        "max_wire_diameter_mm": 1.55,
+        "end_mode": "ground"
+      }
+    },
+    "total_coils": {
+      "value": 4,
+      "unit": "turns",
+      "tolerance_upper": 0.25,
+      "tolerance_lower": -0.25,
+      "source": [
+        "human_confirmed",
+        "qwen_vision",
+        "rapidocr"
+      ],
+      "evidence": "技术要求2：总圈数:4 | 总圈数：4 | 总圈数：4",
+      "confidence": 0.99,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen vision recognition"
+    },
+    "active_coils": {
+      "field": "active_coils",
+      "value": 4,
+      "unit": "turns",
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [
+        "human_confirmed",
+        "company_active_coil_rule"
+      ],
+      "evidence": "端部形式为两端不并紧：有效圈数 = 总圈数。",
+      "confidence": 0.99,
+      "page": 1,
+      "position": null,
+      "suggested_region": "company_active_coil_rule",
+      "need_human_review": false,
+      "derived_rule_id": "COMPANY-ACTIVE-COILS-END-CONDITION-V2",
+      "derived_formula": "total_coils",
+      "source_fields": [
+        "total_coils",
+        "end_type"
+      ],
+      "support_coils_per_end": null,
+      "support_coils_source": null
+    },
+    "end_coils": {
+      "value": null,
+      "unit": "turns",
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [],
+      "evidence": "",
+      "confidence": 0,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "support_coils": {
+      "value": null,
+      "unit": "turns",
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [],
+      "evidence": "",
+      "confidence": 0,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "handedness": {
+      "value": "right",
+      "unit": null,
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [
+        "qwen_vision",
+        "rapidocr",
+        "rapidocr"
+      ],
+      "evidence": "技术要求2：旋向：右旋 | 右旋 | 右旋",
+      "confidence": 0.985,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen vision recognition"
+    },
+    "pitch": {
+      "value": null,
+      "unit": "mm",
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [],
+      "evidence": "",
+      "confidence": 0,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "end_type": {
+      "value": "两端不并紧",
+      "unit": null,
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [
+        "human_confirmed",
+        "qwen_vision"
+      ],
+      "evidence": "示意图两端开口，未标注并紧/闭口",
+      "confidence": 0.99,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen vision recognition",
+      "normalization_status": "normalized"
+    },
+    "end_grinding": {
+      "value": "两端磨削",
+      "unit": null,
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [
+        "human_confirmed",
+        "qwen_vision",
+        "rapidocr"
+      ],
+      "evidence": "两端面有表面粗糙度符号▽12.5，且端面画为平整 | 磨",
+      "confidence": 0.99,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen vision recognition",
+      "normalization_status": "normalized"
+    },
+    "spring_rate": {
+      "field": "spring_rate",
+      "value": 0.8655,
+      "unit": "N/mm",
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [
+        "human_confirmed",
+        "formula_calculation"
+      ],
+      "evidence": "公式计算：k=G*d^4/(8*D^3*n)；G=71000 MPa, d=1.5 mm, D=23.5 mm, n=4.",
+      "confidence": 0.99,
+      "page": 1,
+      "position": null,
+      "suggested_region": "formula_computed_spring_rate",
+      "need_human_review": false,
+      "formula": "G * d^4 / (8 * D^3 * n)",
+      "source_fields": [
+        "material",
+        "wire_diameter",
+        "mean_diameter",
+        "active_coils"
+      ],
+      "formula_calculation_status": "calculated",
+      "formula_calculation_inputs": {
+        "shear_modulus_mpa": 71000,
+        "wire_diameter_mm": 1.5,
+        "mean_diameter_mm": 23.5,
+        "active_coils": 4
+      },
+      "formula_calculation_material": "SUS304/316",
+      "formula_calculation_config_version": "temporary-room-temperature-v1"
+    },
+    "perpendicularity": {
+      "value": 0.75,
+      "unit": "mm",
+      "tolerance_upper": 0.75,
+      "tolerance_lower": 0,
+      "source": [
+        "human_confirmed"
+      ],
+      "evidence": "",
+      "confidence": 0.99,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "straightness": {
+      "value": null,
+      "unit": "mm",
+      "tolerance_upper": null,
+      "tolerance_lower": null,
+      "source": [],
+      "evidence": "",
+      "confidence": 0,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "permanent_set_limit": {
+      "value": 0.045,
+      "unit": "mm",
+      "tolerance_upper": 0.045,
+      "tolerance_lower": 0,
+      "source": [
+        "human_confirmed"
+      ],
+      "evidence": "",
+      "confidence": 0.99,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": ""
+    },
+    "load_points": [
+      {
+        "label": "F1",
+        "height": 11.414,
+        "height_unit": "mm",
+        "force": 11.9,
+        "force_unit": "N",
+        "force_tolerance_percent": 10,
+        "deflection": null,
+        "deflection_unit": "mm",
+        "load_tolerance_upper": 1.19,
+        "load_tolerance_lower": -1.19,
+        "load_tolerance_percent": 10,
+        "test_height_type": "H1",
+        "reference_only": false,
+        "source": [
+          "human_confirmed",
+          "qwen_vision",
+          "rapidocr"
+        ],
+        "evidence": "技术要求4：H1压缩到11.414mm/F1=11.9N±10%；图纸标注F1=11.9N±10%对应高度11.414 | H1压缩到11.414mm/F1=11.9N士10%",
+        "confidence": 0.99,
+        "need_human_review": false,
+        "page": 1,
+        "position": null,
+        "suggested_region": "Qwen load point recognition",
+        "drawing_force_tolerance_percent": 10,
+        "drawing_load_tolerance_percent": 10,
+        "tolerance_source": "standardization",
+        "tolerance_basis": "表3-15：有效圈数 n=4，2级，指定高度负荷极限偏差 ±0.1F。 精度等级采用公司默认2级，需人工确认。"
+      },
+      {
+        "label": "F2",
+        "height": 9.474,
+        "height_unit": "mm",
+        "force": 15.3,
+        "force_unit": "N",
+        "force_tolerance_percent": 10,
+        "deflection": null,
+        "deflection_unit": "mm",
+        "load_tolerance_upper": 1.53,
+        "load_tolerance_lower": -1.53,
+        "load_tolerance_percent": 10,
+        "test_height_type": "H2",
+        "reference_only": true,
+        "source": [
+          "human_confirmed",
+          "qwen_vision",
+          "rapidocr"
+        ],
+        "evidence": "技术要求4：H2压缩到9.474mm/F2=15.3N±10%（参考）；图纸标注F2=15.3N±10%对应高度9.474 | H2压缩到9.474mm/F2=15.3N±10%(参考)",
+        "confidence": 0.99,
+        "need_human_review": false,
+        "page": 1,
+        "position": null,
+        "suggested_region": "Qwen load point recognition",
+        "drawing_force_tolerance_percent": 10,
+        "drawing_load_tolerance_percent": 10,
+        "tolerance_source": "standardization",
+        "tolerance_basis": "表3-15：有效圈数 n=4，2级，指定高度负荷极限偏差 ±0.1F。 精度等级采用公司默认2级，需人工确认。"
+      }
+    ],
+    "torque_points": []
+  },
+  "spring_features": {
+    "spring_family": {
+      "value": "helical",
+      "source": [
+        "qwen_vision"
+      ],
+      "evidence": "圆柱螺旋弹簧示意图",
+      "confidence": 0.95,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen vision recognition"
+    },
+    "spring_shape": {
+      "value": "cylindrical",
+      "source": [
+        "qwen_vision"
+      ],
+      "evidence": "外径尺寸恒定，为圆柱形",
+      "confidence": 0.95,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen vision recognition"
+    },
+    "manufacturing_method": {
+      "value": "unknown",
+      "source": [
+        "qwen_vision"
+      ],
+      "evidence": "图纸未明确标注冷卷或热卷，线径1.5mm通常为冷卷但无明确依据",
+      "confidence": 0.5,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen vision recognition"
+    },
+    "wire_section": {
+      "value": "round",
+      "source": [
+        "qwen_vision"
+      ],
+      "evidence": "线径标注为Φ1.5，圆形截面",
+      "confidence": 0.95,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen vision recognition"
+    },
+    "pitch_type": {
+      "value": "constant",
+      "source": [
+        "qwen_vision"
+      ],
+      "evidence": "示意图节距均匀",
+      "confidence": 0.9,
+      "need_human_review": true,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen vision recognition"
+    }
+  },
+  "standard_selection": {
+    "selected_standard": "GB/T 1239.2-2009",
+    "standard_label": "冷卷圆柱螺旋压缩弹簧",
+    "candidate_standards": [
+      {
+        "standard_no": "GB/T 1239.2-2009",
+        "label": "冷卷圆柱螺旋压缩弹簧",
+        "manufacturing_method": "cold_coiled",
+        "rules_available": true
+      },
+      {
+        "standard_no": "GB/T 23934-2015",
+        "label": "热卷圆柱螺旋压缩弹簧",
+        "manufacturing_method": "hot_coiled",
+        "rules_available": false
+      }
+    ],
+    "status": "applicable",
+    "confidence": 0.96,
+    "selection_source": "drawing_standard_no",
+    "reason": "图纸标准号指向冷卷圆柱螺旋压缩弹簧标准。",
+    "evidence": [
+      "图纸标准号：GB/T 1239.2-2009",
+      "热处理：300°C+10°C/20min+1min",
+      "其他要求：未注尺寸以3D为准"
+    ],
+    "need_human_review": false,
+    "rules_available": true,
+    "references": [
+      {
+        "standard_no": "GB/T 1239.2-2009",
+        "chunk_id": "c407a11f6dd06d1a",
+        "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+        "table_no": "表3-11",
+        "rule_topic": null,
+        "target_fields": [],
+        "source": "ragflow",
+        "status": "available",
+        "score": 0.5345017463688488,
+        "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+        "dataset_name": "压缩弹簧",
+        "document_id": "6c938d20859811f194d2693da0aa6de9",
+        "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+        "positions": [
+          [
+            1,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "similarity": 0.5345017463688488,
+        "retrieval_reason": null,
+        "metadata": {
+          "rule_topic": null,
+          "table_no": "表3-11",
+          "target_fields": []
+        }
+      },
+      {
+        "standard_no": "GB/T 1239.2-2009",
+        "chunk_id": "246df59244385047",
+        "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+        "table_no": "表3-13",
+        "rule_topic": null,
+        "target_fields": [],
+        "source": "ragflow",
+        "status": "available",
+        "score": 0.3835863999746766,
+        "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+        "dataset_name": "压缩弹簧",
+        "document_id": "6c938d20859811f194d2693da0aa6de9",
+        "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+        "positions": [
+          [
+            2,
+            1,
+            1,
+            1,
+            1
+          ]
+        ],
+        "similarity": 0.3835863999746766,
+        "retrieval_reason": null,
+        "metadata": {
+          "rule_topic": null,
+          "table_no": "表3-13",
+          "target_fields": []
+        }
+      },
+      {
+        "standard_no": "GB/T 1239.2-2009",
+        "chunk_id": "542108dc2961a776",
+        "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+        "table_no": null,
+        "rule_topic": null,
+        "target_fields": [],
+        "source": "ragflow",
+        "status": "available",
+        "score": 0.3785503744310894,
+        "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+        "dataset_name": "压缩弹簧",
+        "document_id": "6c938d20859811f194d2693da0aa6de9",
+        "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+        "positions": [],
+        "similarity": 0.3785503744310894,
+        "retrieval_reason": null,
+        "metadata": {
+          "rule_topic": null,
+          "table_no": null,
+          "target_fields": []
+        }
+      },
+      {
+        "standard_no": "GB/T 1239.2-2009",
+        "chunk_id": "47c453c625eff208",
+        "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+        "table_no": null,
+        "rule_topic": null,
+        "target_fields": [],
+        "source": "ragflow",
+        "status": "available",
+        "score": 0.3182346821982422,
+        "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+        "dataset_name": "压缩弹簧",
+        "document_id": "6c938d20859811f194d2693da0aa6de9",
+        "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+        "positions": [],
+        "similarity": 0.3182346821982422,
+        "retrieval_reason": null,
+        "metadata": {
+          "rule_topic": null,
+          "table_no": null,
+          "target_fields": []
+        }
+      },
+      {
+        "standard_no": "GB/T 1239.2-2009",
+        "chunk_id": "90894d4a05448404",
+        "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+        "table_no": null,
+        "rule_topic": null,
+        "target_fields": [],
+        "source": "ragflow",
+        "status": "available",
+        "score": 0.31255750319824216,
+        "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+        "dataset_name": "压缩弹簧",
+        "document_id": "6c938d20859811f194d2693da0aa6de9",
+        "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+        "positions": [],
+        "similarity": 0.31255750319824216,
+        "retrieval_reason": null,
+        "metadata": {
+          "rule_topic": null,
+          "table_no": null,
+          "target_fields": []
+        }
+      }
+    ],
+    "metadata": {
+      "threshold_mm": 8,
+      "auxiliary_evidence": [
+        "热处理：300°C+10°C/20min+1min",
+        "其他要求：未注尺寸以3D为准"
+      ],
+      "conflicts": [],
+      "wire_diameter_mm": 1.5,
+      "wire_diameter_threshold_mm": 8,
+      "wire_diameter_method": "cold_coiled",
+      "wire_diameter_need_human_review": false
+    }
+  },
+  "derived_parameters": {
+    "mean_diameter": {
+      "field": "mean_diameter",
+      "value": 23.5,
+      "unit": "mm",
+      "source": [
+        "derived"
+      ],
+      "formula": "drawing_or_manual_mean_diameter",
+      "source_fields": [
+        "mean_diameter"
+      ],
+      "confidence": 0.99,
+      "need_human_review": false
+    },
+    "spring_index": {
+      "field": "spring_index",
+      "value": 15.6667,
+      "unit": null,
+      "source": [
+        "derived"
+      ],
+      "formula": "mean_diameter / wire_diameter",
+      "source_fields": [
+        "mean_diameter",
+        "wire_diameter"
+      ],
+      "confidence": 0.99,
+      "need_human_review": false
+    },
+    "slenderness_ratio": {
+      "field": "slenderness_ratio",
+      "value": 0.6383,
+      "unit": null,
+      "source": [
+        "derived"
+      ],
+      "formula": "free_length / mean_diameter",
+      "source_fields": [
+        "free_length",
+        "mean_diameter"
+      ],
+      "confidence": 0.99,
+      "need_human_review": false
+    },
+    "load_point_deflections": [
+      {
+        "label": "F1",
+        "height": 11.414,
+        "height_unit": "mm",
+        "deflection": 3.586,
+        "deflection_unit": "mm",
+        "formula": "free_length - load_point.height",
+        "source_fields": [
+          "free_length",
+          "load_points"
+        ]
+      },
+      {
+        "label": "F2",
+        "height": 9.474,
+        "height_unit": "mm",
+        "deflection": 5.526,
+        "deflection_unit": "mm",
+        "formula": "free_length - load_point.height",
+        "source_fields": [
+          "free_length",
+          "load_points"
+        ]
+      }
+    ]
+  },
+  "standardization_results": [
+    {
+      "target_field": "standard_no",
+      "suggested_value": "GB/T 1239.2-2009",
+      "suggested_tolerance_upper": null,
+      "suggested_tolerance_lower": null,
+      "unit": null,
+      "standard_no": "GB/T 1239.2-2009",
+      "rule_id": "GBT1239.2-CTX",
+      "basis": "压缩弹簧第一版仅接入 GB/T 1239.2-2009；未识别标准号时需人工确认。",
+      "status": "suggested",
+      "need_human_review": false,
+      "metadata": {
+        "missing_fields": [],
+        "standard_references": [
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "c407a11f6dd06d1a",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-11",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.5345017463688488,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "similarity": 0.5345017463688488,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-11",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "246df59244385047",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-13",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3835863999746766,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                2,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "similarity": 0.3835863999746766,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-13",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "542108dc2961a776",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3785503744310894,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3785503744310894,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "47c453c625eff208",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3182346821982422,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3182346821982422,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "90894d4a05448404",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.31255750319824216,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.31255750319824216,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "target_field": "outer_diameter",
+      "suggested_value": 25,
+      "suggested_tolerance_upper": 0.75,
+      "suggested_tolerance_lower": -0.75,
+      "unit": "mm",
+      "standard_no": "GB/T 1239.2-2009",
+      "rule_id": "GBT1239.2-DIA",
+      "basis": "表3-11：C=15.6667，2级，±max(0.03D, 0.5mm)。",
+      "status": "suggested",
+      "need_human_review": false,
+      "metadata": {
+        "standard_references": [
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "c407a11f6dd06d1a",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-11",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.5345017463688488,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "similarity": 0.5345017463688488,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-11",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "246df59244385047",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-13",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3835863999746766,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                2,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "similarity": 0.3835863999746766,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-13",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "542108dc2961a776",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3785503744310894,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3785503744310894,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "47c453c625eff208",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3182346821982422,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3182346821982422,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "90894d4a05448404",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.31255750319824216,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.31255750319824216,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "target_field": "free_length",
+      "suggested_value": 15,
+      "suggested_tolerance_upper": 0.8,
+      "suggested_tolerance_lower": -0.8,
+      "unit": "mm",
+      "standard_no": "GB/T 1239.2-2009",
+      "rule_id": "GBT1239.2-FREE",
+      "basis": "表3-12：C=15.6667，2级，±max(0.04H0, 0.8mm)。",
+      "status": "suggested",
+      "need_human_review": false,
+      "metadata": {
+        "standard_references": [
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "c407a11f6dd06d1a",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-11",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.5345017463688488,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "similarity": 0.5345017463688488,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-11",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "246df59244385047",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-13",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3835863999746766,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                2,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "similarity": 0.3835863999746766,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-13",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "542108dc2961a776",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3785503744310894,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3785503744310894,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "47c453c625eff208",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3182346821982422,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3182346821982422,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "90894d4a05448404",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.31255750319824216,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.31255750319824216,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "target_field": "total_coils",
+      "suggested_value": 4,
+      "suggested_tolerance_upper": 0.25,
+      "suggested_tolerance_lower": -0.25,
+      "unit": "turns",
+      "standard_no": "GB/T 1239.2-2009",
+      "rule_id": "GBT1239.2-COILS",
+      "basis": "表3-13：总圈数 n1=4，极限偏差 ±0.25 圈；有特性要求时总圈数作为参考。",
+      "status": "suggested",
+      "need_human_review": false,
+      "metadata": {
+        "standard_references": [
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "c407a11f6dd06d1a",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-11",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.5345017463688488,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "similarity": 0.5345017463688488,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-11",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "246df59244385047",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-13",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3835863999746766,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                2,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "similarity": 0.3835863999746766,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-13",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "542108dc2961a776",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3785503744310894,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3785503744310894,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "47c453c625eff208",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3182346821982422,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3182346821982422,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "90894d4a05448404",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.31255750319824216,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.31255750319824216,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "target_field": "perpendicularity",
+      "suggested_value": 0.75,
+      "suggested_tolerance_upper": 0.75,
+      "suggested_tolerance_lower": 0,
+      "unit": "mm",
+      "standard_no": "GB/T 1239.2-2009",
+      "rule_id": "GBT1239.2-PERP",
+      "basis": "表3-14：2级垂直度 0.05H0，约 2.9°。",
+      "status": "suggested",
+      "need_human_review": false,
+      "metadata": {
+        "standard_references": [
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "c407a11f6dd06d1a",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-11",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.5345017463688488,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "similarity": 0.5345017463688488,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-11",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "246df59244385047",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-13",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3835863999746766,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                2,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "similarity": 0.3835863999746766,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-13",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "542108dc2961a776",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3785503744310894,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3785503744310894,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "47c453c625eff208",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3182346821982422,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3182346821982422,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "90894d4a05448404",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.31255750319824216,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.31255750319824216,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "target_field": "solid_height",
+      "suggested_value": 6.2,
+      "suggested_tolerance_upper": null,
+      "suggested_tolerance_lower": null,
+      "unit": "mm",
+      "standard_no": "GB/T 1239.2-2009",
+      "rule_id": "GBT1239.2-SOLID",
+      "basis": "端面磨削：压并高度参考 Hb = n1 * dmax。 n1=4, dmax=1.55 mm。",
+      "status": "suggested",
+      "need_human_review": false,
+      "metadata": {
+        "standard_references": [
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "c407a11f6dd06d1a",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-11",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.5345017463688488,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "similarity": 0.5345017463688488,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-11",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "246df59244385047",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-13",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3835863999746766,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                2,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "similarity": 0.3835863999746766,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-13",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "542108dc2961a776",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3785503744310894,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3785503744310894,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "47c453c625eff208",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3182346821982422,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3182346821982422,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "90894d4a05448404",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.31255750319824216,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.31255750319824216,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "target_field": "load_points.F1.force",
+      "suggested_value": 11.9,
+      "suggested_tolerance_upper": 1.19,
+      "suggested_tolerance_lower": -1.19,
+      "unit": "N",
+      "standard_no": "GB/T 1239.2-2009",
+      "rule_id": "GBT1239.2-LOAD",
+      "basis": "表3-15：有效圈数 n=4，2级，指定高度负荷极限偏差 ±0.1F。",
+      "status": "suggested",
+      "need_human_review": false,
+      "metadata": {
+        "deflection": 3.586,
+        "active_coils_source": "company_end_condition_rule",
+        "standard_references": [
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "c407a11f6dd06d1a",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-11",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.5345017463688488,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "similarity": 0.5345017463688488,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-11",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "246df59244385047",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-13",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3835863999746766,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                2,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "similarity": 0.3835863999746766,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-13",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "542108dc2961a776",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3785503744310894,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3785503744310894,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "47c453c625eff208",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3182346821982422,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3182346821982422,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "90894d4a05448404",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.31255750319824216,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.31255750319824216,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "target_field": "load_points.F2.force",
+      "suggested_value": 15.3,
+      "suggested_tolerance_upper": 1.53,
+      "suggested_tolerance_lower": -1.53,
+      "unit": "N",
+      "standard_no": "GB/T 1239.2-2009",
+      "rule_id": "GBT1239.2-LOAD",
+      "basis": "表3-15：有效圈数 n=4，2级，指定高度负荷极限偏差 ±0.1F。",
+      "status": "suggested",
+      "need_human_review": false,
+      "metadata": {
+        "deflection": 5.526,
+        "active_coils_source": "company_end_condition_rule",
+        "standard_references": [
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "c407a11f6dd06d1a",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-11",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.5345017463688488,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "similarity": 0.5345017463688488,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-11",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "246df59244385047",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-13",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3835863999746766,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                2,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "similarity": 0.3835863999746766,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-13",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "542108dc2961a776",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3785503744310894,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3785503744310894,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "47c453c625eff208",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3182346821982422,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3182346821982422,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "90894d4a05448404",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.31255750319824216,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.31255750319824216,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "target_field": "spring_rate",
+      "suggested_value": 0.8655,
+      "suggested_tolerance_upper": 0.0866,
+      "suggested_tolerance_lower": -0.0866,
+      "unit": "N/mm",
+      "standard_no": "GB/T 1239.2-2009",
+      "rule_id": "GBT1239.2-STIFF",
+      "basis": "表3-16：有效圈数 n=4，2级，刚度极限偏差 ±0.1F'。",
+      "status": "suggested",
+      "need_human_review": false,
+      "metadata": {
+        "active_coils_source": "company_end_condition_rule",
+        "standard_references": [
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "c407a11f6dd06d1a",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-11",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.5345017463688488,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "similarity": 0.5345017463688488,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-11",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "246df59244385047",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-13",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3835863999746766,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                2,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "similarity": 0.3835863999746766,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-13",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "542108dc2961a776",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3785503744310894,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3785503744310894,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "47c453c625eff208",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3182346821982422,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3182346821982422,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "90894d4a05448404",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.31255750319824216,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.31255750319824216,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "target_field": "permanent_set_limit",
+      "suggested_value": 0.045,
+      "suggested_tolerance_upper": 0.045,
+      "suggested_tolerance_lower": 0,
+      "unit": "mm",
+      "standard_no": "GB/T 1239.2-2009",
+      "rule_id": "GBT1239.2-PSET",
+      "basis": "永久变形不得大于自由高度的 0.3%。",
+      "status": "suggested",
+      "need_human_review": false,
+      "metadata": {
+        "standard_references": [
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "c407a11f6dd06d1a",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-11",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.5345017463688488,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "similarity": 0.5345017463688488,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-11",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "246df59244385047",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": "表3-13",
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3835863999746766,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [
+              [
+                2,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "similarity": 0.3835863999746766,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": "表3-13",
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "542108dc2961a776",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3785503744310894,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3785503744310894,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "47c453c625eff208",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.3182346821982422,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.3182346821982422,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          },
+          {
+            "standard_no": "GB/T 1239.2-2009",
+            "chunk_id": "90894d4a05448404",
+            "title": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "table_no": null,
+            "rule_topic": null,
+            "target_fields": [],
+            "source": "ragflow",
+            "status": "available",
+            "score": 0.31255750319824216,
+            "dataset_id": "26fb397a84d511f194d2693da0aa6de9",
+            "dataset_name": "压缩弹簧",
+            "document_id": "6c938d20859811f194d2693da0aa6de9",
+            "document_name": "冷卷圆柱螺旋压缩弹簧公差标准摘录.md",
+            "positions": [],
+            "similarity": 0.31255750319824216,
+            "retrieval_reason": null,
+            "metadata": {
+              "rule_topic": null,
+              "table_no": null,
+              "target_fields": []
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "llm_standardization_diagnostics": [],
+  "technical_requirements": [
+    {
+      "type": "heat_treatment",
+      "content": "300°C+10°C/20min+1min",
+      "source": [
+        "qwen_vision",
+        "rapidocr"
+      ],
+      "evidence": "技术要求2（实际为第2条重复编号）：热处理要求：300°C+10°C/20min+1min | 300C+10°C/20min+1min",
+      "confidence": 0.95,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen technical requirement recognition"
+    },
+    {
+      "type": "surface",
+      "content": "产品不可有油污、研磨粉尘，表面毛刺小于线径的10%",
+      "source": [
+        "qwen_vision",
+        "rapidocr",
+        "rapidocr"
+      ],
+      "evidence": "技术要求3：外观要求：产品不可有油污、研磨粉尘，表面毛刺小于线径的10% | 外观要求:产品不可有油污、研磨粉尘。表面毛刺小于线径的10% | 外观要求:产品不可有油污、研磨粉尘。表面毛刺小于线径的10%",
+      "confidence": 0.981,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen technical requirement recognition",
+      "raw_content": "产品不可有油污、研磨粉尘，表面毛刺小于线径的10%",
+      "standard_content": "",
+      "normalization_status": "unmatched",
+      "normalization_source": "none",
+      "normalization_confidence": 0,
+      "normalization_reason": "规则和 Qwen 未给出可靠标准术语，保持图纸原文。",
+      "standard_candidates": []
+    },
+    {
+      "type": "salt_spray",
+      "content": "720h无红锈",
+      "source": [
+        "qwen_vision",
+        "rapidocr"
+      ],
+      "evidence": "技术要求6：盐雾要求720h无红锈 | 720h无红锈",
+      "confidence": 0.951,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen technical requirement recognition"
+    },
+    {
+      "type": "lifetime",
+      "content": "L1-L2-L1一秒钟一次，4万次内不可失效，力衰保证10%之内",
+      "source": [
+        "human_confirmed",
+        "qwen_vision"
+      ],
+      "evidence": "技术要求5：寿命测试：L1-L2-L1一秒钟一次，4万次内不可失效，力衰保证10%之内",
+      "confidence": 0.99,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen technical requirement recognition"
+    },
+    {
+      "type": "environmental",
+      "content": "禁用物质符合GB/T 30512-2014《汽车禁用物质要求》",
+      "source": [
+        "qwen_vision",
+        "rapidocr"
+      ],
+      "evidence": "技术要求8：禁用物质符合GB/T 30512-2014《汽车禁用物质要求》 | GB/T 30512-2014",
+      "confidence": 0.951,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen technical requirement recognition"
+    },
+    {
+      "type": "other",
+      "content": "未注尺寸以3D为准",
+      "source": [
+        "human_confirmed",
+        "qwen_vision"
+      ],
+      "evidence": "技术要求7：未注尺寸以3D为准",
+      "confidence": 0.99,
+      "need_human_review": false,
+      "page": 1,
+      "position": null,
+      "suggested_region": "Qwen technical requirement recognition"
+    }
+  ],
+  "dimension_evidence": [],
+  "review_results": [
+    {
+      "rule_id": "MAT-000",
+      "rule_name": "材料工艺能力",
+      "status": "pass",
+      "message": "材料 SUS304 已识别。",
+      "related_fields": [
+        "material"
+      ],
+      "severity": "low"
+    },
+    {
+      "rule_id": "CAP-000",
+      "rule_name": "工艺能力范围",
+      "status": "pass",
+      "message": "线径和外径处于当前工艺范围内。",
+      "related_fields": [
+        "wire_diameter",
+        "outer_diameter"
+      ],
+      "severity": "low"
+    },
+    {
+      "rule_id": "LOAD-000",
+      "rule_name": "自由长度与压缩高度",
+      "status": "pass",
+      "message": "自由长度大于已识别压缩高度。",
+      "related_fields": [
+        "free_length",
+        "load_points"
+      ],
+      "severity": "low"
+    },
+    {
+      "rule_id": "LOAD-100",
+      "rule_name": "载荷随压缩量递增",
+      "status": "pass",
+      "message": "载荷随压缩量增大而增大。",
+      "related_fields": [
+        "load_points"
+      ],
+      "severity": "low"
+    },
+    {
+      "rule_id": "TOL-001",
+      "rule_name": "公差工艺风险",
+      "status": "warning",
+      "message": "outer_diameter 公差带 0.02mm 小于稳定加工阈值 0.05mm。",
+      "related_fields": [
+        "tolerance"
+      ],
+      "severity": "high"
+    },
+    {
+      "rule_id": "TECH-000",
+      "rule_name": "技术要求完整性",
+      "status": "pass",
+      "message": "已识别技术/工艺要求。",
+      "related_fields": [
+        "technical_requirements"
+      ],
+      "severity": "low"
+    },
+    {
+      "rule_id": "DOC-001",
+      "rule_name": "扫描图纸放行策略",
+      "status": "need_review",
+      "message": "当前输入为扫描图纸或图片，关键尺寸必须人工确认后才能进入 ERP。",
+      "related_fields": [
+        "file"
+      ],
+      "severity": "high"
+    }
+  ],
+  "balloons": [
+    {
+      "bubble_id": "B01",
+      "field": "material",
+      "label": "材料",
+      "value": "SUS304",
+      "status": "pass",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen vision recognition",
+      "evidence": "技术要求1：材质：SUS304；标题栏材料栏：SUS304 | SUS304",
+      "message": "识别结果可作为审查候选"
+    },
+    {
+      "bubble_id": "B02",
+      "field": "accuracy_grade",
+      "label": "accuracy_grade",
+      "value": "2级",
+      "status": "need_review",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "",
+      "evidence": "图纸未标注精度等级，按公司默认二级精度生成标准化建议。",
+      "message": "需要人工确认"
+    },
+    {
+      "bubble_id": "B03",
+      "field": "wire_diameter",
+      "label": "线径",
+      "value": "1.5mm ±0.05",
+      "status": "pass",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen vision recognition",
+      "evidence": "技术要求1：线径Φ1.5±0.05 | 线径Φ1.5±0.05 | 线径Φ1.5",
+      "message": "识别结果可作为审查候选"
+    },
+    {
+      "bubble_id": "B04",
+      "field": "outer_diameter",
+      "label": "外径",
+      "value": "25",
+      "status": "pass",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Compression spring dimension role ranking",
+      "evidence": "按压缩弹簧尺寸角色重排：优先采用带直径/竖排/外径公差证据的外径候选。 候选依据：图纸右侧直径尺寸线标注 25 0/-0.02 | 图纸右侧直径尺寸线标注 25 0/-0.02",
+      "message": "需要人工确认"
+    },
+    {
+      "bubble_id": "B05",
+      "field": "inner_diameter",
+      "label": "inner_diameter",
+      "value": "22mm",
+      "status": "need_review",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "formula_computed_diameter",
+      "evidence": "公式推导：Di = Do - 2d。",
+      "message": "需要人工确认"
+    },
+    {
+      "bubble_id": "B06",
+      "field": "mean_diameter",
+      "label": "mean_diameter",
+      "value": "23.5mm",
+      "status": "need_review",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "formula_computed_diameter",
+      "evidence": "公式推导：D = (Do + Di) / 2。",
+      "message": "需要人工确认"
+    },
+    {
+      "bubble_id": "B07",
+      "field": "free_length",
+      "label": "自由长度",
+      "value": "15",
+      "status": "pass",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Compression spring dimension role ranking",
+      "evidence": "按压缩弹簧尺寸角色重排：自由长度应优先采用轴向长度，并应大于载荷测试高度。 候选依据：自由长度15 | 图纸标注总长度尺寸线 15 | 020",
+      "message": "需要人工确认"
+    },
+    {
+      "bubble_id": "B08",
+      "field": "solid_height",
+      "label": "solid_height",
+      "value": "6.2",
+      "status": "need_review",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "formula_computed_solid_height",
+      "evidence": "端面磨削：压并高度参考 Hb = n1 * dmax。 n1=4, dmax=1.55 mm。",
+      "message": "需要人工确认"
+    },
+    {
+      "bubble_id": "B09",
+      "field": "total_coils",
+      "label": "总圈数",
+      "value": "4",
+      "status": "pass",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen vision recognition",
+      "evidence": "技术要求2：总圈数:4 | 总圈数：4 | 总圈数：4",
+      "message": "识别结果可作为审查候选"
+    },
+    {
+      "bubble_id": "B10",
+      "field": "active_coils",
+      "label": "有效圈数",
+      "value": "4turns",
+      "status": "need_review",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "company_active_coil_rule",
+      "evidence": "端部形式为两端不并紧：有效圈数 = 总圈数。",
+      "message": "需要人工确认"
+    },
+    {
+      "bubble_id": "B11",
+      "field": "handedness",
+      "label": "旋向",
+      "value": "right",
+      "status": "pass",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen vision recognition",
+      "evidence": "技术要求2：旋向：右旋 | 右旋 | 右旋",
+      "message": "识别结果可作为审查候选"
+    },
+    {
+      "bubble_id": "B12",
+      "field": "end_type",
+      "label": "end_type",
+      "value": "两端不并紧",
+      "status": "need_review",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen vision recognition",
+      "evidence": "示意图两端开口，未标注并紧/闭口",
+      "message": "需要人工确认"
+    },
+    {
+      "bubble_id": "B13",
+      "field": "end_grinding",
+      "label": "end_grinding",
+      "value": "两端磨削",
+      "status": "need_review",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen vision recognition",
+      "evidence": "两端面有表面粗糙度符号▽12.5，且端面画为平整 | 磨",
+      "message": "需要人工确认"
+    },
+    {
+      "bubble_id": "B14",
+      "field": "spring_rate",
+      "label": "spring_rate",
+      "value": "0.8655",
+      "status": "need_review",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "formula_computed_spring_rate",
+      "evidence": "公式计算：k=G*d^4/(8*D^3*n)；G=71000 MPa, d=1.5 mm, D=23.5 mm, n=4.",
+      "message": "需要人工确认"
+    },
+    {
+      "bubble_id": "B15",
+      "field": "load_point",
+      "label": "载荷测试点 F1",
+      "value": "11.414mm / 11.9N±10%",
+      "status": "pass",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen load point recognition",
+      "evidence": "技术要求4：H1压缩到11.414mm/F1=11.9N±10%；图纸标注F1=11.9N±10%对应高度11.414 | H1压缩到11.414mm/F1=11.9N士10%",
+      "message": "载荷测试点需与原图和检验标准复核"
+    },
+    {
+      "bubble_id": "B16",
+      "field": "load_point",
+      "label": "载荷测试点 F2",
+      "value": "9.474mm / 15.3N±10%",
+      "status": "pass",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen load point recognition",
+      "evidence": "技术要求4：H2压缩到9.474mm/F2=15.3N±10%（参考）；图纸标注F2=15.3N±10%对应高度9.474 | H2压缩到9.474mm/F2=15.3N±10%(参考)",
+      "message": "载荷测试点需与原图和检验标准复核"
+    },
+    {
+      "bubble_id": "B17",
+      "field": "heat_treatment",
+      "label": "热处理",
+      "value": "300°C+10°C/20min+1min",
+      "status": "pass",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen technical requirement recognition",
+      "evidence": "技术要求2（实际为第2条重复编号）：热处理要求：300°C+10°C/20min+1min | 300C+10°C/20min+1min",
+      "message": "技术要求需进入工艺/质量流转"
+    },
+    {
+      "bubble_id": "B18",
+      "field": "surface",
+      "label": "技术要求",
+      "value": "产品不可有油污、研磨粉尘，表面毛刺小于线径的10%",
+      "status": "pass",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen technical requirement recognition",
+      "evidence": "技术要求3：外观要求：产品不可有油污、研磨粉尘，表面毛刺小于线径的10% | 外观要求:产品不可有油污、研磨粉尘。表面毛刺小于线径的10% | 外观要求:产品不可有油污、研磨粉尘。表面毛刺小于线径的10%",
+      "message": "技术要求需进入工艺/质量流转"
+    },
+    {
+      "bubble_id": "B19",
+      "field": "salt_spray",
+      "label": "盐雾",
+      "value": "720h无红锈",
+      "status": "pass",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen technical requirement recognition",
+      "evidence": "技术要求6：盐雾要求720h无红锈 | 720h无红锈",
+      "message": "技术要求需进入工艺/质量流转"
+    },
+    {
+      "bubble_id": "B20",
+      "field": "lifetime",
+      "label": "技术要求",
+      "value": "L1-L2-L1一秒钟一次，4万次内不可失效，力衰保证10%之内",
+      "status": "need_review",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen technical requirement recognition",
+      "evidence": "技术要求5：寿命测试：L1-L2-L1一秒钟一次，4万次内不可失效，力衰保证10%之内",
+      "message": "技术要求需进入工艺/质量流转"
+    },
+    {
+      "bubble_id": "B21",
+      "field": "environmental",
+      "label": "环保要求",
+      "value": "禁用物质符合GB/T 30512-2014《汽车禁用物质要求》",
+      "status": "pass",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen technical requirement recognition",
+      "evidence": "技术要求8：禁用物质符合GB/T 30512-2014《汽车禁用物质要求》 | GB/T 30512-2014",
+      "message": "技术要求需进入工艺/质量流转"
+    },
+    {
+      "bubble_id": "B22",
+      "field": "other",
+      "label": "技术要求",
+      "value": "未注尺寸以3D为准",
+      "status": "need_review",
+      "page": 1,
+      "position": {
+        "x": null,
+        "y": null,
+        "width": null,
+        "height": null,
+        "coordinate_type": "unknown"
+      },
+      "suggested_region": "Qwen technical requirement recognition",
+      "evidence": "技术要求7：未注尺寸以3D为准",
+      "message": "技术要求需进入工艺/质量流转"
+    }
+  ],
+  "conflicts": [
+    {
+      "field": "version",
+      "values": [
+        "A0",
+        "A3",
+        "A0"
+      ],
+      "sources": [
+        "qwen_vision",
+        "rapidocr",
+        "rapidocr"
+      ],
+      "message": "version 多个来源识别结果不一致，需要人工确认。",
+      "need_human_review": true
+    },
+    {
+      "field": "free_length",
+      "values": [
+        15,
+        15,
+        20
+      ],
+      "sources": [
+        "dimension_role_ranker",
+        "qwen_vision",
+        "rapidocr"
+      ],
+      "message": "free_length 多个来源识别结果不一致，需要人工确认。",
+      "need_human_review": true
+    },
+    {
+      "field": "handedness",
+      "values": [
+        "right",
+        "右旋",
+        "右旋"
+      ],
+      "sources": [
+        "qwen_vision",
+        "rapidocr",
+        "rapidocr"
+      ],
+      "message": "handedness 多个来源识别结果不一致，需要人工确认。",
+      "need_human_review": true
+    },
+    {
+      "field": "heat_treatment",
+      "values": [
+        "300°C+10°C/20min+1min",
+        "300C+10°C/20min+1min"
+      ],
+      "sources": [
+        "qwen_vision",
+        "rapidocr"
+      ],
+      "message": "heat_treatment 多个来源识别结果不一致，需要人工确认。",
+      "need_human_review": true
+    },
+    {
+      "field": "surface_requirement",
+      "values": [
+        "产品不可有油污、研磨粉尘，表面毛刺小于线径的10%",
+        "产品不可有油污、研磨粉尘。表面毛刺小于线径的10%",
+        "产品不可有油污、研磨粉尘。表面毛刺小于线径的10%"
+      ],
+      "sources": [
+        "qwen_vision",
+        "rapidocr",
+        "rapidocr"
+      ],
+      "message": "surface_requirement 多个来源识别结果不一致，需要人工确认。",
+      "need_human_review": true
+    },
+    {
+      "field": "environmental",
+      "values": [
+        "禁用物质符合GB/T 30512-2014《汽车禁用物质要求》",
+        "GB/T 30512-2014"
+      ],
+      "sources": [
+        "qwen_vision",
+        "rapidocr"
+      ],
+      "message": "environmental 多个来源识别结果不一致，需要人工确认。",
+      "need_human_review": true
+    }
+  ],
+  "missing_fields": [],
+  "human_review_required": true,
+  "erp_ready": false,
+  "erp_block_reason": "当前输入为扫描图纸或图片，关键尺寸必须人工确认后才能进入 ERP。",
+  "parameter_reasonableness": {
+    "status": "pass",
+    "summary": "当前已识别参数未发现明显几何矛盾或当前标准适用范围风险。",
+    "issues": [],
+    "derived_preview": {
+      "mean_diameter": {
+        "value": 23.5,
+        "unit": "mm"
+      },
+      "spring_index": {
+        "value": 15.6667,
+        "unit": null
+      },
+      "slenderness_ratio": {
+        "value": 0.6383,
+        "unit": null
+      }
+    },
+    "scope": "cylindrical_helical_compression_spring"
+  },
+  "review_revision": 1,
+  "parameter_reasonableness_stale": false,
+  "derived_parameters_stale": false,
+  "standardization_apply_history": [],
+  "confirmation_history": [],
+  "standardization_chat": [],
+  "agent_actions": [],
+  "change_history": [
+    {
+      "client_event_id": "c7de74df-56b8-4c94-97c6-48048888706a",
+      "event_type": "parameter_confirmed",
+      "target_field": "solid_height",
+      "source": "manual",
+      "reason": "人工在审查界面修改",
+      "before_state": {
+        "value": 6.2,
+        "unit": "mm",
+        "tolerance_upper": null,
+        "tolerance_lower": null,
+        "need_human_review": true,
+        "source": [
+          "formula_calculation"
+        ],
+        "default_source": null,
+        "evidence": "端面磨削：压并高度参考 Hb = n1 * dmax。 n1=4, dmax=1.55 mm。"
+      },
+      "after_state": {
+        "value": 6.2,
+        "unit": "mm",
+        "tolerance_upper": null,
+        "tolerance_lower": null,
+        "need_human_review": false,
+        "source": [
+          "human_confirmed",
+          "formula_calculation"
+        ],
+        "default_source": null,
+        "evidence": "端面磨削：压并高度参考 Hb = n1 * dmax。 n1=4, dmax=1.55 mm。"
+      },
+      "metadata": {},
+      "created_at": "2026-08-04T02:00:04.615Z",
+      "sync_status": "saved"
+    },
+    {
+      "client_event_id": "3818cce4-30d0-4796-a2f2-04e8c64d3236",
+      "event_type": "parameter_confirmed",
+      "target_field": "mean_diameter",
+      "source": "manual",
+      "reason": "人工在审查界面修改",
+      "before_state": {
+        "value": 23.5,
+        "unit": "mm",
+        "tolerance_upper": null,
+        "tolerance_lower": null,
+        "need_human_review": true,
+        "source": [
+          "formula_calculation"
+        ],
+        "default_source": null,
+        "evidence": "公式推导：D = (Do + Di) / 2。"
+      },
+      "after_state": {
+        "value": 23.5,
+        "unit": "mm",
+        "tolerance_upper": null,
+        "tolerance_lower": null,
+        "need_human_review": false,
+        "source": [
+          "human_confirmed",
+          "formula_calculation"
+        ],
+        "default_source": null,
+        "evidence": "公式推导：D = (Do + Di) / 2。"
+      },
+      "metadata": {},
+      "created_at": "2026-08-04T02:00:04.096Z",
+      "sync_status": "saved"
+    },
+    {
+      "client_event_id": "6d0088b6-3403-4cfc-b0d1-58d9e721c265",
+      "event_type": "parameter_confirmed",
+      "target_field": "inner_diameter",
+      "source": "manual",
+      "reason": "人工在审查界面修改",
+      "before_state": {
+        "value": 22,
+        "unit": "mm",
+        "tolerance_upper": null,
+        "tolerance_lower": null,
+        "need_human_review": true,
+        "source": [
+          "formula_calculation"
+        ],
+        "default_source": null,
+        "evidence": "公式推导：Di = Do - 2d。"
+      },
+      "after_state": {
+        "value": 22,
+        "unit": "mm",
+        "tolerance_upper": null,
+        "tolerance_lower": null,
+        "need_human_review": false,
+        "source": [
+          "human_confirmed",
+          "formula_calculation"
+        ],
+        "default_source": null,
+        "evidence": "公式推导：Di = Do - 2d。"
+      },
+      "metadata": {},
+      "created_at": "2026-08-04T02:00:03.674Z",
+      "sync_status": "saved"
+    },
+    {
+      "client_event_id": "630f6a39-4feb-410b-a8fc-5c60169783ca",
+      "event_type": "parameter_confirmed",
+      "target_field": "spring_rate",
+      "source": "manual",
+      "reason": "人工在审查界面修改",
+      "before_state": {
+        "value": 0.8655,
+        "unit": "N/mm",
+        "tolerance_upper": null,
+        "tolerance_lower": null,
+        "need_human_review": true,
+        "source": [
+          "formula_calculation"
+        ],
+        "default_source": null,
+        "evidence": "公式计算：k=G*d^4/(8*D^3*n)；G=71000 MPa, d=1.5 mm, D=23.5 mm, n=4."
+      },
+      "after_state": {
+        "value": 0.8655,
+        "unit": "N/mm",
+        "tolerance_upper": null,
+        "tolerance_lower": null,
+        "need_human_review": false,
+        "source": [
+          "human_confirmed",
+          "formula_calculation"
+        ],
+        "default_source": null,
+        "evidence": "公式计算：k=G*d^4/(8*D^3*n)；G=71000 MPa, d=1.5 mm, D=23.5 mm, n=4."
+      },
+      "metadata": {},
+      "created_at": "2026-08-04T01:58:42.712Z",
+      "sync_status": "saved"
+    },
+    {
+      "client_event_id": null,
+      "event_type": "standardization_completed",
+      "target_field": null,
+      "source": "standardization_tool",
+      "reason": "已根据当前审查参数生成标准化建议",
+      "before_state": null,
+      "after_state": null,
+      "metadata": {
+        "use_llm_standardization": true
+      },
+      "actor": {
+        "erp_user_id": "31",
+        "username": "张宇涵",
+        "display_name": "张宇涵",
+        "department_id": "2",
+        "factory_name": "英科1厂"
+      },
+      "created_at": "2026-08-04T01:58:32.067621+00:00",
+      "sync_status": "saved"
+    },
+    {
+      "client_event_id": "5b712bb5-f868-440c-bc0a-4762cef45738",
+      "event_type": "parameter_confirmed",
+      "target_field": "accuracy_grade",
+      "source": "manual",
+      "reason": "人工在审查界面修改",
+      "before_state": {
+        "value": "2级",
+        "unit": null,
+        "tolerance_upper": null,
+        "tolerance_lower": null,
+        "need_human_review": true,
+        "source": [
+          "company_default"
+        ],
+        "default_source": "company_default",
+        "evidence": "图纸未标注精度等级，按公司默认二级精度生成标准化建议。"
+      },
+      "after_state": {
+        "value": "2级",
+        "unit": null,
+        "tolerance_upper": null,
+        "tolerance_lower": null,
+        "need_human_review": false,
+        "source": [
+          "human_confirmed"
+        ],
+        "default_source": null,
+        "evidence": "人工确认通用精度等级：2级。"
+      },
+      "metadata": {},
+      "created_at": "2026-08-04T01:58:19.018Z",
+      "sync_status": "saved"
+    },
+    {
+      "client_event_id": "6832527f-fa2c-4fbb-aecb-086951faca75",
+      "event_type": "standardization_suggestions_applied",
+      "target_field": null,
+      "source": "standardization",
+      "reason": "人工在审查界面修改",
+      "before_state": null,
+      "after_state": {
+        "applied_count": 10
+      },
+      "metadata": {
+        "targets": [
+          "standard_no",
+          "outer_diameter",
+          "free_length",
+          "total_coils",
+          "perpendicularity",
+          "solid_height",
+          "load_points.F1.force",
+          "load_points.F2.force",
+          "spring_rate",
+          "permanent_set_limit"
+        ]
+      },
+      "created_at": "2026-08-04T01:54:49.367Z",
+      "sync_status": "saved"
+    },
+    {
+      "client_event_id": "57a196f8-1572-4f62-9217-fa8312d00720",
+      "event_type": "safe_fields_confirmed",
+      "target_field": null,
+      "source": "manual_batch_confirmation",
+      "reason": "人工在审查界面修改",
+      "before_state": null,
+      "after_state": {
+        "confirmed_count": 7
+      },
+      "metadata": {
+        "fields": [
+          "外径",
+          "自由长度",
+          "有效圈数",
+          "端部形式",
+          "端面磨削",
+          "寿命",
+          "其他"
+        ]
+      },
+      "created_at": "2026-08-04T01:54:46.072Z",
+      "sync_status": "saved"
+    },
+    {
+      "client_event_id": null,
+      "event_type": "standardization_completed",
+      "target_field": null,
+      "source": "standardization_tool",
+      "reason": "已根据当前审查参数生成标准化建议",
+      "before_state": null,
+      "after_state": null,
+      "metadata": {
+        "use_llm_standardization": true
+      },
+      "actor": {
+        "erp_user_id": "31",
+        "username": "张宇涵",
+        "display_name": "张宇涵",
+        "department_id": "2",
+        "factory_name": "英科1厂"
+      },
+      "created_at": "2026-08-04T01:54:51.359347+00:00",
+      "sync_status": "saved"
+    }
+  ],
+  "manual_confirmations": {
+    "outer_diameter": {
+      "confirmed": true,
+      "value": 25,
+      "confirmed_at": "2026-08-04T01:54:46.072Z"
+    },
+    "free_length": {
+      "confirmed": true,
+      "value": 15,
+      "confirmed_at": "2026-08-04T01:54:46.072Z"
+    },
+    "active_coils": {
+      "confirmed": true,
+      "value": 4,
+      "confirmed_at": "2026-08-04T01:54:46.072Z"
+    },
+    "end_type": {
+      "confirmed": true,
+      "value": "两端不并紧",
+      "confirmed_at": "2026-08-04T01:54:46.072Z"
+    },
+    "end_grinding": {
+      "confirmed": true,
+      "value": "两端磨削",
+      "confirmed_at": "2026-08-04T01:54:46.072Z"
+    },
+    "technical_3": {
+      "confirmed": true,
+      "value": "L1-L2-L1一秒钟一次，4万次内不可失效，力衰保证10%之内",
+      "confirmed_at": "2026-08-04T01:54:46.072Z"
+    },
+    "technical_5": {
+      "confirmed": true,
+      "value": "未注尺寸以3D为准",
+      "confirmed_at": "2026-08-04T01:54:46.072Z"
+    },
+    "standardization_standard_no": {
+      "confirmed": true,
+      "value": "GB/T 1239.2-2009",
+      "confirmed_at": "2026-08-04T01:54:49.366Z",
+      "rule_id": "GBT1239.2-CTX",
+      "target_field": "standard_no"
+    },
+    "standardization_outer_diameter": {
+      "confirmed": true,
+      "value": 25,
+      "confirmed_at": "2026-08-04T01:54:49.366Z",
+      "rule_id": "GBT1239.2-DIA",
+      "target_field": "outer_diameter"
+    },
+    "standardization_free_length": {
+      "confirmed": true,
+      "value": 15,
+      "confirmed_at": "2026-08-04T01:54:49.366Z",
+      "rule_id": "GBT1239.2-FREE",
+      "target_field": "free_length"
+    },
+    "standardization_total_coils": {
+      "confirmed": true,
+      "value": 4,
+      "confirmed_at": "2026-08-04T01:54:49.366Z",
+      "rule_id": "GBT1239.2-COILS",
+      "target_field": "total_coils"
+    },
+    "standardization_perpendicularity": {
+      "confirmed": true,
+      "value": 0.75,
+      "confirmed_at": "2026-08-04T01:54:49.366Z",
+      "rule_id": "GBT1239.2-PERP",
+      "target_field": "perpendicularity"
+    },
+    "standardization_solid_height": {
+      "confirmed": true,
+      "value": 6.2,
+      "confirmed_at": "2026-08-04T01:54:49.366Z",
+      "rule_id": "GBT1239.2-SOLID",
+      "target_field": "solid_height"
+    },
+    "standardization_load_points.F1.force": {
+      "confirmed": true,
+      "value": 11.9,
+      "confirmed_at": "2026-08-04T01:54:49.366Z",
+      "rule_id": "GBT1239.2-LOAD",
+      "target_field": "load_points.F1.force"
+    },
+    "standardization_load_points.F2.force": {
+      "confirmed": true,
+      "value": 15.3,
+      "confirmed_at": "2026-08-04T01:54:49.366Z",
+      "rule_id": "GBT1239.2-LOAD",
+      "target_field": "load_points.F2.force"
+    },
+    "standardization_spring_rate": {
+      "confirmed": true,
+      "value": 0.8655,
+      "confirmed_at": "2026-08-04T01:54:49.366Z",
+      "rule_id": "GBT1239.2-STIFF",
+      "target_field": "spring_rate"
+    },
+    "standardization_permanent_set_limit": {
+      "confirmed": true,
+      "value": 0.045,
+      "confirmed_at": "2026-08-04T01:54:49.366Z",
+      "rule_id": "GBT1239.2-PSET",
+      "target_field": "permanent_set_limit"
+    },
+    "accuracy_grade": {
+      "confirmed": true,
+      "value": "2级",
+      "confirmed_at": "2026-08-04T01:58:19.018Z"
+    },
+    "spring_rate": {
+      "confirmed": true,
+      "value": 0.8655,
+      "confirmed_at": "2026-08-04T01:58:42.712Z"
+    },
+    "inner_diameter": {
+      "confirmed": true,
+      "value": 22,
+      "confirmed_at": "2026-08-04T02:00:03.674Z"
+    },
+    "mean_diameter": {
+      "confirmed": true,
+      "value": 23.5,
+      "confirmed_at": "2026-08-04T02:00:04.096Z"
+    },
+    "solid_height": {
+      "confirmed": true,
+      "value": 6.2,
+      "confirmed_at": "2026-08-04T02:00:04.615Z"
+    }
+  },
+  "exported_at": "2026-08-04T02:00:15.202Z",
+  "export_type": "human_confirmed_review"
+}

@@ -3,12 +3,16 @@ server {
     server_name _;
     client_max_body_size 50m;
     add_header Content-Security-Policy "frame-ancestors ${AI_REVIEW_FRAME_ANCESTORS}" always;
+    # Resolve the Compose service dynamically so an API container rebuild does
+    # not leave Nginx forwarding requests to its previous container IP.
+    resolver 127.0.0.11 ipv6=off valid=10s;
+    set $api_upstream api;
 
     root /usr/share/nginx/html;
     index index.html;
 
     location /api/ {
-        proxy_pass http://api:8770;
+        proxy_pass http://$api_upstream:8770;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

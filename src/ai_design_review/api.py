@@ -40,7 +40,7 @@ from .workflow import DrawingReviewWorkflow, apply_standardization_to_review
 PROJECT_ROOT = project_path()
 OUTPUT_ROOT = PROJECT_ROOT / "outputs"
 API_RUN_ROOT = OUTPUT_ROOT / "api_runs"
-TMP_PDF_ROOT = PROJECT_ROOT / "tmp_pdf_pages"
+SAMPLE_ROOT = project_path("data", "samples")
 DEFAULT_FRONTEND_ORIGINS = (
     "http://127.0.0.1:5173,"
     "http://localhost:5173,"
@@ -142,7 +142,7 @@ def get_session(identity: IdentityContext = Depends(require_identity)) -> dict[s
 
 @app.get("/api/samples/mixed-review")
 def get_mixed_review_sample(identity: IdentityContext = Depends(require_identity)) -> FileResponse:
-    sample_path = OUTPUT_ROOT / "mixed_review.json"
+    sample_path = SAMPLE_ROOT / "compression_spring_demo_review.json"
     if not sample_path.is_file():
         raise HTTPException(status_code=404, detail="Sample review not found.")
     return FileResponse(str(sample_path), media_type="application/json")
@@ -150,10 +150,10 @@ def get_mixed_review_sample(identity: IdentityContext = Depends(require_identity
 
 @app.get("/api/samples/spring-preview")
 def get_spring_preview_sample(identity: IdentityContext = Depends(require_identity)) -> FileResponse:
-    sample_path = TMP_PDF_ROOT / "spring_example_rotated.png"
+    sample_path = SAMPLE_ROOT / "compression_spring_demo.png"
     if not sample_path.is_file():
         raise HTTPException(status_code=404, detail="Sample preview not found.")
-    return FileResponse(str(sample_path))
+    return FileResponse(str(sample_path), media_type="image/png")
 
 
 @app.get("/api/standard-knowledge/search")
