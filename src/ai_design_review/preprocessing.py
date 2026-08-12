@@ -62,6 +62,7 @@ def render_pdf_with_pdftoppm(
     output_dir: str | Path,
     prefix: str = "page",
     dpi: int = 200,
+    first_page_only: bool = False,
 ) -> list[str]:
     """Render a PDF with Poppler's pdftoppm if available."""
     candidates = _pdftoppm_candidates()
@@ -78,16 +79,30 @@ def render_pdf_with_pdftoppm(
                 stale.unlink()
             except OSError:
                 pass
+        single_page = output / f"{prefix}.png"
+        if single_page.exists():
+            try:
+                single_page.unlink()
+            except OSError:
+                pass
         command = [
             pdftoppm,
             "-png",
             "-r",
             str(dpi),
+        ]
+        if first_page_only:
+            command.extend(["-f", "1", "-l", "1", "-singlefile"])
+        command.extend([
             str(pdf_path),
             str(output_prefix),
-        ]
+        ])
         completed = subprocess.run(command, capture_output=True)
-        rendered = [str(p) for p in sorted(output.glob(f"{prefix}-*.png"))]
+        rendered = (
+            [str(single_page)]
+            if first_page_only and single_page.exists()
+            else [str(p) for p in sorted(output.glob(f"{prefix}-*.png"))]
+        )
         if completed.returncode == 0 and rendered:
             return rendered
         stderr = completed.stderr.decode(errors="replace") if isinstance(completed.stderr, bytes) else str(completed.stderr or "")

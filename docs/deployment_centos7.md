@@ -17,6 +17,11 @@ PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 RECOGNITION_WORKER_CONCURRENCY=2
 RECOGNITION_JOB_POLL_SECONDS=1
 RECOGNITION_JOB_LEASE_SECONDS=900
+GENERATION_WORKER_API_KEY=replace-with-a-different-long-random-key
+GENERATION_ADMIN_API_KEY=replace-with-another-long-random-key
+GENERATION_JOB_LEASE_SECONDS=300
+GENERATION_MAX_ARTIFACT_MB=50
+MOCK_SOLIDWORKS_ENABLED=false
 ```
 
 `DATABASE_URL` 可以留空，Compose 会自动连接内部 PostgreSQL。若使用公司已有 PostgreSQL，再显式配置：
@@ -47,12 +52,20 @@ curl http://127.0.0.1:8088/api/health
 
 浏览器访问 `http://服务器地址:8088`。API 只绑定到宿主机 `127.0.0.1:8770`，外部访问统一经 Nginx 的 8088 端口；公司现有反向代理可再转发到这个端口。
 
+中文增强接口文档可通过 `http://服务器地址:8088/api/docs` 访问，原 Swagger UI 位于 `/api/swagger`，OpenAPI JSON 位于 `/api/openapi.json`。生产环境不要启动 `mock-solidworks` profile；它仅用于本地联调。若要在本地验证完整闭环，可执行：
+
+```bash
+docker compose --profile mock-solidworks up -d mock-solidworks
+```
+
+模拟 Worker 使用正式 Worker API 和独立 Bearer Key，不挂载数据库卷或输出卷。未来真实 SolidWorks Worker 按同一协议替换其内部绘图逻辑即可。
+
 健康检查中的 `persistence_runtime.status=available` 表示 PostgreSQL 和迁移均可用。`not_configured` 表示仍在 JSON 兼容模式，生产环境不应停留在该状态。
 
 ## 3. 数据与备份
 
 - `postgres_data`：审查快照、参数修改留痕和标准化/对话事件。
-- `review_outputs`：上传图纸、预览图和 JSON 调试副本。
+- `review_outputs`：上传图纸、预览图、JSON 调试副本和 generation 产物文件。
 - 两个卷都是 Docker 命名卷，升级容器不会删除它们。
 
 每日备份 PostgreSQL：

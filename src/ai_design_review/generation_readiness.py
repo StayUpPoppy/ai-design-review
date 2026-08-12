@@ -5,21 +5,17 @@ from datetime import datetime, timezone
 from math import isfinite
 from typing import Any
 
+from .generation_contract import (
+    COMPRESSION_GENERATION_LABELS,
+    COMPRESSION_GENERATION_INPUT_FIELDS,
+    GENERATION_SCHEMA_VERSION,
+    apply_generation_defaults,
+    export_generation_parameters,
+    generation_parameter_state,
+    validate_generation_parameters,
+)
 from .spring_templates import FIELD_LABELS
 from .spring_feasibility import assess_parameter_reasonableness
-
-
-COMPRESSION_CORE_FIELDS = (
-    "material",
-    "wire_diameter",
-    "free_length",
-    "total_coils",
-    "active_coils",
-    "handedness",
-    "end_type",
-    "end_grinding",
-)
-CONTROLLED_DIAMETER_FIELDS = ("outer_diameter", "inner_diameter", "mean_diameter")
 
 
 def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
@@ -36,6 +32,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
             "core_field_count": 0,
         }
 
+    defaulted_fields = apply_generation_defaults(review)
     parameters = review.get("spring_parameters") or {}
     # Generation export is a release boundary, so always recalculate instead of
     # trusting a diagnostic that may predate an external/manual parameter edit.
@@ -44,44 +41,24 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
         item for item in reasonableness.get("issues", [])
         if isinstance(item, dict) and item.get("severity") == "blocked"
     ]
+    blocking_reasonableness.extend(validate_generation_parameters(parameters))
     missing: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     confirmed_count = 0
 
-    for field in COMPRESSION_CORE_FIELDS:
-        state = _parameter_state(parameters, field)
+    for field in COMPRESSION_GENERATION_INPUT_FIELDS:
+        state = generation_parameter_state(parameters, field)
         if state == "missing":
             missing.append(_field_issue(field, "缺少重新生图所需的核心参数。"))
         elif state == "pending":
             pending.append(_field_issue(field, "参数已有值，但仍需人工确认。"))
+        elif state == "invalid":
+            continue
         else:
             confirmed_count += 1
 
-    diameter_state = _controlled_diameter_state(parameters)
-    if diameter_state == "missing":
-        missing.append(
-            _field_issue(
-                "outer_diameter",
-                "至少确认外径、内径或中径中的一项作为受控直径。",
-                label="受控直径",
-                alternatives=list(CONTROLLED_DIAMETER_FIELDS),
-            )
-        )
-    elif diameter_state == "pending":
-        pending.append(
-            _field_issue(
-                "outer_diameter",
-                "受控直径已有识别值，但仍需人工确认。",
-                label="受控直径",
-                alternatives=list(CONTROLLED_DIAMETER_FIELDS),
-            )
-        )
-    else:
-        confirmed_count += 1
-
-    _append_standardization_state(review, missing, pending, warnings)
-    _append_load_point_state(parameters, missing, pending)
+    _append_standardization_warnings(review, warnings)
     _append_technical_requirement_state(review, pending)
 
     if blocking_reasonableness:
@@ -98,7 +75,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
         summary = "参数包可以生成，但存在需要在生图前知悉的风险提示。"
     else:
         status = "ready"
-        summary = "核心参数、技术要求和标准化状态均已确认，可生成参数包。"
+        summary = "核心参数和技术要求均已确认，可生成参数包。"
 
     return {
         "status": status,
@@ -107,7 +84,8 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
         "pending_fields": pending,
         "warnings": warnings,
         "confirmed_core_count": confirmed_count,
-        "core_field_count": len(COMPRESSION_CORE_FIELDS) + 1,
+        "core_field_count": len(COMPRESSION_GENERATION_INPUT_FIELDS),
+        "defaulted_fields": defaulted_fields,
         "parameter_reasonableness": reasonableness,
         "blocking_reasonableness": blocking_reasonableness,
     }
@@ -116,14 +94,9 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
 def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]:
     """Build a compact drawing package from the fields the reviewer has confirmed."""
 
+    apply_generation_defaults(review)
     parameters = review.get("spring_parameters") or {}
-    confirmed_parameters = {
-        field: _generation_parameter(item, field)
-        for field, item in parameters.items()
-        if field not in {"load_points", "torque_points"}
-        and _parameter_state(parameters, field) == "confirmed"
-        and isinstance(item, dict)
-    }
+    confirmed_parameters = export_generation_parameters(parameters)
     technical_requirements = [
         _generation_requirement(item)
         for item in review.get("technical_requirements") or []
@@ -132,11 +105,11 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
     selection = review.get("standard_selection") or {}
     summary = review.get("drawing_summary") or {}
     return {
-        "schema_version": "spring_generation_parameters/v1",
+        "schema_version": GENERATION_SCHEMA_VERSION,
         "package_type": "confirmed_compression_spring_generation_input",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "export_policy": {
-            "parameter_filter": "human_confirmed_only",
+            "parameter_filter": "frozen_compression_inputs_v1_human_confirmed_only",
             "readiness_is_advisory": True,
         },
         "source": {
@@ -152,29 +125,24 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
         },
         "generation_parameters": {
             "spring_parameters": confirmed_parameters,
-            "load_points_label": "载荷测试点",
-            "load_points": _confirmed_load_points(parameters.get("load_points") or []),
-            "torque_points": _confirmed_load_points(parameters.get("torque_points") or []),
             "technical_requirements": technical_requirements,
         },
         "derived_parameters": _export_derived_parameters(review, parameters),
     }
 
 
-def _append_standardization_state(
+def _append_standardization_warnings(
     review: dict[str, Any],
-    missing: list[dict[str, Any]],
-    pending: list[dict[str, Any]],
     warnings: list[dict[str, Any]],
 ) -> None:
     selection = review.get("standard_selection") or {}
     if not selection.get("selected_standard"):
-        missing.append(_field_issue("standard_no", "尚未完成适用技术标准选择。"))
-    elif selection.get("need_human_review") and not selection.get("human_confirmed"):
-        pending.append(_field_issue("standard_no", "适用技术标准尚未人工确认。"))
+        warnings.append(_field_issue("standard_no", "未执行或未完成标准化检查；本次可按当前人工确认参数直接生图。"))
+    elif not selection.get("human_confirmed"):
+        warnings.append(_field_issue("standard_no", "适用技术标准尚未人工确认；本次可按当前人工确认参数直接生图。"))
 
     if review.get("derived_parameters_stale"):
-        pending.append(_field_issue("standardization", "参数修改后尚未重新标准化。", label="标准化结果"))
+        warnings.append(_field_issue("standardization", "参数修改后标准化结果已过期；本次可按当前人工确认参数直接生图。", label="标准化结果"))
 
     for item in review.get("standardization_results") or []:
         if not isinstance(item, dict):
@@ -182,25 +150,11 @@ def _append_standardization_state(
         target = str(item.get("target_field") or "")
         status = str(item.get("status") or "")
         if status in {"stale", "need_context"}:
-            pending.append(_field_issue(target or "standardization", item.get("basis") or "标准化结果仍需补充或重新计算。", label=_label(target) if target else "标准化结果"))
+            warnings.append(_field_issue(target or "standardization", item.get("basis") or "标准化结果仍需补充或重新计算；可按当前人工确认参数直接生图。", label=_label(target) if target else "标准化结果"))
         elif status == "not_applicable":
             warnings.append(_field_issue(target or "standardization", item.get("basis") or "当前标准规则不适用，需作为特殊设计复核。", label=_label(target) if target else "标准风险"))
-
-
-def _append_load_point_state(
-    parameters: dict[str, Any],
-    missing: list[dict[str, Any]],
-    pending: list[dict[str, Any]],
-) -> None:
-    for index, point in enumerate(parameters.get("load_points") or [], start=1):
-        if not isinstance(point, dict):
-            continue
-        label = str(point.get("label") or f"F{index}")
-        target = f"load_points.{label}.force"
-        if point.get("height") in (None, "") or point.get("force") in (None, ""):
-            missing.append(_field_issue(target, f"{label} 的高度和力值需要完整填写。", label=f"载荷测试点 {label}"))
-        elif point.get("need_human_review"):
-            pending.append(_field_issue(target, f"载荷测试点 {label} 尚未人工确认。", label=f"载荷测试点 {label}"))
+        elif status in {"suggested", "llm_suggested", "rules_pending", "unmapped"} or item.get("need_human_review"):
+            warnings.append(_field_issue(target or "standardization", item.get("basis") or "标准化建议尚未处理；未应用的建议不会进入生图参数包。", label=_label(target) if target else "标准化建议"))
 
 
 def _append_technical_requirement_state(review: dict[str, Any], pending: list[dict[str, Any]]) -> None:
@@ -217,32 +171,11 @@ def _append_technical_requirement_state(review: dict[str, Any], pending: list[di
         )
 
 
-def _controlled_diameter_state(parameters: dict[str, Any]) -> str:
-    states = [_parameter_state(parameters, field) for field in CONTROLLED_DIAMETER_FIELDS]
-    if "confirmed" in states:
-        return "confirmed"
-    if "pending" in states:
-        return "pending"
-    return "missing"
-
-
 def _parameter_state(parameters: dict[str, Any], field: str) -> str:
     item = parameters.get(field)
     if not isinstance(item, dict) or item.get("value") in (None, ""):
         return "missing"
     return "pending" if item.get("need_human_review") else "confirmed"
-
-
-def _generation_parameter(item: dict[str, Any], field: str) -> dict[str, Any]:
-    value = item.get("standard_value") if field == "material" and item.get("standard_value") else item.get("value")
-    return {
-        "label": _label(field),
-        "value": value,
-        "unit": item.get("unit"),
-        "tolerance_upper": item.get("tolerance_upper"),
-        "tolerance_lower": item.get("tolerance_lower"),
-        "confirmation_source": "human_confirmed",
-    }
 
 
 def _export_derived_parameters(review: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
@@ -322,13 +255,12 @@ def _export_derived_parameter(
     }
 
 
-def _confirmed_load_points(points: list[Any]) -> list[dict[str, Any]]:
-    return [deepcopy(point) for point in points if isinstance(point, dict) and not point.get("need_human_review")]
-
-
 def _generation_requirement(item: dict[str, Any]) -> dict[str, Any]:
-    content = item.get("standard_content") if item.get("type") == "surface" and item.get("standard_content") else item.get("content")
-    return {"type": item.get("type"), "content": content, "confirmation_source": "human_confirmed"}
+    return {
+        "type": item.get("type"),
+        "content": str(item.get("content") or "").strip(),
+        "confirmation_source": "human_confirmed",
+    }
 
 
 def _field_issue(field: str, reason: Any, *, label: str | None = None, alternatives: list[str] | None = None) -> dict[str, Any]:
@@ -339,7 +271,7 @@ def _field_issue(field: str, reason: Any, *, label: str | None = None, alternati
 
 
 def _label(field: str) -> str:
-    return FIELD_LABELS.get(field, field)
+    return COMPRESSION_GENERATION_LABELS.get(field, FIELD_LABELS.get(field, field))
 
 
 def _technical_label(value: str) -> str:

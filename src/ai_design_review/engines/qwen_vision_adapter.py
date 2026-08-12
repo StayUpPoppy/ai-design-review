@@ -18,6 +18,8 @@ from ..spring_templates import FIELD_LABELS, SPRING_TEMPLATES, SPRING_TYPE_UNKNO
 DEFAULT_QWEN_MODEL = "qwen3.7-plus"
 DEFAULT_QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 QWEN_SOURCE = "qwen_vision"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"", "0", "false", "no", "off"}
 
 
 class QwenVisionError(RuntimeError):
@@ -37,6 +39,7 @@ class QwenVisionEngine(RecognitionEngine):
         timeout_seconds: float | None = None,
         work_dir: str | Path | None = None,
         max_pages: int | None = None,
+        enable_thinking: bool | None = None,
     ):
         self.api_key = api_key or os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         self.model = model or os.getenv("QWEN_MODEL") or DEFAULT_QWEN_MODEL
@@ -44,6 +47,14 @@ class QwenVisionEngine(RecognitionEngine):
         self.timeout_seconds = timeout_seconds or float(os.getenv("QWEN_TIMEOUT_SECONDS", "90"))
         self.work_dir = Path(work_dir) if work_dir else None
         self.max_pages = max_pages or int(os.getenv("QWEN_MAX_PAGES", "3"))
+        if enable_thinking is None:
+            self.enable_thinking, self.thinking_config_status = _environment_bool(
+                "QWEN_VISION_ENABLE_THINKING",
+                default=False,
+            )
+        else:
+            self.enable_thinking = bool(enable_thinking)
+            self.thinking_config_status = "explicit"
 
     def extract(self, file_path: str | Path) -> list[dict[str, Any]]:
         return self.extract_with_raw(file_path)["candidates"]
@@ -70,6 +81,7 @@ class QwenVisionEngine(RecognitionEngine):
         return {
             "engine": self.name,
             "model": self.model,
+            "thinking_enabled": self.enable_thinking,
             "image_paths": [str(item) for item in prepared_images],
             "duration_ms": int((time.monotonic() - started) * 1000),
             "parsed": parsed,
@@ -118,27 +130,15 @@ class QwenVisionEngine(RecognitionEngine):
                 }
             ],
             "temperature": 0,
+            "enable_thinking": self.enable_thinking,
             "response_format": {"type": "json_object"},
         }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            response = client.post(
-                endpoint,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-            if response.status_code in {400, 422} and "response_format" in response.text:
-                payload.pop("response_format", None)
-                response = client.post(
-                    endpoint,
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
+            response = _post_qwen_request(client, endpoint, headers, payload)
             response.raise_for_status()
             return response.json()
 
@@ -354,11 +354,39 @@ def parse_qwen_json(content: Any) -> dict[str, Any]:
 
 def qwen_runtime_status() -> dict[str, Any]:
     api_key = os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+    thinking_enabled, thinking_config_status = _environment_bool(
+        "QWEN_VISION_ENABLE_THINKING",
+        default=False,
+    )
     return {
         "status": "configured" if _configured(api_key) else "not_configured",
         "model": os.getenv("QWEN_MODEL") or DEFAULT_QWEN_MODEL,
         "base_url": os.getenv("QWEN_BASE_URL") or DEFAULT_QWEN_BASE_URL,
+        "thinking_enabled": thinking_enabled,
+        "thinking_config_status": thinking_config_status,
     }
+
+
+def _environment_bool(name: str, *, default: bool) -> tuple[bool, str]:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default, "default"
+    normalized = str(raw_value).strip().lower()
+    if normalized in _TRUE_VALUES:
+        return True, "configured"
+    if normalized in _FALSE_VALUES:
+        return False, "configured"
+    return False, "invalid_defaulted_to_false"
+
+
+def _post_qwen_request(client: Any, endpoint: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
+    request_payload = dict(payload)
+    response = client.post(endpoint, headers=headers, json=request_payload)
+    if response.status_code in {400, 422} and "response_format" in response.text:
+        retry_payload = dict(request_payload)
+        retry_payload.pop("response_format", None)
+        response = client.post(endpoint, headers=headers, json=retry_payload)
+    return response
 
 
 def _parameter_candidate(field: str, item: Any) -> list[dict[str, Any]]:

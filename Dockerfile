@@ -12,7 +12,7 @@ RUN if [ -n "$DEBIAN_APT_MIRROR" ]; then \
       sed -i "s|deb.debian.org|${DEBIAN_APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
     fi \
     && apt-get -o Acquire::Retries=3 update \
-    && apt-get -o Acquire::Retries=3 install -y --no-install-recommends poppler-utils libgomp1 libgl1 libglib2.0-0 \
+    && apt-get -o Acquire::Retries=3 install -y --no-install-recommends poppler-utils libgomp1 libgl1 libglib2.0-0 fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

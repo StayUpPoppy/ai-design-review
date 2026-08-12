@@ -4,6 +4,8 @@ import shutil
 import uuid
 import os
 import re
+import secrets
+import hashlib
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,8 +15,20 @@ from urllib.parse import quote
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 
+from .api_documentation import (
+    API_DESCRIPTION,
+    API_SUMMARY,
+    API_TITLE,
+    OPENAPI_TAGS,
+    SCALAR_ASSET_FILENAME,
+    apply_chinese_openapi_documentation,
+)
 from .engines.geometry_adapter import GeometryEngine
 from .engines.ocr_adapter import OcrJsonEngine
 from .engines.ocr_providers import (
@@ -27,6 +41,34 @@ from .engines.qwen_vision_adapter import QwenVisionEngine, qwen_runtime_status
 from .engines.werk24_adapter import Werk24Engine
 from .identity import IdentityContext, IdentityError, resolve_request_identity
 from .io_utils import project_path, read_json, write_json
+from .generation_contract import apply_generation_defaults
+from .generation_persistence import GenerationStore
+from .generation_readiness import assess_generation_readiness, build_generation_parameter_package
+from .generation_schemas import (
+    GenerationArtifactListResponse,
+    GenerationArtifactResponse,
+    GenerationJobCreate,
+    GenerationJobCreateResponse,
+    GenerationJobListResponse,
+    GenerationJobResponse,
+    GenerationPackageResponse,
+    GenerationReadinessResponse,
+    GenerationTemplateCreate,
+    GenerationTemplateListResponse,
+    GenerationTemplateMatchRequest,
+    GenerationTemplateMatchResponse,
+    GenerationTemplateResponse,
+    GenerationTemplateStatusUpdate,
+    GenerationTemplateVersionCreate,
+    GenerationTemplateVersionsResponse,
+    GenerationWorkerClaim,
+    GenerationWorkerClaimResponse,
+    GenerationWorkerComplete,
+    GenerationWorkerFailed,
+    GenerationWorkerHeartbeat,
+    GenerationWorkerStatus,
+)
+from .generation_service import match_generation_template, request_fingerprint, stable_payload_hash
 from .llm_standardization_engine import LLMStandardizationEngine, llm_standardization_runtime_status
 from .preprocessing import IMAGE_EXTENSIONS, probe_file, render_pdf_with_pdftoppm
 from .review_persistence import PersistenceError, ReviewAccessError, ReviewPersistence, RevisionConflictError
@@ -41,6 +83,7 @@ PROJECT_ROOT = project_path()
 OUTPUT_ROOT = PROJECT_ROOT / "outputs"
 API_RUN_ROOT = OUTPUT_ROOT / "api_runs"
 SAMPLE_ROOT = project_path("data", "samples")
+DOCS_ASSET_ROOT = Path(__file__).resolve().parent / "docs_assets"
 DEFAULT_FRONTEND_ORIGINS = (
     "http://127.0.0.1:5173,"
     "http://localhost:5173,"
@@ -53,10 +96,23 @@ FRONTEND_ORIGINS = [
     if origin.strip()
 ]
 
-app = FastAPI(title="AI Spring Drawing Review API", version="0.1.0")
+app = FastAPI(
+    title=API_TITLE,
+    summary=API_SUMMARY,
+    description=API_DESCRIPTION,
+    version="0.2.0",
+    docs_url=None,
+    openapi_url="/api/openapi.json",
+    redoc_url=None,
+    openapi_tags=OPENAPI_TAGS,
+)
+app.mount("/api/docs-assets", StaticFiles(directory=str(DOCS_ASSET_ROOT)), name="api-docs-assets")
 RAGFLOW_STARTUP_STATUS = ragflow_runtime_status()
 REVIEW_PERSISTENCE = ReviewPersistence()
 DATABASE_STARTUP_STATUS = REVIEW_PERSISTENCE.health()
+GENERATION_TEMPLATE_STARTUP_STATUS: dict[str, Any] = {"status": "not_initialized"}
+WORKER_BEARER = HTTPBearer(auto_error=False, scheme_name="GenerationWorkerBearer")
+ADMIN_BEARER = HTTPBearer(auto_error=False, scheme_name="GenerationAdminBearer")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=FRONTEND_ORIGINS,
@@ -69,15 +125,53 @@ app.add_middleware(
 API_RUN_ROOT.mkdir(parents=True, exist_ok=True)
 
 
+def custom_openapi() -> dict[str, Any]:
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        summary=app.summary,
+        description=app.description,
+        routes=app.routes,
+    )
+    app.openapi_schema = apply_chinese_openapi_documentation(schema)
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
+
+
 class RecognitionCancelled(RuntimeError):
     """Raised by the worker progress callback after a user cancels a job."""
 
 
 @app.on_event("startup")
 def refresh_runtime_startup_status() -> None:
-    global RAGFLOW_STARTUP_STATUS, DATABASE_STARTUP_STATUS
+    global RAGFLOW_STARTUP_STATUS, DATABASE_STARTUP_STATUS, GENERATION_TEMPLATE_STARTUP_STATUS
     RAGFLOW_STARTUP_STATUS = ragflow_runtime_status(check_health=True)
     DATABASE_STARTUP_STATUS = REVIEW_PERSISTENCE.health(check_connection=True)
+    mock_enabled = _env_flag("MOCK_SOLIDWORKS_ENABLED", False)
+    if REVIEW_PERSISTENCE.configured and mock_enabled:
+        try:
+            template = GenerationStore(REVIEW_PERSISTENCE).ensure_mock_template(enabled=True)
+            GENERATION_TEMPLATE_STARTUP_STATUS = {
+                "status": "available",
+                "mock_template_enabled": bool(template.get("enabled")),
+            }
+        except PersistenceError as exc:
+            GENERATION_TEMPLATE_STARTUP_STATUS = {"status": "unavailable", "reason": str(exc)}
+    elif REVIEW_PERSISTENCE.configured:
+        try:
+            disabled_count = GenerationStore(REVIEW_PERSISTENCE).disable_mock_templates()
+            GENERATION_TEMPLATE_STARTUP_STATUS = {
+                "status": "disabled",
+                "mock_templates_disabled": disabled_count,
+            }
+        except PersistenceError as exc:
+            GENERATION_TEMPLATE_STARTUP_STATUS = {"status": "unavailable", "reason": str(exc)}
+    else:
+        GENERATION_TEMPLATE_STARTUP_STATUS = {"status": "not_configured"}
 
 
 @app.on_event("shutdown")
@@ -91,8 +185,66 @@ def root() -> dict[str, Any]:
         "status": "ok",
         "service": "ai-design-review-api",
         "health": "/api/health",
-        "docs": "/docs",
+        "docs": "/api/docs",
     }
+
+
+@app.get("/docs", include_in_schema=False)
+def legacy_docs_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/api/docs", status_code=307)
+
+
+@app.get("/api/docs", include_in_schema=False)
+def scalar_api_docs() -> HTMLResponse:
+    return HTMLResponse(
+        content=f"""<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="弹簧图纸 AI 审查与 SolidWorks 生图 API 中文接口文档" />
+    <title>{API_TITLE}</title>
+    <style>
+      html, body, #app {{ height: 100%; margin: 0; }}
+      body {{ background: #ffffff; }}
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="/api/docs-assets/{SCALAR_ASSET_FILENAME}"></script>
+    <script>
+      Scalar.createApiReference('#app', {{
+        url: '/api/openapi.json',
+        theme: 'default',
+        layout: 'modern',
+        showSidebar: true,
+        hideSearch: false,
+        hideModels: false,
+        modelsSectionLabel: '数据模型',
+        operationTitleSource: 'summary',
+        darkMode: false,
+        hideDarkModeToggle: false,
+        defaultHttpClient: {{ targetKey: 'shell', clientKey: 'curl' }},
+        showDeveloperTools: 'always',
+        persistAuth: false,
+        telemetry: false,
+        documentDownloadType: 'both',
+        defaultOpenFirstTag: true,
+        customFetch: (input, init) => fetch(input, {{ ...(init || {{}}), credentials: 'include' }})
+      }})
+    </script>
+  </body>
+</html>""",
+        status_code=200,
+    )
+
+
+@app.get("/api/swagger", include_in_schema=False)
+def swagger_api_docs() -> HTMLResponse:
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url or "/api/openapi.json",
+        title=f"{API_TITLE} - Swagger UI",
+    )
 
 
 @app.get("/api/health")
@@ -113,6 +265,12 @@ def health() -> dict[str, Any]:
             "status": "available" if REVIEW_PERSISTENCE.configured else "not_configured",
             "backend": "postgresql",
             "configured_concurrency": _configured_recognition_concurrency(),
+        },
+        "generation_runtime": {
+            "status": "available" if _generation_database_available() else "not_configured",
+            "backend": "postgresql",
+            "template_registry": GENERATION_TEMPLATE_STARTUP_STATUS,
+            "mock_mode": _env_flag("MOCK_SOLIDWORKS_ENABLED", False),
         },
         "ocr_runtime": ocr_runtime_status(),
         "geometry_runtime": {"status": "ready", "engine": "geometry"},
@@ -185,6 +343,531 @@ def search_standard_knowledge(
         "count": len(chunks),
         "chunks": chunks,
     }
+
+
+def require_generation_worker(
+    credentials: HTTPAuthorizationCredentials | None = Depends(WORKER_BEARER),
+) -> None:
+    _require_service_key(credentials, "GENERATION_WORKER_API_KEY", "Generation worker")
+
+
+def require_generation_admin(
+    credentials: HTTPAuthorizationCredentials | None = Depends(ADMIN_BEARER),
+) -> None:
+    _require_service_key(credentials, "GENERATION_ADMIN_API_KEY", "Generation administrator")
+
+
+@app.get("/api/reviews/{job_id}/generation-readiness", response_model=GenerationReadinessResponse, tags=["Generation"])
+def get_generation_readiness(job_id: str, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    review, revision = _load_generation_review(job_id, identity)
+    return {
+        "review_id": job_id,
+        "review_revision": revision,
+        "generation_readiness": assess_generation_readiness(review),
+    }
+
+
+@app.get(
+    "/api/reviews/{job_id}/generation-package",
+    response_model=GenerationPackageResponse,
+    responses={409: {"description": "Review is not ready", "content": {"application/json": {"example": {"detail": {"code": "generation_not_ready"}}}}}},
+    tags=["Generation"],
+)
+def get_generation_package(job_id: str, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    review, revision = _load_generation_review(job_id, identity)
+    readiness = assess_generation_readiness(review)
+    if readiness.get("status") not in {"ready", "ready_with_warnings"}:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "generation_not_ready", "generation_readiness": readiness},
+        )
+    return {
+        "review_id": job_id,
+        "review_revision": revision,
+        "generation_readiness": readiness,
+        "parameter_package": build_generation_parameter_package(review),
+    }
+
+
+@app.get("/api/generation-templates", response_model=GenerationTemplateListResponse, tags=["Generation Templates"])
+def list_generation_templates(
+    _: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
+    _require_generation_database()
+    return {"templates": GenerationStore(REVIEW_PERSISTENCE).list_templates()}
+
+
+@app.get("/api/generation-templates/{template_code:path}/versions", response_model=GenerationTemplateVersionsResponse, tags=["Generation Templates"])
+def list_generation_template_versions(
+    template_code: str,
+    _: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
+    _require_generation_database()
+    return {
+        "template_code": template_code,
+        "versions": GenerationStore(REVIEW_PERSISTENCE).list_templates(
+            template_code=template_code,
+            include_disabled=False,
+        ),
+    }
+
+
+@app.post("/api/admin/generation-templates", status_code=201, response_model=GenerationTemplateResponse, tags=["Generation Template Admin"])
+def create_generation_template(
+    body: GenerationTemplateCreate,
+    _: None = Depends(require_generation_admin),
+) -> dict[str, Any]:
+    _require_generation_database()
+    try:
+        return {"template": GenerationStore(REVIEW_PERSISTENCE).create_template(body.model_dump())}
+    except PersistenceError as exc:
+        raise _generation_http_error(exc) from exc
+
+
+@app.post(
+    "/api/admin/generation-templates/{template_code:path}/versions",
+    status_code=201,
+    response_model=GenerationTemplateResponse,
+    tags=["Generation Template Admin"],
+)
+def create_generation_template_version(
+    template_code: str,
+    body: GenerationTemplateVersionCreate,
+    _: None = Depends(require_generation_admin),
+) -> dict[str, Any]:
+    _require_generation_database()
+    try:
+        return {
+            "template": GenerationStore(REVIEW_PERSISTENCE).create_template(
+                {"template_code": template_code, **body.model_dump()}
+            )
+        }
+    except PersistenceError as exc:
+        raise _generation_http_error(exc) from exc
+
+
+@app.patch(
+    "/api/admin/generation-templates/{template_code:path}/versions/{version}/status",
+    response_model=GenerationTemplateResponse,
+    tags=["Generation Template Admin"],
+)
+def update_generation_template_status(
+    template_code: str,
+    version: str,
+    body: GenerationTemplateStatusUpdate,
+    _: None = Depends(require_generation_admin),
+) -> dict[str, Any]:
+    _require_generation_database()
+    try:
+        return {
+            "template": GenerationStore(REVIEW_PERSISTENCE).set_template_status(
+                template_code,
+                version,
+                enabled=body.enabled,
+            )
+        }
+    except PersistenceError as exc:
+        raise _generation_http_error(exc) from exc
+
+
+@app.post("/api/reviews/{job_id}/generation-template-match", response_model=GenerationTemplateMatchResponse, tags=["Generation"])
+def match_review_generation_template(
+    job_id: str,
+    body: GenerationTemplateMatchRequest,
+    identity: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
+    _require_generation_database()
+    review, revision = _load_generation_review(job_id, identity)
+    package = build_generation_parameter_package(review)
+    match = match_generation_template(
+        review,
+        package,
+        GenerationStore(REVIEW_PERSISTENCE).list_templates(),
+        requested_code=body.template_code,
+    )
+    return {"review_id": job_id, "review_revision": revision, "template_match": match}
+
+
+@app.post(
+    "/api/reviews/{job_id}/generation-jobs",
+    status_code=202,
+    response_model=GenerationJobCreateResponse,
+    responses={
+        200: {"model": GenerationJobCreateResponse, "description": "Existing idempotent request"},
+        409: {"description": "Revision, readiness, idempotency, or template conflict", "content": {"application/json": {"example": {"detail": {"code": "review_revision_conflict", "current_revision": 4}}}}},
+        503: {"description": "PostgreSQL generation queue is unavailable"},
+    },
+    tags=["Generation"],
+)
+def create_generation_job(
+    job_id: str,
+    body: GenerationJobCreate,
+    identity: IdentityContext = Depends(require_identity),
+) -> JSONResponse:
+    _require_generation_database()
+    review, revision = _load_generation_review(job_id, identity)
+    if revision is None or body.expected_review_revision != revision:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "review_revision_conflict", "current_revision": revision},
+        )
+    readiness = assess_generation_readiness(review)
+    if readiness.get("status") not in {"ready", "ready_with_warnings"}:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "generation_not_ready", "generation_readiness": readiness},
+        )
+    package = build_generation_parameter_package(review)
+    store = GenerationStore(REVIEW_PERSISTENCE)
+    match = match_generation_template(
+        review,
+        package,
+        store.list_templates(),
+        requested_code=body.template_code,
+    )
+    if match["status"] != "selected":
+        raise HTTPException(status_code=409, detail={"code": match["status"], **match})
+    selected = match["selected_template"]
+    if body.parent_generation_id:
+        parent = store.get_job(body.parent_generation_id, owner_user_id=identity.user_id)
+        if parent is None or parent.get("review_id") != job_id:
+            raise HTTPException(status_code=400, detail={"code": "invalid_parent_generation"})
+    normalized_request = {
+        "review_id": job_id,
+        "review_revision": revision,
+        "parent_generation_id": body.parent_generation_id,
+        "template_code": selected["template_code"],
+        "template_version": selected["version"],
+        "requested_artifact_types": body.requested_artifact_types,
+        "mock_scenario": body.mock_scenario,
+    }
+    generation_id = uuid.uuid4().hex[:16]
+    try:
+        job, created = store.create_job(
+            {
+                "generation_id": generation_id,
+                "review_job_id": job_id,
+                "review_revision": revision,
+                "parent_generation_id": body.parent_generation_id,
+                "idempotency_key": body.idempotency_key,
+                "request_fingerprint": request_fingerprint(normalized_request),
+                "template_code": selected["template_code"],
+                "template_version": selected["version"],
+                "worker_capability": selected["worker_capability"],
+                "parameter_schema_version": str(package.get("schema_version") or "unknown"),
+                "parameter_hash": stable_payload_hash(package),
+                "parameter_package": package,
+                "readiness": readiness,
+                "requested_artifact_types": body.requested_artifact_types,
+                "execution_options": {"mock_scenario": body.mock_scenario},
+            },
+            owner=identity.as_owner_dict(),
+        )
+    except PersistenceError as exc:
+        raise _generation_http_error(exc) from exc
+    return JSONResponse(
+        status_code=202 if created else 200,
+        content={"created": created, "generation_job": _generation_job_response(job)},
+    )
+
+
+@app.get("/api/reviews/{job_id}/generation-jobs", response_model=GenerationJobListResponse, tags=["Generation"])
+def list_review_generation_jobs(
+    job_id: str,
+    identity: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
+    _require_generation_database()
+    _load_generation_review(job_id, identity)
+    jobs = GenerationStore(REVIEW_PERSISTENCE).list_jobs(job_id, owner_user_id=identity.user_id)
+    return {"review_id": job_id, "generation_jobs": [_generation_job_response(item) for item in jobs]}
+
+
+@app.get("/api/generation-jobs/{generation_id}", response_model=GenerationJobResponse, tags=["Generation"])
+def get_generation_job(
+    generation_id: str,
+    identity: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
+    _require_generation_database()
+    job = GenerationStore(REVIEW_PERSISTENCE).get_job(generation_id, owner_user_id=identity.user_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Generation job not found.")
+    return {"generation_job": _generation_job_response(job)}
+
+
+@app.post("/api/generation-jobs/{generation_id}/cancel", response_model=GenerationJobResponse, tags=["Generation"])
+def cancel_generation_job(
+    generation_id: str,
+    identity: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
+    _require_generation_database()
+    try:
+        job = GenerationStore(REVIEW_PERSISTENCE).cancel_job(generation_id, owner_user_id=identity.user_id)
+    except PersistenceError as exc:
+        raise _generation_http_error(exc) from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail="Generation job not found.")
+    return {"generation_job": _generation_job_response(job)}
+
+
+@app.post("/api/generation-jobs/{generation_id}/retry", status_code=202, response_model=GenerationJobResponse, tags=["Generation"])
+def retry_generation_job(
+    generation_id: str,
+    identity: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
+    _require_generation_database()
+    try:
+        job = GenerationStore(REVIEW_PERSISTENCE).retry_job(generation_id, owner_user_id=identity.user_id)
+    except PersistenceError as exc:
+        raise _generation_http_error(exc) from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail="Generation job not found.")
+    for relative_path in job.pop("_discarded_artifact_paths", []):
+        try:
+            _generation_artifact_path(str(relative_path)).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return {"generation_job": _generation_job_response(job)}
+
+
+@app.post("/api/generation-jobs/{generation_id}/approve", response_model=GenerationJobResponse, tags=["Generation"])
+def approve_generation_job(
+    generation_id: str,
+    identity: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
+    _require_generation_database()
+    store = GenerationStore(REVIEW_PERSISTENCE)
+    existing = store.get_job(generation_id, owner_user_id=identity.user_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Generation job not found.")
+    _, revision = _load_generation_review(str(existing["review_id"]), identity)
+    try:
+        job = store.approve_job(
+            generation_id,
+            owner=identity.as_owner_dict(),
+            current_revision=int(revision or 0),
+        )
+    except PersistenceError as exc:
+        raise _generation_http_error(exc) from exc
+    return {"generation_job": _generation_job_response(job or existing)}
+
+
+@app.get("/api/generation-jobs/{generation_id}/artifacts", response_model=GenerationArtifactListResponse, tags=["Generation"])
+def list_generation_artifacts(
+    generation_id: str,
+    identity: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
+    _require_generation_database()
+    store = GenerationStore(REVIEW_PERSISTENCE)
+    if store.get_job(generation_id, owner_user_id=identity.user_id) is None:
+        raise HTTPException(status_code=404, detail="Generation job not found.")
+    return {
+        "generation_id": generation_id,
+        "artifacts": [_generation_artifact_response(item) for item in store.list_artifacts(generation_id, owner_user_id=identity.user_id)],
+    }
+
+
+@app.get("/api/generation-jobs/{generation_id}/artifacts/{artifact_id}", tags=["Generation"])
+def download_generation_artifact(
+    generation_id: str,
+    artifact_id: str,
+    identity: IdentityContext = Depends(require_identity),
+) -> FileResponse:
+    _require_generation_database()
+    artifact = GenerationStore(REVIEW_PERSISTENCE).get_artifact(
+        generation_id,
+        artifact_id,
+        owner_user_id=identity.user_id,
+    )
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Generation artifact not found.")
+    path = _generation_artifact_path(str(artifact["relative_path"]))
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Generation artifact file not found.")
+    return FileResponse(str(path), filename=str(artifact["filename"]), media_type=artifact.get("mime_type"))
+
+
+@app.post("/api/generation-worker/jobs/claim", response_model=GenerationWorkerClaimResponse, responses={204: {"description": "No compatible queued job"}}, tags=["Generation Worker"])
+def claim_generation_worker_job(
+    body: GenerationWorkerClaim,
+    _: None = Depends(require_generation_worker),
+) -> JSONResponse:
+    _require_generation_database()
+    try:
+        job = GenerationStore(REVIEW_PERSISTENCE).claim_job(
+            body.worker_id,
+            body.capabilities,
+            lease_seconds=_generation_lease_seconds(),
+        )
+    except PersistenceError as exc:
+        raise _generation_http_error(exc) from exc
+    if job is None:
+        return Response(status_code=204)
+    return JSONResponse(status_code=200, content={"generation_job": job})
+
+
+@app.post("/api/generation-worker/jobs/{generation_id}/heartbeat", response_model=GenerationJobResponse, tags=["Generation Worker"])
+def heartbeat_generation_worker_job(
+    generation_id: str,
+    body: GenerationWorkerHeartbeat,
+    _: None = Depends(require_generation_worker),
+) -> dict[str, Any]:
+    _require_generation_database()
+    return {"generation_job": _update_generation_worker_job(generation_id, body.worker_id, stage=body.stage, progress=body.progress)}
+
+
+@app.patch("/api/generation-worker/jobs/{generation_id}/status", response_model=GenerationJobResponse, tags=["Generation Worker"])
+def update_generation_worker_status(
+    generation_id: str,
+    body: GenerationWorkerStatus,
+    _: None = Depends(require_generation_worker),
+) -> dict[str, Any]:
+    _require_generation_database()
+    return {
+        "generation_job": _update_generation_worker_job(
+            generation_id,
+            body.worker_id,
+            status=body.status,
+            stage=body.stage,
+            progress=body.progress,
+        )
+    }
+
+
+@app.post(
+    "/api/generation-worker/jobs/{generation_id}/artifacts",
+    status_code=201,
+    response_model=GenerationArtifactResponse,
+    responses={
+        409: {"description": "Worker lease or task state conflict"},
+        413: {"description": "Artifact exceeds GENERATION_MAX_ARTIFACT_MB"},
+        415: {"description": "Artifact MIME type does not match artifact_type"},
+    },
+    tags=["Generation Worker"],
+)
+async def upload_generation_worker_artifact(
+    generation_id: str,
+    file: UploadFile = File(...),
+    worker_id: str = Form(...),
+    artifact_type: str = Form(...),
+    is_mock: bool = Form(False),
+    _: None = Depends(require_generation_worker),
+) -> dict[str, Any]:
+    _require_generation_database()
+    normalized_type = str(artifact_type).strip().lower()[:64]
+    allowed_mime_types = {
+        "png": {"image/png"},
+        "pdf": {"application/pdf"},
+        "model_manifest": {"application/json"},
+        "log": {"application/json", "text/plain"},
+        "sldprt": {"application/octet-stream", "application/x-solidworks"},
+        "slddrw": {"application/octet-stream", "application/x-solidworks"},
+        "dwg": {"application/octet-stream", "image/vnd.dwg", "application/acad"},
+        "dxf": {"application/octet-stream", "image/vnd.dxf", "application/dxf", "text/plain"},
+        "step": {"application/octet-stream", "model/step", "application/step"},
+        "stl": {"application/octet-stream", "model/stl", "application/sla"},
+    }
+    if normalized_type not in allowed_mime_types:
+        raise HTTPException(status_code=400, detail={"code": "unsupported_artifact_type"})
+    normalized_mime = str(file.content_type or "application/octet-stream").split(";", 1)[0].strip().lower()
+    if normalized_mime not in allowed_mime_types[normalized_type]:
+        raise HTTPException(
+            status_code=415,
+            detail={"code": "artifact_mime_mismatch", "artifact_type": normalized_type, "mime_type": normalized_mime},
+        )
+    max_bytes = _generation_max_artifact_bytes()
+    content = await file.read(max_bytes + 1)
+    if not content:
+        raise HTTPException(status_code=400, detail="Generation artifact is empty.")
+    if len(content) > max_bytes:
+        raise HTTPException(status_code=413, detail="Generation artifact exceeds the configured size limit.")
+    artifact_id = uuid.uuid4().hex[:16]
+    safe_name = _safe_filename(file.filename or f"{artifact_id}.bin")[:240]
+    relative = Path(generation_id) / f"{artifact_id}_{safe_name}"
+    target = _generation_artifact_path(relative.as_posix())
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(content)
+    store = GenerationStore(REVIEW_PERSISTENCE)
+    try:
+        artifact = store.add_artifact(
+            {
+                "artifact_id": artifact_id,
+                "generation_id": generation_id,
+                "artifact_type": normalized_type,
+                "filename": safe_name,
+                "relative_path": relative.as_posix(),
+                "mime_type": file.content_type,
+                "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "is_mock": bool(is_mock),
+            },
+            worker_id=worker_id,
+        )
+    except PersistenceError as exc:
+        target.unlink(missing_ok=True)
+        raise _generation_http_error(exc) from exc
+    if artifact is None:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=409, detail={"code": "worker_lease_or_state_conflict"})
+    if normalized_type == "pdf":
+        try:
+            _create_generation_pdf_preview(
+                store,
+                generation_id=generation_id,
+                worker_id=worker_id,
+                pdf_artifact=artifact,
+                pdf_path=target,
+            )
+        except Exception as exc:
+            try:
+                store.record_event(
+                    generation_id,
+                    "generation_preview_failed",
+                    source="system",
+                    payload={
+                        "source_artifact_id": artifact_id,
+                        "reason": f"{type(exc).__name__}: {exc}"[:1000],
+                    },
+                )
+            except PersistenceError:
+                pass
+    return {"artifact": _generation_artifact_response(artifact)}
+
+
+@app.post("/api/generation-worker/jobs/{generation_id}/complete", response_model=GenerationJobResponse, tags=["Generation Worker"])
+def complete_generation_worker_job(
+    generation_id: str,
+    body: GenerationWorkerComplete,
+    _: None = Depends(require_generation_worker),
+) -> dict[str, Any]:
+    _require_generation_database()
+    try:
+        job = GenerationStore(REVIEW_PERSISTENCE).complete_job(generation_id, worker_id=body.worker_id)
+    except PersistenceError as exc:
+        raise _generation_http_error(exc) from exc
+    if job is None:
+        raise HTTPException(status_code=409, detail={"code": "worker_lease_or_state_conflict"})
+    return {"generation_job": _generation_job_response(job)}
+
+
+@app.post("/api/generation-worker/jobs/{generation_id}/failed", response_model=GenerationJobResponse, tags=["Generation Worker"])
+def fail_generation_worker_job(
+    generation_id: str,
+    body: GenerationWorkerFailed,
+    _: None = Depends(require_generation_worker),
+) -> dict[str, Any]:
+    _require_generation_database()
+    try:
+        job = GenerationStore(REVIEW_PERSISTENCE).fail_job(
+            generation_id,
+            worker_id=body.worker_id,
+            error_code=body.error_code,
+            error_message=body.error_message,
+        )
+    except PersistenceError as exc:
+        raise _generation_http_error(exc) from exc
+    if job is None:
+        raise HTTPException(status_code=409, detail={"code": "worker_lease_or_state_conflict"})
+    return {"generation_job": _generation_job_response(job)}
 
 
 async def run_recognition_execution(
@@ -413,6 +1096,7 @@ async def run_recognition_execution(
     _report_recognition_progress(progress_callback, "building_review", 88)
     rules = read_json(project_path("config", "factory_rules.json"))
     review = DrawingReviewWorkflow(rules).run(str(drawing_path), candidates, run_standardization=False)
+    apply_generation_defaults(review)
     llm_standardization_payload: dict[str, Any] | None = None
     if use_llm_standardization:
         warnings.append("LLM/RAG 标准化已改为点击“标准化”按钮后执行，本次上传仅完成识别。")
@@ -958,6 +1642,7 @@ def _create_review_persistence(
     artifact_dir: str,
     identity: IdentityContext,
 ) -> dict[str, Any]:
+    apply_generation_defaults(review)
     try:
         return REVIEW_PERSISTENCE.create_review(
             job_id,
@@ -983,10 +1668,14 @@ def _load_persisted_review(
             raise _persistence_http_error(exc) from exc
         if stored is None:
             raise HTTPException(status_code=404, detail="Review not found.")
-        return stored["review"], stored["revision"]
+        review = stored["review"]
+        apply_generation_defaults(review)
+        return review, stored["revision"]
     if not _local_job_owned(review_path.parent, identity.user_id) or not review_path.exists():
         raise HTTPException(status_code=404, detail="Review not found.")
-    return read_json(review_path), None
+    review = read_json(review_path)
+    apply_generation_defaults(review)
+    return review, None
 
 
 def _ensure_review_owned(job_id: str, review_path: Path, identity: IdentityContext) -> None:
@@ -1002,6 +1691,7 @@ def _save_review_persistence(
     events: list[dict[str, Any]] | None = None,
     identity: IdentityContext,
 ) -> dict[str, Any]:
+    apply_generation_defaults(review)
     revision = _expected_review_revision(expected_revision)
     audit_events = []
     for raw_event in events or []:
@@ -1569,3 +2259,194 @@ def _job_dir(job_id: str) -> Path:
     if not str(job_dir).lower().startswith(str(API_RUN_ROOT.resolve()).lower()):
         raise HTTPException(status_code=400, detail="Invalid job path.")
     return job_dir
+
+
+def _load_generation_review(job_id: str, identity: IdentityContext) -> tuple[dict[str, Any], int | None]:
+    review_path = _job_dir(job_id) / "review.json"
+    review, revision = _load_persisted_review(job_id, review_path, identity)
+    return review, revision
+
+
+def _require_service_key(
+    credentials: HTTPAuthorizationCredentials | None,
+    env_name: str,
+    label: str,
+) -> None:
+    expected = str(os.getenv(env_name) or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail=f"{label} API key is not configured.")
+    worker_key = str(os.getenv("GENERATION_WORKER_API_KEY") or "").strip()
+    admin_key = str(os.getenv("GENERATION_ADMIN_API_KEY") or "").strip()
+    if worker_key and admin_key and secrets.compare_digest(worker_key, admin_key):
+        raise HTTPException(status_code=503, detail="Generation worker and administrator API keys must be different.")
+    supplied = credentials.credentials if credentials and credentials.scheme.lower() == "bearer" else ""
+    if not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail=f"Invalid {label.lower()} API key.")
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "true" if default else "false") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _require_generation_database() -> None:
+    if not _generation_database_available():
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "generation_queue_not_configured", "message": "Generation queues require PostgreSQL."},
+        )
+
+
+def _generation_database_available() -> bool:
+    engine = getattr(REVIEW_PERSISTENCE, "_engine", None)
+    dialect_name = str(getattr(getattr(engine, "dialect", None), "name", "") or "")
+    sqlite_test_mode = dialect_name == "sqlite" and _env_flag("AI_REVIEW_ALLOW_SQLITE_GENERATION_TESTS", False)
+    return bool(REVIEW_PERSISTENCE.configured and (dialect_name == "postgresql" or sqlite_test_mode))
+
+
+def _generation_lease_seconds() -> int:
+    try:
+        return min(max(int(os.getenv("GENERATION_JOB_LEASE_SECONDS", "300")), 30), 3600)
+    except (TypeError, ValueError):
+        return 300
+
+
+def _generation_max_artifact_bytes() -> int:
+    try:
+        megabytes = min(max(int(os.getenv("GENERATION_MAX_ARTIFACT_MB", "50")), 1), 1024)
+    except (TypeError, ValueError):
+        megabytes = 50
+    return megabytes * 1024 * 1024
+
+
+def _generation_artifact_path(relative_path: str) -> Path:
+    root = (API_RUN_ROOT / "_generation_artifacts").resolve()
+    path = (root / relative_path).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid generation artifact path.") from exc
+    return path
+
+
+def _create_generation_pdf_preview(
+    store: GenerationStore,
+    *,
+    generation_id: str,
+    worker_id: str,
+    pdf_artifact: dict[str, Any],
+    pdf_path: Path,
+) -> dict[str, Any] | None:
+    job = store.get_job(generation_id, owner_user_id=None)
+    if job is not None and any(item.get("artifact_type") == "png" for item in job.get("artifacts") or []):
+        return None
+
+    source_artifact_id = str(pdf_artifact["artifact_id"])
+    preview_id = uuid.uuid4().hex[:16]
+    render_dir = pdf_path.parent / f".{source_artifact_id}_preview"
+    try:
+        rendered = render_pdf_with_pdftoppm(
+            pdf_path,
+            render_dir,
+            prefix="preview",
+            dpi=160,
+            first_page_only=True,
+        )
+        if not rendered:
+            raise RuntimeError("PDF renderer did not produce a preview image.")
+        content = Path(rendered[0]).read_bytes()
+        if not content:
+            raise RuntimeError("Generated PDF preview is empty.")
+        if len(content) > _generation_max_artifact_bytes():
+            raise RuntimeError("Generated PDF preview exceeds GENERATION_MAX_ARTIFACT_MB.")
+        source_stem = Path(str(pdf_artifact.get("filename") or "drawing.pdf")).stem
+        filename = _safe_filename(f"{source_stem}_preview.png")[:240]
+        relative = Path(generation_id) / f"{preview_id}_{filename}"
+        target = _generation_artifact_path(relative.as_posix())
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        try:
+            preview = store.add_artifact(
+                {
+                    "artifact_id": preview_id,
+                    "generation_id": generation_id,
+                    "artifact_type": "png",
+                    "filename": filename,
+                    "relative_path": relative.as_posix(),
+                    "mime_type": "image/png",
+                    "size_bytes": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "is_mock": bool(pdf_artifact.get("is_mock")),
+                },
+                worker_id=worker_id,
+                event_source="system",
+                event_payload={"generated_from_artifact_id": source_artifact_id},
+            )
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        if preview is None:
+            target.unlink(missing_ok=True)
+            raise RuntimeError("Worker lease changed while the PDF preview was being registered.")
+        return preview
+    finally:
+        if render_dir.exists():
+            shutil.rmtree(render_dir, ignore_errors=True)
+
+
+def _generation_artifact_response(artifact: dict[str, Any]) -> dict[str, Any]:
+    result = dict(artifact)
+    result.pop("relative_path", None)
+    result["url"] = (
+        f"/api/generation-jobs/{quote(str(artifact['generation_id']), safe='')}"
+        f"/artifacts/{quote(str(artifact['artifact_id']), safe='')}"
+    )
+    return result
+
+
+def _generation_job_response(job: dict[str, Any]) -> dict[str, Any]:
+    result = dict(job)
+    result.pop("parameter_package", None)
+    result["artifacts"] = [_generation_artifact_response(item) for item in job.get("artifacts") or []]
+    result["is_stale"] = False
+    if REVIEW_PERSISTENCE.configured:
+        try:
+            stored = REVIEW_PERSISTENCE.get_review(str(job.get("review_id") or ""), owner_user_id=None)
+            if stored is not None:
+                result["is_stale"] = int(stored.get("revision") or 0) != int(job.get("review_revision") or 0)
+        except PersistenceError:
+            pass
+    return result
+
+
+def _update_generation_worker_job(
+    generation_id: str,
+    worker_id: str,
+    *,
+    status: str | None = None,
+    stage: str | None = None,
+    progress: int | None = None,
+) -> dict[str, Any]:
+    try:
+        job = GenerationStore(REVIEW_PERSISTENCE).update_worker_job(
+            generation_id,
+            worker_id=worker_id,
+            status=status,
+            stage=stage,
+            progress=progress,
+            lease_seconds=_generation_lease_seconds(),
+        )
+    except PersistenceError as exc:
+        raise _generation_http_error(exc) from exc
+    if job is None:
+        raise HTTPException(status_code=409, detail={"code": "worker_lease_or_state_conflict"})
+    return _generation_job_response(job)
+
+
+def _generation_http_error(exc: PersistenceError) -> HTTPException:
+    message = str(exc)
+    if "PostgreSQL is required" in message:
+        return HTTPException(status_code=503, detail={"code": "generation_queue_not_configured", "message": message})
+    if "not found" in message.lower():
+        return HTTPException(status_code=404, detail={"code": "generation_resource_not_found", "message": message})
+    return HTTPException(status_code=409, detail={"code": "generation_conflict", "message": message})

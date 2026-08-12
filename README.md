@@ -94,6 +94,31 @@ python -m pip install -r requirements.txt
 
 `/api/health` 会显示 `qwen_runtime`、`ocr_runtime`、`geometry_runtime` 状态。当前 Windows CPU 环境已验证 `rapidocr 3.8.4 + onnxruntime 1.20.1` 可运行。
 
+中文增强接口文档（Scalar）位于 `http://127.0.0.1:8770/api/docs`，原 Swagger UI 保留在 `/api/swagger`，OpenAPI JSON 位于 `/api/openapi.json`；旧 `/docs` 会重定向到增强文档。Scalar 浏览器资源已固定版本并自托管，断开外网后仍可查看、搜索和在线调试接口。
+
+### 模拟 SolidWorks 生图闭环
+
+生图任务、模板、Worker 租约和产物元数据使用 PostgreSQL。先执行迁移，再启动 API、识别 Worker 与前端：
+
+```bash
+docker compose up -d postgres
+docker compose run --rm api alembic upgrade head
+docker compose up -d api worker web
+```
+
+本地需要打通模拟闭环时，在 `.env` 设置互不相同的 `GENERATION_WORKER_API_KEY`、`GENERATION_ADMIN_API_KEY`，再启动可选 profile：
+
+```bash
+docker compose --profile mock-solidworks up -d mock-solidworks
+docker compose logs -f mock-solidworks
+```
+
+模拟 Worker 只通过正式 HTTP Worker API 领取、更新和上传任务，不连接数据库，也不共享产物目录。它会动态输出带水印 PNG、PDF、模型参数清单和日志，不会伪造 `.SLDPRT` 或 `.SLDDRW` 文件。生产环境保持 `MOCK_SOLIDWORKS_ENABLED=false`，且不要启动该 profile。
+
+`spring_generation_parameters/v1` 已冻结为圆柱螺旋压缩弹簧第一版 SolidWorks 协议。`generation_parameters.spring_parameters` 只包含 `wire_diameter`、`mean_diameter`、`free_length`、`total_coils`、`active_coils`、`handedness`、`end_grinding`、`end_coils_closed` 八个字段；SolidWorks 使用中径与线径计算外径、内径，中文技术要求单独放在 `technical_requirements`。中径缺失时优先由已确认的外径或内径与线径计算，无法计算时补入 23 mm 默认候选值并保持待人工确认；旋向没有默认值。真实 SolidWorks Worker 默认只需上传 PDF，API 会自动将第一页登记为 PNG 对比预览；转换失败时原 PDF 仍可完成任务并下载。
+
+标准化是可选的审图辅助功能，不是创建生图任务的必备条件。八个建模字段、中文技术要求均已人工确认且参数合理性检查不存在阻断问题时，可以按当前参数直接生图；未选择标准、标准尚未确认、建议未处理或标准化结果过期只会产生 `ready_with_warnings` 提示。直接生图与标准化后生图均由 SolidWorks Worker 从 `generation_job.parameter_package` 读取完全相同的冻结参数结构，未标准化时 `standard_context` 保持空值。
+
 也可以显式传入候选识别结果：
 
 ```powershell
@@ -115,10 +140,11 @@ $env:PYTHONPATH="D:\YingKe\ai-design-review\src"
 Copy-Item .env.example .env
 $env:QWEN_API_KEY="你的百炼或 DashScope API Key"
 $env:QWEN_MODEL="qwen3.7-plus"
+$env:QWEN_VISION_ENABLE_THINKING="false"
 $env:QWEN_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
 ```
 
-也可以直接把真实密钥写入本地 `.env`；`scripts\run_backend.cmd` 检测到该文件后会自动加载。`.env` 已加入 `.gitignore`。
+`QWEN_VISION_ENABLE_THINKING=false` 只关闭图纸视觉识别的深度思考，不影响标准化 AI 对话和 RAGFlow。也可以直接把真实密钥写入本地 `.env`；`scripts\run_backend.cmd` 检测到该文件后会自动加载。`.env` 已加入 `.gitignore`。
 
 每次 Qwen 识别都会在 job 目录生成 `qwen_vision_raw.json`，保存模型原始返回、解析后的 JSON 和转换后的 candidates，便于调试。
 
@@ -288,6 +314,23 @@ docker compose up -d
 docker compose down
 http://127.0.0.1:8088
 http://127.0.0.1:8088/api/health
+http://127.0.0.1:8088/api/docs
+http://127.0.0.1:8088/api/swagger
 
 # 公网地址
 http://111.170.173.2:8088/
+
+document.cookie = `userinfo=${encodeURIComponent(JSON.stringify({
+  userId: "123",
+  username: "admin",
+  realName: "管理员",
+  currentOrgId: "1",
+  currentOrgName: "总部"
+}))}; Path=/`;
+
+location.reload();
+
+docker compose --profile mock-solidworks stop
+docker compose --profile mock-solidworks start
+
+docker compose --profile mock-solidworks up -d

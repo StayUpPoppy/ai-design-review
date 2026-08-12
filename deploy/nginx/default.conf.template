@@ -23,6 +23,10 @@ server {
         proxy_read_timeout 300s;
     }
 
+    location = /docs {
+        return 307 $scheme://$http_host/api/docs;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
     }

@@ -45,10 +45,22 @@ const state = {
   recentReviewsLoading: false,
   recognitionPollers: {},
   recognitionMessageIds: {},
+  generationReadiness: null,
+  generationJobs: [],
+  generationQueueAvailable: null,
+  generationPollers: {},
+  generationBusy: false,
+  generationCompare: null,
   identity: null,
   identityReady: false,
   identityError: "",
 };
+
+window.addEventListener("beforeunload", (event) => {
+  if (!hasPendingEditedReviewItems(state.review)) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 
 const REQUIRED_FIELDS = [
   "material",
@@ -91,6 +103,7 @@ const FIELD_LABELS = {
   pitch: "节距",
   end_type: "端部形式",
   end_grinding: "端面磨削",
+  end_coils_closed: "端圈压并",
   spring_rate: "刚度",
   perpendicularity: "垂直度",
   straightness: "直线度",
@@ -186,17 +199,47 @@ const COMPRESSION_CORE_PARAMETER_FIELDS = new Set([
 ]);
 
 const COMPRESSION_GENERATION_CORE_FIELDS = [
-  "material",
   "wire_diameter",
+  "mean_diameter",
   "free_length",
   "total_coils",
   "active_coils",
   "handedness",
-  "end_type",
   "end_grinding",
+  "end_coils_closed",
 ];
 
-const CONTROLLED_DIAMETER_FIELDS = ["outer_diameter", "inner_diameter", "mean_diameter"];
+const COMPRESSION_GENERATION_DEFAULTS = {
+  wire_diameter: 3,
+  mean_diameter: 23,
+  free_length: 45,
+  total_coils: 10,
+  active_coils: 8,
+  end_grinding: 1,
+  end_coils_closed: 1,
+};
+
+const COMPRESSION_GENERATION_UNITS = {
+  wire_diameter: "mm",
+  mean_diameter: "mm",
+  free_length: "mm",
+  total_coils: null,
+  active_coils: null,
+  handedness: null,
+  end_grinding: null,
+  end_coils_closed: null,
+};
+
+const COMPRESSION_GENERATION_LABELS = {
+  wire_diameter: "线径",
+  mean_diameter: "中径",
+  free_length: "自由长度",
+  total_coils: "总圈数",
+  active_coils: "有效圈数",
+  handedness: "旋向",
+  end_grinding: "两端磨削",
+  end_coils_closed: "端圈压并",
+};
 
 const SPECIALIZED_ACCURACY_PARAMETER_FIELDS = new Set([
   "diameter_accuracy_grade",
@@ -488,6 +531,8 @@ reviewJsonInput.addEventListener("change", async (event) => {
   if (!file) return;
   advancedOptions.open = false;
   const review = normalizeReview(JSON.parse(await file.text()));
+  state.lastJob = null;
+  resetGenerationState();
   state.compareTab = "workbench";
   setReview(review, null);
   appendUserMessage(`导入审查 JSON：${file.name}`);
@@ -655,6 +700,10 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
       preserveAccuracyGradeUpdate: true,
       preservePendingAccuracyGrade: true,
     });
+    state.generationReadiness = null;
+    if (state.lastJob?.job_id && typeof loadGenerationState === "function") {
+      void loadGenerationState(state.lastJob.job_id, { silent: true });
+    }
     state.review.standardization_apply_history = [];
     state.review.derived_parameters_stale = false;
     state.review.parameter_reasonableness_stale = false;
@@ -743,6 +792,10 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
       finalTurn._client_id = pendingTurnId;
     }
     setReview(normalized, state.imageUrl);
+    state.generationReadiness = null;
+    if (state.lastJob?.job_id && typeof loadGenerationState === "function") {
+      void loadGenerationState(state.lastJob.job_id, { silent: true });
+    }
     const context = getReviewContext(messageId);
     if (context) {
       context.review = state.review;
@@ -885,6 +938,7 @@ function loadPointAuditState(point) {
 
 function queueReviewAuditEvent(event) {
   if (!state.review || !event) return;
+  state.generationReadiness = null;
   const entry = {
     client_event_id: createAuditEventId(),
     event_type: event.event_type || "manual_review_updated",
@@ -959,6 +1013,7 @@ async function persistReviewChanges() {
         }
       });
       refreshReviewChangeHistory();
+      if (state.generationJobs.length) void loadGenerationState(state.lastJob.job_id, { silent: true });
     } catch (error) {
       state.pendingReviewAuditEvents.unshift(...events);
       (state.review.change_history || []).forEach((entry) => {
@@ -1109,12 +1164,15 @@ function syncParameterReasonablenessSurfaces(messageId = state.activeReviewMessa
   document.querySelectorAll('[data-kind="param"]').forEach((row) => {
     const severity = reasonablenessSeverityForField(state.review, row.dataset.field);
     ["blocked", "warning", "needs_input"].forEach((value) => row.classList.toggle(`parameter-risk-${value}`, severity === value));
+    const param = state.review.spring_parameters?.[row.dataset.field];
+    if (param) syncConfirmationControl(row, param, { kind: "parameter", field: row.dataset.field, review: state.review });
   });
   document.querySelectorAll('[data-kind="load_point"]').forEach((row) => {
     const point = state.review.spring_parameters?.load_points?.[Number(row.dataset.index)];
     const field = `load_points.${point?.label || `F${Number(row.dataset.index) + 1}`}`;
     const severity = reasonablenessSeverityForField(state.review, field);
     ["blocked", "warning", "needs_input"].forEach((value) => row.classList.toggle(`parameter-risk-${value}`, severity === value));
+    if (point) syncConfirmationControl(row, point, { kind: "load_point", field, review: state.review });
   });
   bindReasonablenessIssueFocus(document, messageId);
 }
@@ -1192,6 +1250,7 @@ async function loadDemoReview() {
     // A demo must never retain the ID of a previously opened real order.
     await flushReviewPersistence();
     state.lastJob = null;
+    resetGenerationState();
     state.pendingReviewAuditEvents = [];
     removeMessage(thinkingId);
     state.compareTab = "workbench";
@@ -1420,6 +1479,7 @@ async function openPersistedReview(jobId, options = {}) {
     };
     state.compareTab = "workbench";
     setReview(normalizeReview(payload), toBackendAssetUrl(item?.image_url));
+    await loadGenerationState(jobId, { render: false, silent: true });
     renderRecentReviews();
     if (!options.recognitionCompleted) appendUserMessage(`打开已保存审图：${item?.drawing_name || item?.drawing_no || jobId}`);
     appendReviewMessage("已恢复审图结果，可继续确认、标准化或与 AI 对话。");
@@ -1528,6 +1588,7 @@ function resetDeletedReviewState() {
   state.review = null;
   state.imageUrl = null;
   state.lastJob = null;
+  resetGenerationState();
   state.activeReviewMessageId = null;
   state.selectedBubbleId = null;
   exportButton.disabled = true;
@@ -1552,6 +1613,7 @@ async function startNewReview() {
     state.review = null;
     state.imageUrl = null;
     state.lastJob = null;
+    resetGenerationState();
     state.activeReviewMessageId = null;
     state.selectedBubbleId = null;
     state.selectedFile = null;
@@ -1870,6 +1932,7 @@ function reasonablenessSeverityForField(review, field) {
 function renderParameterTableHtml(review) {
   const params = review.spring_parameters || {};
   const fieldGroups = getParameterFieldGroups(params, review);
+  const confirmationPlan = buildSafeConfirmationPlan(review);
   const parameterRows = fieldGroups.core.map((field) => {
     const meta = getFieldMeta(field, review);
     return parameterRowHtml(field, params[field] || blankParam(meta.unit), meta);
@@ -1884,7 +1947,10 @@ function renderParameterTableHtml(review) {
     <section class="review-block">
       <div class="block-head">
         <h2>结构化尺寸数据</h2>
-        <span>${totalRows} 项</span>
+        <div class="parameter-bulk-actions">
+          <span>${totalRows} 项</span>
+          <button type="button" data-action="confirm-all-review-items" ${confirmationPlan.items.length ? "" : "disabled"}>全部确认可确认项${confirmationPlan.items.length ? ` · ${confirmationPlan.items.length}` : ""}</button>
+        </div>
       </div>
       <div class="data-table">
         ${dataTableHeadHtml("参数", "数值", "公差")}
@@ -1954,6 +2020,9 @@ function auditEventLabel(eventType) {
     parameter_tolerance_updated: "修改公差",
     parameter_confirmed: "确认参数",
     parameter_reopened: "重新编辑",
+    recognized_value_confirmed: "确认识别值",
+    modified_value_confirmed: "确认修改值",
+    risk_value_confirmed: "确认风险值",
     load_point_value_updated: "修改载荷测试点",
     load_point_tolerance_updated: "修改载荷公差",
     load_point_confirmed: "确认载荷测试点",
@@ -2225,7 +2294,7 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
         <span class="sr-only">${escapeHtml(label)}公差</span>
         <input data-role="tolerance" aria-label="${escapeHtml(label)}公差" value="${escapeHtml(formatTolerance(param))}">
       </label>
-      <button class="confirm-button${param.need_human_review ? "" : " confirmed"}" type="button" data-role="confirm">${confirmationActionLabel(param)}</button>
+      ${confirmationButtonHtml(param, { kind: "parameter", field, review: state.review })}
     </div>
   `;
 }
@@ -2254,7 +2323,7 @@ function loadPointRowHtml(point, index, review = state.review) {
         <input data-role="load-tolerance" aria-label="${escapeHtml(label)}&#20844;&#24046;" value="${escapeHtml(tolerance.value)}" placeholder="${escapeHtml(tolerance.placeholder)}" title="${escapeHtml(tolerance.title)}">
         ${tolerance.note ? `<small>${escapeHtml(tolerance.note)}</small>` : ""}
       </label>
-      <button class="confirm-button${point.need_human_review ? "" : " confirmed"}" type="button" data-role="confirm">${confirmationActionLabel(point)}</button>
+      ${confirmationButtonHtml(point, { kind: "load_point", field: `load_points.${label}`, review })}
     </div>
   `;
 }
@@ -2348,8 +2417,99 @@ function applyStandardizedLoadTolerance(point, upper, lower, options = {}) {
   point.tolerance_basis = options.basis || point.tolerance_basis || "";
 }
 
-function confirmationActionLabel(item) {
-  return item?.need_human_review ? "确认" : "修改";
+function confirmationItemWasEdited(item) {
+  return Boolean(item?.need_human_review) && sourceValues(item?.source).includes("human_edited");
+}
+
+function hasPendingEditedReviewItems(review) {
+  if (!review) return false;
+  const parameters = review.spring_parameters || {};
+  const parameterPending = Object.values(parameters).some((item) => {
+    if (Array.isArray(item)) return item.some(confirmationItemWasEdited);
+    return confirmationItemWasEdited(item);
+  });
+  return parameterPending || (review.technical_requirements || []).some(confirmationItemWasEdited);
+}
+
+function confirmationControlState(item, options = {}) {
+  const kind = options.kind || "parameter";
+  const field = options.field || "";
+  const review = options.review || state.review;
+  if (!item?.need_human_review) {
+    return { state: "confirmed", label: "已确认", disabled: true, reason: "该项已经确认；修改内容后可重新确认。" };
+  }
+
+  let invalidReason = "";
+  if (kind === "load_point") {
+    if (!isFiniteReviewNumber(item?.height) || !isFiniteReviewNumber(item?.force)) {
+      invalidReason = "高度和力值需要完整填写为有效数字";
+    }
+  } else if (kind === "technical") {
+    if (!String(item?.content || "").trim()) invalidReason = "技术要求内容不能为空";
+    else if (item?.type === "surface" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item?.normalization_status)) {
+      invalidReason = "请先明确表面处理标准术语";
+    }
+  } else {
+    invalidReason = bulkParameterInvalidReason(field, item);
+    if (!invalidReason && item?.derived_value_stale) invalidReason = "关联参数已变化，等待重新计算";
+  }
+
+  const severity = kind === "technical" ? "" : reasonablenessSeverityForField(review, field);
+  if (!invalidReason && ["blocked", "needs_input"].includes(severity)) {
+    invalidReason = severity === "blocked" ? "存在阻断问题，请先修改参数" : "所需信息尚未填写完整";
+  }
+  if (!invalidReason && confirmationItemWasEdited(item) && review?.parameter_reasonableness_stale && kind !== "technical") {
+    return { state: "validating", label: "校验中", disabled: true, reason: "正在重新检查参数合理性。" };
+  }
+  if (invalidReason) {
+    return { state: "invalid", label: "无法确认", disabled: true, reason: invalidReason };
+  }
+
+  const modified = confirmationItemWasEdited(item);
+  return {
+    state: modified ? "modified" : (severity === "warning" ? "warning" : "pending"),
+    label: modified ? "确认修改" : "确认",
+    disabled: false,
+    reason: severity === "warning" ? "当前值存在风险提示，确认后将记录人工接受。" : "",
+  };
+}
+
+function confirmationButtonHtml(item, options = {}) {
+  const control = confirmationControlState(item, options);
+  const title = control.reason ? ` title="${escapeHtml(control.reason)}"` : "";
+  return `<button class="confirm-button ${escapeHtml(control.state)}" type="button" data-role="confirm"${control.disabled ? " disabled" : ""}${title}>${escapeHtml(control.label)}</button>`;
+}
+
+function syncConfirmationControl(row, item, options = {}) {
+  const button = row?.querySelector?.('[data-role="confirm"]');
+  if (!button) return confirmationControlState(item, options);
+  const control = confirmationControlState(item, options);
+  button.classList.remove("confirmed", "pending", "modified", "warning", "validating", "invalid");
+  button.classList.add(control.state);
+  button.disabled = control.disabled;
+  button.textContent = control.label;
+  button.title = control.reason || "";
+  row.dataset.confirmationState = control.state;
+  return control;
+}
+
+function syncReviewConfirmationControls(root, review = state.review) {
+  if (!root || !review) return;
+  root.querySelectorAll('[data-kind="param"][data-field]').forEach((row) => {
+    const field = row.dataset.field;
+    const item = review.spring_parameters?.[field];
+    if (item) syncConfirmationControl(row, item, { kind: "parameter", field, review });
+  });
+  root.querySelectorAll('[data-kind="load_point"][data-index]').forEach((row) => {
+    const item = review.spring_parameters?.load_points?.[Number(row.dataset.index)];
+    const field = `load_points.${item?.label || `F${Number(row.dataset.index) + 1}`}`;
+    if (item) syncConfirmationControl(row, item, { kind: "load_point", field, review });
+  });
+  root.querySelectorAll('[data-kind="technical"][data-index]').forEach((row) => {
+    const index = Number(row.dataset.index);
+    const item = review.technical_requirements?.[index];
+    if (item) syncConfirmationControl(row, item, { kind: "technical", field: `technical_requirements.${index + 1}`, review });
+  });
 }
 
 function renderDerivedParametersHtml(review) {
@@ -2393,7 +2553,10 @@ function renderDerivedParametersHtml(review) {
 }
 
 function renderGenerationReadinessHtml(review) {
-  const readiness = assessGenerationReadiness(review);
+  const serverState = review === state.review ? state.generationReadiness : null;
+  const readiness = serverState?.generation_readiness || assessGenerationReadiness(review);
+  const isPersistedReview = Boolean(state.lastJob?.job_id && review === state.review);
+  const canGenerate = isPersistedReview && state.generationQueueAvailable === true && ["ready", "ready_with_warnings"].includes(readiness.status);
   const statusLabels = {
     ready: "可生成",
     ready_with_warnings: "可生成，有提示",
@@ -2412,12 +2575,83 @@ function renderGenerationReadinessHtml(review) {
       <div class="generation-readiness-progress">已确认核心参数 ${readiness.confirmed_core_count}/${readiness.core_field_count}</div>
       ${renderGenerationReadinessIssues("需要补充", readiness.missing_fields, "missing")}
       ${renderGenerationReadinessIssues("需要确认", readiness.pending_fields, "pending")}
+      ${renderGenerationReadinessIssues("参数不合理", readiness.blocking_reasonableness, "blocked")}
       ${renderGenerationReadinessIssues("风险提示", readiness.warnings, "warning")}
       <div class="generation-package-actions">
         <button type="button" data-action="export-generation-package">导出参数包</button>
-        <small>仅包含当前已确认参数；完整性提示不影响导出。</small>
+        <button type="button" class="primary-action" data-action="create-generation-job" ${canGenerate && !state.generationBusy ? "" : "disabled"}>${state.generationBusy ? "正在创建…" : "生成图纸"}</button>
+        <small>${isPersistedReview
+          ? (state.generationQueueAvailable === false ? "就绪状态可查询；创建生图任务需要 PostgreSQL。" : "就绪状态由服务器重新计算；参数有提示时仍可确认后生成。")
+          : "本地导入数据仅允许导出，保存为服务器审图单后才能生图。"}</small>
+      </div>
+      ${renderGenerationJobsHtml(review)}
+    </section>
+  `;
+}
+
+function renderGenerationJobsHtml(review) {
+  if (review !== state.review || !state.lastJob?.job_id) return "";
+  const jobs = Array.isArray(state.generationJobs) ? state.generationJobs : [];
+  if (!jobs.length) {
+    return '<div class="generation-empty">尚未生成版本。创建后会在这里显示 SolidWorks 模拟任务进度。</div>';
+  }
+  return `
+    <section class="generation-version-section">
+      <div class="generation-version-head">
+        <strong>生图版本 · ${jobs.length}</strong>
+        <span>旧版本保留，可随参数修订重新生成</span>
+      </div>
+      <div class="generation-version-list">
+        ${jobs.map((job, index) => renderGenerationJobHtml(job, jobs.length - index)).join("")}
+      </div>
+      <div class="generation-erp-placeholder">
+        <button type="button" disabled>传送至 ERP</button>
+        <span>待真实 SolidWorks / ERP 接入</span>
       </div>
     </section>
+  `;
+}
+
+function renderGenerationJobHtml(job, versionNumber) {
+  const labels = {
+    queued: "排队中",
+    claimed: "已领取",
+    generating_3d: "生成三维模型",
+    generating_2d: "生成二维图",
+    uploading: "上传产物",
+    completed: "已完成",
+    failed: "失败",
+    cancelled: "已取消",
+  };
+  const png = (job.artifacts || []).find((item) => item.artifact_type === "png" || item.mime_type === "image/png");
+  const pdf = (job.artifacts || []).find((item) => item.artifact_type === "pdf" || item.mime_type === "application/pdf");
+  const isMock = (job.artifacts || []).some((item) => item.is_mock) || String(job.template_code || "").startsWith("mock");
+  const terminal = ["completed", "failed", "cancelled"].includes(job.status);
+  return `
+    <article class="generation-version-card ${escapeHtml(job.status || "queued")}${job.is_final ? " final" : ""}${job.is_stale ? " stale" : ""}">
+      <div class="generation-version-title">
+        <div>
+          <strong>版本 ${escapeHtml(String(versionNumber))}${job.is_final ? ` · ${isMock ? "模拟最终版本" : "最终版本"}` : ""}</strong>
+          <small>审图修订 r${escapeHtml(String(job.review_revision ?? "-"))} · ${escapeHtml(job.template_code || "未匹配模板")} / ${escapeHtml(job.template_version || "-")}</small>
+        </div>
+        <span class="generation-job-status">${escapeHtml(labels[job.status] || job.status || "未知")}</span>
+      </div>
+      ${!terminal ? `<div class="generation-progress"><span style="width:${Math.min(Math.max(Number(job.progress) || 0, 0), 100)}%"></span></div>` : ""}
+      <div class="generation-version-meta">
+        <span>${escapeHtml(formatRecentReviewTime(job.completed_at || job.updated_at || job.created_at))}</span>
+        ${isMock ? "<span>模拟产物</span>" : ""}
+        ${job.parent_generation_id ? "<span>基于上一版本</span>" : ""}
+        ${job.is_stale ? "<span class=\"generation-stale-label\">参数已过期</span>" : ""}
+      </div>
+      ${job.error_message ? `<p class="generation-error">${escapeHtml(job.error_code || "generation_failed")}：${escapeHtml(job.error_message)}</p>` : ""}
+      <div class="generation-version-actions">
+        ${png ? `<button type="button" data-action="compare-generation" data-generation-id="${escapeHtml(job.generation_id)}">对比图纸</button>` : ""}
+        ${pdf ? `<a class="button-link" href="${escapeHtml(toBackendAssetUrl(pdf.url))}" target="_blank" rel="noopener">查看 PDF</a>` : ""}
+        ${job.status === "failed" ? `<button type="button" data-action="retry-generation" data-generation-id="${escapeHtml(job.generation_id)}">原参数重试</button>` : ""}
+        ${!terminal ? `<button type="button" class="secondary-action" data-action="cancel-generation" data-generation-id="${escapeHtml(job.generation_id)}">取消</button>` : ""}
+        ${job.status === "completed" && !job.is_stale && !job.is_final ? `<button type="button" class="primary-action" data-action="approve-generation" data-generation-id="${escapeHtml(job.generation_id)}">设为最终版本</button>` : ""}
+      </div>
+    </article>
   `;
 }
 
@@ -2444,6 +2678,119 @@ function canFocusGenerationIssue(field) {
   return Boolean(target) && !target.startsWith("technical_requirements.");
 }
 
+function generationSourceParameter(parameters, field) {
+  if (field === "mean_diameter") {
+    const direct = rawGenerationParameter(parameters, "mean_diameter");
+    if (direct) return direct;
+    const wire = rawGenerationParameter(parameters, "wire_diameter");
+    if (!wire || !Number.isFinite(Number(wire.value))) return null;
+    for (const diameterField of ["outer_diameter", "inner_diameter"]) {
+      const diameter = rawGenerationParameter(parameters, diameterField);
+      if (!diameter || !Number.isFinite(Number(diameter.value))) continue;
+      const value = diameterField === "outer_diameter"
+        ? Number(diameter.value) - Number(wire.value)
+        : Number(diameter.value) + Number(wire.value);
+      return {
+        value: Number(value.toFixed(3)),
+        unit: "mm",
+        source: ["derived", `${diameterField}_and_wire_diameter`],
+        source_fields: [diameterField, "wire_diameter"],
+        formula: diameterField === "outer_diameter"
+          ? "outer_diameter - wire_diameter"
+          : "inner_diameter + wire_diameter",
+        need_human_review: Boolean(diameter.need_human_review || wire.need_human_review),
+      };
+    }
+    return null;
+  }
+  if (field === "end_coils_closed") {
+    const direct = parameters?.end_coils_closed;
+    if (direct && typeof direct === "object" && direct.value != null && direct.value !== "") return direct;
+    const legacy = parameters?.end_type;
+    if (legacy && typeof legacy === "object" && legacy.value != null && legacy.value !== "") return legacy;
+    return null;
+  }
+  return rawGenerationParameter(parameters, field);
+}
+
+function rawGenerationParameter(parameters, field) {
+  const item = parameters?.[field];
+  return item && typeof item === "object" && item.value != null && item.value !== "" ? item : null;
+}
+
+function generationContractValue(field, rawValue) {
+  if (["wire_diameter", "mean_diameter", "free_length"].includes(field)) {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value) || value <= 0) throw new Error(`${targetFieldLabel(field)}必须大于 0`);
+    return Number(value.toFixed(3));
+  }
+  if (["total_coils", "active_coils"].includes(field)) {
+    const value = Number(rawValue);
+    if (!Number.isInteger(value) || value <= 0) throw new Error(`${targetFieldLabel(field)}必须是正整数`);
+    return value;
+  }
+  const text = String(rawValue ?? "").trim();
+  const normalized = text.toLowerCase().replaceAll("-", "_").replaceAll(" ", "");
+  if (field === "handedness") {
+    if (["right", "right_hand", "r", "右旋"].includes(normalized)) return "right";
+    if (["left", "left_hand", "l", "左旋"].includes(normalized)) return "left";
+    throw new Error("旋向只能是 right 或 left");
+  }
+  if (field === "end_grinding") {
+    if (["1", "true", "ground", "grounded", "closed_and_ground"].includes(normalized)) return 1;
+    if (["0", "false", "not_ground", "notground", "unground", "ungrounded"].includes(normalized)) return 0;
+    if (text.includes("不磨") || text.includes("未磨")) return 0;
+    if (text.includes("磨削") || text.includes("磨平")) return 1;
+    throw new Error("两端磨削只能是 0 或 1");
+  }
+  if (field === "end_coils_closed") {
+    if (["1", "true", "tight", "closed", "closed_end", "closed_and_ground", "closed_and_unground"].includes(normalized)) return 1;
+    if (["0", "false", "not_tight", "nottight", "open", "open_end"].includes(normalized)) return 0;
+    if (text.includes("不并紧") || text.includes("不压并") || text.includes("开口") || text.includes("开放")) return 0;
+    if (text.includes("并紧") || text.includes("压并") || text.includes("闭口") || text.includes("闭合")) return 1;
+    throw new Error("端圈压并只能是 0 或 1");
+  }
+  throw new Error(`不支持的生图字段：${field}`);
+}
+
+function generationContractState(parameters, field) {
+  const item = generationSourceParameter(parameters, field);
+  if (!item) return "missing";
+  if (item.need_human_review) return "pending";
+  try {
+    generationContractValue(field, item.value);
+    return "confirmed";
+  } catch {
+    return "invalid";
+  }
+}
+
+function applyGenerationDefaults(review) {
+  if (currentSpringType(review) !== "compression_spring") return [];
+  review.spring_parameters ||= {};
+  const applied = [];
+  Object.entries(COMPRESSION_GENERATION_DEFAULTS).forEach(([field, value]) => {
+    if (generationSourceParameter(review.spring_parameters, field)) return;
+    const internalField = field === "end_coils_closed" ? "end_type" : field;
+    const internalValue = field === "end_coils_closed"
+      ? "两端并紧"
+      : field === "end_grinding"
+        ? "两端磨削"
+        : value;
+    review.spring_parameters[internalField] = {
+      ...(review.spring_parameters[internalField] || {}),
+      value: internalValue,
+      unit: COMPRESSION_GENERATION_UNITS[field],
+      source: ["solidworks_protocol_default"],
+      default_source: "spring_generation_parameters/v1",
+      need_human_review: true,
+    };
+    applied.push(field);
+  });
+  review.generation_defaulted_fields = Array.from(new Set([...(review.generation_defaulted_fields || []), ...applied]));
+  return applied;
+}
+
 function assessGenerationReadiness(review) {
   if (currentSpringType(review) !== "compression_spring") {
     return {
@@ -2456,6 +2803,7 @@ function assessGenerationReadiness(review) {
       core_field_count: 0,
     };
   }
+  applyGenerationDefaults(review);
   const parameters = review.spring_parameters || {};
   const reasonableness = review.parameter_reasonableness || {};
   const reasonablenessStale = Boolean(review.parameter_reasonableness_stale);
@@ -2463,78 +2811,80 @@ function assessGenerationReadiness(review) {
   const pending = [];
   const warnings = [];
   let confirmed = 0;
+  const contractIssues = [];
   COMPRESSION_GENERATION_CORE_FIELDS.forEach((field) => {
-    const state = generationParameterState(parameters[field]);
+    const state = generationContractState(parameters, field);
     if (state === "missing") missing.push(generationIssue(field, "缺少重新生图所需的核心参数。"));
     else if (state === "pending") pending.push(generationIssue(field, "参数已有值，但仍需人工确认。"));
+    else if (state === "invalid") {
+      try {
+        generationContractValue(field, generationSourceParameter(parameters, field)?.value);
+      } catch (error) {
+        contractIssues.push(generationIssue(field, error.message || String(error)));
+      }
+    }
     else confirmed += 1;
   });
-  const diameterStates = CONTROLLED_DIAMETER_FIELDS.map((field) => generationParameterState(parameters[field]));
-  if (diameterStates.includes("confirmed")) {
-    confirmed += 1;
-  } else if (diameterStates.includes("pending")) {
-    pending.push(generationIssue("outer_diameter", "受控直径已有识别值，但仍需人工确认。", "受控直径"));
-  } else {
-    missing.push(generationIssue("outer_diameter", "至少确认外径、内径或中径中的一项作为受控直径。", "受控直径"));
+  if (generationContractState(parameters, "wire_diameter") === "confirmed" && generationContractState(parameters, "mean_diameter") === "confirmed") {
+    const wire = generationContractValue("wire_diameter", generationSourceParameter(parameters, "wire_diameter").value);
+    const mean = generationContractValue("mean_diameter", generationSourceParameter(parameters, "mean_diameter").value);
+    if (mean <= wire) contractIssues.push(generationIssue("mean_diameter", "中径必须大于线径，确保计算内径大于零。"));
+  }
+  if (generationContractState(parameters, "total_coils") === "confirmed" && generationContractState(parameters, "active_coils") === "confirmed") {
+    const total = generationContractValue("total_coils", generationSourceParameter(parameters, "total_coils").value);
+    const active = generationContractValue("active_coils", generationSourceParameter(parameters, "active_coils").value);
+    if (active > total) contractIssues.push(generationIssue("active_coils", "有效圈数不能大于总圈数。"));
   }
   const selection = review.standard_selection || {};
   if (!selection.selected_standard) {
-    missing.push(generationIssue("standard_no", "尚未完成适用技术标准选择。"));
-  } else if (selection.need_human_review && !selection.human_confirmed) {
-    pending.push(generationIssue("standard_no", "适用技术标准尚未人工确认。"));
+    warnings.push(generationIssue("standard_no", "未执行或未完成标准化检查；本次可按当前人工确认参数直接生图。"));
+  } else if (!selection.human_confirmed) {
+    warnings.push(generationIssue("standard_no", "适用技术标准尚未人工确认；本次可按当前人工确认参数直接生图。"));
   }
   if (review.derived_parameters_stale) {
-    pending.push(generationIssue("standardization", "参数修改后尚未重新标准化。", "标准化结果"));
+    warnings.push(generationIssue("standardization", "参数修改后标准化结果已过期；本次可按当前人工确认参数直接生图。", "标准化结果"));
   }
   for (const item of review.standardization_results || []) {
     if (!item || typeof item !== "object") continue;
     if (["stale", "need_context"].includes(item.status)) {
-      pending.push(generationIssue(item.target_field || "standardization", item.basis || "标准化结果仍需补充或重新计算。"));
+      warnings.push(generationIssue(item.target_field || "standardization", item.basis || "标准化结果仍需补充或重新计算；可按当前人工确认参数直接生图。"));
     } else if (item.status === "not_applicable") {
       warnings.push(generationIssue(item.target_field || "standardization", item.basis || "当前标准规则不适用，需作为特殊设计复核。"));
+    } else if (["suggested", "llm_suggested", "rules_pending", "unmapped"].includes(item.status) || item.need_human_review) {
+      warnings.push(generationIssue(item.target_field || "standardization", item.basis || "标准化建议尚未处理；未应用的建议不会进入生图参数包。"));
     }
   }
-  (parameters.load_points || []).forEach((point, index) => {
-    if (!point || typeof point !== "object") return;
-    const label = point.label || `F${index + 1}`;
-    const field = `load_points.${label}.force`;
-    if (point.height == null || point.height === "" || point.force == null || point.force === "") {
-      missing.push(generationIssue(field, `${label} 的高度和力值需要完整填写。`, `载荷测试点 ${label}`));
-    } else if (point.need_human_review) {
-      pending.push(generationIssue(field, `载荷测试点 ${label} 尚未人工确认。`, `载荷测试点 ${label}`));
-    }
-  });
+  if (reasonablenessStale) {
+    warnings.push(generationIssue("reasonableness", "参数合理性结果待服务端重新计算；创建任务前服务端会使用当前参数重新核对。", "参数合理性"));
+  }
   (review.technical_requirements || []).forEach((item, index) => {
     if (!item?.content || !item.need_human_review) return;
     const label = TECH_LABELS[item.type] || item.type || "技术要求";
     pending.push(generationIssue(`technical_requirements.${index + 1}`, `技术要求“${label}”尚未人工确认。`, label));
   });
-  const status = reasonableness.status === "blocked"
+  const status = (!reasonablenessStale && reasonableness.status === "blocked") || contractIssues.length
     ? "blocked"
-    : reasonablenessStale
-      ? "needs_confirmation"
-      : missing.length ? "needs_input" : pending.length ? "needs_confirmation" : warnings.length ? "ready_with_warnings" : "ready";
+    : missing.length ? "needs_input" : pending.length ? "needs_confirmation" : warnings.length ? "ready_with_warnings" : "ready";
   const summary = status === "blocked"
-    ? (reasonableness.summary || "存在无法直接采用的参数矛盾。")
+    ? (contractIssues[0]?.reason || reasonableness.summary || "存在无法直接采用的参数矛盾。")
     : status === "ready"
-    ? "核心参数、技术要求和标准化状态均已确认，可生成参数包。"
+    ? "核心参数和技术要求均已确认，可生成参数包。"
     : status === "ready_with_warnings"
       ? "参数包可以生成，但存在需要在生图前知悉的风险提示。"
       : status === "needs_input"
         ? `还缺少 ${missing.length} 项生成必填信息。`
         : `核心尺寸已齐，但还有 ${pending.length} 项需要人工确认。`;
-  const displaySummary = reasonablenessStale && status !== "blocked"
-    ? "参数已修改，正在重新核对合理性；完成前不能导出生图参数包。"
-    : summary;
   return {
     status,
-    summary: displaySummary,
+    summary,
     missing_fields: dedupeGenerationIssues(missing),
     pending_fields: dedupeGenerationIssues(pending),
     warnings: dedupeGenerationIssues(warnings),
     confirmed_core_count: confirmed,
-    core_field_count: COMPRESSION_GENERATION_CORE_FIELDS.length + 1,
+    core_field_count: COMPRESSION_GENERATION_CORE_FIELDS.length,
+    defaulted_fields: review.generation_defaulted_fields || [],
     parameter_reasonableness: reasonableness,
+    blocking_reasonableness: contractIssues,
   };
 }
 
@@ -2967,7 +3317,7 @@ function renderRequirementsHtml(review) {
               <textarea data-role="content">${escapeHtml(item.content || "")}</textarea>
             </label>
             ${renderSurfaceNormalizationHtml(item)}
-            <button type="button" data-role="confirm">${item.need_human_review ? "确认" : "已确认"}</button>
+            ${confirmationButtonHtml(item, { kind: "technical", field: `technical_requirements.${index + 1}`, review })}
           </div>
         `).join("")}
       </div>
@@ -3175,56 +3525,80 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     const param = review.spring_parameters[field] || blankParam(fieldMeta.unit);
     review.spring_parameters[field] = param;
     const valueInput = row.querySelector('[data-role="value"]');
-    valueInput.addEventListener("input", () => {
+    let valueBeforeState = null;
+    const applyValueDraft = (event) => {
+      if (field === "accuracy_grade") return;
+      activateReviewContext(messageId);
+      valueBeforeState ||= parameterAuditState(param);
+      rememberConfirmedSnapshot(param);
+      param.value = parseValue(event.target.value, param.value);
+      applyEditedConfirmationState(param, field);
+      syncBubbleValue(field, param.value);
+      syncConfirmationControl(row, param, { kind: "parameter", field, review });
       refreshCompressionDesignChecks(root, review);
-    });
+      scheduleParameterReasonablenessRefresh(messageId);
+    };
+    valueInput.addEventListener("input", applyValueDraft);
     valueInput.addEventListener("change", (event) => {
       activateReviewContext(messageId);
       if (field === "accuracy_grade") {
         selectAccuracyGrade(root, review, event.target.value, messageId);
         return;
       }
-      const beforeState = parameterAuditState(param);
-      param.value = parseValue(event.target.value, param.value);
-      markParamEdited(param, field);
-      syncBubbleValue(field, param.value);
-      refreshCompressionDesignChecks(root, review);
-      queueReviewAuditEvent({
-        event_type: "parameter_value_updated",
-        target_field: field,
-        before_state: beforeState,
-        after_state: parameterAuditState(param),
-      });
-      scheduleParameterReasonablenessRefresh(messageId);
+      if (!valueBeforeState) applyValueDraft(event);
+      const afterState = parameterAuditState(param);
+      if (JSON.stringify(valueBeforeState) !== JSON.stringify(afterState)) {
+        queueReviewAuditEvent({
+          event_type: "parameter_value_updated",
+          target_field: field,
+          before_state: valueBeforeState,
+          after_state: afterState,
+        });
+        scheduleParameterReasonablenessRefresh(messageId);
+      }
+      valueBeforeState = null;
     });
-    row.querySelector('[data-role="tolerance"]').addEventListener("change", (event) => {
+    const toleranceInput = row.querySelector('[data-role="tolerance"]');
+    let toleranceBeforeState = null;
+    const applyToleranceDraft = (event) => {
       activateReviewContext(messageId);
-      const beforeState = parameterAuditState(param);
+      toleranceBeforeState ||= parameterAuditState(param);
+      rememberConfirmedSnapshot(param);
       applyTolerance(param, event.target.value);
-      markParamEdited(param, field);
-      queueReviewAuditEvent({
-        event_type: "parameter_tolerance_updated",
-        target_field: field,
-        before_state: beforeState,
-        after_state: parameterAuditState(param),
-      });
+      applyEditedConfirmationState(param, field);
+      syncConfirmationControl(row, param, { kind: "parameter", field, review });
       scheduleParameterReasonablenessRefresh(messageId);
+    };
+    toleranceInput.addEventListener("input", applyToleranceDraft);
+    toleranceInput.addEventListener("change", (event) => {
+      if (!toleranceBeforeState) applyToleranceDraft(event);
+      const afterState = parameterAuditState(param);
+      if (JSON.stringify(toleranceBeforeState) !== JSON.stringify(afterState)) {
+        queueReviewAuditEvent({
+          event_type: "parameter_tolerance_updated",
+          target_field: field,
+          before_state: toleranceBeforeState,
+          after_state: afterState,
+        });
+        scheduleParameterReasonablenessRefresh(messageId);
+      }
+      toleranceBeforeState = null;
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
+      const control = confirmationControlState(param, { kind: "parameter", field, review });
+      if (control.disabled) return;
       const beforeState = parameterAuditState(param);
-      const action = toggleParamConfirmation(param, field);
-      const button = row.querySelector('[data-role="confirm"]');
-      if (button) {
-        button.classList.toggle("confirmed", action === "confirmed");
-        button.textContent = confirmationActionLabel(param);
-      }
+      const eventType = confirmationAuditEventType(param, field, review);
+      confirmParam(param, field);
       queueReviewAuditEvent({
-        event_type: action === "confirmed" ? "parameter_confirmed" : "parameter_reopened",
+        event_type: eventType,
         target_field: field,
         before_state: beforeState,
         after_state: parameterAuditState(param),
+        metadata: eventType === "risk_value_confirmed" ? { accepted_warning: true } : {},
       });
+      syncConfirmationControl(row, param, { kind: "parameter", field, review });
       if (field === "accuracy_grade") syncAccuracyGradeControls(root, param);
       scheduleParameterReasonablenessRefresh(messageId);
     });
@@ -3240,60 +3614,53 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   root.querySelectorAll('[data-kind="load_point"]').forEach((row) => {
     const point = review.spring_parameters.load_points[Number(row.dataset.index)];
     const pointField = `load_points.${point?.label || `F${Number(row.dataset.index) + 1}`}`;
-    row.querySelector('[data-role="height"]').addEventListener("change", (event) => {
-      activateReviewContext(messageId);
-      const beforeState = loadPointAuditState(point);
+    const confirmationField = `load_points_${row.dataset.index}`;
+    const bindLoadPointDraft = (input, applyValue, eventType) => {
+      let beforeState = null;
+      const applyDraft = (event) => {
+        activateReviewContext(messageId);
+        beforeState ||= loadPointAuditState(point);
+        rememberConfirmedSnapshot(point);
+        applyValue(event);
+        applyEditedConfirmationState(point, pointField, { confirmationField });
+        syncConfirmationControl(row, point, { kind: "load_point", field: pointField, review });
+        scheduleParameterReasonablenessRefresh(messageId);
+      };
+      input.addEventListener("input", applyDraft);
+      input.addEventListener("change", (event) => {
+        if (!beforeState) applyDraft(event);
+        const afterState = loadPointAuditState(point);
+        if (JSON.stringify(beforeState) !== JSON.stringify(afterState)) {
+          queueReviewAuditEvent({ event_type: eventType, target_field: pointField, before_state: beforeState, after_state: afterState });
+          scheduleParameterReasonablenessRefresh(messageId);
+        }
+        beforeState = null;
+      });
+    };
+    bindLoadPointDraft(row.querySelector('[data-role="height"]'), (event) => {
       point.height = parseValue(event.target.value, point.height);
-      markParamEdited(point, pointField, { confirmationField: `load_points_${row.dataset.index}` });
-      queueReviewAuditEvent({
-        event_type: "load_point_value_updated",
-        target_field: pointField,
-        before_state: beforeState,
-        after_state: loadPointAuditState(point),
-      });
-      scheduleParameterReasonablenessRefresh(messageId);
-    });
-    row.querySelector('[data-role="force"]').addEventListener("change", (event) => {
-      activateReviewContext(messageId);
-      const beforeState = loadPointAuditState(point);
+    }, "load_point_value_updated");
+    bindLoadPointDraft(row.querySelector('[data-role="force"]'), (event) => {
       point.force = parseValue(event.target.value, point.force);
-      markParamEdited(point, pointField, { confirmationField: `load_points_${row.dataset.index}` });
-      queueReviewAuditEvent({
-        event_type: "load_point_value_updated",
-        target_field: pointField,
-        before_state: beforeState,
-        after_state: loadPointAuditState(point),
-      });
-      scheduleParameterReasonablenessRefresh(messageId);
-    });
-    row.querySelector('[data-role="load-tolerance"]').addEventListener("change", (event) => {
-      activateReviewContext(messageId);
-      const beforeState = loadPointAuditState(point);
+    }, "load_point_value_updated");
+    bindLoadPointDraft(row.querySelector('[data-role="load-tolerance"]'), (event) => {
       applyLoadPointTolerance(point, event.target.value);
-      markParamEdited(point, pointField, { confirmationField: `load_points_${row.dataset.index}` });
-      queueReviewAuditEvent({
-        event_type: "load_point_tolerance_updated",
-        target_field: pointField,
-        before_state: beforeState,
-        after_state: loadPointAuditState(point),
-      });
-      scheduleParameterReasonablenessRefresh(messageId);
-    });
+    }, "load_point_tolerance_updated");
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
+      const control = confirmationControlState(point, { kind: "load_point", field: pointField, review });
+      if (control.disabled) return;
       const beforeState = loadPointAuditState(point);
-      const action = toggleParamConfirmation(point, `load_points_${row.dataset.index}`, { invalidationField: pointField });
-      const button = row.querySelector('[data-role="confirm"]');
-      if (button) {
-        button.classList.toggle("confirmed", action === "confirmed");
-        button.textContent = confirmationActionLabel(point);
-      }
+      const eventType = confirmationAuditEventType(point, pointField, review);
+      confirmParam(point, confirmationField);
       queueReviewAuditEvent({
-        event_type: action === "confirmed" ? "load_point_confirmed" : "load_point_reopened",
+        event_type: eventType,
         target_field: pointField,
         before_state: beforeState,
         after_state: loadPointAuditState(point),
+        metadata: eventType === "risk_value_confirmed" ? { accepted_warning: true } : {},
       });
+      syncConfirmationControl(row, point, { kind: "load_point", field: pointField, review });
       scheduleParameterReasonablenessRefresh(messageId);
     });
   });
@@ -3310,18 +3677,43 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     applyAvailableStandardizationSuggestions(messageId);
   });
 
-  root.querySelector('[data-action="confirm-safe-fields"]')?.addEventListener("click", () => {
+  root.querySelector('[data-action="confirm-all-review-items"]')?.addEventListener("click", async () => {
     activateReviewContext(messageId);
-    const confirmed = confirmSafeRecognizedFields();
-    if (confirmed.count) {
-      queueReviewAuditEvent({
-        event_type: "safe_fields_confirmed",
-        source: "manual_batch_confirmation",
-        after_state: { confirmed_count: confirmed.count },
-        metadata: { fields: confirmed.labels },
-      });
+    const plan = buildSafeConfirmationPlan(state.review);
+    if (!plan.items.length) {
+      updateLatestReviewMessage("没有可批量确认的无风险项目，请继续逐项处理默认值或风险项。");
+      return;
     }
-    updateLatestReviewMessage(confirmed.count ? `已确认 ${confirmed.count} 项无风险识别值，仍请处理风险或默认项。` : "没有可批量确认的无风险识别值。");
+    const confirmed = confirmSafeRecognizedFields(plan);
+    syncReviewConfirmationControls(root, state.review);
+    const bulkButton = root.querySelector('[data-action="confirm-all-review-items"]');
+    const remainingPlan = buildSafeConfirmationPlan(state.review);
+    if (bulkButton) {
+      bulkButton.disabled = !remainingPlan.items.length;
+      bulkButton.textContent = `全部确认可确认项${remainingPlan.items.length ? ` · ${remainingPlan.items.length}` : ""}`;
+    }
+    queueReviewAuditEvent({
+      event_type: "safe_fields_confirmed",
+      source: "manual_batch_confirmation",
+      after_state: {
+        confirmed_count: confirmed.count,
+        group_counts: confirmed.group_counts,
+      },
+      metadata: {
+        fields: confirmed.fields,
+        labels: confirmed.labels,
+        group_counts: confirmed.group_counts,
+        skipped: confirmed.skipped.map((item) => ({
+          field: item.field,
+          label: item.label,
+          reason: item.reason,
+        })),
+      },
+    });
+    scheduleParameterReasonablenessRefresh(messageId);
+    updateLatestReviewMessage(`已确认 ${confirmed.count} 项无风险内容，跳过 ${confirmed.skipped.length} 项默认值、风险项或不完整内容。`);
+    await flushReviewPersistence();
+    if (state.lastJob?.job_id) await loadGenerationState(state.lastJob.job_id, { silent: true });
   });
 
   root.querySelectorAll('[data-action="focus-workbench-field"]').forEach((button) => {
@@ -3394,6 +3786,27 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     const packageData = makeGenerationParameterPackage(state.review);
     downloadJson(packageData, "compression_spring_generation_parameters.json");
     updateLatestReviewMessage("已导出当前已确认的生图参数包；待确认或空缺字段未包含。");
+  });
+
+  root.querySelector('[data-action="create-generation-job"]')?.addEventListener("click", () => {
+    activateReviewContext(messageId);
+    void createGenerationJob();
+  });
+
+  root.querySelectorAll('[data-action="compare-generation"]').forEach((button) => {
+    button.addEventListener("click", () => openGenerationCompare(button.dataset.generationId || ""));
+  });
+
+  root.querySelectorAll('[data-action="retry-generation"]').forEach((button) => {
+    button.addEventListener("click", () => void retryGenerationJob(button.dataset.generationId || ""));
+  });
+
+  root.querySelectorAll('[data-action="cancel-generation"]').forEach((button) => {
+    button.addEventListener("click", () => void cancelGenerationJob(button.dataset.generationId || ""));
+  });
+
+  root.querySelectorAll('[data-action="approve-generation"]').forEach((button) => {
+    button.addEventListener("click", () => void approveGenerationJob(button.dataset.generationId || ""));
   });
 
   root.querySelector('[data-action="confirm-standard-selection"]')?.addEventListener("click", () => {
@@ -3514,9 +3927,14 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
 
   root.querySelectorAll('[data-kind="technical"]').forEach((row) => {
     const item = review.technical_requirements[Number(row.dataset.index)];
+    const technicalField = `technical_requirements.${Number(row.dataset.index) + 1}`;
+    const confirmationField = `technical_${row.dataset.index}`;
     const contentInput = row.querySelector('[data-role="content"]');
-    contentInput.addEventListener("change", (event) => {
+    let contentBeforeState = null;
+    const applyTechnicalDraft = (event) => {
       activateReviewContext(messageId);
+      contentBeforeState ||= { content: item.content || "", need_human_review: Boolean(item.need_human_review) };
+      rememberConfirmedSnapshot(item);
       item.content = event.target.value.trim();
       if (item.type === "surface") {
         item.raw_content ||= item.evidence || item.content;
@@ -3526,13 +3944,35 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         item.normalization_confidence = 1;
         item.normalization_reason = "人工修改标准术语";
       }
-      confirmParam(item, `technical_${row.dataset.index}`);
+      applyEditedConfirmationState(item, technicalField, {
+        confirmationField,
+        skipParameterReasonableness: true,
+        skipStandardizationInvalidation: true,
+        skipDependentInvalidation: true,
+      });
+      syncConfirmationControl(row, item, { kind: "technical", field: technicalField, review });
+    };
+    contentInput.addEventListener("input", applyTechnicalDraft);
+    contentInput.addEventListener("change", (event) => {
+      if (!contentBeforeState) applyTechnicalDraft(event);
+      const afterState = { content: item.content || "", need_human_review: Boolean(item.need_human_review) };
+      if (JSON.stringify(contentBeforeState) !== JSON.stringify(afterState)) {
+        queueReviewAuditEvent({
+          event_type: "technical_requirement_updated",
+          target_field: technicalField,
+          before_state: contentBeforeState,
+          after_state: afterState,
+        });
+      }
+      contentBeforeState = null;
       updateLatestReviewMessage();
     });
     row.querySelector('[data-role="standard-candidate"]')?.addEventListener("change", (event) => {
       const value = event.target.value.trim();
       if (!value) return;
       activateReviewContext(messageId);
+      const beforeState = { content: item.content || "", need_human_review: Boolean(item.need_human_review) };
+      rememberConfirmedSnapshot(item);
       item.raw_content ||= item.evidence || item.content;
       item.content = value;
       item.standard_content = value;
@@ -3541,11 +3981,27 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       item.normalization_confidence = 1;
       item.normalization_reason = "人工选择候选标准术语";
       contentInput.value = value;
-      confirmParam(item, `technical_${row.dataset.index}`);
+      applyEditedConfirmationState(item, technicalField, {
+        confirmationField,
+        skipParameterReasonableness: true,
+        skipStandardizationInvalidation: true,
+        skipDependentInvalidation: true,
+      });
+      queueReviewAuditEvent({
+        event_type: "technical_requirement_updated",
+        target_field: technicalField,
+        before_state: beforeState,
+        after_state: { content: item.content || "", need_human_review: Boolean(item.need_human_review) },
+      });
+      syncConfirmationControl(row, item, { kind: "technical", field: technicalField, review });
       updateLatestReviewMessage();
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
+      const control = confirmationControlState(item, { kind: "technical", field: technicalField, review });
+      if (control.disabled) return;
+      const beforeState = { content: item.content || "", need_human_review: Boolean(item.need_human_review) };
+      const eventType = confirmationItemWasEdited(item) ? "modified_value_confirmed" : "recognized_value_confirmed";
       if (item.type === "surface" && item.content) {
         item.standard_content ||= item.content;
         item.raw_content ||= item.evidence || item.content;
@@ -3554,7 +4010,14 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         item.normalization_confidence = 1;
         item.normalization_reason = "人工确认当前表面处理术语";
       }
-      confirmParam(item, `technical_${row.dataset.index}`);
+      confirmParam(item, confirmationField);
+      queueReviewAuditEvent({
+        event_type: eventType,
+        target_field: technicalField,
+        before_state: beforeState,
+        after_state: { content: item.content || "", need_human_review: Boolean(item.need_human_review) },
+      });
+      syncConfirmationControl(row, item, { kind: "technical", field: technicalField, review });
       updateLatestReviewMessage();
     });
   });
@@ -4412,44 +4875,142 @@ function restoreComparePanelScrollPositions(positions, options = {}) {
   else requestAnimationFrame(restore);
 }
 
-function safeConfirmableReviewItems(review) {
+function buildSafeConfirmationPlan(review) {
   const parameters = review?.spring_parameters || {};
+  const fieldGroups = getParameterFieldGroups(parameters, review);
+  const coreFields = new Set(fieldGroups.core);
+  const advancedFields = new Set(fieldGroups.advanced);
   const items = [];
+  const skipped = [];
+  const skip = (group, field, label, reason) => skipped.push({ group, field, label, reason });
+
   getParameterFields(parameters, review).forEach((field) => {
     const param = parameters[field];
-    const sources = sourceValues(param?.source);
-    const hasSystemDefault = param?.default_source === "company_default" || sources.includes("company_default");
+    if (!param?.need_human_review) return;
+    const group = coreFields.has(field) ? "core" : (advancedFields.has(field) ? "advanced" : "advanced");
+    const label = targetFieldLabel(field);
+    const sources = sourceValues(param.source);
+    const hasSystemDefault = Boolean(param.default_source) || sources.some((source) => source.includes("default"));
     const isFormulaValue = sources.includes("formula_calculation");
-    const standardStillNeedsReview = field === "standard_no" && review?.standard_selection?.need_human_review;
-    if (!param?.need_human_review || param.value == null || param.value === "") return;
-    if (hasSystemDefault || isFormulaValue || standardStillNeedsReview) return;
-    if (reasonablenessSeverityForField(review, field)) return;
-    items.push({ kind: "parameter", field, param, label: targetFieldLabel(field) });
+
+    if (field === "standard_no") {
+      skip(group, field, label, "适用标准不在批量确认范围内");
+      return;
+    }
+    const invalidReason = bulkParameterInvalidReason(field, param);
+    if (invalidReason) {
+      skip(group, field, label, invalidReason);
+      return;
+    }
+    if (hasSystemDefault) {
+      skip(group, field, label, "默认候选值需要单独确认");
+      return;
+    }
+    const severity = reasonablenessSeverityForField(review, field);
+    if (severity) {
+      skip(group, field, label, `存在${reasonablenessSeverityLabel(severity)}，需要单独处理`);
+      return;
+    }
+    if (isFormulaValue && !formulaConfirmationSourcesReady(parameters, param, review)) {
+      skip(group, field, label, "公式来源字段尚未全部确认");
+      return;
+    }
+    items.push({ kind: "parameter", group, field, param, label });
   });
 
   (parameters.load_points || []).forEach((point, index) => {
-    const field = `load_points.${point?.label || `F${index + 1}`}`;
-    if (!point?.need_human_review || point.height == null || point.height === "" || point.force == null || point.force === "") return;
-    if (reasonablenessSeverityForField(review, field)) return;
-    items.push({ kind: "load_point", field, index, point, label: `载荷测试点 ${point.label || `F${index + 1}`}` });
+    if (!point?.need_human_review) return;
+    const pointLabel = point.label || `F${index + 1}`;
+    const field = `load_points.${pointLabel}`;
+    const label = `载荷测试点 ${pointLabel}`;
+    if (!isFiniteReviewNumber(point.height) || !isFiniteReviewNumber(point.force)) {
+      skip("load_point", field, label, "高度和力值需要完整填写为有效数字");
+      return;
+    }
+    const sources = sourceValues(point.source);
+    if (point.default_source || sources.some((source) => source.includes("default"))) {
+      skip("load_point", field, label, "默认候选值需要单独确认");
+      return;
+    }
+    const severity = reasonablenessSeverityForField(review, field);
+    if (severity) {
+      skip("load_point", field, label, `存在${reasonablenessSeverityLabel(severity)}，需要单独处理`);
+      return;
+    }
+    items.push({ kind: "load_point", group: "load_point", field, index, point, label });
   });
 
   (review?.technical_requirements || []).forEach((item, index) => {
-    if (!item?.need_human_review || !item.content || item.normalization_status === "unmatched") return;
-    items.push({ kind: "technical", field: `technical_requirements.${index + 1}`, index, item, label: TECH_LABELS[item.type] || item.type || "技术要求" });
+    if (!item?.need_human_review) return;
+    const field = `technical_requirements.${index + 1}`;
+    const label = TECH_LABELS[item.type] || item.type || "技术要求";
+    if (!String(item.content || "").trim()) {
+      skip("technical", field, label, "技术要求内容为空");
+      return;
+    }
+    if (item.type === "surface" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item.normalization_status)) {
+      skip("technical", field, label, "表面处理术语尚未明确匹配");
+      return;
+    }
+    items.push({ kind: "technical", group: "technical", field, index, item, label });
   });
-  return items;
+
+  return { items, skipped, group_counts: safeConfirmationGroupCounts(items) };
 }
 
-function confirmSafeRecognizedFields() {
-  if (!state.review) return { count: 0, labels: [] };
-  const items = safeConfirmableReviewItems(state.review);
-  items.forEach((item) => {
+function safeConfirmableReviewItems(review) {
+  return buildSafeConfirmationPlan(review).items;
+}
+
+function bulkParameterInvalidReason(field, param) {
+  if (param?.value == null || param.value === "") return "参数值缺失";
+  try {
+    if (COMPRESSION_GENERATION_CORE_FIELDS.includes(field)) generationContractValue(field, param.value);
+    else if (field === "end_type") generationContractValue("end_coils_closed", param.value);
+    else if (supplementInputMode(field) === "decimal" && !isFiniteReviewNumber(param.value)) return "参数值不是有效数字";
+  } catch (error) {
+    return error.message || String(error);
+  }
+  return "";
+}
+
+function isFiniteReviewNumber(value) {
+  return value != null && value !== "" && Number.isFinite(Number(value));
+}
+
+function formulaConfirmationSourcesReady(parameters, param, review) {
+  const sourceFields = Array.isArray(param?.source_fields) ? param.source_fields.filter(Boolean) : [];
+  if (!sourceFields.length) return false;
+  return sourceFields.every((field) => {
+    const source = parameters?.[field];
+    return source && typeof source === "object"
+      && source.value != null && source.value !== ""
+      && !source.need_human_review
+      && !reasonablenessSeverityForField(review, field);
+  });
+}
+
+function safeConfirmationGroupCounts(items) {
+  const counts = { core: 0, advanced: 0, load_point: 0, technical: 0 };
+  items.forEach((item) => { counts[item.group] = (counts[item.group] || 0) + 1; });
+  return counts;
+}
+
+function confirmSafeRecognizedFields(plan = null) {
+  if (!state.review) return { count: 0, labels: [], fields: [], group_counts: safeConfirmationGroupCounts([]), skipped: [] };
+  const confirmationPlan = plan || buildSafeConfirmationPlan(state.review);
+  confirmationPlan.items.forEach((item) => {
     if (item.kind === "parameter") confirmParam(item.param, item.field);
     else if (item.kind === "load_point") confirmParam(item.point, `load_points_${item.index}`);
     else if (item.kind === "technical") confirmParam(item.item, `technical_${item.index}`);
   });
-  return { count: items.length, labels: items.map((item) => item.label) };
+  return {
+    count: confirmationPlan.items.length,
+    labels: confirmationPlan.items.map((item) => item.label),
+    fields: confirmationPlan.items.map((item) => item.field),
+    group_counts: confirmationPlan.group_counts,
+    skipped: confirmationPlan.skipped,
+  };
 }
 
 function applyAvailableStandardizationSuggestions(messageId = state.activeReviewMessageId) {
@@ -4589,9 +5150,8 @@ function syncAccuracyGradeControls(root, param) {
     element.classList.toggle("is-default", param?.default_source === "company_default");
     element.classList.toggle("is-confirmed", param?.default_source !== "company_default");
   });
-  scope.querySelectorAll('[data-kind="param"][data-field="accuracy_grade"] [data-role="confirm"]').forEach((button) => {
-    button.classList.toggle("confirmed", !param?.need_human_review);
-    button.textContent = confirmationActionLabel(param);
+  scope.querySelectorAll('[data-kind="param"][data-field="accuracy_grade"]').forEach((row) => {
+    syncConfirmationControl(row, param, { kind: "parameter", field: "accuracy_grade", review: state.review });
   });
   updateAccuracyGradeFeedbackUi(scope);
 }
@@ -4692,8 +5252,7 @@ function renderReviewWorkbenchHtml(review) {
             <small>${safeItems.length ? `${safeItems.length} 项无风险识别值可批量确认` : "识别值已完成初步核对"}</small>
           </div>
           <div class="workbench-step-actions">
-            ${safeItems.length ? `<button type="button" data-action="confirm-safe-fields">确认无风险项</button>` : ""}
-            <button type="button" class="secondary-action" data-action="show-workbench-tab" data-target-tab="parameters">查看参数</button>
+            <button type="button" class="secondary-action" data-action="show-workbench-tab" data-target-tab="parameters">${safeItems.length ? "去参数页批量确认" : "查看参数"}</button>
           </div>
         </article>
         <article class="workbench-step ${needsStandardization || hasPendingAccuracyGrade ? "needs-attention" : ""}">
@@ -4752,9 +5311,7 @@ function workbenchFieldsOverlap(left, right) {
 }
 
 function workbenchStatusLabel(review, readiness) {
-  if (review?.parameter_reasonableness?.status === "blocked") return "存在需要先核对的参数";
-  if (!review?.standardization_results?.length) return "等待生成标准化方案";
-  if (review?.derived_parameters_stale || (review?.standardization_results || []).some((item) => item?.status === "stale")) return "参数已修改，方案待更新";
+  if (readiness.status === "blocked") return "存在需要先核对的参数";
   if (readiness.status === "ready" || readiness.status === "ready_with_warnings") return "可以导出生图参数包";
   return "继续处理待确认项目";
 }
@@ -4763,7 +5320,7 @@ function workbenchStatusDescription(review, readiness, counts) {
   if (counts.blocked) return `${counts.blocked} 项几何或载荷关系需要先人工核对。`;
   if (counts.input) return `${counts.input} 项信息待补充，补齐后可继续标准化。`;
   if (counts.warning) return `${counts.warning} 项风险提示不阻断流程，但建议向客户确认。`;
-  if (!review?.standardization_results?.length) return "识别和合理性诊断已完成；生成方案不会覆盖当前识别值。";
+  if (!review?.standardization_results?.length) return "标准化为可选功能；确认建模参数和技术要求后可直接生图。";
   return readiness.summary;
 }
 
@@ -5071,6 +5628,7 @@ function activateReviewContext(messageId = state.activeReviewMessageId, options 
 function setReview(review, imageUrl, options = {}) {
   if (!options.preserveAccuracyGradeUpdate) resetAccuracyGradeUpdate();
   if (!options.preservePendingAccuracyGrade) resetPendingAccuracyGrade();
+  applyGenerationDefaults(review);
   state.review = review;
   state.imageUrl = imageUrl;
   exportButton.disabled = false;
@@ -5156,6 +5714,240 @@ function apiFetch(path, options = {}) {
   return fetch(apiUrl(path), { ...options, credentials: "include" });
 }
 
+async function loadGenerationState(reviewId = state.lastJob?.job_id, options = {}) {
+  if (!reviewId) {
+    resetGenerationState();
+    return;
+  }
+  state.generationQueueAvailable = null;
+  try {
+    const [readinessResponse, jobsResponse] = await Promise.all([
+      apiFetch(`/api/reviews/${encodeURIComponent(reviewId)}/generation-readiness`),
+      apiFetch(`/api/reviews/${encodeURIComponent(reviewId)}/generation-jobs`),
+    ]);
+    const readinessPayload = await readinessResponse.json();
+    const jobsPayload = await jobsResponse.json();
+    if (!readinessResponse.ok) throw new Error(generationApiError(readinessPayload, "无法读取服务端生图就绪状态"));
+    if (state.lastJob?.job_id !== reviewId) return;
+    state.generationReadiness = readinessPayload;
+    if (jobsResponse.ok) {
+      state.generationQueueAvailable = true;
+      state.generationJobs = jobsPayload.generation_jobs || [];
+    } else if (jobsResponse.status === 503 && jobsPayload?.detail?.code === "generation_queue_not_configured") {
+      state.generationQueueAvailable = false;
+      state.generationJobs = [];
+    } else {
+      throw new Error(generationApiError(jobsPayload, "无法读取生图版本"));
+    }
+    state.generationJobs.forEach((job) => {
+      if (!["completed", "failed", "cancelled"].includes(job.status)) trackGenerationJob(job.generation_id);
+    });
+    if (options.render !== false) refreshReviewSurfaces();
+  } catch (error) {
+    if (options.silent !== true) appendAssistantText(`生图服务暂不可用：${error.message || String(error)}`, true, { scroll: false });
+  }
+}
+
+async function reloadGenerationReadiness(reviewId = state.lastJob?.job_id) {
+  if (!reviewId) return null;
+  const response = await apiFetch(`/api/reviews/${encodeURIComponent(reviewId)}/generation-readiness`);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(generationApiError(payload, "无法读取服务端生图就绪状态"));
+  if (state.lastJob?.job_id === reviewId) state.generationReadiness = payload;
+  return payload;
+}
+
+async function createGenerationJob() {
+  const reviewId = state.lastJob?.job_id;
+  if (!reviewId || state.generationBusy) return;
+  state.generationBusy = true;
+  refreshReviewSurfaces();
+  try {
+    await flushReviewPersistence();
+    if (state.pendingReviewAuditEvents.length || state.reviewPersistenceSaving) {
+      throw new Error("当前参数尚未成功保存到服务器，请检查网络后重试");
+    }
+    const readinessPayload = await reloadGenerationReadiness(reviewId);
+    const readiness = readinessPayload?.generation_readiness || {};
+    if (!["ready", "ready_with_warnings"].includes(readiness.status)) {
+      throw new Error(readiness.summary || "当前参数尚未达到生图条件");
+    }
+    if (readiness.status === "ready_with_warnings") {
+      const warningText = (readiness.warnings || []).map((item) => item.reason).filter(Boolean).join("\n");
+      if (!window.confirm(`当前参数可以生图。标准化为可选功能，未应用的标准化建议不会进入参数包；任务将按当前已确认参数生成。\n\n风险提示：\n${warningText || readiness.summary}\n\n是否继续生成？`)) return;
+    }
+    const parent = state.generationJobs.find((job) => job.status === "completed") || state.generationJobs[0];
+    const response = await apiFetch(`/api/reviews/${encodeURIComponent(reviewId)}/generation-jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        expected_review_revision: Number(readinessPayload.review_revision),
+        idempotency_key: createGenerationIdempotencyKey(reviewId, readinessPayload.review_revision),
+        parent_generation_id: parent?.generation_id || null,
+        requested_artifact_types: ["pdf"],
+        mock_scenario: "success",
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(generationApiError(payload, "创建生图任务失败"));
+    const job = payload.generation_job;
+    state.generationJobs = [job, ...state.generationJobs.filter((item) => item.generation_id !== job.generation_id)];
+    trackGenerationJob(job.generation_id);
+    appendAssistantText("已创建生图任务，SolidWorks Worker 将按正式协议领取并生成 PDF；服务器会自动生成对比预览。", false, { scroll: false });
+  } catch (error) {
+    appendAssistantText(`无法生成图纸：${error.message || String(error)}`, true, { scroll: false });
+  } finally {
+    state.generationBusy = false;
+    refreshReviewSurfaces();
+  }
+}
+
+function trackGenerationJob(generationId) {
+  if (!generationId || state.generationPollers[generationId]) return;
+  const poll = async () => {
+    try {
+      const response = await apiFetch(`/api/generation-jobs/${encodeURIComponent(generationId)}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(generationApiError(payload, "读取生图进度失败"));
+      const job = payload.generation_job;
+      const index = state.generationJobs.findIndex((item) => item.generation_id === generationId);
+      if (index >= 0) state.generationJobs.splice(index, 1, job);
+      else state.generationJobs.unshift(job);
+      if (["completed", "failed", "cancelled"].includes(job.status)) {
+        stopTrackingGenerationJob(generationId);
+        await loadGenerationState(job.review_id, { silent: true });
+      } else {
+        refreshReviewSurfaces();
+      }
+    } catch {
+      // A transient network failure should not discard a running job; the next poll retries it.
+    }
+  };
+  state.generationPollers[generationId] = window.setInterval(() => { void poll(); }, 2000);
+  void poll();
+}
+
+function stopTrackingGenerationJob(generationId) {
+  const timer = state.generationPollers[generationId];
+  if (timer) window.clearInterval(timer);
+  delete state.generationPollers[generationId];
+}
+
+async function retryGenerationJob(generationId) {
+  await generationJobAction(generationId, "retry", "已按原参数创建重试任务。", true);
+}
+
+async function cancelGenerationJob(generationId) {
+  await generationJobAction(generationId, "cancel", "已请求取消生图任务。", false);
+}
+
+async function approveGenerationJob(generationId) {
+  await generationJobAction(generationId, "approve", "当前版本已设为模拟最终版本；ERP 传送将在真实接口接入后开放。", false);
+}
+
+async function generationJobAction(generationId, action, successMessage, shouldTrack) {
+  if (!generationId || state.generationBusy) return;
+  state.generationBusy = true;
+  try {
+    const response = await apiFetch(`/api/generation-jobs/${encodeURIComponent(generationId)}/${action}`, { method: "POST" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(generationApiError(payload, `生图任务${action}失败`));
+    const job = payload.generation_job;
+    state.generationJobs = [job, ...state.generationJobs.filter((item) => item.generation_id !== job.generation_id)];
+    if (shouldTrack) trackGenerationJob(job.generation_id);
+    await loadGenerationState(job.review_id || state.lastJob?.job_id, { silent: true });
+    appendAssistantText(successMessage, false, { scroll: false });
+  } catch (error) {
+    appendAssistantText(`操作失败：${error.message || String(error)}`, true, { scroll: false });
+  } finally {
+    state.generationBusy = false;
+    refreshReviewSurfaces();
+  }
+}
+
+function createGenerationIdempotencyKey(reviewId, revision) {
+  const unique = window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${reviewId}-r${revision}-${unique}`;
+}
+
+function generationApiError(payload, fallback) {
+  const detail = payload?.detail;
+  if (typeof detail === "string") return detail;
+  if (detail?.message) return detail.message;
+  const labels = {
+    generation_not_ready: "当前审图参数尚未达到生图条件",
+    review_revision_conflict: "审图参数已更新，请刷新后重新生图",
+    template_not_found: "没有匹配到可用生图模板",
+    template_selection_required: "存在多个同优先级模板，需要人工选择",
+    generation_queue_not_configured: "生图队列需要 PostgreSQL",
+    generation_conflict: "生图任务状态冲突，请刷新后重试",
+  };
+  return labels[detail?.code] || detail?.code || fallback;
+}
+
+function resetGenerationState() {
+  Object.keys(state.generationPollers).forEach(stopTrackingGenerationJob);
+  state.generationReadiness = null;
+  state.generationJobs = [];
+  state.generationQueueAvailable = null;
+  state.generationBusy = false;
+  document.querySelector(".generation-compare-dialog[open]")?.close();
+}
+
+function openGenerationCompare(generationId) {
+  const job = state.generationJobs.find((item) => item.generation_id === generationId);
+  const artifact = (job?.artifacts || []).find((item) => item.artifact_type === "png" || item.mime_type === "image/png");
+  if (!job || !artifact) return;
+  document.querySelector(".generation-compare-dialog")?.remove();
+  const dialog = document.createElement("dialog");
+  dialog.className = "generation-compare-dialog";
+  const originalUrl = state.imageUrl ? toBackendAssetUrl(state.imageUrl) : "";
+  const generatedUrl = toBackendAssetUrl(artifact.url);
+  dialog.innerHTML = `
+    <div class="generation-compare-shell">
+      <header>
+        <div><strong>原图与生成图对比</strong><small>审图修订 r${escapeHtml(String(job.review_revision))} · ${escapeHtml(job.template_code || "")}</small></div>
+        <button type="button" data-role="close-generation-compare" aria-label="关闭">×</button>
+      </header>
+      <div class="generation-compare-toolbar">
+        <div role="group" aria-label="对比模式">
+          <button type="button" class="active" data-compare-mode="side-by-side">左右对比</button>
+          <button type="button" data-compare-mode="original">仅原图</button>
+          <button type="button" data-compare-mode="generated">仅生成图</button>
+          <button type="button" data-compare-mode="overlay">透明叠加</button>
+        </div>
+        <label>缩放 <input type="range" min="50" max="200" value="100" data-role="generation-zoom"><span data-role="generation-zoom-label">100%</span></label>
+        <label class="generation-opacity-control" hidden>生成图透明度 <input type="range" min="10" max="100" value="55" data-role="generation-opacity"></label>
+      </div>
+      <div class="generation-compare-canvas side-by-side" data-role="generation-compare-canvas">
+        <figure class="generation-original"><figcaption>用户原图</figcaption>${originalUrl ? `<div><img src="${escapeHtml(originalUrl)}" alt="用户上传的原始图纸"></div>` : "<p>原图预览不可用</p>"}</figure>
+        <figure class="generation-output"><figcaption>生成二维图（模拟）</figcaption><div><img src="${escapeHtml(generatedUrl)}" alt="模拟 SolidWorks 生成图"></div></figure>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(dialog);
+  const canvas = dialog.querySelector('[data-role="generation-compare-canvas"]');
+  const opacityControl = dialog.querySelector(".generation-opacity-control");
+  dialog.querySelector('[data-role="close-generation-compare"]').addEventListener("click", () => dialog.close());
+  dialog.querySelectorAll("[data-compare-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      dialog.querySelectorAll("[data-compare-mode]").forEach((item) => item.classList.toggle("active", item === button));
+      canvas.className = `generation-compare-canvas ${button.dataset.compareMode}`;
+      opacityControl.hidden = button.dataset.compareMode !== "overlay";
+    });
+  });
+  dialog.querySelector('[data-role="generation-zoom"]').addEventListener("input", (event) => {
+    const scale = Number(event.target.value) / 100;
+    canvas.style.setProperty("--generation-zoom", String(scale));
+    dialog.querySelector('[data-role="generation-zoom-label"]').textContent = `${event.target.value}%`;
+  });
+  dialog.querySelector('[data-role="generation-opacity"]').addEventListener("input", (event) => {
+    canvas.style.setProperty("--generation-opacity", String(Number(event.target.value) / 100));
+  });
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.showModal();
+}
+
 async function readUploadResponsePayload(response) {
   const body = await response.text();
   try {
@@ -5229,6 +6021,7 @@ function normalizeReview(review) {
   cloned.review_results ||= [];
   cloned.balloons ||= [];
   cloned.manual_confirmations ||= {};
+  applyGenerationDefaults(cloned);
   return cloned;
 }
 
@@ -5316,25 +6109,6 @@ function hasHumanReview(review) {
   return fieldNeedsReview || techNeedsReview || standardizationNeedsReview || standardSelectionNeedsReview;
 }
 
-function confirmAllFields() {
-  const params = state.review.spring_parameters || {};
-  Object.entries(params).forEach(([field, param]) => {
-    if (Array.isArray(param)) {
-      param.forEach((item, index) => confirmParam(item, `${field}_${index}`));
-    } else if (param && typeof param === "object") {
-      confirmParam(param, field);
-    }
-  });
-  (state.review.technical_requirements || []).forEach((item, index) => {
-    confirmParam(item, `technical_${index}`);
-  });
-  const standardizationPlan = standardizationBatchPlan(state.review);
-  applyStandardizationResults(standardizationPlan.items.map(({ item }) => item), { mode: "confirm_all" });
-  if (state.review.standard_selection?.need_human_review) {
-    confirmStandardSelection();
-  }
-}
-
 function acknowledgeScannedInput() {
   const rule = state.review.review_results.find((item) => item.rule_id === "DOC-001");
   if (rule) {
@@ -5351,6 +6125,7 @@ function confirmParam(param, field) {
   param.need_human_review = false;
   param.confidence = Math.max(Number(param.confidence) || 0, 0.99);
   param.source = Array.from(new Set(["human_confirmed", ...sourceValues(param.source)]));
+  delete param.derived_value_stale;
   if (acceptsDefaultAccuracy) {
     param.source = ["human_confirmed"];
     param.evidence = `人工确认通用精度等级：${normalizeAccuracyGrade(param.value) || param.value}。`;
@@ -5364,23 +6139,113 @@ function confirmParam(param, field) {
     value: param.value ?? param.content ?? null,
     confirmed_at: new Date().toISOString(),
   };
+  param.confirmation_snapshot = confirmationSnapshotFor(param);
 }
 
-function toggleParamConfirmation(param, field, options = {}) {
-  if (param?.need_human_review) {
-    confirmParam(param, field);
-    return "confirmed";
+function confirmationSnapshotFor(item) {
+  if (!item || typeof item !== "object") return null;
+  if (Object.prototype.hasOwnProperty.call(item, "height") || Object.prototype.hasOwnProperty.call(item, "force")) {
+    return {
+      kind: "load_point",
+      height: item.height ?? null,
+      force: item.force ?? null,
+      load_tolerance_upper: item.load_tolerance_upper ?? null,
+      load_tolerance_lower: item.load_tolerance_lower ?? null,
+      load_tolerance_percent: item.load_tolerance_percent ?? null,
+    };
   }
-  param.need_human_review = true;
-  param.source = Array.from(new Set(["human_reopened", ...sourceValues(param.source)]));
-  revokeManualConfirmations(options.invalidationField || field, "reopened_for_edit");
-  return "reopened";
+  if (Object.prototype.hasOwnProperty.call(item, "content")) {
+    return { kind: "technical", content: String(item.content || "").trim() };
+  }
+  return {
+    kind: "parameter",
+    value: item.value ?? null,
+    tolerance_upper: item.tolerance_upper ?? null,
+    tolerance_lower: item.tolerance_lower ?? null,
+  };
+}
+
+function rememberConfirmedSnapshot(item) {
+  if (!item || item.need_human_review || item.confirmation_snapshot) return;
+  item.confirmation_snapshot = confirmationSnapshotFor(item);
+}
+
+function confirmationSnapshotMatches(item) {
+  if (!item?.confirmation_snapshot) return false;
+  return JSON.stringify(item.confirmation_snapshot) === JSON.stringify(confirmationSnapshotFor(item));
+}
+
+function restoreSnapshotConfirmation(item, confirmationField) {
+  item.need_human_review = false;
+  item.source = sourceValues(item.source).filter((source) => source !== "human_edited");
+  delete item.derived_value_stale;
+  state.review.manual_confirmations ||= {};
+  state.review.manual_confirmations[confirmationField] = {
+    confirmed: true,
+    value: item.value ?? item.content ?? null,
+    confirmed_at: new Date().toISOString(),
+    confirmation_source: "restored_confirmed_value",
+  };
+}
+
+function applyEditedConfirmationState(item, field, options = {}) {
+  const confirmationField = options.confirmationField || field;
+  if (confirmationSnapshotMatches(item)) {
+    restoreSnapshotConfirmation(item, confirmationField);
+    return "restored";
+  }
+  markParamEdited(item, field, options);
+  return "modified";
+}
+
+function confirmationAuditEventType(item, field, review = state.review) {
+  if (reasonablenessSeverityForField(review, field) === "warning") return "risk_value_confirmed";
+  return confirmationItemWasEdited(item) ? "modified_value_confirmed" : "recognized_value_confirmed";
+}
+
+function markDependentFormulaParametersPending(field) {
+  const parameters = state.review?.spring_parameters || {};
+  Object.entries(parameters).forEach(([targetField, target]) => {
+    if (targetField === field || !target || typeof target !== "object" || Array.isArray(target)) return;
+    const sourceFields = Array.isArray(target.source_fields) ? target.source_fields : [];
+    const isCalculated = sourceValues(target.source).some((source) => source === "formula_calculation" || source === "derived");
+    if (!isCalculated || !sourceFields.includes(field)) return;
+    rememberConfirmedSnapshot(target);
+    const recalculated = recalculateKnownDependentParameter(targetField, target, parameters);
+    if (recalculated && confirmationSnapshotMatches(target)) {
+      restoreSnapshotConfirmation(target, targetField);
+      return;
+    }
+    target.need_human_review = true;
+    target.source = Array.from(new Set(["derived_recalculation", ...sourceValues(target.source)]));
+    target.derived_value_stale = !recalculated;
+    revokeManualConfirmations(targetField, "source_parameter_edited");
+  });
+}
+
+function recalculateKnownDependentParameter(field, target, parameters) {
+  const wire = Number(parameters.wire_diameter?.value);
+  const mean = Number(parameters.mean_diameter?.value);
+  const outer = Number(parameters.outer_diameter?.value);
+  const inner = Number(parameters.inner_diameter?.value);
+  let value = null;
+  if (field === "mean_diameter" && Number.isFinite(wire)) {
+    if (target.source_fields?.includes("outer_diameter") && Number.isFinite(outer)) value = outer - wire;
+    else if (target.source_fields?.includes("inner_diameter") && Number.isFinite(inner)) value = inner + wire;
+  } else if (field === "outer_diameter" && Number.isFinite(wire) && Number.isFinite(mean)) {
+    value = mean + wire;
+  } else if (field === "inner_diameter" && Number.isFinite(wire) && Number.isFinite(mean)) {
+    value = mean - wire;
+  }
+  if (!Number.isFinite(value)) return false;
+  target.value = Number(value.toFixed(3));
+  return true;
 }
 
 function markParamEdited(param, field = "", options = {}) {
   param.need_human_review = true;
   param.source = Array.from(new Set(["human_edited", ...sourceValues(param.source)]));
-  state.review.parameter_reasonableness_stale = true;
+  if (!options.skipParameterReasonableness) state.review.parameter_reasonableness_stale = true;
   if (!field) {
     scheduleAutomaticStandardization();
     return;
@@ -5389,7 +6254,10 @@ function markParamEdited(param, field = "", options = {}) {
     revokeManualConfirmations(options.confirmationField, "value_edited");
   }
   revokeManualConfirmations(field, "value_edited");
-  invalidateStandardizationResults(field);
+  if (!options.skipStandardizationInvalidation) invalidateStandardizationResults(field);
+  if (!options.skipDependentInvalidation && !field.startsWith("load_points.") && !field.startsWith("technical_requirements.")) {
+    markDependentFormulaParametersPending(field);
+  }
   scheduleAutomaticStandardization(undefined, {
     force: ["total_coils", "end_type", "support_coils"].includes(field),
   });
@@ -5471,13 +6339,14 @@ function makeExportReview() {
 
 function makeGenerationParameterPackage(review = state.review) {
   const confirmedParameters = {};
-  Object.entries(review.spring_parameters || {}).forEach(([field, param]) => {
-    if (["load_points", "torque_points"].includes(field) || generationParameterState(param) !== "confirmed") return;
-    const value = field === "material" && param.standard_value ? param.standard_value : param.value;
+  COMPRESSION_GENERATION_CORE_FIELDS.forEach((field) => {
+    const param = generationSourceParameter(review.spring_parameters || {}, field);
+    if (!param || generationContractState(review.spring_parameters || {}, field) !== "confirmed") return;
+    const value = generationContractValue(field, param.value);
     confirmedParameters[field] = {
-      label: targetFieldLabel(field),
+      label: COMPRESSION_GENERATION_LABELS[field],
       value,
-      unit: param.unit || null,
+      unit: COMPRESSION_GENERATION_UNITS[field],
       tolerance_upper: param.tolerance_upper ?? null,
       tolerance_lower: param.tolerance_lower ?? null,
       confirmation_source: "human_confirmed",
@@ -5487,7 +6356,7 @@ function makeGenerationParameterPackage(review = state.review) {
     .filter((item) => item?.content && !item.need_human_review)
     .map((item) => ({
       type: item.type,
-      content: item.type === "surface" && item.standard_content ? item.standard_content : item.content,
+      content: item.content,
       confirmation_source: "human_confirmed",
     }));
   const summary = review.drawing_summary || {};
@@ -5497,7 +6366,7 @@ function makeGenerationParameterPackage(review = state.review) {
     package_type: "confirmed_compression_spring_generation_input",
     generated_at: new Date().toISOString(),
     export_policy: {
-      parameter_filter: "human_confirmed_only",
+      parameter_filter: "frozen_compression_inputs_v1_human_confirmed_only",
       readiness_is_advisory: true,
     },
     source: {
@@ -5513,9 +6382,6 @@ function makeGenerationParameterPackage(review = state.review) {
     },
     generation_parameters: {
       spring_parameters: confirmedParameters,
-      load_points_label: "载荷测试点",
-      load_points: structuredClone((review.spring_parameters?.load_points || []).filter((point) => !point?.need_human_review)),
-      torque_points: structuredClone((review.spring_parameters?.torque_points || []).filter((point) => !point?.need_human_review)),
       technical_requirements: requirements,
     },
     derived_parameters: generationDerivedParameters(review),

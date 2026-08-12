@@ -25,7 +25,7 @@ assert.notEqual(loadTargetStart, -1, "load point target helper must exist");
 assert.notEqual(loadTargetEnd, -1, "load point target helper block must be complete");
 vm.runInContext(appSource.slice(loadTargetStart, loadTargetEnd), context);
 const toleranceStart = appSource.indexOf("function loadPointToleranceDisplay");
-const toleranceEnd = appSource.indexOf("function confirmationActionLabel", toleranceStart);
+const toleranceEnd = appSource.indexOf("function confirmationItemWasEdited", toleranceStart);
 assert.notEqual(toleranceStart, -1, "load tolerance display helpers must exist");
 assert.notEqual(toleranceEnd, -1, "load tolerance display helper block must be complete");
 context.formatCompactNumber = (value) => String(value);

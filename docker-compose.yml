@@ -57,6 +57,25 @@ services:
     networks:
       - ai_review_internal
 
+  mock-solidworks:
+    profiles: ["mock-solidworks"]
+    build:
+      context: .
+      args:
+        DEBIAN_APT_MIRROR: ${DEBIAN_APT_MIRROR:-mirrors.aliyun.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
+    restart: unless-stopped
+    command: ["python", "-m", "ai_design_review.mock_solidworks_worker"]
+    env_file:
+      - .env
+    environment:
+      MOCK_SOLIDWORKS_API_BASE_URL: http://api:8770
+      MOCK_SOLIDWORKS_ENABLED: "true"
+    depends_on:
+      - api
+    networks:
+      - ai_review_internal
+
   web:
     image: nginx:1.26-alpine
     restart: unless-stopped

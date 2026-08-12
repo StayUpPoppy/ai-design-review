@@ -9,7 +9,7 @@ assert.match(appSource, /COMPRESSION_END_TYPE_OPTIONS = \["两端并紧", "两�
 const start = appSource.indexOf("function safeConfirmableReviewItems");
 const end = appSource.indexOf("function renderCompareDataPanelHtml", start);
 const confirmationStart = appSource.indexOf("function confirmParam");
-const confirmationEnd = appSource.indexOf("function toggleParamConfirmation", confirmationStart);
+const confirmationEnd = appSource.indexOf("function sourceValues", confirmationStart);
 
 assert.notEqual(start, -1, "review workbench helpers must exist");
 assert.notEqual(end, -1, "review workbench helper block must be complete");
@@ -39,6 +39,14 @@ const context = {
     outer_diameter: "外径",
     accuracy_grade: "通用精度等级",
   }[field] || field),
+  buildSafeConfirmationPlan: (review) => ({
+    items: [
+      { field: "wire_diameter", label: "线径" },
+      { field: "load_points.F1", label: "载荷测试点 F1" },
+      { field: "technical_requirements.1", label: "表面处理" },
+    ],
+    skipped: [],
+  }),
   reasonablenessSeverityForField: (review, field) => review.risks?.[field] || "",
   standardizationBatchPlan: () => ({ items: [], conflicts: [] }),
   revokeManualConfirmations: () => false,
@@ -102,7 +110,9 @@ assert.deepEqual(Array.from(safeItems, (item) => item.label), ["线径", "载荷
 
 const html = context.renderReviewWorkbenchHtml(review);
 assert.match(html, /待处理/);
-assert.match(html, /data-action="confirm-safe-fields"/);
+assert.match(html, /data-action="show-workbench-tab"/);
+assert.match(html, /去参数页批量确认/);
+assert.doesNotMatch(html, /data-action="confirm-safe-fields"/);
 assert.match(html, /data-action="run-workbench-standardization"/);
 assert.match(html, /data-action="export-generation-package"/);
 assert.match(html, /data-action="workbench-ai"/);
