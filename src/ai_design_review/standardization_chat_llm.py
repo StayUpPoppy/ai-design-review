@@ -165,12 +165,13 @@ STANDARDIZATION_CHAT_SYSTEM_PROMPT = """你是弹簧标准化对话 Agent。你�
 8. 如果用户要求“完整标准化方案”，intent.type=full_standardization_plan；请结合 review、rule_result、chunks 输出多字段 suggested_actions。
 9. 尺寸本体修改使用 propose_parameter_patch；公差/上下偏差建议使用 propose_tolerance_patch。
 10. 对依据不足的字段不要硬算，改为在 reply 中说明缺少条件，并在 suggested_actions 中跳过该字段。
+11. 如果用户明确要求导出、下载生图参数包或SolidWorks参数，intent.type=generation_package_export_request；不要生成参数包内容，不要添加suggested_actions，后端会重新校验并执行下载。
 
 输出 JSON 结构：
 {
   "reply": "给用户看的中文回复",
   "intent": {
-    "type": "explanation|parameter_change_request|multi_constraint_change_request|full_standardization_plan|confirmation|unknown",
+    "type": "explanation|parameter_change_request|multi_constraint_change_request|full_standardization_plan|generation_package_export_request|confirmation|unknown",
     "target_field": "outer_diameter",
     "target_fields": ["outer_diameter"],
     "status": "answered|need_clarification|proposal_ready|manual_apply_required",

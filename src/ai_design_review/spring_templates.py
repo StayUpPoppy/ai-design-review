@@ -162,6 +162,12 @@ FIELD_LABELS = {
     for template in SPRING_TEMPLATES.values()
     for field in template["fields"]
 }
+FIELD_LABELS.update({
+    "spring_index": "旋绕比",
+    "slenderness_ratio": "细长比",
+    "load_point_deflections": "载荷变形量",
+    "end_coils_closed": "端圈压并",
+})
 
 
 def classify_spring_type(candidates: list[dict[str, Any]], file_info: dict[str, Any] | None = None) -> dict[str, Any]:

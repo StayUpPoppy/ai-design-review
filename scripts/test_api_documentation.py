@@ -48,6 +48,8 @@ EXPECTED_OPERATION_KEYS = {
     ("GET", "/api/reviews/{job_id}/artifacts/{relative_path}"),
     ("POST", "/api/reviews/{job_id}/standardize"),
     ("POST", "/api/reviews/{job_id}/standardization-chat"),
+    ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/apply"),
+    ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/discard"),
     ("GET", "/api/reviews/{job_id}/generation-readiness"),
     ("GET", "/api/reviews/{job_id}/generation-package"),
     ("POST", "/api/reviews/{job_id}/generation-template-match"),
@@ -74,6 +76,7 @@ EXPECTED_OPERATION_KEYS = {
 
 EXPECTED_OPERATION_IDS = {
     "approve_generation_job_api_generation_jobs__generation_id__approve_post",
+    "apply_review_parameter_change_proposal_api_reviews__job_id__parameter_change_proposals__proposal_id__apply_post",
     "assess_review_reasonableness_api_reviews_reasonableness_post",
     "cancel_generation_job_api_generation_jobs__generation_id__cancel_post",
     "claim_generation_worker_job_api_generation_worker_jobs_claim_post",
@@ -83,6 +86,7 @@ EXPECTED_OPERATION_IDS = {
     "create_generation_template_version_api_admin_generation_templates__template_code__versions_post",
     "create_review_api_reviews_post",
     "delete_existing_review_api_reviews__job_id__delete",
+    "discard_review_parameter_change_proposal_api_reviews__job_id__parameter_change_proposals__proposal_id__discard_post",
     "download_generation_artifact_api_generation_jobs__generation_id__artifacts__artifact_id__get",
     "download_review_api_reviews__job_id__download_get",
     "fail_generation_worker_job_api_generation_worker_jobs__generation_id__failed_post",
@@ -168,7 +172,7 @@ def main() -> None:
                 operations[key] = operation
 
     assert set(operations) == EXPECTED_OPERATION_KEYS
-    assert len(operations) == 44
+    assert len(operations) == 46
     assert {operation["operationId"] for operation in operations.values()} == EXPECTED_OPERATION_IDS
 
     for key, operation in operations.items():
@@ -221,13 +225,20 @@ def main() -> None:
     }
     claim_job = schema["components"]["schemas"]["GenerationWorkerClaimJobView"]
     assert claim_job["properties"]["parameter_package"]["$ref"].endswith("GenerationParameterPackageV1")
+    chat_response = schema["components"]["schemas"]["StandardizationChatResponse"]
+    assert chat_response["properties"]["generation_package_export"]["anyOf"][0]["$ref"].endswith(
+        "GenerationPackageExportAction"
+    )
+    package_export_action = schema["components"]["schemas"]["GenerationPackageExportAction"]
+    assert package_export_action["properties"]["schema_version"]["examples"] == ["spring_generation_parameters/v1"]
+    assert package_export_action["properties"]["parameter_fields"]["description"]
     job_create = schema["components"]["schemas"]["GenerationJobCreate"]
     requested_artifacts = job_create["properties"]["requested_artifact_types"]
     assert requested_artifacts.get("default") == ["pdf"]
     assert operations[("POST", "/api/reviews")]["responses"]["413"]["content"]["application/json"]["example"]
     assert operations[("POST", "/api/generation-worker/jobs/{generation_id}/artifacts")]["responses"]["415"]["content"]["application/json"]["example"]
 
-    print("API documentation contract tests passed: 44 operations, Chinese metadata, self-hosted Scalar, and security schemes.")
+    print(f"API documentation contract tests passed: {len(operations)} operations, Chinese metadata, self-hosted Scalar, and security schemes.")
 
 
 if __name__ == "__main__":

@@ -1,14 +1,35 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
-from .end_conditions import normalize_end_grinding, normalize_end_type
+from .end_conditions import (
+    END_GRINDING_GROUND,
+    END_GRINDING_NOT_GROUND,
+    END_TYPE_NOT_TIGHT,
+    END_TYPE_TIGHT,
+    normalize_end_grinding,
+    normalize_end_type,
+)
+from .generation_contract import (
+    COMPRESSION_GENERATION_INPUT_FIELDS,
+    COMPRESSION_GENERATION_LABELS,
+    GENERATION_SCHEMA_VERSION,
+    generation_source_item,
+)
 from .generation_readiness import assess_generation_readiness
+from .parameter_impact import assess_parameter_change_impact
+from .parameter_change_proposal import (
+    build_parameter_change_proposal,
+    find_parameter_change_proposal,
+    invalidate_open_parameter_change_proposals,
+)
 from .spring_feasibility import assess_parameter_change_set, assess_parameter_reasonableness
 from .spring_templates import FIELD_LABELS
 from .standard_knowledge import chunk_reference, retrieve_standard_chunks
+from .standardization_batch import build_standardization_batch
 from .standardization_chat_llm import StandardizationChatLLMEngine
 
 
@@ -22,7 +43,8 @@ FIELD_SYNONYMS: dict[str, tuple[str, ...]] = {
     "active_coils": ("有效圈数", "工作圈数"),
     "support_coils": ("支承圈数", "支撑圈数", "单端支承圈数"),
     "solid_height": ("压并高度", "并紧高度"),
-    "end_type": ("端部形式", "端部", "端型", "并紧", "不并紧", "闭口", "开口"),
+    "end_type": ("端部形式", "端圈压并", "端部", "端型", "不压并", "压并", "并紧", "不并紧", "闭口", "开口"),
+    "handedness": ("旋向", "左旋", "右旋"),
     "end_grinding": ("端面磨削", "端面磨平", "两端磨平", "两端磨削", "两端不磨削", "磨平", "不磨"),
     "spring_rate": ("刚度", "弹簧刚度", "k"),
     "perpendicularity": ("垂直度",),
@@ -32,7 +54,7 @@ FIELD_SYNONYMS: dict[str, tuple[str, ...]] = {
 }
 
 EXPLANATION_WORDS = ("为什么", "依据", "怎么", "如何", "怎么算", "哪里来", "来源", "标准", "公差")
-CHANGE_WORDS = ("太小", "太大", "偏小", "偏大", "过小", "过大", "低了", "高了", "改", "调整", "设为", "设置", "换成", "增加", "减小", "降低", "提高")
+CHANGE_WORDS = ("太小", "太大", "偏小", "偏大", "过小", "过大", "低了", "高了", "改", "调整", "设为", "设置", "换成", "增加", "减小", "降低", "提高", "不能超过", "不超过", "不得超过", "至少", "保持不变")
 CONFIRM_WORDS = ("按你说", "就用", "确认", "应用", "采用", "可以")
 FULL_PLAN_WORDS = (
     "完整标准化方案",
@@ -93,10 +115,198 @@ NUMERIC_SUPPLEMENT_FIELDS = {
     "permanent_set_limit",
 }
 
+ACCURACY_GRADE_FIELDS = (
+    "diameter_accuracy_grade",
+    "free_length_accuracy_grade",
+    "load_accuracy_grade",
+    "stiffness_accuracy_grade",
+)
+ACCURACY_SPECIALIZED_TERMS = (
+    "直径",
+    "外径",
+    "内径",
+    "中径",
+    "自由高度",
+    "自由长度",
+    "载荷",
+    "负荷",
+    "刚度",
+)
+ACCURACY_ACTION_TERMS = ("标准化", "重新出方案", "重新生成方案", "生成方案", "出方案")
+ACCURACY_EXPLANATION_TERMS = ("区别", "差别", "不同", "哪个好", "如何选择", "什么意思", "是什么")
+GENERATION_PACKAGE_EXPORT_ACTION_TERMS = ("导出", "下载", "保存", "生成文件", "生成", "导出来", "下下来")
+GENERATION_PACKAGE_EXPORT_OBJECT_TERMS = (
+    "参数包",
+    "生图参数",
+    "生成图纸参数",
+    "solidworks参数",
+    "solidworks建模参数",
+    "solidworks 参数",
+)
+GENERATION_PACKAGE_EXPORT_EXPLANATION_TERMS = ("怎么", "如何", "在哪里", "去哪", "哪儿", "是什么", "什么意思")
+GENERATION_PACKAGE_EXPORT_QUERY_TERMS = ("能不能", "能否", "是否可以", "可以吗", "能导出吗", "能下载吗")
+
+
+def parse_accuracy_standardization_request(message: str) -> dict[str, Any] | None:
+    """Parse an explicit general accuracy-standardization command without using an LLM."""
+
+    text = str(message or "").strip()
+    normalized = text.replace("級", "级").replace("壹", "一").replace("贰", "二").replace("叁", "三")
+    has_action = any(term in normalized for term in ACCURACY_ACTION_TERMS)
+    mentions_accuracy = "精度" in normalized
+    if not has_action or not mentions_accuracy:
+        return None
+    if any(term in normalized for term in ACCURACY_EXPLANATION_TERMS):
+        return None
+
+    grade_map = {"一": "1级", "二": "2级", "三": "3级", "1": "1级", "2": "2级", "3": "3级"}
+    tokens = re.findall(r"([一二三123])\s*级", normalized)
+    grades = list(dict.fromkeys(grade_map[token] for token in tokens))
+    invalid_tokens = re.findall(r"([四五六七八九零4567890])\s*级", normalized)
+    specialized_terms = [term for term in ACCURACY_SPECIALIZED_TERMS if term in normalized]
+
+    if invalid_tokens:
+        return {
+            "status": "invalid_grade",
+            "requested_grade": None,
+            "requested_grades": grades,
+            "scope": "general",
+            "message": "当前仅支持1级、2级或3级精度，请重新指定。",
+        }
+    if len(grades) > 1:
+        return {
+            "status": "need_clarification",
+            "requested_grade": None,
+            "requested_grades": grades,
+            "scope": "general",
+            "message": f"本次同时识别到{'、'.join(grades)}，请只选择一个通用精度等级。",
+        }
+    if not grades:
+        return {
+            "status": "need_clarification",
+            "requested_grade": None,
+            "requested_grades": [],
+            "scope": "general",
+            "message": "请明确选择1级、2级或3级精度后再进行标准化。",
+        }
+    if specialized_terms:
+        return {
+            "status": "specialized_not_supported",
+            "requested_grade": grades[0],
+            "requested_grades": grades,
+            "scope": "specialized",
+            "specialized_terms": specialized_terms,
+            "message": "当前AI对话第一版只支持设置整图的通用精度；专项精度请暂时在参数页单独设置。",
+        }
+    return {
+        "status": "ready",
+        "requested_grade": grades[0],
+        "requested_grades": grades,
+        "scope": "general",
+    }
+
+
+def parse_generation_package_export_request(message: str) -> dict[str, Any] | None:
+    """Recognize an explicit generation-package export request without building the package in the LLM."""
+
+    text = str(message or "").strip()
+    normalized = re.sub(r"[\s，。！？、：；,.!?;:_-]+", "", text).lower()
+    has_action = any(term.replace(" ", "").lower() in normalized for term in GENERATION_PACKAGE_EXPORT_ACTION_TERMS)
+    has_object = any(term.replace(" ", "").lower() in normalized for term in GENERATION_PACKAGE_EXPORT_OBJECT_TERMS)
+    if not has_action or not has_object:
+        return None
+    if any(term in normalized for term in GENERATION_PACKAGE_EXPORT_EXPLANATION_TERMS):
+        return {"status": "explain", "source": "local_rule"}
+    if any(term in normalized for term in GENERATION_PACKAGE_EXPORT_QUERY_TERMS):
+        return {"status": "query", "source": "local_rule"}
+    return {"status": "execute", "source": "local_rule"}
+
+
+def select_general_accuracy_grade(review: dict[str, Any], requested_grade: str) -> dict[str, Any]:
+    """Apply the same confirmed general-grade selection used by the manual UI."""
+
+    grade = str(requested_grade or "").strip()
+    if grade not in {"1级", "2级", "3级"}:
+        raise ValueError("requested_grade must be 1级, 2级, or 3级.")
+    parameters = review.setdefault("spring_parameters", {})
+    current = parameters.get("accuracy_grade")
+    item = dict(current) if isinstance(current, dict) else {}
+    previous_grade = _normalized_accuracy_grade(item.get("value"))
+    raw_source = item.get("source")
+    previous_source = [str(value) for value in raw_source] if isinstance(raw_source, list) else [str(raw_source)] if raw_source else []
+    selection_changed = (
+        previous_grade != grade
+        or item.get("need_human_review") is not False
+        or previous_source != ["human_selected"]
+        or bool(item.get("default_source"))
+    )
+    specialized_retained = {
+        field: str((parameters.get(field) or {}).get("value"))
+        for field in ACCURACY_GRADE_FIELDS
+        if isinstance(parameters.get(field), dict) and (parameters.get(field) or {}).get("value") not in (None, "")
+    }
+    item.update(
+        {
+            "value": grade,
+            "need_human_review": False,
+            "confidence": 0.99,
+            "source": ["human_selected"],
+            "evidence": f"用户通过AI对话选择通用精度等级：{grade}。",
+        }
+    )
+    item.pop("default_source", None)
+    item.pop("default_reason", None)
+    parameters["accuracy_grade"] = item
+    review.setdefault("manual_confirmations", {})["accuracy_grade"] = {
+        "confirmed": True,
+        "value": grade,
+        "confirmed_at": _now(),
+        "confirmation_source": "ai_accuracy_standardization",
+    }
+    invalidated = []
+    if selection_changed:
+        invalidated = invalidate_open_parameter_change_proposals(
+            review,
+            reason="通用精度等级已经变化，当前参数修改方案需要重新计算。",
+        )
+    return {
+        "status": "selected",
+        "requested_grade": grade,
+        "previous_grade": previous_grade,
+        "scope": "general",
+        "selection_changed": selection_changed,
+        "specialized_grades_retained": specialized_retained,
+        "invalidated_proposal_ids": invalidated,
+    }
+
+
+def _normalized_accuracy_grade(value: Any) -> str | None:
+    normalized = str(value or "").replace("級", "级")
+    matched = re.search(r"([123])\s*级", normalized)
+    return f"{matched.group(1)}级" if matched else None
+
 
 def standardization_chat_context_needs_refresh(review: dict[str, Any], message: str) -> dict[str, Any]:
     """Decide whether a chat turn needs fresh deterministic standardization context."""
     text = str(message or "").strip()
+    accuracy_request = parse_accuracy_standardization_request(text)
+    if accuracy_request is not None:
+        return {
+            "required": False,
+            "intent_type": "accuracy_standardization_request",
+            "reasons": [],
+            "result_count": len(review.get("standardization_results") or []),
+            "stale_result_count": 0,
+        }
+    package_export_request = parse_generation_package_export_request(text)
+    if package_export_request is not None:
+        return {
+            "required": False,
+            "intent_type": "generation_package_export_request",
+            "reasons": [],
+            "result_count": len(review.get("standardization_results") or []),
+            "stale_result_count": 0,
+        }
     intent_type = _detect_intent_type(text)
     results = [item for item in review.get("standardization_results", []) or [] if isinstance(item, dict)]
     selection = review.get("standard_selection") or {}
@@ -128,14 +338,22 @@ def chat_about_standardization(
     use_llm: bool = False,
     llm_engine: Any | None = None,
     supplements: dict[str, Any] | None = None,
+    active_proposal_id: str | None = None,
+    review_revision: int | None = None,
+    accuracy_standardization: dict[str, Any] | None = None,
+    standardization_batch_revision: int | None = None,
+    generation_package_export_source: str = "local",
+    generation_package_export_revision: int | None = None,
 ) -> dict[str, Any]:
     text = str(message or "").strip()
     if not text:
         raise ValueError("message is required.")
 
-    review["parameter_reasonableness"] = assess_parameter_reasonableness(review)
-
     raw_supplements = supplements if isinstance(supplements, dict) else {}
+    accuracy_request = parse_accuracy_standardization_request(text)
+    package_export_request = parse_generation_package_export_request(text)
+    if package_export_request is None:
+        review["parameter_reasonableness"] = assess_parameter_reasonableness(review)
     target = _detect_target_field(text)
     intent_type = _detect_intent_type(text)
     missing_context = _missing_standardization_context(review)
@@ -149,6 +367,18 @@ def chat_about_standardization(
 
     if raw_supplements:
         result = _handle_batch_supplements(review, raw_supplements)
+    elif accuracy_request is not None:
+        result = _handle_accuracy_standardization_request(
+            accuracy_request,
+            accuracy_standardization=accuracy_standardization,
+        )
+    elif package_export_request is not None:
+        result = _handle_generation_package_export(
+            review,
+            package_export_request,
+            source_mode=generation_package_export_source,
+            review_revision=generation_package_export_revision,
+        )
     elif intent_type == "parameter_reasonableness":
         result = _handle_parameter_reasonableness(review, text)
     elif intent_type == "generation_readiness":
@@ -169,13 +399,66 @@ def chat_about_standardization(
     # Missing inputs are deterministic blocking conditions. Ask for them first
     # rather than allowing an LLM to produce a seemingly complete plan.
     if use_llm and not raw_supplements and result["intent"]["type"] not in {
+        "accuracy_standardization_request",
+        "generation_package_export_request",
         "missing_context",
         "generation_readiness",
         "parameter_reasonableness",
     }:
         result = _run_llm_chat(review, text, result, llm_engine=llm_engine)
 
+    if (
+        package_export_request is None
+        and (result.get("intent") or {}).get("type") == "generation_package_export_request"
+    ):
+        llm_metadata = {key: result.get(key) for key in ("llm_chat", "diagnostics") if result.get(key) is not None}
+        result = _handle_generation_package_export(
+            review,
+            {"status": "execute", "source": "llm"},
+            source_mode=generation_package_export_source,
+            review_revision=generation_package_export_revision,
+        )
+        result.update(llm_metadata)
+
     _attach_proposal_feasibility(review, result)
+
+    proposal_actions = [
+        item
+        for item in result.get("suggested_actions", []) or []
+        if isinstance(item, dict) and item.get("type") in {"propose_parameter_patch", "propose_tolerance_patch", "proposal_constraint"}
+    ]
+    selected_proposal_id = active_proposal_id or review.get("active_parameter_change_proposal_id")
+    clarification = None
+    if (
+        not proposal_actions
+        and (result.get("intent") or {}).get("type") == "parameter_change_request"
+        and (result.get("intent") or {}).get("status") in {"need_clarification", "need_input"}
+    ):
+        clarification = str(result.get("reply") or "请补充明确的修改目标值。")
+    change_proposal = None
+    if proposal_actions or clarification:
+        change_proposal = build_parameter_change_proposal(
+            review,
+            proposal_actions,
+            user_goal=text,
+            active_proposal_id=str(selected_proposal_id or "") or None,
+            review_revision=review_revision,
+            clarification=clarification,
+        )
+    if change_proposal:
+        result["change_proposal"] = change_proposal
+
+    result_intent = result.get("intent") or {}
+    is_accuracy_execution = (
+        result_intent.get("type") == "accuracy_standardization_request"
+        and result_intent.get("status") == "completed"
+    )
+    is_full_standardization = result_intent.get("type") == "full_standardization_plan"
+    if is_accuracy_execution or is_full_standardization:
+        result["standardization_batch"] = build_standardization_batch(
+            review,
+            review_revision=standardization_batch_revision,
+        )
 
     turn = {
         "created_at": _now(),
@@ -187,16 +470,77 @@ def chat_about_standardization(
     }
     if result.get("proposal_validation"):
         turn["proposal_validation"] = result["proposal_validation"]
+    if result.get("impact_preview"):
+        turn["impact_preview"] = result["impact_preview"]
+    if result.get("change_proposal"):
+        turn["change_proposal"] = result["change_proposal"]
     if result.get("generation_readiness"):
         turn["generation_readiness"] = result["generation_readiness"]
+    if result.get("accuracy_standardization"):
+        turn["accuracy_standardization"] = result["accuracy_standardization"]
+    if result.get("standardization_batch"):
+        turn["standardization_batch"] = result["standardization_batch"]
+    if result.get("generation_package_export"):
+        turn["generation_package_export"] = result["generation_package_export"]
     if result.get("llm_chat"):
         turn["llm_chat"] = result["llm_chat"]
     if result.get("diagnostics"):
         turn["diagnostics"] = result["diagnostics"]
     review.setdefault("standardization_chat", [])
     review["standardization_chat"].append(turn)
+    if result.get("change_proposal"):
+        proposal = find_parameter_change_proposal(review, result["change_proposal"].get("proposal_id"))
+        if proposal is not None:
+            proposal["source_turn_created_at"] = turn["created_at"]
+        result["change_proposal"]["source_turn_created_at"] = turn["created_at"]
+        turn["change_proposal"]["source_turn_created_at"] = turn["created_at"]
     result["turn"] = turn
     result["review"] = review
+    return result
+
+
+def _handle_accuracy_standardization_request(
+    request: dict[str, Any],
+    *,
+    accuracy_standardization: dict[str, Any] | None,
+) -> dict[str, Any]:
+    request_status = str(request.get("status") or "need_clarification")
+    if request_status == "ready" and accuracy_standardization:
+        completed = dict(accuracy_standardization)
+        grade = str(completed.get("requested_grade") or request.get("requested_grade") or "")
+        count = int(completed.get("standardization_result_count") or 0)
+        retained = completed.get("specialized_grades_retained") or {}
+        retained_text = ""
+        if retained:
+            retained_text = " 已有专项精度保持不变，并继续优先用于对应公差计算。"
+        reply = (
+            f"已按通用精度等级{grade}重新生成标准化方案，共生成{count}项建议。"
+            f"{retained_text} 标准化建议尚未自动应用，请继续逐项核对或批量应用。"
+        )
+        result = _response(
+            reply,
+            intent_type="accuracy_standardization_request",
+            target_field="accuracy_grade",
+            status="completed",
+            affected_fields=["accuracy_grade", "standardization_results"],
+        )
+        result["accuracy_standardization"] = completed
+        return result
+
+    if request_status == "ready":
+        message = "已识别精度标准化指令，但当前调用未执行标准化，请重新提交。"
+        status = "execution_required"
+    else:
+        message = str(request.get("message") or "请明确选择1级、2级或3级精度。")
+        status = request_status
+    result = _response(
+        message,
+        intent_type="accuracy_standardization_request",
+        target_field="accuracy_grade",
+        status=status,
+        affected_fields=[],
+    )
+    result["accuracy_standardization"] = dict(request)
     return result
 
 
@@ -240,28 +584,40 @@ def _run_llm_chat(
 
 def _attach_proposal_feasibility(review: dict[str, Any], result: dict[str, Any]) -> None:
     actions = [item for item in result.get("suggested_actions", []) or [] if isinstance(item, dict)]
+    applicable_actions = [
+        item
+        for item in actions
+        if item.get("type") in {"propose_parameter_patch", "propose_tolerance_patch"}
+    ]
     parameter_actions = [item for item in actions if item.get("type") == "propose_parameter_patch"]
-    if not parameter_actions:
+    if not applicable_actions:
         return
 
-    for action in parameter_actions:
-        validation = assess_parameter_change_set(review, [action])
-        action["validation"] = validation
+    for action in applicable_actions:
+        impact_preview = assess_parameter_change_impact(review, [action])
+        action["impact_preview"] = impact_preview
         metadata = action.setdefault("metadata", {})
-        metadata["feasibility_status"] = validation["status"]
-        metadata["feasibility_can_apply"] = validation["status"] != "blocked"
+        metadata["impact_status"] = impact_preview["status"]
+        metadata["impact_can_apply"] = impact_preview["status"] != "blocked"
+        if action.get("type") == "propose_parameter_patch":
+            validation = assess_parameter_change_set(review, [action])
+            action["validation"] = validation
+            metadata["feasibility_status"] = validation["status"]
+            metadata["feasibility_can_apply"] = validation["status"] != "blocked"
 
-    proposal_validation = assess_parameter_change_set(review, parameter_actions)
-    result["proposal_validation"] = proposal_validation
-    if proposal_validation["status"] == "blocked":
+    if parameter_actions:
+        result["proposal_validation"] = assess_parameter_change_set(review, parameter_actions)
+    impact_preview = assess_parameter_change_impact(review, applicable_actions)
+    result["impact_preview"] = impact_preview
+    if impact_preview["status"] == "blocked":
         result["reply"] = (
             f"{result.get('reply') or ''}\n\n"
-            f"变更预检未通过：{proposal_validation['summary']} 请调整目标值后再确认。"
+            f"变更预检未通过：{impact_preview['summary']} 请调整目标值后再确认。"
         ).strip()
-    elif proposal_validation["status"] == "warning":
+    elif impact_preview["status"] == "warning":
         result["reply"] = (
             f"{result.get('reply') or ''}\n\n"
-            f"变更预检提示：{proposal_validation['summary']}"
+            f"变更预检提示：{impact_preview['summary']}"
         ).strip()
 
 
@@ -301,7 +657,8 @@ def _handle_parameter_reasonableness(review: dict[str, Any], message: str) -> di
 
 
 def _handle_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
-    readiness = assess_generation_readiness(review)
+    export_review = deepcopy(review)
+    readiness = assess_generation_readiness(export_review)
     missing = readiness.get("missing_fields") or []
     pending = readiness.get("pending_fields") or []
     actions = [
@@ -340,6 +697,123 @@ def _handle_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
         affected_fields=["generation_parameters"],
     )
     response["generation_readiness"] = readiness
+    return response
+
+
+def _handle_generation_package_export(
+    review: dict[str, Any],
+    request: dict[str, Any],
+    *,
+    source_mode: str,
+    review_revision: int | None,
+) -> dict[str, Any]:
+    request_status = str(request.get("status") or "execute")
+    if request_status == "explain":
+        return _response(
+            "正式审图可从服务端导出冻结的SolidWorks生图参数包；本地导入JSON也可以导出，但不能据此创建生图任务。请直接说“导出参数包”即可执行。",
+            intent_type="generation_package_export_request",
+            target_field="",
+            status="explained",
+            affected_fields=[],
+        )
+
+    export_review = deepcopy(review)
+    readiness = assess_generation_readiness(export_review)
+    readiness_status = str(readiness.get("status") or "needs_input")
+    can_download = request_status == "execute" and readiness_status in {"ready", "ready_with_warnings"}
+    if request_status == "query":
+        if readiness_status in {"ready", "ready_with_warnings"}:
+            reply = "当前参数已经可以导出生图参数包。需要下载时，请直接说“导出参数包”。"
+        else:
+            reply = f"当前还不能导出生图参数包：{readiness.get('summary') or '仍有内容需要处理。'}"
+        response = _response(
+            reply,
+            intent_type="generation_package_export_request",
+            target_field="",
+            status="answered",
+            affected_fields=[],
+        )
+        response["generation_readiness"] = readiness
+        return response
+
+    if can_download:
+        reply = "已完成生图参数包校验，正在下载冻结的SolidWorks参数JSON。"
+        if readiness_status == "ready_with_warnings":
+            reply += f" 参数包仍可使用，但有 {len(readiness.get('warnings') or [])} 条非阻断警告，已在结果卡中列出。"
+        intent_status = "ready"
+    else:
+        reply = f"当前暂时不能导出生图参数包：{readiness.get('summary') or '仍有内容需要处理。'}"
+        intent_status = "blocked"
+
+    parameters = export_review.get("spring_parameters") or {}
+    field_summary = []
+    baseline_parameter_fields = []
+    for field in COMPRESSION_GENERATION_INPUT_FIELDS:
+        item = generation_source_item(parameters, field)
+        value = item.get("value") if isinstance(item, dict) else item
+        unit = item.get("unit") if isinstance(item, dict) else None
+        field_summary.append(
+            {
+                "field": field,
+                "label": COMPRESSION_GENERATION_LABELS.get(field) or FIELD_LABELS.get(field) or field,
+                "value": value,
+                "unit": unit,
+            }
+        )
+        baseline_parameter_fields.append(
+            {
+                "field": field,
+                "value": value,
+                "unit": unit,
+                "tolerance_upper": item.get("tolerance_upper") if isinstance(item, dict) else None,
+                "tolerance_lower": item.get("tolerance_lower") if isinstance(item, dict) else None,
+                "need_human_review": bool(item.get("need_human_review", True)) if isinstance(item, dict) else True,
+            }
+        )
+
+    baseline_requirements = [
+        {
+            "type": item.get("type"),
+            "content": item.get("content"),
+            "need_human_review": bool(item.get("need_human_review", True)),
+            "confirmation_source": item.get("confirmation_source"),
+        }
+        for item in (export_review.get("technical_requirements") or [])
+        if isinstance(item, dict) and item.get("content")
+    ]
+
+    export_action = {
+        "status": readiness_status,
+        "source_mode": "server" if source_mode == "server" else "local",
+        "filename": "compression_spring_generation_parameters.json",
+        "schema_version": GENERATION_SCHEMA_VERSION,
+        "review_revision": review_revision,
+        "can_download": can_download,
+        "automatic_download": can_download,
+        "action_type": "download_generation_package" if can_download else "resolve_generation_readiness",
+        "parameter_fields": field_summary,
+        "missing_fields": list(readiness.get("missing_fields") or []),
+        "pending_fields": list(readiness.get("pending_fields") or []),
+        "blocking_reasonableness": list(readiness.get("blocking_reasonableness") or []),
+        "warnings": list(readiness.get("warnings") or []),
+        "download_status": "pending" if can_download else "blocked",
+        "downloaded_at": None,
+        "failure_reason": "",
+        "baseline_state": {
+            "spring_type": (export_review.get("drawing_summary") or {}).get("spring_type"),
+            "parameter_fields": baseline_parameter_fields,
+            "technical_requirements": baseline_requirements,
+        },
+    }
+    response = _response(
+        reply,
+        intent_type="generation_package_export_request",
+        target_field="",
+        status=intent_status,
+        affected_fields=[],
+    )
+    response["generation_readiness"] = readiness
+    response["generation_package_export"] = export_action
     return response
 
 
@@ -553,6 +1027,47 @@ def _handle_change(review: dict[str, Any], message: str, target: str | None) -> 
             status="need_clarification",
         )
 
+    constraints = _extract_proposal_constraints(review, message)
+    if constraints:
+        targets = [str(item["target_field"]) for item in constraints]
+        return _response(
+            f"已把你的要求记录为方案硬约束：{'、'.join(item['description'] for item in constraints)}。系统会从正式参数基线重新求解完整方案。",
+            intent_type="parameter_change_request",
+            target_field=targets[0],
+            target_fields=targets,
+            status="proposal_ready",
+            suggested_actions=constraints,
+            affected_fields=list(dict.fromkeys(field for target in targets for field in _affected_fields(target))),
+        )
+
+    requested_changes = _extract_multiple_requested_changes(message)
+    if requested_changes:
+        actions = []
+        for requested_target, value, unit in requested_changes:
+            actions.append(
+                {
+                    "type": "propose_parameter_patch",
+                    "target_field": requested_target,
+                    "target_label": _target_label(requested_target),
+                    "current_value": _current_value(review, requested_target),
+                    "proposed_value": value,
+                    "unit": unit or _target_unit(review, requested_target),
+                    "affected_fields": _affected_fields(requested_target),
+                    "apply_policy": "proposal_only",
+                }
+            )
+        targets = [str(action["target_field"]) for action in actions]
+        return _response(
+            f"已根据你的要求整理 {len(actions)} 项直接修改，并正在同步计算全部关联参数。方案确认前不会自动写回正式参数。",
+            intent_type="parameter_change_request",
+            target_field=targets[0],
+            target_fields=targets,
+            status="proposal_ready",
+            suggested_actions=actions,
+            affected_fields=list(dict.fromkeys(field for action in actions for field in action["affected_fields"])),
+            references=_retrieve_plan_references(review, message, targets),
+        )
+
     value, unit = _extract_requested_value(message, target)
     current_value = _current_value(review, target)
     affected = _affected_fields(target)
@@ -749,9 +1264,25 @@ def _extract_requested_value(text: str, target: str) -> tuple[Any | None, str | 
         if grade:
             return f"{grade.group(1)}级", None
     if target == "end_grinding":
+        binary = re.search(r"(?:改成|改为|设置为|设为|调整到|为)?\s*([01])(?:\D|$)", text)
+        if binary:
+            return END_GRINDING_GROUND if binary.group(1) == "1" else END_GRINDING_NOT_GROUND, None
         return normalize_end_grinding(text), None
     if target == "end_type":
+        binary = re.search(r"(?:改成|改为|设置为|设为|调整到|为)?\s*([01])(?:\D|$)", text)
+        if binary:
+            return END_TYPE_TIGHT if binary.group(1) == "1" else END_TYPE_NOT_TIGHT, None
+        if "不压并" in text:
+            return END_TYPE_NOT_TIGHT, None
+        if "压并" in text:
+            return END_TYPE_TIGHT, None
         return normalize_end_type(text), None
+    if target == "handedness":
+        if "左旋" in text or re.search(r"\bleft\b", text, re.IGNORECASE):
+            return "left", None
+        if "右旋" in text or re.search(r"\bright\b", text, re.IGNORECASE):
+            return "right", None
+        return None, None
 
     patterns = (
         r"(?:改成|改为|设置为|设为|调整到|调到|变成|换成|增加到|减小到|降低到|提高到)\s*(-?\d+(?:\.\d+)?)\s*([a-zA-Z/]+|毫米|mm|N/mm|N|圈)?",
@@ -768,6 +1299,68 @@ def _extract_requested_value(text: str, target: str) -> tuple[Any | None, str | 
         unit_match = re.search(r"(N/mm|mm|毫米|N|圈)", text, re.IGNORECASE)
         return _to_number(numbers[0]), _normalize_unit(unit_match.group(1) if unit_match else None)
     return None, None
+
+
+def _extract_multiple_requested_changes(text: str) -> list[tuple[str, Any, str | None]]:
+    changes: list[tuple[str, Any, str | None]] = []
+    for segment in re.split(r"[，,；;。\n]+", text):
+        segment = segment.strip()
+        if not segment:
+            continue
+        target = _detect_target_field(segment)
+        if not target:
+            continue
+        value, unit = _extract_requested_value(segment, target)
+        if value is None:
+            continue
+        changes.append((target, value, unit))
+    deduped: dict[str, tuple[str, Any, str | None]] = {}
+    for item in changes:
+        deduped[item[0]] = item
+    return list(deduped.values())
+
+
+def _extract_proposal_constraints(review: dict[str, Any], text: str) -> list[dict[str, Any]]:
+    constraints: list[dict[str, Any]] = []
+    for segment in re.split(r"[，,；;。\n]+", text):
+        target = _detect_target_field(segment)
+        if not target:
+            continue
+        if "保持不变" in segment or "维持不变" in segment:
+            value = _current_value(review, target)
+            if value not in (None, ""):
+                constraints.append(
+                    {
+                        "type": "proposal_constraint",
+                        "target_field": target,
+                        "operator": "equal",
+                        "constraint_value": value,
+                        "unit": _target_unit(review, target),
+                        "description": f"{_target_label(target)}保持当前值 {_format_value(value, _target_unit(review, target))}",
+                    }
+                )
+            continue
+        match = re.search(r"(?:不能超过|不超过|不得超过|最多(?:为|到)?)\s*(-?\d+(?:\.\d+)?)", segment)
+        operator = "max"
+        if not match:
+            match = re.search(r"(?:不能低于|不低于|至少(?:为|到)?)\s*(-?\d+(?:\.\d+)?)", segment)
+            operator = "min"
+        if not match:
+            continue
+        value = _to_number(match.group(1))
+        unit_match = re.search(r"(N/mm|mm|毫米|N|圈)", segment, re.IGNORECASE)
+        unit = _normalize_unit(unit_match.group(1) if unit_match else None) or _target_unit(review, target)
+        constraints.append(
+            {
+                "type": "proposal_constraint",
+                "target_field": target,
+                "operator": operator,
+                "constraint_value": value,
+                "unit": unit,
+                "description": f"{_target_label(target)}{'不超过' if operator == 'max' else '不低于'}{_format_value(value, unit)}",
+            }
+        )
+    return constraints
 
 
 def _retrieve_references(review: dict[str, Any], target: str | None, query: str) -> list[dict[str, Any]]:

@@ -71,9 +71,19 @@ from .generation_schemas import (
 from .generation_service import match_generation_template, request_fingerprint, stable_payload_hash
 from .llm_standardization_engine import LLMStandardizationEngine, llm_standardization_runtime_status
 from .preprocessing import IMAGE_EXTENSIONS, probe_file, render_pdf_with_pdftoppm
+from .parameter_change_proposal import (
+    ParameterProposalError,
+    apply_parameter_change_proposal,
+    discard_parameter_change_proposal,
+)
 from .review_persistence import PersistenceError, ReviewAccessError, ReviewPersistence, RevisionConflictError
 from .standard_knowledge import ragflow_runtime_status, retrieve_standard_chunks
-from .standardization_chat_agent import chat_about_standardization, standardization_chat_context_needs_refresh
+from .standardization_chat_agent import (
+    chat_about_standardization,
+    parse_accuracy_standardization_request,
+    select_general_accuracy_grade,
+    standardization_chat_context_needs_refresh,
+)
 from .standardization_chat_llm import standardization_chat_llm_runtime_status
 from .spring_feasibility import assess_parameter_reasonableness
 from .workflow import DrawingReviewWorkflow, apply_standardization_to_review
@@ -1384,12 +1394,36 @@ async def standardization_chat_payload(
     if not message:
         raise HTTPException(status_code=400, detail="standardization chat requires a message.")
     try:
+        accuracy_request = parse_accuracy_standardization_request(message)
+        accuracy_result = None
+        if accuracy_request and accuracy_request.get("status") == "ready":
+            accuracy_result = select_general_accuracy_grade(review, str(accuracy_request["requested_grade"]))
+            warnings: list[str] = []
+            llm_payload = await _run_standardization_stage(
+                review,
+                warnings,
+                use_llm_standardization=True,
+            )
+            accuracy_result.update(
+                {
+                    "status": "completed",
+                    "standardization_result_count": len(review.get("standardization_results") or []),
+                    "warnings": warnings,
+                    "llm_standardization": _llm_standardization_summary(llm_payload),
+                }
+            )
         context = await _prepare_standardization_chat_context(review, message)
         result = chat_about_standardization(
             review,
             message,
             use_llm=bool(body.get("use_llm")),
             supplements=body.get("supplements"),
+            active_proposal_id=body.get("active_proposal_id"),
+            review_revision=body.get("expected_revision"),
+            accuracy_standardization=accuracy_result,
+            standardization_batch_revision=None,
+            generation_package_export_source="local",
+            generation_package_export_revision=None,
         )
         return _attach_standardization_chat_context(result, context)
     except ValueError as exc:
@@ -1409,34 +1443,91 @@ async def standardization_chat_existing_review(
     message = str(body.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="standardization chat requires a message.")
-    _ensure_review_owned(job_id, review_path, identity)
-    if not isinstance(review, dict):
-        review, _ = _load_persisted_review(job_id, review_path, identity)
+    persisted_review, current_revision = _load_persisted_review(job_id, review_path, identity)
+    accuracy_request = parse_accuracy_standardization_request(message)
+    is_accuracy_execution = bool(accuracy_request and accuracy_request.get("status") == "ready")
+    if is_accuracy_execution:
+        if body.get("expected_revision") in (None, ""):
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "expected_revision_required", "message": "精度标准化指令必须提供 expected_revision。"},
+            )
+        expected_revision = _expected_review_revision(body.get("expected_revision"))
+        if expected_revision is not None and expected_revision != current_revision:
+            raise HTTPException(
+                status_code=409,
+                detail={"message": "当前审查数据已被其他操作更新，请刷新后重试。", "current_revision": current_revision},
+            )
+        review = persisted_review
+    elif not isinstance(review, dict):
+        review = persisted_review
     try:
+        accuracy_result = None
+        if is_accuracy_execution:
+            accuracy_result = select_general_accuracy_grade(review, str(accuracy_request["requested_grade"]))
+            warnings: list[str] = []
+            llm_payload = await _run_standardization_stage(
+                review,
+                warnings,
+                use_llm_standardization=True,
+                job_dir=job_dir,
+            )
+            accuracy_result.update(
+                {
+                    "status": "completed",
+                    "standardization_result_count": len(review.get("standardization_results") or []),
+                    "warnings": warnings,
+                    "llm_standardization": _llm_standardization_summary(llm_payload),
+                }
+            )
         context = await _prepare_standardization_chat_context(review, message)
         result = chat_about_standardization(
             review,
             message,
             use_llm=bool(body.get("use_llm")),
             supplements=body.get("supplements"),
+            active_proposal_id=body.get("active_proposal_id"),
+            review_revision=current_revision,
+            accuracy_standardization=accuracy_result,
+            standardization_batch_revision=(current_revision + 1) if current_revision is not None else None,
+            generation_package_export_source="server",
+            generation_package_export_revision=(current_revision + 1) if current_revision is not None else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = _attach_standardization_chat_context(result, context)
+    audit_event = {
+        "event_type": "standardization_chat_completed",
+        "source": "ai_chat",
+        "reason": "已完成一次标准化对话",
+        "metadata": {"use_llm": bool(body.get("use_llm"))},
+    }
+    if accuracy_result:
+        audit_event = {
+            "event_type": "accuracy_standardization_completed",
+            "target_field": "accuracy_grade",
+            "source": "ai_chat",
+            "reason": f"已按通用精度等级{accuracy_result['requested_grade']}重新生成标准化方案",
+            "before_state": {"value": accuracy_result.get("previous_grade")},
+            "after_state": {"value": accuracy_result.get("requested_grade")},
+            "metadata": {
+                "scope": "general",
+                "selection_changed": accuracy_result.get("selection_changed"),
+                "specialized_grades_retained": accuracy_result.get("specialized_grades_retained") or {},
+                "standardization_result_count": accuracy_result.get("standardization_result_count"),
+                "invalidated_proposal_ids": accuracy_result.get("invalidated_proposal_ids") or [],
+            },
+        }
+    is_generation_package_export = (
+        (result.get("intent") or {}).get("type") == "generation_package_export_request"
+    )
     persistence = _save_review_persistence(
         job_id,
         result["review"],
         review_path=review_path,
         expected_revision=body.get("expected_revision"),
         identity=identity,
-        events=[
-            {
-                "event_type": "standardization_chat_completed",
-                "source": "ai_chat",
-                "reason": "已完成一次标准化对话",
-                "metadata": {"use_llm": bool(body.get("use_llm"))},
-            }
-        ],
+        events=[] if is_generation_package_export else [audit_event],
     )
     write_json(job_dir / "standardization_chat.json", {"turns": result["review"].get("standardization_chat", [])})
     return {
@@ -1444,6 +1535,113 @@ async def standardization_chat_existing_review(
         "review_revision": persistence.get("revision"),
         "persistence": _persistence_response(persistence),
         **result,
+    }
+
+
+@app.post("/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/apply")
+def apply_review_parameter_change_proposal(
+    job_id: str,
+    proposal_id: str,
+    payload: dict[str, Any] | None = Body(None),
+    identity: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
+    body = payload or {}
+    if body.get("expected_review_revision") in (None, ""):
+        raise HTTPException(status_code=400, detail={"code": "expected_review_revision_required", "message": "expected_review_revision 为必填项。"})
+    try:
+        version = int(body.get("version"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail={"code": "proposal_version_required", "message": "version 必须是正整数。"}) from exc
+    if version <= 0:
+        raise HTTPException(status_code=400, detail={"code": "proposal_version_required", "message": "version 必须是正整数。"})
+
+    review_path = _job_dir(job_id) / "review.json"
+    review, _ = _load_persisted_review(job_id, review_path, identity)
+    try:
+        applied_review, result = apply_parameter_change_proposal(review, proposal_id, version=version)
+    except ParameterProposalError as exc:
+        status_code = 404 if exc.code == "proposal_not_found" else 409
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc), "proposal": exc.current},
+        ) from exc
+    persistence = _save_review_persistence(
+        job_id,
+        applied_review,
+        review_path=review_path,
+        expected_revision=body.get("expected_review_revision"),
+        identity=identity,
+        events=[
+            {
+                "event_type": "parameter_change_proposal_applied",
+                "source": "ai_chat",
+                "reason": "用户整体应用AI参数修改方案",
+                "metadata": {
+                    "proposal_id": proposal_id,
+                    "proposal_version": version,
+                    "changed_fields": [item.get("target_field") for item in result.get("patches") or []],
+                },
+            }
+        ],
+    )
+    return {
+        "job_id": job_id,
+        "review_revision": persistence.get("revision"),
+        "persistence": _persistence_response(persistence),
+        "change_proposal": result["proposal"],
+        "log_id": result["log_id"],
+        "review": applied_review,
+    }
+
+
+@app.post("/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/discard")
+def discard_review_parameter_change_proposal(
+    job_id: str,
+    proposal_id: str,
+    payload: dict[str, Any] | None = Body(None),
+    identity: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
+    body = payload or {}
+    if body.get("expected_review_revision") in (None, ""):
+        raise HTTPException(status_code=400, detail={"code": "expected_review_revision_required", "message": "expected_review_revision 为必填项。"})
+    try:
+        version = int(body.get("version"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail={"code": "proposal_version_required", "message": "version 必须是正整数。"}) from exc
+    if version <= 0:
+        raise HTTPException(status_code=400, detail={"code": "proposal_version_required", "message": "version 必须是正整数。"})
+
+    review_path = _job_dir(job_id) / "review.json"
+    review, _ = _load_persisted_review(job_id, review_path, identity)
+    try:
+        proposal = discard_parameter_change_proposal(review, proposal_id, version=version)
+    except ParameterProposalError as exc:
+        status_code = 404 if exc.code == "proposal_not_found" else 409
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc), "proposal": exc.current},
+        ) from exc
+    persistence = _save_review_persistence(
+        job_id,
+        review,
+        review_path=review_path,
+        expected_revision=body.get("expected_review_revision"),
+        identity=identity,
+        events=[
+            {
+                "event_type": "parameter_change_proposal_discarded",
+                "source": "ai_chat",
+                "reason": "用户放弃AI参数修改方案",
+                "metadata": {"proposal_id": proposal_id, "proposal_version": version},
+            }
+        ],
+    )
+    return {
+        "job_id": job_id,
+        "review_revision": persistence.get("revision"),
+        "persistence": _persistence_response(persistence),
+        "change_proposal": proposal,
+        "review": review,
     }
 
 

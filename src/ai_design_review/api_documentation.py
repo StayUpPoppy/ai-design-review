@@ -83,8 +83,10 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/reviews/standardize"): _operation("标准化与合理性", "标准化临时审图数据", "标准化请求体中的 review，但不写入指定审图任务；适用于导入但尚未持久化的本地 JSON。"),
     ("POST", "/api/reviews/reasonableness"): _operation("标准化与合理性", "核对参数合理性", "对当前 review 执行确定性几何与参数关系检查，返回警告、阻断问题和派生参数预览，不直接保存数据。"),
     ("POST", "/api/reviews/{job_id}/standardize"): _operation("标准化与合理性", "标准化并保存审图参数", "对已保存审图单执行规则或 LLM 标准化，保存结果、增加修订号并记录审计事件；expected_revision 不一致时返回 409。"),
-    ("POST", "/api/reviews/standardization-chat"): _operation("标准化与合理性", "对临时审图数据进行标准化对话", "根据 review 和用户消息生成标准化建议或参数修改结果，但不写入指定审图任务。"),
-    ("POST", "/api/reviews/{job_id}/standardization-chat"): _operation("标准化与合理性", "对已保存审图单进行标准化对话", "结合当前审图参数和标准知识处理用户指令，保存返回的 review、增加修订号并记录对话审计事件。"),
+    ("POST", "/api/reviews/standardization-chat"): _operation("标准化与合理性", "对临时审图数据进行标准化对话", "根据 review 和用户消息生成标准化建议、参数修改结果或生图参数包导出动作。明确的“按一级、二级或三级精度标准化”指令会直接选择通用精度并重新计算建议；“导出参数包”只返回本地白名单下载动作，不创建生图任务。"),
+    ("POST", "/api/reviews/{job_id}/standardization-chat"): _operation("标准化与合理性", "对已保存审图单进行标准化对话", "结合当前审图参数和标准知识处理用户指令。通用精度标准化会在同一事务中选择精度并重新计算建议；“导出参数包”会重新校验生图就绪状态，前端随后从正式 generation-package 接口下载并核对审图修订号，不创建生图任务。"),
+    ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/apply"): _operation("标准化与合理性", "应用完整参数修改方案", "按方案版本和审图修订执行乐观锁校验，重新求解全部关联参数并原子写入。ready 或 warning 方案可以应用；过期、缺信息或存在冲突时返回409。"),
+    ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/discard"): _operation("标准化与合理性", "放弃参数修改方案", "关闭尚未应用的方案草稿并保存审计事件，不修改正式参数；已应用或版本已变化时返回409。"),
     ("GET", "/api/reviews/{job_id}/generation-readiness"): _operation("生图准备", "检查审图是否可以生图", "由服务端根据当前审图修订重新计算缺失字段、待确认字段、警告和参数矛盾，是前端启用“生成图纸”的唯一可信依据。标准化为可选功能；未标准化、标准未确认或标准化结果过期只产生警告，不阻止按当前人工确认参数生图。"),
     ("GET", "/api/reviews/{job_id}/generation-package"): _operation("生图准备", "获取 SolidWorks 生图参数包", "仅 ready 或 ready_with_warnings 状态返回冻结的 spring_generation_parameters/v1 参数快照。spring_parameters 固定包含线径、中径、自由长度、总圈数、有效圈数、旋向、两端磨削和端圈压并八个字段；SolidWorks 根据中径和线径计算外径、内径。未执行标准化时 standard_context 保持空值，参数包仍可用于生图；其他未就绪状态返回 409 和具体原因。"),
     ("POST", "/api/reviews/{job_id}/generation-template-match"): _operation("生图准备", "匹配 SolidWorks 生图模板", "根据图纸类型、必填字段、匹配规则和优先级返回模板候选；可指定 template_code，也可由后端自动选择。"),
@@ -143,6 +145,10 @@ class SpringParametersDocument(BaseModel):
     material: ReviewParameterValue | None = Field(default=None, description="材料。")
     standard_no: ReviewParameterValue | None = Field(default=None, description="执行标准号。")
     accuracy_grade: ReviewParameterValue | None = Field(default=None, description="通用精度等级。")
+    diameter_accuracy_grade: ReviewParameterValue | None = Field(default=None, description="直径专项精度等级；存在时优先于通用精度。")
+    free_length_accuracy_grade: ReviewParameterValue | None = Field(default=None, description="自由高度专项精度等级；存在时优先于通用精度。")
+    load_accuracy_grade: ReviewParameterValue | None = Field(default=None, description="载荷专项精度等级；存在时优先于通用精度。")
+    stiffness_accuracy_grade: ReviewParameterValue | None = Field(default=None, description="刚度专项精度等级；存在时优先于通用精度。")
     wire_diameter: ReviewParameterValue | None = Field(default=None, description="线径。")
     outer_diameter: ReviewParameterValue | None = Field(default=None, description="外径。")
     inner_diameter: ReviewParameterValue | None = Field(default=None, description="内径。")
@@ -212,9 +218,14 @@ class StandardizationChatRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     review: ReviewDocument = Field(description="当前完整审图数据。")
-    message: str = Field(min_length=1, description="用户的标准化或参数调整指令。", examples=["请按当前标准核对线径和自由长度。"])
+    message: str = Field(
+        min_length=1,
+        description="用户的标准化、参数调整或生图参数包导出指令。",
+        examples=["请按当前标准核对线径和自由长度。", "导出参数包"],
+    )
     use_llm: bool = Field(default=False, description="是否调用大模型处理本轮对话。")
     supplements: dict[str, Any] | None = Field(default=None, description="上一轮要求补充的工况或参数信息。")
+    active_proposal_id: str | None = Field(default=None, description="需要继续调整的参数修改方案 ID；省略时使用当前活动方案。")
 
 
 class ExistingStandardizationChatRequest(StandardizationChatRequest):
@@ -279,12 +290,307 @@ class ReasonablenessResponse(BaseModel):
     parameter_reasonableness: dict[str, Any] = Field(description="参数合理性状态、问题列表和派生参数预览。")
 
 
+class ParameterImpactRiskDelta(BaseModel):
+    introduced: list[dict[str, Any]] = Field(default_factory=list, description="本次修改新引入的合理性或协议风险。")
+    resolved: list[dict[str, Any]] = Field(default_factory=list, description="本次修改消除的原有风险。")
+    unchanged_count: int = Field(default=0, ge=0, description="修改前后均存在的风险数量。")
+
+
+class ParameterImpactGenerationReadiness(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    before_status: str | None = Field(default=None, description="修改前生图就绪状态。")
+    after_status: str | None = Field(default=None, description="按建议确认修改后的生图就绪状态。")
+    parameter_package_changed: bool = Field(default=False, description="冻结的 SolidWorks 参数包是否发生变化。")
+    changed_frozen_fields: list[str] = Field(default_factory=list, description="发生变化的冻结建模字段。")
+
+
+class ParameterImpactWorkflowEffects(BaseModel):
+    standardization_recalculation_required: bool = Field(description="应用后是否需要自动重新标准化。")
+    new_generation_required: bool = Field(description="如需反映本次修改，是否应创建新的生图版本。")
+
+
+class ParameterImpactPreview(BaseModel):
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra={"examples": [{
+            "status": "ready",
+            "summary": "修改后未发现新增阻断问题，SolidWorks 参数包将随之更新。",
+            "impact_count": 4,
+            "direct_changes": [{
+                "field": "mean_diameter",
+                "label": "中径",
+                "change_type": "value",
+                "before": 23,
+                "after": 25,
+                "unit": "mm",
+            }],
+            "derived_changes": [
+                {"field": "outer_diameter", "label": "外径", "before": 26, "after": 28, "unit": "mm"},
+                {"field": "inner_diameter", "label": "内径", "before": 20, "after": 22, "unit": "mm"},
+            ],
+            "risk_delta": {"introduced": [], "resolved": [], "unchanged_count": 0},
+            "generation_readiness": {
+                "before_status": "ready",
+                "after_status": "ready_with_warnings",
+                "parameter_package_changed": True,
+                "changed_frozen_fields": ["mean_diameter"],
+            },
+            "workflow_effects": {
+                "standardization_recalculation_required": True,
+                "new_generation_required": True,
+            },
+            "baseline_state": {},
+        }]},
+    )
+
+    status: str = Field(description="影响结论：ready、warning、blocked 或 not_applicable。")
+    summary: str = Field(description="面向用户的中文影响摘要。")
+    impact_count: int = Field(default=0, ge=0, description="直接变化、派生变化及风险变化的合计数量。")
+    direct_changes: list[dict[str, Any]] = Field(default_factory=list, description="参数或公差的当前值与建议值。")
+    derived_changes: list[dict[str, Any]] = Field(default_factory=list, description="外径、中径、内径、旋绕比等派生结果变化。")
+    risk_delta: ParameterImpactRiskDelta = Field(description="新增、消除和保留的风险。")
+    generation_readiness: ParameterImpactGenerationReadiness = Field(description="生图状态和冻结参数包变化。")
+    workflow_effects: ParameterImpactWorkflowEffects = Field(description="标准化和生图版本的后续影响。")
+    baseline_state: dict[str, Any] = Field(description="生成预览时的审图状态快照，用于阻止应用过期建议。")
+
+
+class ParameterChangeProposalItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    field: str = Field(description="稳定的英文参数字段代码。")
+    label: str = Field(description="与参数页一致的中文名称。")
+    before: Any | None = Field(default=None, description="正式参数当前值。")
+    after: Any | None = Field(default=None, description="方案应用后的值。")
+    unit: str | None = Field(default=None, description="参数单位。")
+    confirmation_after: str | None = Field(default=None, description="应用后的确认或计算来源。")
+    source_fields: list[str] = Field(default_factory=list, description="自动同步值所依赖的字段代码。")
+
+
+class ParameterChangeProposal(BaseModel):
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra={"examples": [{
+            "proposal_id": "proposal_123",
+            "version": 1,
+            "status": "ready",
+            "summary": "方案已完成整体校验，将同步更新3项参数。",
+            "user_goal": "中径改成26mm，线径不变",
+            "direct_changes": [{"field": "mean_diameter", "label": "中径", "before": 42, "after": 26, "unit": "mm"}],
+            "synchronized_changes": [
+                {"field": "outer_diameter", "label": "外径", "before": 48, "after": 32, "unit": "mm"},
+                {"field": "inner_diameter", "label": "内径", "before": 36, "after": 20, "unit": "mm"},
+            ],
+            "derived_changes": [{"field": "spring_index", "label": "旋绕比", "before": 7, "after": 4.3333}],
+            "clarifying_questions": [],
+            "blocking_issues": [],
+        }]},
+    )
+
+    proposal_id: str = Field(description="参数修改方案唯一ID。")
+    version: int = Field(ge=1, description="方案版本，每轮继续调整后递增。")
+    status: str = Field(description="方案状态：needs_input、ready、warning、blocked、stale、applied或discarded。")
+    summary: str = Field(description="中文方案结论。")
+    user_goal: str = Field(description="当前方案对应的用户修改目标。")
+    direct_changes: list[ParameterChangeProposalItem] = Field(default_factory=list, description="用户明确要求修改的参数。")
+    synchronized_changes: list[ParameterChangeProposalItem] = Field(default_factory=list, description="为保持整体一致而必须同步的参数。")
+    derived_changes: list[dict[str, Any]] = Field(default_factory=list, description="旋绕比、细长比、刚度等计算影响。")
+    recommendations: list[dict[str, Any]] = Field(default_factory=list, description="尚未加入应用范围的可选调整建议。")
+    constraints: list[dict[str, Any]] = Field(default_factory=list, description="用户在多轮对话中累计的最大值、最小值或保持不变约束。")
+    clarifying_questions: list[str] = Field(default_factory=list, description="形成唯一方案前需要用户补充的问题。")
+    blocking_issues: list[dict[str, Any]] = Field(default_factory=list, description="禁止应用的冲突或几何问题。")
+    risk_delta: ParameterImpactRiskDelta = Field(description="方案新增、消除和保留的风险。")
+    generation_readiness: ParameterImpactGenerationReadiness = Field(description="方案前后的生图状态与冻结参数变化。")
+    workflow_effects: ParameterImpactWorkflowEffects = Field(description="标准化和生图版本影响。")
+
+
+class ParameterChangeProposalCommand(BaseModel):
+    version: int = Field(ge=1, description="需要应用或放弃的方案版本。")
+    expected_review_revision: int = Field(ge=1, description="客户端当前审图修订号，用于乐观锁。")
+
+
+class ParameterChangeProposalResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    job_id: str = Field(description="审图任务ID。")
+    review_revision: int | None = Field(default=None, description="操作完成后的审图修订号。")
+    persistence: dict[str, Any] = Field(description="持久化模式和修订信息。")
+    change_proposal: ParameterChangeProposal = Field(description="操作后的完整方案状态。")
+    log_id: str | None = Field(default=None, description="应用方案生成的审计操作ID。")
+    review: ReviewDocument = Field(description="操作后的完整审图数据。")
+
+
+class AccuracyStandardizationResult(BaseModel):
+    status: str = Field(description="执行状态；完成时为 completed。", examples=["completed"])
+    requested_grade: str | None = Field(default=None, description="用户要求的通用精度等级，仅允许1级、2级或3级。", examples=["1级"])
+    previous_grade: str | None = Field(default=None, description="执行前的通用精度等级。", examples=["2级"])
+    scope: str = Field(default="general", description="精度作用范围；第一版仅执行 general。")
+    selection_changed: bool | None = Field(default=None, description="精度值、来源或确认状态是否实际发生变化。")
+    specialized_grades_retained: dict[str, str] = Field(
+        default_factory=dict,
+        description="保持不变并继续优先的专项精度等级。",
+        examples=[{"diameter_accuracy_grade": "2级"}],
+    )
+    standardization_result_count: int = Field(default=0, ge=0, description="重新计算得到的标准化建议数量。")
+    warnings: list[str] = Field(default_factory=list, description="本轮标准化产生的非阻断警告。")
+
+
+class StandardizationBatchValue(BaseModel):
+    exists: bool = Field(description="应用前该参数栏位是否已经存在。")
+    value: Any = Field(default=None, description="参数值；没有值时为 null。")
+    tolerance_upper: Any = Field(default=None, description="上偏差；没有公差时为 null。")
+    tolerance_lower: Any = Field(default=None, description="下偏差；没有公差时为 null。")
+    unit: str = Field(default="", description="参数或载荷值单位。")
+    confirmed: bool = Field(default=False, description="该状态是否已经人工确认。")
+
+
+class StandardizationBatchItem(BaseModel):
+    result_index: int = Field(ge=0, description="该项目在本次 standardization_results 中的位置。")
+    target_field: str = Field(description="稳定的内部字段代码；前端只展示中文 label。", examples=["free_length"])
+    label: str = Field(description="与参数页面一致的中文名称。", examples=["自由长度"])
+    rule_id: str = Field(default="", description="产生该建议的标准化规则编号。")
+    standard_no: str = Field(default="", description="建议采用的技术标准编号。")
+    unit: str = Field(default="", description="建议值单位。")
+    before: StandardizationBatchValue = Field(description="应用前的参数值、公差和确认状态。")
+    after: StandardizationBatchValue = Field(description="应用后的参数值、公差和确认状态。")
+    change_types: list[str] = Field(
+        default_factory=list,
+        description="实际变化类型：created、value、tolerance 或 confirmation。",
+    )
+    can_apply: bool = Field(description="该项是否允许由本次‘应用全部’安全写入。")
+    reason: str = Field(default="", description="不能应用时的中文原因。")
+    basis: str = Field(default="", description="可折叠展示的标准依据，不包含前端计算公式。")
+
+
+class StandardizationBatch(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "batch_id": "standardization_batch_58c1b20a43b572d1bc17",
+                "status": "ready",
+                "review_revision": 8,
+                "baseline_fingerprint": "58c1b20a43b572d1bc17...",
+                "result_fingerprint": "28eed4e1b985...",
+                "applicable_count": 2,
+                "skipped_count": 1,
+                "items": [
+                    {
+                        "result_index": 1,
+                        "target_field": "free_length",
+                        "label": "自由长度",
+                        "rule_id": "GBT1239.2-FREE",
+                        "standard_no": "GB/T 1239.2-2009",
+                        "unit": "mm",
+                        "before": {"exists": True, "value": 45, "tolerance_upper": 1, "tolerance_lower": -1, "unit": "mm", "confirmed": True},
+                        "after": {"exists": True, "value": 45, "tolerance_upper": 0.6, "tolerance_lower": -0.6, "unit": "mm", "confirmed": True},
+                        "change_types": ["tolerance"],
+                        "can_apply": True,
+                        "reason": "",
+                        "basis": "按所选精度等级计算自由高度公差。",
+                    }
+                ],
+                "skipped_items": [],
+                "baseline_state": {},
+                "applied_count": 0,
+                "applied_at": None,
+            }
+        }
+    )
+
+    batch_id: str = Field(description="本次标准化结果快照的稳定标识。")
+    status: str = Field(description="批次状态：ready、no_changes、applied 或 stale。")
+    review_revision: int | None = Field(default=None, description="生成该快照后的审图修订号；本地JSON模式为空。")
+    baseline_fingerprint: str = Field(description="生成标准化结果时参数基线的SHA-256。")
+    result_fingerprint: str = Field(description="本次标准化建议集合的SHA-256。")
+    applicable_count: int = Field(default=0, ge=0, description="可以由‘应用全部’写入的实际变化项数量。")
+    skipped_count: int = Field(default=0, ge=0, description="因缺条件、冲突、不适用或过期而跳过的数量。")
+    items: list[StandardizationBatchItem] = Field(default_factory=list, description="会实际修改参数栏位的安全建议。")
+    skipped_items: list[StandardizationBatchItem] = Field(default_factory=list, description="不会写入的建议及中文原因。")
+    baseline_state: dict[str, Any] = Field(default_factory=dict, description="用于应用前检查结果是否过期的基线快照。")
+    applied_count: int = Field(default=0, ge=0, description="已成功写入的项目数量。")
+    applied_at: str | None = Field(default=None, description="成功应用时间；未应用时为空。")
+
+
+class GenerationPackageExportField(BaseModel):
+    field: str = Field(description="稳定的协议字段代码；界面只展示对应中文名称。", examples=["mean_diameter"])
+    label: str = Field(description="与参数页一致的中文名称。", examples=["中径"])
+    value: Any = Field(default=None, description="执行导出校验时的参数值。")
+    unit: str | None = Field(default=None, description="参数单位。", examples=["mm"])
+
+
+class GenerationPackageExportAction(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "status": "ready_with_warnings",
+                "source_mode": "server",
+                "filename": "compression_spring_generation_parameters.json",
+                "schema_version": "spring_generation_parameters/v1",
+                "review_revision": 12,
+                "can_download": True,
+                "automatic_download": True,
+                "action_type": "download_generation_package",
+                "parameter_fields": [
+                    {"field": "wire_diameter", "label": "线径", "value": 3, "unit": "mm"},
+                    {"field": "mean_diameter", "label": "中径", "value": 23, "unit": "mm"},
+                ],
+                "missing_fields": [],
+                "pending_fields": [],
+                "blocking_reasonableness": [],
+                "warnings": [
+                    {"field": "standard_no", "label": "适用标准", "reason": "未执行标准化检查；可按当前人工确认参数直接导出。"}
+                ],
+                "download_status": "pending",
+                "downloaded_at": None,
+                "failure_reason": "",
+                "baseline_state": {},
+            }
+        }
+    )
+
+    status: str = Field(description="服务端重新计算的生图就绪状态。", examples=["ready_with_warnings"])
+    source_mode: str = Field(description="参数包来源：server 为正式审图，local 为本地导入JSON。", examples=["server"])
+    filename: str = Field(description="建议下载文件名。", examples=["compression_spring_generation_parameters.json"])
+    schema_version: str = Field(description="冻结参数包协议版本。", examples=["spring_generation_parameters/v1"])
+    review_revision: int | None = Field(default=None, description="生成该导出动作时的审图修订号；本地模式为空。")
+    can_download: bool = Field(description="当前是否允许下载。")
+    automatic_download: bool = Field(description="前端收到本轮响应后是否应立即触发下载。")
+    action_type: str = Field(description="前端动作；可下载时为 download_generation_package，否则为 resolve_generation_readiness。")
+    parameter_fields: list[GenerationPackageExportField] = Field(default_factory=list, description="冻结8个SolidWorks建模字段摘要。")
+    missing_fields: list[dict[str, Any]] = Field(default_factory=list, description="缺失字段及中文原因。")
+    pending_fields: list[dict[str, Any]] = Field(default_factory=list, description="待人工确认字段及中文原因。")
+    blocking_reasonableness: list[dict[str, Any]] = Field(default_factory=list, description="阻止导出的合理性问题。")
+    warnings: list[dict[str, Any]] = Field(default_factory=list, description="不阻止下载但需要用户知悉的警告。")
+    download_status: str = Field(description="初始下载状态；浏览器可在本地更新为 downloading、downloaded、failed 或 stale。")
+    downloaded_at: str | None = Field(default=None, description="浏览器成功触发下载的时间；初始为空。")
+    failure_reason: str = Field(default="", description="自动下载失败时的中文原因。")
+    baseline_state: dict[str, Any] = Field(default_factory=dict, description="本地JSON模式用来判断旧导出卡是否过期的参数基线。")
+
+
 class StandardizationChatResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     job_id: str | None = Field(default=None, description="持久化版本对应的审图任务 ID。")
     review_revision: int | None = Field(default=None, description="保存后的审图修订号。")
     answer: str | None = Field(default=None, description="本轮 AI 对话答复。")
+    reply: str | None = Field(default=None, description="本轮AI返回的中文回复。")
+    intent: dict[str, Any] | None = Field(default=None, description="识别出的用户意图、目标字段和处理状态。")
+    suggested_actions: list[dict[str, Any]] = Field(default_factory=list, description="需要用户确认后才能写回的结构化修改建议；每项可包含 impact_preview。")
+    impact_preview: ParameterImpactPreview | None = Field(default=None, description="本轮全部参数建议同时应用时的确定性影响预览。")
+    change_proposal: ParameterChangeProposal | None = Field(default=None, description="本轮生成或更新的完整参数修改方案。")
+    accuracy_standardization: AccuracyStandardizationResult | None = Field(
+        default=None,
+        description="按通用精度等级直接标准化的执行结果；普通对话时为空。",
+    )
+    standardization_batch: StandardizationBatch | None = Field(
+        default=None,
+        description="执行型标准化生成的实际变化快照和一键应用范围；普通问答及参数修改方案为空。",
+    )
+    generation_package_export: GenerationPackageExportAction | None = Field(
+        default=None,
+        description="AI对话导出生图参数包的校验结果和前端下载动作；普通对话时为空。",
+    )
+    turn: dict[str, Any] | None = Field(default=None, description="已经写入审图记录的本轮对话，其中单项建议包含各自的影响预览。")
     review: ReviewDocument = Field(description="应用本轮对话结果后的审图数据。")
 
 
@@ -336,6 +642,14 @@ DOCUMENTATION_MODELS: tuple[type[BaseModel], ...] = (
     ReviewListResponse,
     StandardizationResponse,
     ReasonablenessResponse,
+    ParameterImpactRiskDelta,
+    ParameterImpactGenerationReadiness,
+    ParameterImpactWorkflowEffects,
+    ParameterImpactPreview,
+    ParameterChangeProposalItem,
+    ParameterChangeProposal,
+    ParameterChangeProposalCommand,
+    ParameterChangeProposalResponse,
     StandardizationChatResponse,
     SaveReviewResponse,
     DeleteReviewResponse,
@@ -350,6 +664,8 @@ REQUEST_MODELS: dict[tuple[str, str], type[BaseModel]] = {
     ("POST", "/api/reviews/{job_id}/standardize"): ExistingStandardizeRequest,
     ("POST", "/api/reviews/standardization-chat"): StandardizationChatRequest,
     ("POST", "/api/reviews/{job_id}/standardization-chat"): ExistingStandardizationChatRequest,
+    ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/apply"): ParameterChangeProposalCommand,
+    ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/discard"): ParameterChangeProposalCommand,
     ("PATCH", "/api/reviews/{job_id}"): SaveReviewRequest,
 }
 
@@ -367,6 +683,8 @@ RESPONSE_MODELS: dict[tuple[str, str], tuple[str, type[BaseModel]]] = {
     ("POST", "/api/reviews/reasonableness"): ("200", ReasonablenessResponse),
     ("POST", "/api/reviews/standardization-chat"): ("200", StandardizationChatResponse),
     ("POST", "/api/reviews/{job_id}/standardization-chat"): ("200", StandardizationChatResponse),
+    ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/apply"): ("200", ParameterChangeProposalResponse),
+    ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/discard"): ("200", ParameterChangeProposalResponse),
 }
 
 
@@ -377,6 +695,7 @@ PARAMETER_DOCUMENTATION = {
     "relative_path": ("审图任务目录内的相对文件路径。", "previews/page-1.png"),
     "template_code": ("模板代码，可包含斜杠。", "mock/compression-spring"),
     "version": ("模板版本号。", "v1"),
+    "proposal_id": ("参数修改方案 ID。", "proposal_123"),
     "standard_no": ("标准号。", "GB/T 1239.2-2009"),
     "spring_type": ("弹簧类型代码。", "compression_spring"),
     "target_fields": ("目标字段，多个字段使用英文逗号分隔。", "wire_diameter,free_length"),
