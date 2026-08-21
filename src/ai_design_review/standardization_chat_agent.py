@@ -31,6 +31,11 @@ from .spring_templates import FIELD_LABELS
 from .standard_knowledge import chunk_reference, retrieve_standard_chunks
 from .standardization_batch import build_standardization_batch
 from .standardization_chat_llm import StandardizationChatLLMEngine
+from .technical_requirements import (
+    TECHNICAL_REQUIREMENT_TYPE_LABELS,
+    ensure_technical_requirement_ids,
+    normalize_technical_requirement_type,
+)
 
 
 FIELD_SYNONYMS: dict[str, tuple[str, ...]] = {
@@ -145,6 +150,19 @@ GENERATION_PACKAGE_EXPORT_OBJECT_TERMS = (
 )
 GENERATION_PACKAGE_EXPORT_EXPLANATION_TERMS = ("怎么", "如何", "在哪里", "去哪", "哪儿", "是什么", "什么意思")
 GENERATION_PACKAGE_EXPORT_QUERY_TERMS = ("能不能", "能否", "是否可以", "可以吗", "能导出吗", "能下载吗")
+TECHNICAL_REQUIREMENT_OBJECT_TERMS = ("技术要求", "工艺要求", "图纸要求", "标注要求")
+TECHNICAL_REQUIREMENT_ADD_TERMS = ("增加", "新增", "添加", "补充")
+TECHNICAL_REQUIREMENT_UPDATE_TERMS = ("修改", "改为", "改成", "替换为", "换成")
+TECHNICAL_REQUIREMENT_DELETE_TERMS = ("删除", "移除", "去掉", "删掉")
+TECHNICAL_REQUIREMENT_TYPE_KEYWORDS = {
+    "surface": ("表面", "镀锌", "镀镍", "镀铬", "发黑", "磷化", "达克罗", "喷塑", "电泳"),
+    "hardness": ("硬度", "HRC", "HV", "HB"),
+    "heat_treatment": ("热处理", "回火", "淬火", "退火", "时效"),
+    "salt_spray": ("盐雾",),
+    "environmental": ("环保", "环境", "RoHS", "REACH"),
+    "lifetime": ("寿命", "循环次数", "疲劳"),
+    "process": ("工艺", "去毛刺", "磨平", "磨削"),
+}
 
 
 def parse_accuracy_standardization_request(message: str) -> dict[str, Any] | None:
@@ -220,6 +238,121 @@ def parse_generation_package_export_request(message: str) -> dict[str, Any] | No
     if any(term in normalized for term in GENERATION_PACKAGE_EXPORT_QUERY_TERMS):
         return {"status": "query", "source": "local_rule"}
     return {"status": "execute", "source": "local_rule"}
+
+
+def parse_technical_requirement_change_request(
+    review: dict[str, Any],
+    message: str,
+) -> dict[str, Any] | None:
+    """Recognize unambiguous technical-requirement CRUD without asking the LLM to write data."""
+
+    text = str(message or "").strip()
+    if not text:
+        return None
+    has_action = any(
+        term in text
+        for term in (*TECHNICAL_REQUIREMENT_ADD_TERMS, *TECHNICAL_REQUIREMENT_UPDATE_TERMS, *TECHNICAL_REQUIREMENT_DELETE_TERMS)
+    )
+    if not has_action:
+        return None
+    mentions_object = any(term in text for term in TECHNICAL_REQUIREMENT_OBJECT_TERMS)
+    mentions_known_type = _infer_technical_requirement_type(text) is not None
+    if not mentions_object and not mentions_known_type and not _message_mentions_existing_requirement(review, text):
+        return None
+    if any(term in text for term in ("怎么", "如何", "能不能", "可以吗")) and not re.search(
+        r"(?:增加|新增|添加|补充|删除|移除|去掉|删掉|改为|改成|替换为|换成).{2,}",
+        text,
+    ):
+        return {
+            "status": "explained",
+            "actions": [],
+            "questions": [],
+            "message": "你可以让我新增、修改或删除技术要求；系统会先生成完整方案，应用后才写回参数包。",
+        }
+
+    actions: list[dict[str, Any]] = []
+    questions: list[str] = []
+    consumed_spans: list[tuple[int, int]] = []
+
+    update_pattern = re.compile(r"(?:把|将)?\s*[“\"']?(.+?)[”\"']?\s*(?:改为|改成|修改为|替换为|换成)\s*[“\"']?(.+?)[”\"']?(?=$|[，,；;])")
+    for match in update_pattern.finditer(text):
+        target_text = _clean_technical_requirement_phrase(match.group(1))
+        replacement = _clean_technical_requirement_phrase(match.group(2), strip_requirement_suffix=False)
+        matches = _match_technical_requirements(review, target_text)
+        if len(matches) != 1:
+            questions.append(_technical_requirement_match_question(target_text, matches, operation="修改"))
+        elif not replacement:
+            questions.append("请补充修改后的技术要求完整内容。")
+        else:
+            current = matches[0]
+            content = _merge_technical_requirement_replacement(str(current.get("content") or ""), replacement)
+            actions.append(
+                {
+                    "type": "propose_technical_requirement_update",
+                    "requirement_id": current.get("requirement_id"),
+                    "requirement_type": _infer_technical_requirement_type(replacement)
+                    or normalize_technical_requirement_type(current.get("type"), default="other"),
+                    "content": content,
+                    "reason": "用户要求修改现有技术要求。",
+                    "apply_policy": "manual_confirm_required",
+                }
+            )
+        consumed_spans.append(match.span())
+
+    delete_pattern = re.compile(r"(?:删除|移除|去掉|删掉)\s*[“\"']?(.+?)[”\"']?(?=$|[，,；;]|再(?:增加|新增|添加|补充))")
+    for match in delete_pattern.finditer(text):
+        if _span_overlaps(match.span(), consumed_spans):
+            continue
+        target_text = _clean_technical_requirement_phrase(match.group(1))
+        matches = _match_technical_requirements(review, target_text)
+        if len(matches) != 1:
+            questions.append(_technical_requirement_match_question(target_text, matches, operation="删除"))
+        else:
+            current = matches[0]
+            actions.append(
+                {
+                    "type": "propose_technical_requirement_delete",
+                    "requirement_id": current.get("requirement_id"),
+                    "reason": "用户要求删除现有技术要求。",
+                    "apply_policy": "manual_confirm_required",
+                }
+            )
+        consumed_spans.append(match.span())
+
+    add_pattern = re.compile(r"(?:增加|新增|添加|补充)\s*(?:一条|一个)?\s*(?:新的)?\s*(?:技术要求|工艺要求|图纸要求|标注要求)?\s*[：:]?\s*[“\"']?(.+?)[”\"']?(?=$|[，,；;])")
+    for match in add_pattern.finditer(text):
+        if _span_overlaps(match.span(), consumed_spans):
+            continue
+        content = _clean_technical_requirement_phrase(match.group(1), strip_requirement_suffix=False)
+        if not content:
+            questions.append("请补充需要新增的技术要求具体内容。")
+            continue
+        requirement_type = _infer_technical_requirement_type(content) or "other"
+        actions.append(
+            {
+                "type": "propose_technical_requirement_add",
+                "requirement_type": requirement_type,
+                "content": content,
+                "reason": "用户要求新增技术要求。",
+                "apply_policy": "manual_confirm_required",
+            }
+        )
+
+    if not actions and not questions:
+        questions.append("请说明要新增的内容，或明确要修改、删除哪一条技术要求。")
+    status = "need_clarification" if questions else "proposal_ready"
+    if actions and questions:
+        message_text = f"已识别 {len(actions)} 项技术要求变更，另有目标不明确的内容需要补充。"
+    elif actions:
+        message_text = f"已整理 {len(actions)} 项技术要求变更，应用方案前不会修改正式数据。"
+    else:
+        message_text = questions[0]
+    return {
+        "status": status,
+        "actions": actions,
+        "questions": list(dict.fromkeys(questions)),
+        "message": message_text,
+    }
 
 
 def select_general_accuracy_grade(review: dict[str, Any], requested_grade: str) -> dict[str, Any]:
@@ -307,6 +440,15 @@ def standardization_chat_context_needs_refresh(review: dict[str, Any], message: 
             "result_count": len(review.get("standardization_results") or []),
             "stale_result_count": 0,
         }
+    technical_requirement_request = parse_technical_requirement_change_request(review, text)
+    if technical_requirement_request is not None:
+        return {
+            "required": False,
+            "intent_type": "technical_requirement_change_request",
+            "reasons": [],
+            "result_count": len(review.get("standardization_results") or []),
+            "stale_result_count": 0,
+        }
     intent_type = _detect_intent_type(text)
     results = [item for item in review.get("standardization_results", []) or [] if isinstance(item, dict)]
     selection = review.get("standard_selection") or {}
@@ -348,10 +490,12 @@ def chat_about_standardization(
     text = str(message or "").strip()
     if not text:
         raise ValueError("message is required.")
+    ensure_technical_requirement_ids(review)
 
     raw_supplements = supplements if isinstance(supplements, dict) else {}
     accuracy_request = parse_accuracy_standardization_request(text)
     package_export_request = parse_generation_package_export_request(text)
+    technical_requirement_request = parse_technical_requirement_change_request(review, text)
     if package_export_request is None:
         review["parameter_reasonableness"] = assess_parameter_reasonableness(review)
     target = _detect_target_field(text)
@@ -379,6 +523,34 @@ def chat_about_standardization(
             source_mode=generation_package_export_source,
             review_revision=generation_package_export_revision,
         )
+    elif technical_requirement_request is not None:
+        result = _handle_technical_requirement_change_request(technical_requirement_request)
+        mixed_parameter_actions = _mixed_parameter_actions(review, text)
+        if mixed_parameter_actions:
+            technical_actions = list(result.get("suggested_actions") or [])
+            result["suggested_actions"] = [*mixed_parameter_actions, *technical_actions]
+            parameter_targets = [
+                str(item.get("target_field") or "")
+                for item in mixed_parameter_actions
+                if item.get("target_field")
+            ]
+            result["intent"] = {
+                **(result.get("intent") or {}),
+                "type": "multi_constraint_change_request",
+                "target_field": parameter_targets[0] if parameter_targets else "",
+                "target_fields": [*parameter_targets, "technical_requirements"],
+                "status": (result.get("intent") or {}).get("status") or "proposal_ready",
+            }
+            result["affected_fields"] = list(dict.fromkeys([
+                *(result.get("affected_fields") or []),
+                *(field for action in mixed_parameter_actions for field in action.get("affected_fields") or []),
+                "technical_requirements",
+                "generation_parameters.technical_requirements",
+            ]))
+            result["reply"] = (
+                f"{result.get('reply') or ''}\n\n"
+                f"同时识别到 {len(mixed_parameter_actions)} 项参数修改；参数和技术要求会合并为一个整体方案，应用前不会写回正式数据。"
+            ).strip()
     elif intent_type == "parameter_reasonableness":
         result = _handle_parameter_reasonableness(review, text)
     elif intent_type == "generation_readiness":
@@ -398,7 +570,11 @@ def chat_about_standardization(
 
     # Missing inputs are deterministic blocking conditions. Ask for them first
     # rather than allowing an LLM to produce a seemingly complete plan.
-    if use_llm and not raw_supplements and result["intent"]["type"] not in {
+    deterministic_technical_complete = bool(
+        technical_requirement_request
+        and technical_requirement_request.get("status") in {"proposal_ready", "explained"}
+    )
+    if use_llm and not raw_supplements and not deterministic_technical_complete and result["intent"]["type"] not in {
         "accuracy_standardization_request",
         "generation_package_export_request",
         "missing_context",
@@ -425,13 +601,23 @@ def chat_about_standardization(
     proposal_actions = [
         item
         for item in result.get("suggested_actions", []) or []
-        if isinstance(item, dict) and item.get("type") in {"propose_parameter_patch", "propose_tolerance_patch", "proposal_constraint"}
+        if isinstance(item, dict) and item.get("type") in {
+            "propose_parameter_patch",
+            "propose_tolerance_patch",
+            "proposal_constraint",
+            "propose_technical_requirement_add",
+            "propose_technical_requirement_update",
+            "propose_technical_requirement_delete",
+        }
     ]
     selected_proposal_id = active_proposal_id or review.get("active_parameter_change_proposal_id")
     clarification = None
     if (
-        not proposal_actions
-        and (result.get("intent") or {}).get("type") == "parameter_change_request"
+        (result.get("intent") or {}).get("type") in {
+            "parameter_change_request",
+            "technical_requirement_change_request",
+            "multi_constraint_change_request",
+        }
         and (result.get("intent") or {}).get("status") in {"need_clarification", "need_input"}
     ):
         clarification = str(result.get("reply") or "请补充明确的修改目标值。")
@@ -544,6 +730,60 @@ def _handle_accuracy_standardization_request(
     return result
 
 
+def _handle_technical_requirement_change_request(request: dict[str, Any]) -> dict[str, Any]:
+    status = str(request.get("status") or "need_clarification")
+    actions = [item for item in request.get("actions") or [] if isinstance(item, dict)]
+    questions = [str(item) for item in request.get("questions") or [] if str(item).strip()]
+    reply = str(request.get("message") or "请明确需要新增、修改或删除的技术要求。")
+    if questions:
+        reply = f"{reply}\n\n" + "\n".join(f"- {item}" for item in questions)
+    return _response(
+        reply,
+        intent_type="technical_requirement_change_request",
+        target_field="",
+        target_fields=["technical_requirements"],
+        status=status,
+        suggested_actions=actions,
+        affected_fields=["technical_requirements", "generation_parameters.technical_requirements"],
+    )
+
+
+def _mixed_parameter_actions(review: dict[str, Any], message: str) -> list[dict[str, Any]]:
+    """Extract explicit parameter edits from clauses that are not technical-note CRUD.
+
+    This keeps deterministic mixed requests such as “中径改为25mm，并新增镀锌要求”
+    in one proposal, while avoiding the classic false positive where deleting a note
+    named “两端磨平” is mistaken for changing the end-grinding model switch.
+    """
+
+    actions: list[dict[str, Any]] = []
+    clauses = [part.strip() for part in re.split(r"(?:同时|并且|然后|再(?=增加|新增|添加|补充|删除|移除|去掉|删掉)|[，,；;])", message) if part.strip()]
+    for clause in clauses:
+        has_technical_verb = any(
+            term in clause
+            for term in (
+                *TECHNICAL_REQUIREMENT_ADD_TERMS,
+                *TECHNICAL_REQUIREMENT_UPDATE_TERMS,
+                *TECHNICAL_REQUIREMENT_DELETE_TERMS,
+            )
+        )
+        is_technical_clause = has_technical_verb and (
+            any(term in clause for term in TECHNICAL_REQUIREMENT_OBJECT_TERMS)
+            or _infer_technical_requirement_type(clause) is not None
+            or _message_mentions_existing_requirement(review, clause)
+        )
+        if is_technical_clause:
+            continue
+        target = _detect_target_field(clause)
+        if not target:
+            continue
+        parameter_result = _handle_change(review, clause, target)
+        for action in parameter_result.get("suggested_actions") or []:
+            if action.get("type") in {"propose_parameter_patch", "propose_tolerance_patch", "proposal_constraint"}:
+                actions.append(action)
+    return actions
+
+
 def _run_llm_chat(
     review: dict[str, Any],
     message: str,
@@ -587,7 +827,13 @@ def _attach_proposal_feasibility(review: dict[str, Any], result: dict[str, Any])
     applicable_actions = [
         item
         for item in actions
-        if item.get("type") in {"propose_parameter_patch", "propose_tolerance_patch"}
+        if item.get("type") in {
+            "propose_parameter_patch",
+            "propose_tolerance_patch",
+            "propose_technical_requirement_add",
+            "propose_technical_requirement_update",
+            "propose_technical_requirement_delete",
+        }
     ]
     parameter_actions = [item for item in actions if item.get("type") == "propose_parameter_patch"]
     if not applicable_actions:
@@ -1189,6 +1435,87 @@ def _response(
         "suggested_actions": suggested_actions or [],
         "references": references or [],
     }
+
+
+def _infer_technical_requirement_type(text: str) -> str | None:
+    lowered = str(text or "").lower()
+    for requirement_type, keywords in TECHNICAL_REQUIREMENT_TYPE_KEYWORDS.items():
+        if any(str(keyword).lower() in lowered for keyword in keywords):
+            return requirement_type
+    return None
+
+
+def _message_mentions_existing_requirement(review: dict[str, Any], text: str) -> bool:
+    normalized_message = _normalize_technical_requirement_match_text(text)
+    return any(
+        (
+            normalized_content
+            and (normalized_content in normalized_message or normalized_message in normalized_content)
+        )
+        for item in review.get("technical_requirements") or []
+        if isinstance(item, dict)
+        for normalized_content in [_normalize_technical_requirement_match_text(item.get("content"))]
+    )
+
+
+def _match_technical_requirements(review: dict[str, Any], target_text: str) -> list[dict[str, Any]]:
+    ensure_technical_requirement_ids(review)
+    requirements = [item for item in review.get("technical_requirements") or [] if isinstance(item, dict)]
+    normalized_target = _normalize_technical_requirement_match_text(target_text)
+    if not normalized_target:
+        return []
+    content_matches = []
+    for item in requirements:
+        normalized_content = _normalize_technical_requirement_match_text(item.get("content"))
+        if normalized_content and (normalized_target in normalized_content or normalized_content in normalized_target):
+            content_matches.append(item)
+    if content_matches:
+        return content_matches
+    inferred_type = _infer_technical_requirement_type(target_text)
+    if inferred_type:
+        return [
+            item
+            for item in requirements
+            if normalize_technical_requirement_type(item.get("type"), default="other") == inferred_type
+        ]
+    return []
+
+
+def _technical_requirement_match_question(
+    target_text: str,
+    matches: list[dict[str, Any]],
+    *,
+    operation: str,
+) -> str:
+    if not matches:
+        return f"没有找到与“{target_text}”对应的技术要求，请提供更完整的原文。"
+    options = "；".join(str(item.get("content") or "") for item in matches[:3])
+    return f"找到多条可能要{operation}的技术要求：{options}。请明确选择其中一条。"
+
+
+def _clean_technical_requirement_phrase(value: Any, *, strip_requirement_suffix: bool = True) -> str:
+    text = str(value or "").strip().strip("“”\"'：:，,；;。")
+    text = re.sub(r"^(?:这条|该条|对应的)?(?:技术要求|工艺要求|图纸要求|标注要求)\s*", "", text)
+    if strip_requirement_suffix:
+        text = re.sub(r"(?:这条|该条)?(?:技术要求|工艺要求|图纸要求|标注要求|要求)\s*$", "", text)
+    return text.strip().strip("“”\"'：:，,；;。")
+
+
+def _normalize_technical_requirement_match_text(value: Any) -> str:
+    text = _clean_technical_requirement_phrase(value)
+    return re.sub(r"[\s，,。；;：:、‘’“”\"']+", "", text).casefold()
+
+
+def _merge_technical_requirement_replacement(current: str, replacement: str) -> str:
+    replacement = str(replacement or "").strip()
+    duration = re.fullmatch(r"\d+(?:\.\d+)?\s*(?:h|小时)", replacement, re.IGNORECASE)
+    if duration and re.search(r"\d+(?:\.\d+)?\s*(?:h|小时)", current, re.IGNORECASE):
+        return re.sub(r"\d+(?:\.\d+)?\s*(?:h|小时)", replacement, current, count=1, flags=re.IGNORECASE)
+    return replacement
+
+
+def _span_overlaps(span: tuple[int, int], consumed: list[tuple[int, int]]) -> bool:
+    return any(span[0] < end and start < span[1] for start, end in consumed)
 
 
 def _detect_intent_type(text: str) -> str:

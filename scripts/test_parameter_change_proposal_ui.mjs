@@ -20,6 +20,8 @@ const context = {
     inner_diameter: "内径",
     spring_index: "旋绕比",
   },
+  TECH_LABELS: { surface: "表面处理", salt_spray: "盐雾试验", other: "其他要求" },
+  normalizeTechnicalRequirementType: (value) => ["surface", "salt_spray", "other"].includes(String(value)) ? String(value) : "other",
   targetFieldLabel: (field) => field,
   formatParameterImpactValue: (value, unit = "") => value == null ? "-" : `${value}${unit || ""}`,
   generationReadinessStatusLabel: (status) => ({ ready: "可生成", ready_with_warnings: "可生成（有提示）" })[status] || status,
@@ -63,6 +65,39 @@ assert.doesNotMatch(html, />spring_index</);
 assert.doesNotMatch(html, /D\/d/);
 assert.match(html, /应用整个方案/);
 assert.match(html, /已有生图版本不会覆盖/);
+
+const technicalHtml = context.renderParameterChangeProposalHtml({
+  ...proposal,
+  direct_changes: [],
+  synchronized_changes: [],
+  derived_changes: [],
+  technical_requirement_changes: [
+    {
+      operation: "add",
+      requirement_id: "techreq-new",
+      before: null,
+      after: { requirement_id: "techreq-new", type: "surface", content: "表面镀锌。", need_human_review: false },
+    },
+    {
+      operation: "update",
+      requirement_id: "techreq-salt",
+      before: { requirement_id: "techreq-salt", type: "salt_spray", content: "盐雾试验72小时。", need_human_review: false },
+      after: { requirement_id: "techreq-salt", type: "salt_spray", content: "盐雾试验96小时。", need_human_review: false },
+    },
+    {
+      operation: "delete",
+      requirement_id: "techreq-old",
+      before: { requirement_id: "techreq-old", type: "other", content: "旧技术要求。", need_human_review: false },
+      after: null,
+    },
+  ],
+}, 2);
+assert.match(technicalHtml, /技术要求修改方案 V2/);
+assert.match(technicalHtml, /新增·表面处理/);
+assert.match(technicalHtml, /表面镀锌/);
+assert.match(technicalHtml, /盐雾试验72小时。 → 盐雾试验：盐雾试验96小时。/);
+assert.match(technicalHtml, /删除·其他要求/);
+assert.match(technicalHtml, /SolidWorks参数包将变化/);
 
 const turn = { change_proposal: { ...proposal, status: "ready" } };
 context.state.review.parameter_change_proposals[0] = { ...proposal, status: "applied" };

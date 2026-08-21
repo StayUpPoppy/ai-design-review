@@ -25,6 +25,7 @@ from .spring_templates import (
     template_for,
 )
 from .surface_terms import normalize_surface_requirement
+from .technical_requirements import new_technical_requirement_id
 
 
 TECHNICAL_FIELD_TYPES = {
@@ -239,6 +240,7 @@ class DrawingReviewWorkflow:
                 need_human_review = bool(normalized["need_human_review"])
             requirements.append(
                 {
+                    "requirement_id": new_technical_requirement_id(),
                     "type": requirement_type,
                     "content": content,
                     "source": item.get("source", []),

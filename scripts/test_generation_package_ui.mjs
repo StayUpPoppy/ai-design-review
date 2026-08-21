@@ -22,6 +22,7 @@ const context = {
   COMPRESSION_GENERATION_UNITS: { wire_diameter: "mm", mean_diameter: "mm", free_length: "mm", total_coils: null, active_coils: null, handedness: null, end_grinding: null, end_coils_closed: null },
   COMPRESSION_GENERATION_LABELS: { wire_diameter: "线径", mean_diameter: "中径", free_length: "自由长度", total_coils: "总圈数", active_coils: "有效圈数", handedness: "旋向", end_grinding: "两端磨削", end_coils_closed: "端圈压并" },
   currentSpringType: (review) => review.drawing_summary?.spring_type || "unknown_spring",
+  normalizeTechnicalRequirementType: (value) => String(value || "other").trim() || "other",
   targetFieldLabel: (field) => ({ material: "材料", mean_diameter: "中径", active_coils: "有效圈数" }[field] || field),
 };
 vm.createContext(context);
@@ -44,6 +45,22 @@ assert.equal(packageData.generation_parameters.spring_parameters.end_coils_close
 assert.equal(packageData.generation_parameters.spring_parameters.material, undefined);
 assert.equal(packageData.generation_parameters.load_points, undefined);
 assert.equal(packageData.generation_parameters.technical_requirements[0].content, "镀锌");
+assert.equal(packageData.generation_parameters.technical_requirements[0].requirement_id, undefined);
+
+const pendingRequirementReview = structuredClone(review);
+pendingRequirementReview.technical_requirements[0].requirement_id = "techreq-confirmed";
+pendingRequirementReview.technical_requirements.push({
+  requirement_id: "techreq-pending",
+  type: "other",
+  content: "待确认内容不会进入参数包。",
+  need_human_review: true,
+});
+const filteredPackage = context.makeGenerationParameterPackage(pendingRequirementReview);
+assert.equal(filteredPackage.generation_parameters.technical_requirements.length, 1);
+assert.deepEqual(
+  Object.keys(filteredPackage.generation_parameters.technical_requirements[0]),
+  ["type", "content", "confirmation_source"],
+);
 
 const directReview = structuredClone(review);
 directReview.standard_selection = {

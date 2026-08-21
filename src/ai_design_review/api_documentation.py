@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -167,6 +167,35 @@ class SpringParametersDocument(BaseModel):
     load_points: list[dict[str, Any]] = Field(default_factory=list, description="载荷测试点，通常包含高度和力值。")
 
 
+class TechnicalRequirementDocument(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    requirement_id: str | None = Field(
+        default=None,
+        description="技术要求内部稳定ID；只用于编辑、确认和AI方案定位，不发送给SolidWorks。",
+        examples=["techreq_a1b2c3"],
+    )
+    type: Literal[
+        "surface",
+        "hardness",
+        "heat_treatment",
+        "salt_spray",
+        "environmental",
+        "lifetime",
+        "process",
+        "other",
+    ] = Field(
+        default="other",
+        description="技术要求类型：surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process或other。",
+        examples=["surface"],
+    )
+    content: str = Field(default="", description="需要写入二维图纸固定区域的中文技术要求原文。", examples=["表面镀锌。"])
+    source: list[str] = Field(default_factory=list, description="识别、人工编辑或AI方案等内部来源。")
+    evidence: str | None = Field(default=None, description="图纸识别证据或人工修改说明。")
+    confidence: float | None = Field(default=None, ge=0, le=1, description="识别或确认置信度。")
+    need_human_review: bool = Field(default=True, description="是否仍待人工确认；只有false的非空内容进入生图参数包。")
+
+
 class ReviewDocument(BaseModel):
     model_config = ConfigDict(
         extra="allow",
@@ -183,6 +212,10 @@ class ReviewDocument(BaseModel):
 
     drawing_summary: DrawingSummaryDocument = Field(default_factory=DrawingSummaryDocument, description="图纸基本信息与总体审查结论。")
     spring_parameters: SpringParametersDocument = Field(default_factory=SpringParametersDocument, description="识别、推导和人工确认的弹簧参数。")
+    technical_requirements: list[TechnicalRequirementDocument] = Field(
+        default_factory=list,
+        description="按页面顺序保存的技术要求；已确认项会同步进入生图参数包。",
+    )
     derived_parameters: dict[str, Any] = Field(default_factory=dict, description="根据已知参数计算出的派生参数。")
     standard_selection: dict[str, Any] = Field(default_factory=dict, description="标准选择、适用性和人工确认信息。")
     parameter_reasonableness: dict[str, Any] | None = Field(default=None, description="最近一次参数合理性诊断结果。")
@@ -367,6 +400,19 @@ class ParameterChangeProposalItem(BaseModel):
     source_fields: list[str] = Field(default_factory=list, description="自动同步值所依赖的字段代码。")
 
 
+class TechnicalRequirementProposalChange(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    operation: Literal["add", "update", "delete"] = Field(
+        description="技术要求操作：add、update或delete。",
+        examples=["update"],
+    )
+    requirement_id: str = Field(description="被操作技术要求的稳定内部ID。", examples=["techreq_a1b2c3"])
+    type_label: str | None = Field(default=None, description="技术要求类型的中文名称。", examples=["盐雾试验"])
+    before: dict[str, Any] | None = Field(default=None, description="应用前的类型、内容和确认状态；新增时为null。")
+    after: dict[str, Any] | None = Field(default=None, description="应用后的类型、内容和确认状态；删除时为null。")
+
+
 class ParameterChangeProposal(BaseModel):
     model_config = ConfigDict(
         extra="allow",
@@ -394,6 +440,10 @@ class ParameterChangeProposal(BaseModel):
     user_goal: str = Field(description="当前方案对应的用户修改目标。")
     direct_changes: list[ParameterChangeProposalItem] = Field(default_factory=list, description="用户明确要求修改的参数。")
     synchronized_changes: list[ParameterChangeProposalItem] = Field(default_factory=list, description="为保持整体一致而必须同步的参数。")
+    technical_requirement_changes: list[TechnicalRequirementProposalChange] = Field(
+        default_factory=list,
+        description="本方案将原子执行的技术要求新增、修改和删除操作。",
+    )
     derived_changes: list[dict[str, Any]] = Field(default_factory=list, description="旋绕比、细长比、刚度等计算影响。")
     recommendations: list[dict[str, Any]] = Field(default_factory=list, description="尚未加入应用范围的可选调整建议。")
     constraints: list[dict[str, Any]] = Field(default_factory=list, description="用户在多轮对话中累计的最大值、最小值或保持不变约束。")
@@ -629,6 +679,7 @@ DOCUMENTATION_MODELS: tuple[type[BaseModel], ...] = (
     ReviewParameterValue,
     DrawingSummaryDocument,
     SpringParametersDocument,
+    TechnicalRequirementDocument,
     ReviewDocument,
     StandardizePayloadRequest,
     ExistingStandardizeRequest,
@@ -647,6 +698,7 @@ DOCUMENTATION_MODELS: tuple[type[BaseModel], ...] = (
     ParameterImpactWorkflowEffects,
     ParameterImpactPreview,
     ParameterChangeProposalItem,
+    TechnicalRequirementProposalChange,
     ParameterChangeProposal,
     ParameterChangeProposalCommand,
     ParameterChangeProposalResponse,

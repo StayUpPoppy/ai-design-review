@@ -17,6 +17,7 @@ def main() -> None:
     _assert_tolerance_can_change_solid_height_risk()
     _assert_batch_is_simulated_as_one_change_set()
     _assert_non_protocol_field_does_not_change_package()
+    _assert_technical_requirement_changes_update_generation_package()
     print("parameter impact preview tests passed")
 
 
@@ -122,6 +123,60 @@ def _assert_non_protocol_field_does_not_change_package() -> None:
     preview = assess_parameter_change_impact(_ready_review(), [_patch("spring_rate", 1.25, "N/mm")])
     assert preview["generation_readiness"]["parameter_package_changed"] is False
     assert preview["workflow_effects"]["new_generation_required"] is False
+
+
+def _assert_technical_requirement_changes_update_generation_package() -> None:
+    review = _ready_review()
+    review["technical_requirements"][0]["requirement_id"] = "techreq_surface"
+    original = deepcopy(review)
+
+    updated = assess_parameter_change_impact(
+        review,
+        [
+            {
+                "type": "propose_technical_requirement_update",
+                "requirement_id": "techreq_surface",
+                "requirement_type": "surface",
+                "content": "表面镀锌，盐雾试验 96 小时。",
+            }
+        ],
+    )
+    assert review == original
+    assert updated["status"] == "ready", updated
+    assert updated["generation_readiness"]["parameter_package_changed"] is True
+    assert updated["generation_readiness"]["technical_requirements_changed"] is True
+    assert updated["generation_readiness"]["changed_frozen_fields"] == []
+    assert updated["workflow_effects"]["new_generation_required"] is True
+    assert updated["workflow_effects"]["standardization_recalculation_required"] is False
+    assert updated["direct_changes"][0]["change_type"] == "technical_requirement_update"
+    assert updated["direct_changes"][0]["after"]["content"].endswith("96 小时。")
+
+    added = assess_parameter_change_impact(
+        review,
+        [
+            {
+                "type": "propose_technical_requirement_add",
+                "requirement_id": "techreq_hardness",
+                "requirement_type": "hardness",
+                "content": "硬度为 HRC 45～50。",
+            }
+        ],
+    )
+    assert added["generation_readiness"]["technical_requirements_changed"] is True
+    assert added["workflow_effects"]["new_generation_required"] is True
+
+    deleted = assess_parameter_change_impact(
+        review,
+        [
+            {
+                "type": "propose_technical_requirement_delete",
+                "requirement_id": "techreq_surface",
+            }
+        ],
+    )
+    assert deleted["generation_readiness"]["technical_requirements_changed"] is True
+    assert deleted["workflow_effects"]["new_generation_required"] is True
+    assert deleted["direct_changes"][0]["after"] is None
 
 
 def _patch(field: str, value: object, unit: str | None = None) -> dict:

@@ -17,6 +17,8 @@ def main() -> None:
     _assert_missing_values_receive_pending_defaults()
     _assert_handedness_has_no_default()
     _assert_pending_field_is_omitted_but_package_exports()
+    _assert_technical_requirements_require_explicit_confirmation()
+    _assert_duplicate_technical_requirements_block_release()
     _assert_contract_validation()
     _assert_optional_standardization_is_warning()
     _assert_warning_blocked_and_not_applicable_states()
@@ -153,6 +155,77 @@ def _assert_pending_field_is_omitted_but_package_exports() -> None:
     assert "mean_diameter" not in package["generation_parameters"]["spring_parameters"]
     assert package["generation_parameters"]["spring_parameters"]["wire_diameter"]["value"] == 2
     assert package["derived_parameters"]["mean_diameter"]["value"] == 18
+
+
+def _assert_technical_requirements_require_explicit_confirmation() -> None:
+    review = _ready_review()
+    review["technical_requirements"] = [
+        {
+            "requirement_id": "techreq_confirmed",
+            "type": "surface",
+            "content": "表面镀锌。",
+            "need_human_review": False,
+            "source": ["human"],
+        },
+        {
+            "requirement_id": "techreq_pending",
+            "type": "hardness",
+            "content": "硬度为 HRC 45～50。",
+            "need_human_review": True,
+        },
+        {
+            "requirement_id": "techreq_legacy_without_state",
+            "type": "other",
+            "content": "未显式确认的历史要求。",
+        },
+        {
+            "requirement_id": "techreq_empty",
+            "type": "other",
+            "content": "  ",
+            "need_human_review": False,
+        },
+    ]
+
+    readiness = assess_generation_readiness(review)
+    assert readiness["status"] == "needs_confirmation", readiness
+    pending = [
+        item for item in readiness["pending_fields"]
+        if item["field"].startswith("technical_requirements.")
+    ]
+    assert {item.get("requirement_id") for item in pending} == {
+        "techreq_pending", "techreq_legacy_without_state", "techreq_empty",
+    }
+    assert any("内容为空" in item["reason"] for item in pending)
+
+    requirements = build_generation_parameter_package(review)["generation_parameters"]["technical_requirements"]
+    assert requirements == [
+        {
+            "type": "surface",
+            "content": "表面镀锌。",
+            "confirmation_source": "human_confirmed",
+        }
+    ]
+    assert "requirement_id" not in requirements[0]
+    assert "source" not in requirements[0]
+
+
+def _assert_duplicate_technical_requirements_block_release() -> None:
+    review = _ready_review()
+    review["technical_requirements"].append(
+        {
+            "requirement_id": "techreq_duplicate",
+            "type": "surface",
+            "content": "  镀锌  ",
+            "need_human_review": False,
+        }
+    )
+    readiness = assess_generation_readiness(review)
+    assert readiness["status"] == "needs_confirmation", readiness
+    duplicate = next(
+        item for item in readiness["pending_fields"]
+        if item.get("requirement_id") == "techreq_duplicate"
+    )
+    assert "重复" in duplicate["reason"]
 
 
 def _assert_contract_validation() -> None:

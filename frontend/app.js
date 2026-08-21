@@ -54,10 +54,14 @@ const state = {
   identity: null,
   identityReady: false,
   identityError: "",
+  technicalRequirementUndo: null,
 };
 
 window.addEventListener("beforeunload", (event) => {
-  if (!hasPendingEditedReviewItems(state.review)) return;
+  const hasUnsavedReviewWork = hasPendingEditedReviewItems(state.review)
+    || state.pendingReviewAuditEvents.length > 0
+    || state.reviewPersistenceSaving;
+  if (!hasUnsavedReviewWork) return;
   event.preventDefault();
   event.returnValue = "";
 });
@@ -168,6 +172,8 @@ const TECH_LABELS = {
   process: "工艺",
   other: "其他",
 };
+
+const TECH_REQUIREMENT_TYPES = Object.freeze(Object.keys(TECH_LABELS));
 
 const VLM_AVAILABLE = false;
 
@@ -829,7 +835,15 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
 async function submitParameterChangeProposal(proposal, command, messageId = state.activeReviewMessageId) {
   if (!proposal?.proposal_id || !state.lastJob?.job_id || state.busy) return false;
   activateReviewContext(messageId);
-  await flushReviewPersistence();
+  try {
+    await flushReviewPersistence({ throwOnError: true });
+    if (state.pendingReviewAuditEvents.length || state.reviewPersistenceSaving) {
+      throw new Error("当前审图修改尚未成功保存，请检查网络后重试。");
+    }
+  } catch (error) {
+    updateLatestReviewMessage(error?.message || "当前审图修改尚未成功保存，请稍后重试。");
+    return false;
+  }
   setBusy(true);
   try {
     const response = await apiFetch(
@@ -863,9 +877,13 @@ async function submitParameterChangeProposal(proposal, command, messageId = stat
     if (typeof loadGenerationState === "function") {
       void loadGenerationState(state.lastJob.job_id, { silent: true });
     }
+    const includesTechnicalRequirements = Array.isArray(proposal?.technical_requirement_changes)
+      && proposal.technical_requirement_changes.length > 0;
     updateLatestReviewMessage(command === "apply"
-      ? "已整体应用参数修改方案，关联参数、合理性和生图状态已经同步更新。"
-      : "已放弃参数修改方案，正式参数没有变化。");
+      ? (includesTechnicalRequirements
+        ? "已整体应用审图修改方案，技术要求已确认并同步到下一版生图参数包。"
+        : "已整体应用参数修改方案，关联参数、合理性和生图状态已经同步更新。")
+      : "已放弃修改方案，正式审图数据没有变化。");
     return true;
   } catch (error) {
     updateLatestReviewMessage(error.message || String(error));
@@ -2075,6 +2093,13 @@ function renderReviewChangeHistoryHtml(review, forceOpen = false) {
 function auditTargetLabel(target) {
   const value = String(target || "");
   if (value.startsWith("load_points.")) return `载荷测试点 ${value.slice("load_points.".length)}`;
+  if (value.startsWith("technical_requirements.")) {
+    const token = value.slice("technical_requirements.".length);
+    const item = (state.review?.technical_requirements || []).find((candidate, index) => {
+      return String(candidate?.requirement_id || "") === token || String(index + 1) === token;
+    });
+    return item ? `技术要求·${TECH_LABELS[item.type] || item.type || "其他"}` : "技术要求";
+  }
   return targetFieldLabel(value) || value || "审查数据";
 }
 
@@ -2097,6 +2122,11 @@ function auditEventLabel(eventType) {
     standard_selection_confirmed: "确认适用标准",
     safe_fields_confirmed: "批量确认无风险项",
     all_fields_confirmed: "全部确认",
+    technical_requirement_added: "新增技术要求",
+    technical_requirement_updated: "修改技术要求",
+    technical_requirement_deleted: "删除技术要求",
+    technical_requirement_restored: "恢复技术要求",
+    technical_requirement_confirmed: "确认技术要求",
   };
   return labels[eventType] || "更新审查数据";
 }
@@ -2107,6 +2137,9 @@ function auditStateText(snapshot) {
   if (snapshot.value != null && snapshot.value !== "") parts.push(String(snapshot.value));
   if (snapshot.height != null && snapshot.height !== "") parts.push(`H=${snapshot.height}`);
   if (snapshot.force != null && snapshot.force !== "") parts.push(`F=${snapshot.force}`);
+  if (snapshot.type) parts.push(TECH_LABELS[snapshot.type] || String(snapshot.type));
+  if (snapshot.content != null && snapshot.content !== "") parts.push(String(snapshot.content));
+  if (snapshot.deleted === true) parts.push("已删除");
   const upper = snapshot.tolerance_upper ?? snapshot.load_tolerance_upper;
   const lower = snapshot.tolerance_lower ?? snapshot.load_tolerance_lower;
   const percent = snapshot.load_tolerance_percent;
@@ -2492,14 +2525,18 @@ function hasPendingEditedReviewItems(review) {
     if (Array.isArray(item)) return item.some(confirmationItemWasEdited);
     return confirmationItemWasEdited(item);
   });
-  return parameterPending || (review.technical_requirements || []).some(confirmationItemWasEdited);
+  return parameterPending || (review.technical_requirements || []).some((item) => {
+    return confirmationItemWasEdited(item)
+      || (item?.need_human_review !== false && sourceValues(item?.source).includes("human_added"));
+  });
 }
 
 function confirmationControlState(item, options = {}) {
   const kind = options.kind || "parameter";
   const field = options.field || "";
   const review = options.review || state.review;
-  if (!item?.need_human_review) {
+  const isConfirmed = kind === "technical" ? item?.need_human_review === false : !item?.need_human_review;
+  if (isConfirmed) {
     return { state: "confirmed", label: "已确认", disabled: true, reason: "该项已经确认；修改内容后可重新确认。" };
   }
 
@@ -2510,6 +2547,7 @@ function confirmationControlState(item, options = {}) {
     }
   } else if (kind === "technical") {
     if (!String(item?.content || "").trim()) invalidReason = "技术要求内容不能为空";
+    else if (isDuplicateTechnicalRequirement(review, item)) invalidReason = "已存在相同类型和内容的技术要求";
     else if (item?.type === "surface" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item?.normalization_status)) {
       invalidReason = "请先明确表面处理标准术语";
     }
@@ -2569,10 +2607,10 @@ function syncReviewConfirmationControls(root, review = state.review) {
     const field = `load_points.${item?.label || `F${Number(row.dataset.index) + 1}`}`;
     if (item) syncConfirmationControl(row, item, { kind: "load_point", field, review });
   });
-  root.querySelectorAll('[data-kind="technical"][data-index]').forEach((row) => {
-    const index = Number(row.dataset.index);
+  root.querySelectorAll('[data-kind="technical"][data-requirement-id]').forEach((row) => {
+    const index = (review.technical_requirements || []).findIndex((item) => String(item?.requirement_id || "") === String(row.dataset.requirementId || ""));
     const item = review.technical_requirements?.[index];
-    if (item) syncConfirmationControl(row, item, { kind: "technical", field: `technical_requirements.${index + 1}`, review });
+    if (item) syncConfirmationControl(row, item, { kind: "technical", field: technicalRequirementField(item, index), review });
   });
 }
 
@@ -2921,10 +2959,23 @@ function assessGenerationReadiness(review) {
   if (reasonablenessStale) {
     warnings.push(generationIssue("reasonableness", "参数合理性结果待服务端重新计算；创建任务前服务端会使用当前参数重新核对。", "参数合理性"));
   }
+  const seenTechnicalRequirements = new Set();
   (review.technical_requirements || []).forEach((item, index) => {
-    if (!item?.content || !item.need_human_review) return;
     const label = TECH_LABELS[item.type] || item.type || "技术要求";
-    pending.push(generationIssue(`technical_requirements.${index + 1}`, `技术要求“${label}”尚未人工确认。`, label));
+    const content = String(item?.content || "").trim();
+    const canonical = `${normalizeTechnicalRequirementType(item?.type)}:${content.replace(/\s+/g, " ").toLocaleLowerCase()}`;
+    const duplicate = Boolean(content) && seenTechnicalRequirements.has(canonical);
+    if (content) seenTechnicalRequirements.add(canonical);
+    if (content && item.need_human_review === false && !duplicate) return;
+    const reason = duplicate
+      ? `技术要求“${label}”与已有内容重复，请修改或删除重复项。`
+      : content
+        ? `技术要求“${label}”尚未人工确认。`
+        : `技术要求“${label}”内容为空，请补充内容或删除该项。`;
+    pending.push({
+      ...generationIssue(technicalRequirementField(item, index), reason, label),
+      requirement_id: item.requirement_id || null,
+    });
   });
   const status = (!reasonablenessStale && reasonableness.status === "blocked") || contractIssues.length
     ? "blocked"
@@ -3358,6 +3409,11 @@ async function executeGenerationPackageExport(action, turnIndex, messageId = sta
     preserveAccuracyGradeUpdate: true,
     preservePendingAccuracyGrade: true,
   });
+  await flushReviewPersistence();
+  if (state.pendingReviewAuditEvents.length || state.reviewPersistenceSaving) {
+    if (!options.automatic) updateLatestReviewMessage("当前技术要求或参数尚未成功保存，请检查网络后重试。");
+    return false;
+  }
   const liveAction = state.review?.standardization_chat?.[turnIndex]?.generation_package_export || action;
   if (!liveAction.can_download) return false;
   if (generationPackageExportDisplayStatus(liveAction) === "stale") {
@@ -3424,6 +3480,36 @@ async function executeGenerationPackageExport(action, turnIndex, messageId = sta
       automatic_download: false,
     }, messageId);
     if (!options.automatic) updateLatestReviewMessage(error?.message || "参数包下载失败，请重试。");
+    return false;
+  }
+}
+
+async function exportCurrentGenerationPackage(messageId = state.activeReviewMessageId) {
+  if (!state.review) return false;
+  if (messageId) activateReviewContext(messageId, {
+    preserveAccuracyGradeUpdate: true,
+    preservePendingAccuracyGrade: true,
+  });
+  try {
+    await flushReviewPersistence();
+    if (state.pendingReviewAuditEvents.length || state.reviewPersistenceSaving) {
+      throw new Error("当前技术要求或参数尚未成功保存，请检查网络后重试。");
+    }
+    let parameterPackage;
+    if (state.lastJob?.job_id) {
+      const response = await apiFetch(`/api/reviews/${encodeURIComponent(state.lastJob.job_id)}/generation-package`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(generationApiError(payload, "服务端参数包读取失败"));
+      parameterPackage = payload.parameter_package;
+    } else {
+      parameterPackage = makeGenerationParameterPackage(state.review);
+    }
+    if (!parameterPackage || typeof parameterPackage !== "object") throw new Error("参数包响应为空。");
+    downloadJson(parameterPackage, "compression_spring_generation_parameters.json");
+    updateLatestReviewMessage("已导出最新生图参数包；只有已确认技术要求会发送给 SolidWorks。");
+    return true;
+  } catch (error) {
+    updateLatestReviewMessage(error?.message || "参数包导出失败，请重试。");
     return false;
   }
 }
@@ -3557,7 +3643,13 @@ function renderParameterChangeProposalHtml(proposal, turnIndex) {
   const introduced = Array.isArray(proposal?.risk_delta?.introduced) ? proposal.risk_delta.introduced : [];
   const recommendations = Array.isArray(proposal?.recommendations) ? proposal.recommendations : [];
   const constraints = Array.isArray(proposal?.constraints) ? proposal.constraints : [];
+  const technicalChanges = Array.isArray(proposal?.technical_requirement_changes) ? proposal.technical_requirement_changes : [];
   const readiness = proposal?.generation_readiness || {};
+  const hasParameterChanges = direct.length > 0 || synchronized.length > 0 || derived.length > 0;
+  const proposalTitle = technicalChanges.length
+    ? (hasParameterChanges ? "审图修改方案" : "技术要求修改方案")
+    : "参数修改方案";
+  const parameterPackageChanged = Boolean(readiness.parameter_package_changed || technicalChanges.length);
   const canApply = ["ready", "warning"].includes(status) && Boolean(state.lastJob?.job_id);
   const canDiscard = !["applied", "discarded"].includes(status) && Boolean(state.lastJob?.job_id);
   const statusLabels = {
@@ -3578,7 +3670,7 @@ function renderParameterChangeProposalHtml(proposal, turnIndex) {
       data-turn-index="${turnIndex}" data-proposal-id="${escapeHtml(proposal.proposal_id || "")}" data-proposal-version="${escapeHtml(String(proposal.version || ""))}">
       <div class="parameter-change-proposal-head">
         <div>
-          <strong>参数修改方案 V${escapeHtml(String(proposal.version || 1))}</strong>
+          <strong>${proposalTitle} V${escapeHtml(String(proposal.version || 1))}</strong>
           <small>${escapeHtml(statusLabels[status] || status)}</small>
         </div>
         ${readinessText ? `<span>${escapeHtml(readinessText)}</span>` : ""}
@@ -3588,11 +3680,12 @@ function renderParameterChangeProposalHtml(proposal, turnIndex) {
       ${renderParameterProposalChangeGroup("用户直接修改", direct)}
       ${renderParameterProposalChangeGroup("自动同步参数", synchronized)}
       ${renderParameterProposalChangeGroup("计算影响", derived)}
+      ${renderTechnicalRequirementProposalChanges(technicalChanges)}
       ${renderParameterProposalMessages("需要补充", questions)}
       ${renderParameterProposalIssues("阻断问题", blocking)}
       ${renderParameterProposalIssues("风险提示", introduced)}
       ${renderParameterProposalRecommendations(recommendations)}
-      ${proposal?.generation_readiness?.parameter_package_changed
+      ${parameterPackageChanged
         ? `<div class="parameter-change-proposal-effect">SolidWorks参数包将变化；已有生图版本不会覆盖，应用后需要创建新版本。</div>`
         : `<div class="parameter-change-proposal-effect">当前方案不会改变SolidWorks冻结建模参数。</div>`}
       ${!state.lastJob?.job_id ? `<small class="parameter-change-proposal-local">本地未持久化数据只能预览方案，不能整体应用。</small>` : ""}
@@ -3602,6 +3695,49 @@ function renderParameterChangeProposalHtml(proposal, turnIndex) {
       </div>
       ${["needs_input", "ready", "warning", "blocked"].includes(status) ? `<small>可继续在下方对话中补充约束或调整目标值，正式参数在应用前不会变化。</small>` : ""}
     </section>
+  `;
+}
+
+function technicalRequirementProposalSnapshot(change, side) {
+  const snapshot = change?.[side]
+    || (side === "before" ? change?.previous : change?.requirement)
+    || (side === "after" ? change?.proposed : null);
+  if (snapshot && typeof snapshot === "object") {
+    return {
+      type: normalizeTechnicalRequirementType(snapshot.type || change?.type),
+      content: String(snapshot.content ?? change?.content ?? "").trim(),
+    };
+  }
+  if ((side === "after" && change?.operation !== "delete") || (side === "before" && change?.operation === "delete")) {
+    return {
+      type: normalizeTechnicalRequirementType(change?.type),
+      content: String(change?.content || "").trim(),
+    };
+  }
+  return null;
+}
+
+function renderTechnicalRequirementProposalChanges(changes) {
+  if (!Array.isArray(changes) || !changes.length) return "";
+  const operationLabels = { add: "新增", update: "修改", delete: "删除" };
+  return `
+    <div class="parameter-change-proposal-group technical-requirement-proposal-group">
+      <strong>技术要求变更</strong>
+      <ul>${changes.map((change) => {
+        const operation = String(change?.operation || "update");
+        const before = technicalRequirementProposalSnapshot(change, "before");
+        const after = technicalRequirementProposalSnapshot(change, "after");
+        const reference = after || before || { type: "other", content: "" };
+        const label = `${operationLabels[operation] || "修改"}·${TECH_LABELS[reference.type] || "其他"}`;
+        let detail = reference.content || "-";
+        if (operation === "update") {
+          const beforeText = before ? `${TECH_LABELS[before.type] || "其他"}：${before.content || "-"}` : "-";
+          const afterText = after ? `${TECH_LABELS[after.type] || "其他"}：${after.content || "-"}` : "-";
+          detail = `${beforeText} → ${afterText}`;
+        }
+        return `<li><span>${escapeHtml(label)}</span><small>${escapeHtml(detail)}</small></li>`;
+      }).join("")}</ul>
+    </div>
   `;
 }
 
@@ -3929,73 +4065,200 @@ function renderStandardizationChatActionPreviewHtml(action) {
   `;
 }
 
+function createTechnicalRequirementId(review = state.review) {
+  const existing = new Set((review?.technical_requirements || []).map((item) => String(item?.requirement_id || "")));
+  let candidate = "";
+  do {
+    const unique = globalThis.crypto?.randomUUID
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    candidate = `techreq_${unique}`;
+  } while (existing.has(candidate));
+  return candidate;
+}
+
+function normalizeTechnicalRequirementType(value) {
+  const normalized = String(value || "").trim();
+  return TECH_REQUIREMENT_TYPES.includes(normalized) ? normalized : "other";
+}
+
+function technicalRequirementConfirmationKey(item, index = -1) {
+  const requirementId = String(item?.requirement_id || "").trim();
+  return requirementId ? `technical_requirement_${requirementId}` : `technical_${Math.max(index, 0)}`;
+}
+
+function technicalRequirementField(item, index = -1) {
+  const requirementId = String(item?.requirement_id || "").trim();
+  return `technical_requirements.${requirementId || Math.max(index + 1, 1)}`;
+}
+
+function ensureTechnicalRequirementIds(review) {
+  if (!review || typeof review !== "object") return review;
+  const requirements = review.technical_requirements ||= [];
+  const confirmations = review.manual_confirmations ||= {};
+  const seen = new Set();
+  requirements.forEach((item, index) => {
+    if (!item || typeof item !== "object") return;
+    const hadRequirementId = Boolean(String(item.requirement_id || "").trim());
+    let requirementId = String(item.requirement_id || "").trim();
+    if (!requirementId || seen.has(requirementId)) requirementId = createTechnicalRequirementId(review);
+    item.requirement_id = requirementId;
+    item.type = normalizeTechnicalRequirementType(item.type);
+    seen.add(requirementId);
+
+    const stableKey = technicalRequirementConfirmationKey(item, index);
+    const legacyKey = `technical_${index}`;
+    const legacy = confirmations[legacyKey];
+    if (!hadRequirementId && !confirmations[stableKey] && legacy) {
+      confirmations[stableKey] = {
+        ...structuredClone(legacy),
+        requirement_id: requirementId,
+        target_field: technicalRequirementField(item, index),
+        migrated_from: legacyKey,
+      };
+    }
+    const confirmed = Boolean(confirmations[stableKey]?.confirmed || legacy?.confirmed);
+    if (typeof item.need_human_review !== "boolean") item.need_human_review = !confirmed;
+  });
+  return review;
+}
+
+function technicalRequirementAuditState(item, extra = {}) {
+  if (!item || typeof item !== "object") return { ...extra };
+  return {
+    requirement_id: item.requirement_id || null,
+    type: normalizeTechnicalRequirementType(item.type),
+    content: String(item.content || "").trim(),
+    need_human_review: item.need_human_review !== false,
+    normalization_status: item.normalization_status || null,
+    ...extra,
+  };
+}
+
+function technicalRequirementCounts(review) {
+  const requirements = review?.technical_requirements || [];
+  const confirmed = requirements.filter((item) => String(item?.content || "").trim() && item?.need_human_review === false).length;
+  return { total: requirements.length, confirmed, pending: requirements.length - confirmed };
+}
+
+function isDuplicateTechnicalRequirement(review, target) {
+  const type = normalizeTechnicalRequirementType(target?.type);
+  const content = String(target?.content || "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  if (!content) return false;
+  return (review?.technical_requirements || []).some((item) => {
+    return item !== target
+      && normalizeTechnicalRequirementType(item?.type) === type
+      && String(item?.content || "").trim().replace(/\s+/g, " ").toLocaleLowerCase() === content;
+  });
+}
+
+function technicalRequirementTypeOptionsHtml(selected = "other") {
+  const current = normalizeTechnicalRequirementType(selected);
+  return TECH_REQUIREMENT_TYPES.map((type) => `
+    <option value="${escapeHtml(type)}"${type === current ? " selected" : ""}>${escapeHtml(TECH_LABELS[type])}</option>
+  `).join("");
+}
+
+function markParameterChangeProposalsStale(reason = "技术要求已修改") {
+  (state.review?.parameter_change_proposals || []).forEach((proposal) => {
+    if (!["needs_input", "ready", "warning", "blocked"].includes(String(proposal?.status || ""))) return;
+    proposal.status = "stale";
+    proposal.summary = `${reason}，请在 AI 对话中重新计算修改方案。`;
+  });
+  if (state.review?.active_parameter_change_proposal_id) state.review.active_parameter_change_proposal_id = null;
+}
+
+function applyManualSurfaceNormalization(item, reason) {
+  if (!item || item.type !== "surface") return;
+  item.raw_content ||= item.evidence || item.content || "";
+  item.standard_content = String(item.content || "").trim();
+  item.normalization_status = "human_confirmed";
+  item.normalization_source = "human";
+  item.normalization_confidence = 1;
+  item.normalization_reason = reason || "人工确认表面处理术语";
+}
+
+function clearSurfaceNormalization(item) {
+  if (!item) return;
+  [
+    "raw_content", "standard_content", "normalization_status", "normalization_source",
+    "normalization_confidence", "normalization_reason", "standard_candidates",
+  ].forEach((field) => delete item[field]);
+}
+
+function markTechnicalRequirementEdited(item, technicalField, confirmationField) {
+  if (!item) return;
+  rememberConfirmedSnapshot(item);
+  item.need_human_review = true;
+  item.source = Array.from(new Set(["human_edited", ...sourceValues(item.source)]));
+  revokeManualConfirmations(confirmationField, "technical_requirement_edited");
+  revokeManualConfirmations(technicalField, "technical_requirement_edited");
+  markParameterChangeProposalsStale();
+  state.generationReadiness = null;
+}
+
+function syncTechnicalRequirementSummary(root, review) {
+  const counts = technicalRequirementCounts(review);
+  root?.querySelectorAll?.('[data-role="technical-requirement-summary"]').forEach((element) => {
+    element.textContent = `已确认 ${counts.confirmed} 项 · 待确认 ${counts.pending} 项 · 将写入二维图纸 ${counts.confirmed} 项`;
+  });
+}
+
 function renderRequirementsHtml(review) {
+  ensureTechnicalRequirementIds(review);
   const requirements = review.technical_requirements || [];
-  if (!requirements.length) {
-    return `
-      <section class="review-block">
-        <div class="block-head"><h2>技术要求</h2><span>0 项</span></div>
-        <div class="empty-line">未识别技术要求</div>
-      </section>
-    `;
-  }
+  const counts = technicalRequirementCounts(review);
+  const undo = state.technicalRequirementUndo?.review === review ? state.technicalRequirementUndo : null;
   return `
-    <section class="review-block">
-      <div class="block-head"><h2>技术要求</h2><span>${requirements.length} 项</span></div>
-      <div class="requirement-list">
-        ${requirements.map((item, index) => `
-          <div class="requirement-row" data-kind="technical" data-index="${index}">
-            <label>${escapeHtml(TECH_LABELS[item.type] || item.type || "技术要求")}
-              <textarea data-role="content">${escapeHtml(item.content || "")}</textarea>
-            </label>
-            ${renderSurfaceNormalizationHtml(item)}
-            ${confirmationButtonHtml(item, { kind: "technical", field: `technical_requirements.${index + 1}`, review })}
-          </div>
-        `).join("")}
+    <section class="review-block technical-requirements-block">
+      <div class="block-head technical-requirements-head">
+        <h2>技术要求</h2>
+        <div>
+          <span data-role="technical-requirement-summary">已确认 ${counts.confirmed} 项 · 待确认 ${counts.pending} 项 · 将写入二维图纸 ${counts.confirmed} 项</span>
+          <button type="button" class="secondary-action" data-action="show-technical-requirement-create">+新增技术要求</button>
+        </div>
       </div>
+      ${undo ? `
+        <div class="technical-requirement-undo" role="status">
+          <span>已删除“${escapeHtml(String(undo.item?.content || "技术要求"))}”</span>
+          <button type="button" class="secondary-action" data-action="undo-technical-requirement-delete">撤销删除</button>
+        </div>
+      ` : ""}
+      <form class="technical-requirement-create" data-kind="technical_requirement_create" hidden>
+        <label>类型
+          <select data-role="new-technical-type">${technicalRequirementTypeOptionsHtml("other")}</select>
+        </label>
+        <label>中文技术要求
+          <textarea data-role="new-technical-content" placeholder="例如：去除毛刺，表面镀锌。"></textarea>
+        </label>
+        <small data-role="technical-requirement-create-error" aria-live="polite"></small>
+        <div>
+          <button type="submit">添加</button>
+          <button type="button" class="secondary-action" data-action="cancel-technical-requirement-create">取消</button>
+        </div>
+      </form>
+      ${requirements.length ? `
+        <div class="requirement-list">
+          ${requirements.map((item, index) => `
+            <div class="requirement-row" data-kind="technical" data-index="${index}" data-requirement-id="${escapeHtml(item.requirement_id)}">
+              <div class="requirement-editor">
+                <label>类型
+                  <select data-role="type">${technicalRequirementTypeOptionsHtml(item.type)}</select>
+                </label>
+                <label>中文技术要求
+                  <textarea data-role="content">${escapeHtml(item.content || "")}</textarea>
+                </label>
+              </div>
+              <div class="requirement-actions">
+                ${confirmationButtonHtml(item, { kind: "technical", field: technicalRequirementField(item, index), review })}
+                <button type="button" class="secondary-action requirement-delete-button" data-role="delete-technical-requirement">删除</button>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      ` : '<div class="empty-line">尚未添加技术要求；如无标注要求，可保持为空。</div>'}
     </section>
   `;
-}
-
-function renderSurfaceNormalizationHtml(item) {
-  if (item.type !== "surface") return "";
-  const status = item.normalization_status || "unmatched";
-  const raw = item.raw_content || item.evidence || "";
-  const reason = item.normalization_reason || "";
-  const candidates = Array.isArray(item.standard_candidates) ? item.standard_candidates : [];
-  const lockedStatuses = new Set(["matched", "alias_matched", "llm_auto_matched", "human_confirmed"]);
-  const candidateOptions = candidates
-    .filter((candidate) => candidate?.term)
-    .map((candidate) => `
-      <option value="${escapeHtml(candidate.term)}">${escapeHtml(candidate.term)}${candidate.score ? ` · ${Math.round(Number(candidate.score) * 100)}%` : ""}</option>
-    `).join("");
-  return `
-    <div class="requirement-meta">
-      <span class="normalization-status ${escapeHtml(status)}">${escapeHtml(surfaceStatusLabel(status))}</span>
-      ${raw ? `<small>图纸原文：${escapeHtml(raw)}</small>` : ""}
-      ${reason ? `<small>说明：${escapeHtml(reason)}</small>` : ""}
-      ${candidateOptions && !lockedStatuses.has(status) ? `
-        <label class="candidate-select">候选标准术语
-          <select data-role="standard-candidate">
-            <option value="">选择标准术语</option>
-            ${candidateOptions}
-          </select>
-        </label>
-      ` : ""}
-    </div>
-  `;
-}
-
-function surfaceStatusLabel(status) {
-  const labels = {
-    matched: "已标准化",
-    alias_matched: "按别名标准化",
-    llm_auto_matched: "AI自动标准化",
-    human_confirmed: "人工确认",
-    suggested: "候选待确认",
-    unmatched: "未标准化，保持原文",
-  };
-  return labels[status] || "待确认";
 }
 
 function standardizationStatusLabel(status) {
@@ -4035,6 +4298,7 @@ function standardizationChatIntentLabel(type) {
     explanation: "依据解释",
     parameter_change_request: "参数修改",
     multi_constraint_change_request: "多约束修改",
+    technical_requirement_change_request: "技术要求修改",
     full_standardization_plan: "完整标准化方案",
     accuracy_standardization_request: "按精度标准化",
     generation_package_export_request: "导出生图参数包",
@@ -4327,6 +4591,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     }
     const confirmed = confirmSafeRecognizedFields(plan);
     syncReviewConfirmationControls(root, state.review);
+    syncTechnicalRequirementSummary(root, state.review);
     const bulkButton = root.querySelector('[data-action="confirm-all-review-items"]');
     const remainingPlan = buildSafeConfirmationPlan(state.review);
     if (bulkButton) {
@@ -4422,11 +4687,11 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     updateLatestReviewMessage(reverted ? `已撤销上次应用的 ${reverted.applied_count} 项标准化建议。` : "没有可撤销的标准化应用记录。");
   });
 
-  root.querySelector('[data-action="export-generation-package"]')?.addEventListener("click", () => {
-    activateReviewContext(messageId);
-    const packageData = makeGenerationParameterPackage(state.review);
-    downloadJson(packageData, "compression_spring_generation_parameters.json");
-    updateLatestReviewMessage("已导出当前已确认的生图参数包；待确认或空缺字段未包含。");
+  // “待处理”和“生图参数包”页签都会显示导出按钮，必须分别绑定。
+  root.querySelectorAll('[data-action="export-generation-package"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      void exportCurrentGenerationPackage(messageId);
+    });
   });
 
   root.querySelector('[data-action="create-generation-job"]')?.addEventListener("click", () => {
@@ -4616,100 +4881,184 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     });
   });
 
+  const createRequirementForm = root.querySelector('[data-kind="technical_requirement_create"]');
+  root.querySelector('[data-action="show-technical-requirement-create"]')?.addEventListener("click", () => {
+    if (!createRequirementForm) return;
+    createRequirementForm.hidden = false;
+    createRequirementForm.querySelector('[data-role="new-technical-content"]')?.focus();
+  });
+  createRequirementForm?.querySelector('[data-action="cancel-technical-requirement-create"]')?.addEventListener("click", () => {
+    createRequirementForm.reset();
+    createRequirementForm.hidden = true;
+    const error = createRequirementForm.querySelector('[data-role="technical-requirement-create-error"]');
+    if (error) error.textContent = "";
+  });
+  createRequirementForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    activateReviewContext(messageId);
+    ensureTechnicalRequirementIds(review);
+    const type = normalizeTechnicalRequirementType(createRequirementForm.querySelector('[data-role="new-technical-type"]')?.value);
+    const content = String(createRequirementForm.querySelector('[data-role="new-technical-content"]')?.value || "").trim();
+    const error = createRequirementForm.querySelector('[data-role="technical-requirement-create-error"]');
+    if (!content) {
+      if (error) error.textContent = "请先填写技术要求内容。";
+      return;
+    }
+    const item = {
+      requirement_id: createTechnicalRequirementId(review),
+      type,
+      content,
+      source: ["human_added"],
+      evidence: "人工新增技术要求",
+      confidence: 1,
+      need_human_review: true,
+    };
+    if (isDuplicateTechnicalRequirement(review, item)) {
+      if (error) error.textContent = "已存在相同类型和内容的技术要求。";
+      return;
+    }
+    if (type === "surface") applyManualSurfaceNormalization(item, "人工新增表面处理术语");
+    review.technical_requirements.push(item);
+    state.technicalRequirementUndo = null;
+    markParameterChangeProposalsStale();
+    queueReviewAuditEvent({
+      event_type: "technical_requirement_added",
+      target_field: technicalRequirementField(item, review.technical_requirements.length - 1),
+      before_state: null,
+      after_state: technicalRequirementAuditState(item),
+      metadata: { requirement_id: item.requirement_id, index: review.technical_requirements.length - 1 },
+    });
+    updateLatestReviewMessage("已新增技术要求，确认后才会写入生图参数包。");
+  });
+
+  root.querySelector('[data-action="undo-technical-requirement-delete"]')?.addEventListener("click", () => {
+    activateReviewContext(messageId);
+    const undo = state.technicalRequirementUndo;
+    if (!undo || undo.review !== review) return;
+    if ((review.technical_requirements || []).some((item) => item?.requirement_id === undo.item?.requirement_id)) {
+      state.technicalRequirementUndo = null;
+      updateLatestReviewMessage("该技术要求已经恢复。");
+      return;
+    }
+    const index = Math.min(Math.max(Number(undo.index) || 0, 0), review.technical_requirements.length);
+    review.technical_requirements.splice(index, 0, structuredClone(undo.item));
+    if (undo.confirmation) review.manual_confirmations[undo.confirmationKey] = structuredClone(undo.confirmation);
+    const restored = review.technical_requirements[index];
+    state.technicalRequirementUndo = null;
+    markParameterChangeProposalsStale("技术要求已恢复");
+    queueReviewAuditEvent({
+      event_type: "technical_requirement_restored",
+      target_field: technicalRequirementField(restored, index),
+      before_state: { requirement_id: restored.requirement_id, deleted: true },
+      after_state: technicalRequirementAuditState(restored),
+      metadata: { requirement_id: restored.requirement_id, index },
+    });
+    updateLatestReviewMessage("已撤销删除，技术要求已恢复到原位置。");
+  });
+
   root.querySelectorAll('[data-kind="technical"]').forEach((row) => {
-    const item = review.technical_requirements[Number(row.dataset.index)];
-    const technicalField = `technical_requirements.${Number(row.dataset.index) + 1}`;
-    const confirmationField = `technical_${row.dataset.index}`;
+    const requirementId = String(row.dataset.requirementId || "");
+    const index = review.technical_requirements.findIndex((candidate) => String(candidate?.requirement_id || "") === requirementId);
+    const item = review.technical_requirements[index];
+    if (!item) return;
+    const technicalField = technicalRequirementField(item, index);
+    const confirmationField = technicalRequirementConfirmationKey(item, index);
     const contentInput = row.querySelector('[data-role="content"]');
     let contentBeforeState = null;
     const applyTechnicalDraft = (event) => {
       activateReviewContext(messageId);
-      contentBeforeState ||= { content: item.content || "", need_human_review: Boolean(item.need_human_review) };
-      rememberConfirmedSnapshot(item);
+      contentBeforeState ||= technicalRequirementAuditState(item);
       item.content = event.target.value.trim();
-      if (item.type === "surface") {
-        item.raw_content ||= item.evidence || item.content;
-        item.standard_content = item.content;
-        item.normalization_status = "human_confirmed";
-        item.normalization_source = "human";
-        item.normalization_confidence = 1;
-        item.normalization_reason = "人工修改标准术语";
-      }
-      applyEditedConfirmationState(item, technicalField, {
-        confirmationField,
-        skipParameterReasonableness: true,
-        skipStandardizationInvalidation: true,
-        skipDependentInvalidation: true,
-      });
+      if (item.type === "surface") applyManualSurfaceNormalization(item, "人工修改表面处理术语");
+      markTechnicalRequirementEdited(item, technicalField, confirmationField);
       syncConfirmationControl(row, item, { kind: "technical", field: technicalField, review });
+      syncTechnicalRequirementSummary(root, review);
     };
     contentInput.addEventListener("input", applyTechnicalDraft);
     contentInput.addEventListener("change", (event) => {
       if (!contentBeforeState) applyTechnicalDraft(event);
-      const afterState = { content: item.content || "", need_human_review: Boolean(item.need_human_review) };
+      const afterState = technicalRequirementAuditState(item);
       if (JSON.stringify(contentBeforeState) !== JSON.stringify(afterState)) {
         queueReviewAuditEvent({
           event_type: "technical_requirement_updated",
           target_field: technicalField,
           before_state: contentBeforeState,
           after_state: afterState,
+          metadata: { requirement_id: item.requirement_id, index },
         });
       }
       contentBeforeState = null;
       updateLatestReviewMessage();
     });
-    row.querySelector('[data-role="standard-candidate"]')?.addEventListener("change", (event) => {
-      const value = event.target.value.trim();
-      if (!value) return;
+    row.querySelector('[data-role="type"]')?.addEventListener("change", (event) => {
       activateReviewContext(messageId);
-      const beforeState = { content: item.content || "", need_human_review: Boolean(item.need_human_review) };
-      rememberConfirmedSnapshot(item);
-      item.raw_content ||= item.evidence || item.content;
-      item.content = value;
-      item.standard_content = value;
-      item.normalization_status = "human_confirmed";
-      item.normalization_source = "human";
-      item.normalization_confidence = 1;
-      item.normalization_reason = "人工选择候选标准术语";
-      contentInput.value = value;
-      applyEditedConfirmationState(item, technicalField, {
-        confirmationField,
-        skipParameterReasonableness: true,
-        skipStandardizationInvalidation: true,
-        skipDependentInvalidation: true,
-      });
+      const beforeState = technicalRequirementAuditState(item);
+      const previousType = item.type;
+      item.type = normalizeTechnicalRequirementType(event.target.value);
+      if (item.type === "surface") applyManualSurfaceNormalization(item, "人工将技术要求设为表面处理");
+      else if (previousType === "surface") clearSurfaceNormalization(item);
+      markTechnicalRequirementEdited(item, technicalField, confirmationField);
       queueReviewAuditEvent({
         event_type: "technical_requirement_updated",
         target_field: technicalField,
         before_state: beforeState,
-        after_state: { content: item.content || "", need_human_review: Boolean(item.need_human_review) },
+        after_state: technicalRequirementAuditState(item),
+        metadata: { requirement_id: item.requirement_id, index, changed_field: "type" },
       });
-      syncConfirmationControl(row, item, { kind: "technical", field: technicalField, review });
       updateLatestReviewMessage();
     });
-    row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
+    row.querySelector('[data-role="confirm"]')?.addEventListener("click", () => {
       activateReviewContext(messageId);
       const control = confirmationControlState(item, { kind: "technical", field: technicalField, review });
       if (control.disabled) return;
-      const beforeState = { content: item.content || "", need_human_review: Boolean(item.need_human_review) };
-      const eventType = confirmationItemWasEdited(item) ? "modified_value_confirmed" : "recognized_value_confirmed";
-      if (item.type === "surface" && item.content) {
-        item.standard_content ||= item.content;
-        item.raw_content ||= item.evidence || item.content;
-        item.normalization_status = "human_confirmed";
-        item.normalization_source = "human";
-        item.normalization_confidence = 1;
-        item.normalization_reason = "人工确认当前表面处理术语";
-      }
+      const beforeState = technicalRequirementAuditState(item);
+      if (item.type === "surface") applyManualSurfaceNormalization(item, "人工确认当前表面处理术语");
       confirmParam(item, confirmationField);
+      review.manual_confirmations[confirmationField] = {
+        ...(review.manual_confirmations[confirmationField] || {}),
+        requirement_id: item.requirement_id,
+        target_field: technicalField,
+        type: item.type,
+      };
+      markParameterChangeProposalsStale("技术要求确认状态已变化");
       queueReviewAuditEvent({
-        event_type: eventType,
+        event_type: "technical_requirement_confirmed",
         target_field: technicalField,
         before_state: beforeState,
-        after_state: { content: item.content || "", need_human_review: Boolean(item.need_human_review) },
+        after_state: technicalRequirementAuditState(item),
+        metadata: { requirement_id: item.requirement_id, index },
       });
       syncConfirmationControl(row, item, { kind: "technical", field: technicalField, review });
-      updateLatestReviewMessage();
+      syncTechnicalRequirementSummary(root, review);
+      updateLatestReviewMessage("已确认技术要求，将写入下一版生图参数包。");
+    });
+    row.querySelector('[data-role="delete-technical-requirement"]')?.addEventListener("click", () => {
+      activateReviewContext(messageId);
+      const currentIndex = review.technical_requirements.findIndex((candidate) => String(candidate?.requirement_id || "") === requirementId);
+      if (currentIndex < 0) return;
+      const removed = review.technical_requirements[currentIndex];
+      const confirmationKey = technicalRequirementConfirmationKey(removed, currentIndex);
+      const confirmation = review.manual_confirmations?.[confirmationKey]
+        ? structuredClone(review.manual_confirmations[confirmationKey])
+        : null;
+      review.technical_requirements.splice(currentIndex, 1);
+      delete review.manual_confirmations[confirmationKey];
+      state.technicalRequirementUndo = {
+        review,
+        item: structuredClone(removed),
+        index: currentIndex,
+        confirmationKey,
+        confirmation,
+      };
+      markParameterChangeProposalsStale("技术要求已删除");
+      queueReviewAuditEvent({
+        event_type: "technical_requirement_deleted",
+        target_field: technicalRequirementField(removed, currentIndex),
+        before_state: technicalRequirementAuditState(removed),
+        after_state: { requirement_id: removed.requirement_id, deleted: true },
+        metadata: { requirement_id: removed.requirement_id, index: currentIndex },
+      });
+      updateLatestReviewMessage("已删除技术要求；可使用“撤销删除”恢复一次。");
     });
   });
 }
@@ -5255,18 +5604,23 @@ function undoStandardizationChatApplication(logId) {
   }
   const conflict = standardizationChatRollbackConflict(log);
   if (conflict) {
-    return { ok: false, message: `${targetFieldLabel(conflict)} 已被后续修改，不能覆盖较新的参数。` };
+    const conflictLabel = conflict.startsWith("technical_requirements") ? "技术要求" : targetFieldLabel(conflict);
+    return { ok: false, message: `${conflictLabel}已被后续修改，不能覆盖较新的内容。` };
   }
   const parameters = state.review.spring_parameters ||= {};
   const confirmations = state.review.manual_confirmations ||= {};
   if (log.rollback.full_state) {
     const snapshot = log.rollback.full_state;
     state.review.spring_parameters = structuredClone(snapshot.spring_parameters || {});
+    if ((log.technical_requirement_changes || []).length) {
+      state.review.technical_requirements = structuredClone(snapshot.technical_requirements || []);
+    }
     state.review.manual_confirmations = structuredClone(snapshot.manual_confirmations || {});
     state.review.derived_parameters = structuredClone(snapshot.derived_parameters || {});
     state.review.parameter_reasonableness = structuredClone(snapshot.parameter_reasonableness || {});
     state.review.standard_selection = structuredClone(snapshot.standard_selection || {});
     state.review.standardization_results = structuredClone(snapshot.standardization_results || []);
+    ensureTechnicalRequirementIds(state.review);
     const proposal = (state.review.parameter_change_proposals || []).find((item) => {
       return String(item?.proposal_id || "") === String(log.rollback.proposal_id || "");
     });
@@ -5325,7 +5679,45 @@ function standardizationChatRollbackConflict(log) {
       return target;
     }
   }
+  const technicalChanges = Array.isArray(log.technical_requirement_changes)
+    ? log.technical_requirement_changes
+    : [];
+  if (technicalChanges.length) {
+    const baseline = log.rollback?.full_state?.technical_requirements || [];
+    const expected = technicalRequirementsAfterProposalChanges(baseline, technicalChanges);
+    if (JSON.stringify(technicalRequirementRollbackState(state.review?.technical_requirements || []))
+      !== JSON.stringify(technicalRequirementRollbackState(expected))) {
+      return "technical_requirements";
+    }
+  }
   return "";
+}
+
+function technicalRequirementsAfterProposalChanges(baseline, changes) {
+  const requirements = structuredClone(Array.isArray(baseline) ? baseline : []);
+  changes.forEach((change) => {
+    const requirementId = String(change?.requirement_id || "");
+    const index = requirements.findIndex((item) => String(item?.requirement_id || "") === requirementId);
+    if (change?.operation === "delete") {
+      if (index >= 0) requirements.splice(index, 1);
+      return;
+    }
+    const after = change?.after;
+    if (!after || typeof after !== "object") return;
+    const next = { ...structuredClone(after), requirement_id: requirementId || after.requirement_id };
+    if (index >= 0) requirements[index] = next;
+    else requirements.push(next);
+  });
+  return requirements;
+}
+
+function technicalRequirementRollbackState(requirements) {
+  return (Array.isArray(requirements) ? requirements : []).map((item) => ({
+    requirement_id: String(item?.requirement_id || ""),
+    type: normalizeTechnicalRequirementType(item?.type),
+    content: String(item?.content || "").trim(),
+    need_human_review: item?.need_human_review !== false,
+  }));
 }
 
 function standardizationChatValuesEqual(left, right) {
@@ -5504,9 +5896,12 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
     renderCompareOverlay();
   }
   requestAnimationFrame(() => {
-    const technicalMatch = target.match(/^technical_requirements\.(\d+)$/);
+    const technicalMatch = target.match(/^technical_requirements\.(.+)$/);
     if (technicalMatch) {
-      const technicalIndex = Math.max(Number(technicalMatch[1]) - 1, 0);
+      const token = technicalMatch[1];
+      const technicalIndex = /^\d+$/.test(token)
+        ? Math.max(Number(token) - 1, 0)
+        : (state.review.technical_requirements || []).findIndex((item) => String(item?.requirement_id || "") === token);
       const technicalRow = compareOverlay.querySelector(`[data-kind="technical"][data-index="${technicalIndex}"]`);
       if (technicalRow) {
         technicalRow.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -5697,18 +6092,22 @@ function buildSafeConfirmationPlan(review) {
   });
 
   (review?.technical_requirements || []).forEach((item, index) => {
-    if (!item?.need_human_review) return;
-    const field = `technical_requirements.${index + 1}`;
+    if (item?.need_human_review === false) return;
+    const field = technicalRequirementField(item, index);
     const label = TECH_LABELS[item.type] || item.type || "技术要求";
     if (!String(item.content || "").trim()) {
       skip("technical", field, label, "技术要求内容为空");
+      return;
+    }
+    if (isDuplicateTechnicalRequirement(review, item)) {
+      skip("technical", field, label, "已存在相同类型和内容的技术要求");
       return;
     }
     if (item.type === "surface" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item.normalization_status)) {
       skip("technical", field, label, "表面处理术语尚未明确匹配");
       return;
     }
-    items.push({ kind: "technical", group: "technical", field, index, item, label });
+    items.push({ kind: "technical", group: "technical", field, index, item, label, requirement_id: item.requirement_id || null });
   });
 
   return { items, skipped, group_counts: safeConfirmationGroupCounts(items) };
@@ -5758,7 +6157,16 @@ function confirmSafeRecognizedFields(plan = null) {
   confirmationPlan.items.forEach((item) => {
     if (item.kind === "parameter") confirmParam(item.param, item.field);
     else if (item.kind === "load_point") confirmParam(item.point, `load_points_${item.index}`);
-    else if (item.kind === "technical") confirmParam(item.item, `technical_${item.index}`);
+    else if (item.kind === "technical") {
+      const confirmationKey = technicalRequirementConfirmationKey(item.item, item.index);
+      confirmParam(item.item, confirmationKey);
+      state.review.manual_confirmations[confirmationKey] = {
+        ...(state.review.manual_confirmations[confirmationKey] || {}),
+        requirement_id: item.item.requirement_id || null,
+        target_field: technicalRequirementField(item.item, item.index),
+        type: item.item.type,
+      };
+    }
   });
   return {
     count: confirmationPlan.items.length,
@@ -6521,6 +6929,7 @@ function activateReviewContext(messageId = state.activeReviewMessageId, options 
 function setReview(review, imageUrl, options = {}) {
   if (!options.preserveAccuracyGradeUpdate) resetAccuracyGradeUpdate();
   if (!options.preservePendingAccuracyGrade) resetPendingAccuracyGrade();
+  ensureTechnicalRequirementIds(review);
   applyGenerationDefaults(review);
   state.review = review;
   state.imageUrl = imageUrl;
@@ -6807,38 +7216,240 @@ function openGenerationCompare(generationId) {
           <button type="button" class="active" data-compare-mode="side-by-side">左右对比</button>
           <button type="button" data-compare-mode="original">仅原图</button>
           <button type="button" data-compare-mode="generated">仅生成图</button>
-          <button type="button" data-compare-mode="overlay">透明叠加</button>
         </div>
-        <label>缩放 <input type="range" min="50" max="200" value="100" data-role="generation-zoom"><span data-role="generation-zoom-label">100%</span></label>
-        <label class="generation-opacity-control" hidden>生成图透明度 <input type="range" min="10" max="100" value="55" data-role="generation-opacity"></label>
+        <div class="generation-zoom-controls" role="group" aria-label="图纸缩放">
+          <button type="button" data-role="generation-zoom-out" aria-label="缩小图纸">−</button>
+          <output data-role="generation-zoom-label" aria-live="polite">100%</output>
+          <button type="button" data-role="generation-zoom-in" aria-label="放大图纸">+</button>
+          <button type="button" data-role="generation-reset-view">重置（100%）</button>
+        </div>
+        <span class="generation-compare-hint">滚轮缩放 · 按住左键拖拽平移</span>
       </div>
       <div class="generation-compare-canvas side-by-side" data-role="generation-compare-canvas">
-        <figure class="generation-original"><figcaption>用户原图</figcaption>${originalUrl ? `<div><img src="${escapeHtml(originalUrl)}" alt="用户上传的原始图纸"></div>` : "<p>原图预览不可用</p>"}</figure>
-        <figure class="generation-output"><figcaption>生成二维图（模拟）</figcaption><div><img src="${escapeHtml(generatedUrl)}" alt="模拟 SolidWorks 生成图"></div></figure>
+        <figure class="generation-original">
+          <figcaption>用户原图</figcaption>
+          ${originalUrl
+            ? `<div class="generation-compare-viewport" data-role="generation-compare-viewport"><img src="${escapeHtml(originalUrl)}" alt="用户上传的原始图纸" draggable="false"></div>`
+            : '<p class="generation-compare-empty">原图预览不可用</p>'}
+        </figure>
+        <figure class="generation-output">
+          <figcaption>生成二维图（模拟）</figcaption>
+          <div class="generation-compare-viewport" data-role="generation-compare-viewport"><img src="${escapeHtml(generatedUrl)}" alt="模拟 SolidWorks 生成图" draggable="false"></div>
+        </figure>
       </div>
     </div>
   `;
   document.body.appendChild(dialog);
   const canvas = dialog.querySelector('[data-role="generation-compare-canvas"]');
-  const opacityControl = dialog.querySelector(".generation-opacity-control");
+  const zoomLabel = dialog.querySelector('[data-role="generation-zoom-label"]');
+  const zoomOutButton = dialog.querySelector('[data-role="generation-zoom-out"]');
+  const zoomInButton = dialog.querySelector('[data-role="generation-zoom-in"]');
+  const resetViewButton = dialog.querySelector('[data-role="generation-reset-view"]');
+  const minZoom = 0.25;
+  const maxZoom = 5;
+  const viewPadding = 18;
+  const viewState = {
+    zoom: 1,
+    centerX: 0.5,
+    centerY: 0.5,
+    drag: null,
+  };
+  const panes = [...dialog.querySelectorAll('[data-role="generation-compare-viewport"]')].map((viewport) => ({
+    viewport,
+    image: viewport.querySelector("img"),
+    ready: false,
+    renderState: null,
+  }));
+  let resizeObserver = null;
+  let renderFrame = null;
+
+  const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
+
+  function updateZoomControls() {
+    const percentage = Math.round(viewState.zoom * 100);
+    zoomLabel.textContent = `${percentage}%`;
+    zoomOutButton.disabled = viewState.zoom <= minZoom + 0.001;
+    zoomInButton.disabled = viewState.zoom >= maxZoom - 0.001;
+  }
+
+  function paneTransform(pane) {
+    if (!pane.ready || !pane.image.naturalWidth || !pane.image.naturalHeight) return null;
+    const bounds = pane.viewport.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return null;
+    const availableWidth = Math.max(1, bounds.width - viewPadding * 2);
+    const availableHeight = Math.max(1, bounds.height - viewPadding * 2);
+    const baseScale = Math.min(
+      availableWidth / pane.image.naturalWidth,
+      availableHeight / pane.image.naturalHeight,
+    );
+    const scale = baseScale * viewState.zoom;
+    const scaledWidth = pane.image.naturalWidth * scale;
+    const scaledHeight = pane.image.naturalHeight * scale;
+
+    const position = (viewportSize, imageSize, center) => {
+      if (imageSize <= viewportSize - viewPadding * 2) return (viewportSize - imageSize) / 2;
+      const preferred = viewportSize / 2 - center * imageSize;
+      return clamp(preferred, viewportSize - viewPadding - imageSize, viewPadding);
+    };
+
+    return {
+      bounds,
+      baseScale,
+      scale,
+      scaledWidth,
+      scaledHeight,
+      x: position(bounds.width, scaledWidth, viewState.centerX),
+      y: position(bounds.height, scaledHeight, viewState.centerY),
+    };
+  }
+
+  function renderView() {
+    renderFrame = null;
+    updateZoomControls();
+    panes.forEach((pane) => {
+      const transform = paneTransform(pane);
+      pane.renderState = transform;
+      if (!transform) return;
+      pane.image.style.transform = `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})`;
+      pane.image.style.visibility = "visible";
+    });
+  }
+
+  function scheduleRender() {
+    if (renderFrame !== null) cancelAnimationFrame(renderFrame);
+    renderFrame = requestAnimationFrame(renderView);
+  }
+
+  function resetView() {
+    viewState.zoom = 1;
+    viewState.centerX = 0.5;
+    viewState.centerY = 0.5;
+    scheduleRender();
+  }
+
+  function setZoom(nextZoom, anchor = null) {
+    const previousZoom = viewState.zoom;
+    const zoom = clamp(nextZoom, minZoom, maxZoom);
+    if (Math.abs(zoom - previousZoom) < 0.0001) return;
+
+    const pane = anchor?.pane;
+    const previous = pane?.renderState;
+    if (pane && previous) {
+      const localX = anchor.clientX - previous.bounds.left;
+      const localY = anchor.clientY - previous.bounds.top;
+      const imageX = (localX - previous.x) / previous.scale;
+      const imageY = (localY - previous.y) / previous.scale;
+      const anchorX = imageX >= 0 && imageX <= pane.image.naturalWidth
+        ? imageX / pane.image.naturalWidth
+        : viewState.centerX;
+      const anchorY = imageY >= 0 && imageY <= pane.image.naturalHeight
+        ? imageY / pane.image.naturalHeight
+        : viewState.centerY;
+      const nextScale = previous.baseScale * zoom;
+      viewState.centerX = clamp(
+        anchorX - (localX - previous.bounds.width / 2) / (pane.image.naturalWidth * nextScale),
+        0,
+        1,
+      );
+      viewState.centerY = clamp(
+        anchorY - (localY - previous.bounds.height / 2) / (pane.image.naturalHeight * nextScale),
+        0,
+        1,
+      );
+    }
+
+    viewState.zoom = zoom;
+    scheduleRender();
+  }
+
+  function endDrag(pointerId) {
+    const drag = viewState.drag;
+    if (!drag || (pointerId !== undefined && drag.pointerId !== pointerId)) return;
+    viewState.drag = null;
+    drag.pane.viewport.classList.remove("dragging");
+    if (drag.pane.viewport.hasPointerCapture?.(drag.pointerId)) {
+      drag.pane.viewport.releasePointerCapture(drag.pointerId);
+    }
+  }
+
+  panes.forEach((pane) => {
+    const markReady = () => {
+      pane.ready = Boolean(pane.image.naturalWidth && pane.image.naturalHeight);
+      scheduleRender();
+    };
+    if (pane.image.complete && pane.image.naturalWidth) markReady();
+    else pane.image.addEventListener("load", markReady, { once: true });
+    pane.image.addEventListener("error", () => {
+      pane.ready = false;
+      pane.viewport.classList.add("image-unavailable");
+      pane.viewport.textContent = "图片预览加载失败";
+    }, { once: true });
+
+    pane.viewport.addEventListener("wheel", (event) => {
+      if (!pane.ready || !event.deltaY) return;
+      event.preventDefault();
+      const factor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
+      setZoom(viewState.zoom * factor, {
+        pane,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+    }, { passive: false });
+
+    pane.viewport.addEventListener("pointerdown", (event) => {
+      if (!pane.ready || (event.pointerType === "mouse" && event.button !== 0)) return;
+      event.preventDefault();
+      endDrag();
+      viewState.drag = {
+        pane,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        centerX: viewState.centerX,
+        centerY: viewState.centerY,
+      };
+      pane.viewport.classList.add("dragging");
+      pane.viewport.setPointerCapture?.(event.pointerId);
+    });
+
+    pane.viewport.addEventListener("pointermove", (event) => {
+      const drag = viewState.drag;
+      if (!drag || drag.pointerId !== event.pointerId || drag.pane !== pane || !pane.renderState) return;
+      const deltaX = event.clientX - drag.startX;
+      const deltaY = event.clientY - drag.startY;
+      viewState.centerX = clamp(drag.centerX - deltaX / pane.renderState.scaledWidth, 0, 1);
+      viewState.centerY = clamp(drag.centerY - deltaY / pane.renderState.scaledHeight, 0, 1);
+      scheduleRender();
+    });
+    pane.viewport.addEventListener("pointerup", (event) => endDrag(event.pointerId));
+    pane.viewport.addEventListener("pointercancel", (event) => endDrag(event.pointerId));
+    pane.viewport.addEventListener("lostpointercapture", (event) => endDrag(event.pointerId));
+  });
+
   dialog.querySelector('[data-role="close-generation-compare"]').addEventListener("click", () => dialog.close());
   dialog.querySelectorAll("[data-compare-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       dialog.querySelectorAll("[data-compare-mode]").forEach((item) => item.classList.toggle("active", item === button));
       canvas.className = `generation-compare-canvas ${button.dataset.compareMode}`;
-      opacityControl.hidden = button.dataset.compareMode !== "overlay";
+      requestAnimationFrame(resetView);
     });
   });
-  dialog.querySelector('[data-role="generation-zoom"]').addEventListener("input", (event) => {
-    const scale = Number(event.target.value) / 100;
-    canvas.style.setProperty("--generation-zoom", String(scale));
-    dialog.querySelector('[data-role="generation-zoom-label"]').textContent = `${event.target.value}%`;
-  });
-  dialog.querySelector('[data-role="generation-opacity"]').addEventListener("input", (event) => {
-    canvas.style.setProperty("--generation-opacity", String(Number(event.target.value) / 100));
-  });
-  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  zoomOutButton.addEventListener("click", () => setZoom(viewState.zoom / 1.25));
+  zoomInButton.addEventListener("click", () => setZoom(viewState.zoom * 1.25));
+  resetViewButton.addEventListener("click", resetView);
+
+  if (typeof ResizeObserver !== "undefined") {
+    resizeObserver = new ResizeObserver(scheduleRender);
+    resizeObserver.observe(canvas);
+  }
+  dialog.addEventListener("close", () => {
+    endDrag();
+    resizeObserver?.disconnect();
+    if (renderFrame !== null) cancelAnimationFrame(renderFrame);
+    dialog.remove();
+  }, { once: true });
   dialog.showModal();
+  requestAnimationFrame(resetView);
 }
 
 async function readUploadResponsePayload(response) {
@@ -6916,6 +7527,7 @@ function normalizeReview(review) {
   cloned.review_results ||= [];
   cloned.balloons ||= [];
   cloned.manual_confirmations ||= {};
+  ensureTechnicalRequirementIds(cloned);
   applyGenerationDefaults(cloned);
   return cloned;
 }
@@ -6998,7 +7610,9 @@ function hasHumanReview(review) {
     if (Array.isArray(param)) return param.some((item) => item.need_human_review);
     return param && typeof param === "object" && param.need_human_review;
   });
-  const techNeedsReview = (review.technical_requirements || []).some((item) => item.need_human_review);
+  const techNeedsReview = (review.technical_requirements || []).some((item) => {
+    return String(item?.content || "").trim() && item?.need_human_review !== false;
+  });
   const standardizationNeedsReview = (review.standardization_results || []).some((item) => item.need_human_review);
   const standardSelectionNeedsReview = Boolean(review.standard_selection?.need_human_review);
   return fieldNeedsReview || techNeedsReview || standardizationNeedsReview || standardSelectionNeedsReview;
@@ -7050,7 +7664,11 @@ function confirmationSnapshotFor(item) {
     };
   }
   if (Object.prototype.hasOwnProperty.call(item, "content")) {
-    return { kind: "technical", content: String(item.content || "").trim() };
+    return {
+      kind: "technical",
+      type: normalizeTechnicalRequirementType(item.type),
+      content: String(item.content || "").trim(),
+    };
   }
   return {
     kind: "parameter",
@@ -7248,7 +7866,7 @@ function makeGenerationParameterPackage(review = state.review) {
     };
   });
   const requirements = (review.technical_requirements || [])
-    .filter((item) => item?.content && !item.need_human_review)
+    .filter((item) => item?.content && item.need_human_review === false)
     .map((item) => ({
       type: item.type,
       content: item.content,

@@ -8,6 +8,12 @@ from typing import Any, Callable
 
 from .spring_templates import template_field_keys
 from .standard_knowledge import chunk_reference, retrieve_standard_chunks
+from .technical_requirements import (
+    TECHNICAL_REQUIREMENT_TYPES,
+    ensure_technical_requirement_ids,
+    normalize_technical_requirement_type,
+    technical_requirement_snapshot,
+)
 
 
 DEFAULT_STANDARDIZATION_CHAT_MODEL = "qwen3.7-plus"
@@ -16,7 +22,16 @@ DEFAULT_STANDARDIZATION_CHAT_TIMEOUT_SECONDS = 180.0
 DEFAULT_STANDARDIZATION_CHAT_MAX_RETRIES = 1
 MAX_PROMPT_CHUNK_CONTENT_CHARS = 1000
 MAX_RECENT_CHAT_TURNS = 2
-ALLOWED_CHAT_ACTION_TYPES = {"propose_parameter_patch", "propose_tolerance_patch"}
+TECHNICAL_REQUIREMENT_ACTION_TYPES = {
+    "propose_technical_requirement_add",
+    "propose_technical_requirement_update",
+    "propose_technical_requirement_delete",
+}
+ALLOWED_CHAT_ACTION_TYPES = {
+    "propose_parameter_patch",
+    "propose_tolerance_patch",
+    *TECHNICAL_REQUIREMENT_ACTION_TYPES,
+}
 FULL_PLAN_TARGET_FIELDS = [
     "standard_no",
     "accuracy_grade",
@@ -77,6 +92,7 @@ class StandardizationChatLLMEngine:
         self.completion_fn = completion_fn
 
     def chat(self, review: dict[str, Any], message: str, rule_result: dict[str, Any] | None = None) -> dict[str, Any]:
+        ensure_technical_requirement_ids(review)
         chunks = _retrieve_chunks(review, message, rule_result or {})
         request = {
             "model": self.model,
@@ -166,12 +182,16 @@ STANDARDIZATION_CHAT_SYSTEM_PROMPT = """你是弹簧标准化对话 Agent。你�
 9. 尺寸本体修改使用 propose_parameter_patch；公差/上下偏差建议使用 propose_tolerance_patch。
 10. 对依据不足的字段不要硬算，改为在 reply 中说明缺少条件，并在 suggested_actions 中跳过该字段。
 11. 如果用户明确要求导出、下载生图参数包或SolidWorks参数，intent.type=generation_package_export_request；不要生成参数包内容，不要添加suggested_actions，后端会重新校验并执行下载。
+12. 技术要求新增、修改、删除使用 propose_technical_requirement_add、propose_technical_requirement_update、propose_technical_requirement_delete；不能用参数修改动作代替。
+13. 修改或删除现有技术要求时，requirement_id 必须来自 review.technical_requirements；无法唯一确定目标时 status=need_clarification 并追问，不能猜测。
+14. 新增技术要求填写 requirement_type 和 content；修改填写 requirement_id 以及需要变化的 requirement_type/content；删除只需填写 requirement_id。
+15. requirement_type 只能是 surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process、other。
 
 输出 JSON 结构：
 {
   "reply": "给用户看的中文回复",
   "intent": {
-    "type": "explanation|parameter_change_request|multi_constraint_change_request|full_standardization_plan|generation_package_export_request|confirmation|unknown",
+    "type": "explanation|parameter_change_request|technical_requirement_change_request|multi_constraint_change_request|full_standardization_plan|generation_package_export_request|confirmation|unknown",
     "target_field": "outer_diameter",
     "target_fields": ["outer_diameter"],
     "status": "answered|need_clarification|proposal_ready|manual_apply_required",
@@ -196,6 +216,14 @@ STANDARDIZATION_CHAT_SYSTEM_PROMPT = """你是弹簧标准化对话 Agent。你�
       "unit": "mm",
       "reason": "依据 chunks 或 review.standardization_results 中的自由长度公差条款",
       "affected_fields": ["free_length_tolerance"],
+      "apply_policy": "manual_confirm_required"
+    },
+    {
+      "type": "propose_technical_requirement_update",
+      "requirement_id": "techreq_xxx",
+      "requirement_type": "salt_spray",
+      "content": "盐雾试验96小时。",
+      "reason": "用户要求修改盐雾试验时长",
       "apply_policy": "manual_confirm_required"
     }
   ],
@@ -232,12 +260,13 @@ def normalize_chat_payload(
     duration_ms: int,
 ) -> dict[str, Any]:
     allowed = set(_allowed_target_fields(review))
+    intent_allowed = {*allowed, "technical_requirements"}
     diagnostics: list[dict[str, Any]] = []
     intent = dict(payload.get("intent") or {})
     target_field = str(intent.get("target_field") or "").strip()
-    target_fields = _normalize_target_fields(intent.get("target_fields"), allowed, diagnostics)
+    target_fields = _normalize_target_fields(intent.get("target_fields"), intent_allowed, diagnostics)
     if target_field:
-        if target_field in allowed:
+        if target_field in intent_allowed:
             if target_field not in target_fields:
                 target_fields.insert(0, target_field)
         else:
@@ -268,13 +297,16 @@ def normalize_chat_payload(
         else:
             normalized["metadata"]["action_type_valid"] = True
         normalized["type"] = action_type or "unknown"
-        action_target = str(normalized.get("target_field") or "").strip()
-        if action_target and action_target not in allowed:
-            normalized["metadata"]["target_field_valid"] = False
-            normalized["metadata"]["target_field_error"] = f"target_field {action_target} is not allowed"
-            diagnostics.append({"type": "invalid_action_target", "index": index, "target_field": action_target})
+        if action_type in TECHNICAL_REQUIREMENT_ACTION_TYPES:
+            _normalize_technical_requirement_action(normalized, diagnostics, index)
         else:
-            normalized["metadata"]["target_field_valid"] = bool(action_target)
+            action_target = str(normalized.get("target_field") or "").strip()
+            if action_target and action_target not in allowed:
+                normalized["metadata"]["target_field_valid"] = False
+                normalized["metadata"]["target_field_error"] = f"target_field {action_target} is not allowed"
+                diagnostics.append({"type": "invalid_action_target", "index": index, "target_field": action_target})
+            else:
+                normalized["metadata"]["target_field_valid"] = bool(action_target)
         if "tolerance_upper" in normalized and "suggested_tolerance_upper" not in normalized:
             normalized["suggested_tolerance_upper"] = normalized.get("tolerance_upper")
         if "tolerance_lower" in normalized and "suggested_tolerance_lower" not in normalized:
@@ -315,6 +347,46 @@ def normalize_chat_payload(
             "retrieved_chunk_count": len(chunks),
         },
     }
+
+
+def _normalize_technical_requirement_action(
+    action: dict[str, Any],
+    diagnostics: list[dict[str, Any]],
+    index: int,
+) -> None:
+    metadata = action.setdefault("metadata", {})
+    if action.get("target_requirement_id") and not action.get("requirement_id"):
+        action["requirement_id"] = action.get("target_requirement_id")
+    if action.get("proposed_type") not in (None, "") and action.get("requirement_type") in (None, ""):
+        action["requirement_type"] = action.get("proposed_type")
+    if action.get("technical_requirement_type") not in (None, "") and action.get("requirement_type") in (None, ""):
+        action["requirement_type"] = action.get("technical_requirement_type")
+    if action.get("proposed_content") is not None and action.get("content") is None:
+        action["content"] = action.get("proposed_content")
+
+    requirement_id = str(action.get("requirement_id") or "").strip()
+    if requirement_id:
+        action["requirement_id"] = requirement_id
+    requirement_type = action.get("requirement_type")
+    if requirement_type not in (None, ""):
+        normalized_type = normalize_technical_requirement_type(requirement_type, default=None)
+        action["requirement_type"] = normalized_type or str(requirement_type).strip()
+        if normalized_type is None:
+            metadata["technical_requirement_type_valid"] = False
+            diagnostics.append(
+                {
+                    "type": "invalid_technical_requirement_type",
+                    "index": index,
+                    "requirement_type": requirement_type,
+                    "allowed_types": list(TECHNICAL_REQUIREMENT_TYPES),
+                }
+            )
+        else:
+            metadata["technical_requirement_type_valid"] = True
+    if action.get("content") is not None:
+        action["content"] = str(action.get("content") or "").strip()
+    metadata["target_field_valid"] = True
+    metadata["technical_requirement_action"] = True
 
 
 def _normalize_unchanged_load_value_action(
@@ -436,6 +508,16 @@ def _build_prompt(
 
 
 def _compact_review(review: dict[str, Any]) -> dict[str, Any]:
+    ensure_technical_requirement_ids(review)
+    active_proposal_id = str(review.get("active_parameter_change_proposal_id") or "")
+    active_proposal = next(
+        (
+            item
+            for item in (review.get("parameter_change_proposals") or [])
+            if isinstance(item, dict) and str(item.get("proposal_id") or "") == active_proposal_id
+        ),
+        None,
+    )
     return {
         "drawing_summary": review.get("drawing_summary") or {},
         "spring_features": review.get("spring_features") or {},
@@ -443,6 +525,22 @@ def _compact_review(review: dict[str, Any]) -> dict[str, Any]:
         "spring_parameters": _compact_parameters(review.get("spring_parameters") or {}),
         "derived_parameters": review.get("derived_parameters") or {},
         "parameter_reasonableness": review.get("parameter_reasonableness") or {},
+        "technical_requirements": [
+            {
+                **technical_requirement_snapshot(item),
+                "index": index,
+            }
+            for index, item in enumerate(review.get("technical_requirements") or [], start=1)
+            if isinstance(item, dict)
+        ],
+        "active_change_proposal": {
+            "proposal_id": active_proposal.get("proposal_id"),
+            "version": active_proposal.get("version"),
+            "status": active_proposal.get("status"),
+            "technical_requirement_changes": active_proposal.get("technical_requirement_changes") or [],
+        }
+        if isinstance(active_proposal, dict)
+        else None,
         "standardization_results": [
             {
                 key: item.get(key)

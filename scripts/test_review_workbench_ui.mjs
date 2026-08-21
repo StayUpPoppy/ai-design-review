@@ -6,6 +6,16 @@ const appSource = fs.readFileSync(new URL("../frontend/app.js", import.meta.url)
 assert.match(appSource, /"end_type",\s*\n\s*"end_grinding"/);
 assert.match(appSource, /COMPRESSION_END_GRINDING_OPTIONS = \["两端磨削", "两端不磨削"\]/);
 assert.match(appSource, /COMPRESSION_END_TYPE_OPTIONS = \["两端并紧", "两端不并紧"\]/);
+assert.equal(
+  (appSource.match(/<button[^>]+data-action="export-generation-package"/g) || []).length,
+  2,
+  "工作台和生图参数包页应各有一个导出按钮",
+);
+assert.match(
+  appSource,
+  /querySelectorAll\('\[data-action="export-generation-package"\]'\)\.forEach/,
+  "两个导出参数包按钮都必须绑定点击事件",
+);
 const start = appSource.indexOf("function safeConfirmableReviewItems");
 const end = appSource.indexOf("function renderCompareDataPanelHtml", start);
 const confirmationStart = appSource.indexOf("function confirmParam");

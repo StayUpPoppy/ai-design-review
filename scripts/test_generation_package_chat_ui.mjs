@@ -20,6 +20,8 @@ const state = {
   review,
   lastJob: { job_id: "review-1", review_revision: 5 },
   activeReviewMessageId: "message-1",
+  pendingReviewAuditEvents: [],
+  reviewPersistenceSaving: false,
 };
 const context = {
   console,
@@ -46,6 +48,7 @@ const context = {
   getReviewContext: () => ({ review: state.review }),
   refreshReviewSurfaces: () => { refreshCount += 1; },
   activateReviewContext: () => state.review,
+  flushReviewPersistence: async () => true,
   apiFetch: async () => ({
     ok: true,
     json: async () => ({

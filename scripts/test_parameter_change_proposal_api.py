@@ -93,6 +93,27 @@ def main() -> None:
                 assert discard.status_code == 200, discard.text
                 assert discard.json()["change_proposal"]["status"] == "discarded"
                 assert discard.json()["review"]["spring_parameters"]["free_length"]["value"] == 70
+
+                technical_chat = client.post(
+                    "/api/reviews/proposal-review/standardization-chat",
+                    json={"message": "新增一条技术要求：表面镀锌。", "use_llm": False, "expected_revision": 5},
+                )
+                assert technical_chat.status_code == 200, technical_chat.text
+                technical_proposal = technical_chat.json()["change_proposal"]
+                assert technical_proposal["technical_requirement_changes"][0]["operation"] == "add"
+                assert technical_chat.json()["review_revision"] == 6
+
+                technical_apply = client.post(
+                    f"/api/reviews/proposal-review/parameter-change-proposals/{technical_proposal['proposal_id']}/apply",
+                    json={"version": technical_proposal["version"], "expected_review_revision": 6},
+                )
+                assert technical_apply.status_code == 200, technical_apply.text
+                technical_payload = technical_apply.json()
+                assert technical_payload["review_revision"] == 7
+                requirement = technical_payload["review"]["technical_requirements"][0]
+                assert requirement["content"] == "表面镀锌"
+                assert requirement["need_human_review"] is False
+                assert requirement["requirement_id"].startswith("techreq_")
         finally:
             api.REVIEW_PERSISTENCE = original_repository
             api.API_RUN_ROOT = original_root

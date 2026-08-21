@@ -70,6 +70,21 @@ const context = {
     param.need_human_review = false;
     context.state.review.manual_confirmations[field] = { confirmed: true, value: param.value ?? param.content ?? null };
   },
+  technicalRequirementConfirmationKey(item, index = -1) {
+    const requirementId = String(item?.requirement_id || "").trim();
+    return requirementId ? `technical_requirement_${requirementId}` : `technical_${Math.max(index, 0)}`;
+  },
+  technicalRequirementField(item, index = -1) {
+    const requirementId = String(item?.requirement_id || "").trim();
+    return `technical_requirements.${requirementId || Math.max(index + 1, 1)}`;
+  },
+  isDuplicateTechnicalRequirement(review, target) {
+    const type = String(target?.type || "other");
+    const content = String(target?.content || "").trim().replace(/\s+/g, " ").toLowerCase();
+    return (review?.technical_requirements || []).some((item) => item !== target
+      && String(item?.type || "other") === type
+      && String(item?.content || "").trim().replace(/\s+/g, " ").toLowerCase() === content);
+  },
 };
 vm.createContext(context);
 vm.runInContext(appSource.slice(helperStart, helperEnd), context);

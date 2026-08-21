@@ -6,15 +6,20 @@ from typing import Any
 from .generation_contract import (
     COMPRESSION_GENERATION_INPUT_FIELDS,
     COMPRESSION_GENERATION_LABELS,
-    export_generation_parameters,
     generation_source_item,
 )
-from .generation_readiness import assess_generation_readiness
+from .generation_readiness import assess_generation_readiness, build_generation_parameter_package
 from .spring_templates import FIELD_LABELS
 from .standardizers.compression import calculate_compression_solid_height, derive_compression_parameters
 
 
-APPLICABLE_ACTION_TYPES = {"propose_parameter_patch", "propose_tolerance_patch"}
+PARAMETER_ACTION_TYPES = {"propose_parameter_patch", "propose_tolerance_patch"}
+TECHNICAL_REQUIREMENT_ACTION_TYPES = {
+    "propose_technical_requirement_add",
+    "propose_technical_requirement_update",
+    "propose_technical_requirement_delete",
+}
+APPLICABLE_ACTION_TYPES = PARAMETER_ACTION_TYPES | TECHNICAL_REQUIREMENT_ACTION_TYPES
 
 
 def assess_parameter_change_impact(review: dict[str, Any], actions: list[dict[str, Any]]) -> dict[str, Any]:
@@ -26,8 +31,7 @@ def assess_parameter_change_impact(review: dict[str, Any], actions: list[dict[st
         for action in actions
         if isinstance(action, dict)
         and action.get("type") in APPLICABLE_ACTION_TYPES
-        and action.get("target_field")
-        and _has_action_value(action)
+        and _is_applicable_action(action)
     ]
     if not applicable:
         return _empty_impact(
@@ -54,7 +58,12 @@ def assess_parameter_change_impact(review: dict[str, Any], actions: list[dict[st
     # Applying a parameter through the UI invalidates the old standardization
     # context until the automatic recalculation finishes. Model that immediate
     # workflow state so readiness warnings match what the user will see.
-    _mark_standardization_stale(after_review)
+    parameter_changes_applied = any(
+        action.get("type") in PARAMETER_ACTION_TYPES
+        for action in applicable
+    )
+    if parameter_changes_applied:
+        _mark_standardization_stale(after_review)
 
     before_readiness = assess_generation_readiness(before_review)
     after_readiness = assess_generation_readiness(after_review)
@@ -70,9 +79,19 @@ def assess_parameter_change_impact(review: dict[str, Any], actions: list[dict[st
     resolved = [item for key, item in before_issue_map.items() if key not in after_issue_map]
     unchanged_count = sum(1 for key in after_issue_map if key in before_issue_map)
 
-    before_package = export_generation_parameters(before_review.get("spring_parameters") or {})
-    after_package = export_generation_parameters(after_review.get("spring_parameters") or {})
+    before_generation_parameters = (
+        build_generation_parameter_package(before_review).get("generation_parameters") or {}
+    )
+    after_generation_parameters = (
+        build_generation_parameter_package(after_review).get("generation_parameters") or {}
+    )
+    before_package = before_generation_parameters.get("spring_parameters") or {}
+    after_package = after_generation_parameters.get("spring_parameters") or {}
     package_changed = before_package != after_package
+    before_requirements = before_generation_parameters.get("technical_requirements") or []
+    after_requirements = after_generation_parameters.get("technical_requirements") or []
+    technical_requirements_changed = before_requirements != after_requirements
+    package_changed = package_changed or technical_requirements_changed
     frozen_changes = [
         field
         for field in COMPRESSION_GENERATION_INPUT_FIELDS
@@ -100,9 +119,10 @@ def assess_parameter_change_impact(review: dict[str, Any], actions: list[dict[st
             "after_summary": after_readiness.get("summary"),
             "parameter_package_changed": package_changed,
             "changed_frozen_fields": frozen_changes,
+            "technical_requirements_changed": technical_requirements_changed,
         },
         "workflow_effects": {
-            "standardization_recalculation_required": True,
+            "standardization_recalculation_required": parameter_changes_applied,
             "new_generation_required": package_changed,
         },
         "baseline_state": baseline_state,
@@ -124,6 +144,9 @@ def build_impact_baseline_state(review: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_action(review: dict[str, Any], action: dict[str, Any]) -> dict[str, Any] | None:
+    if action.get("type") in TECHNICAL_REQUIREMENT_ACTION_TYPES:
+        return _apply_technical_requirement_action(review, action)
+
     parameters = review.setdefault("spring_parameters", {})
     target = str(action.get("target_field") or "")
     load_target = _load_target(target)
@@ -173,6 +196,115 @@ def _apply_action(review: dict[str, Any], action: dict[str, Any]) -> dict[str, A
         item["unit"] = unit
     parameters[target] = item
     return _direct_change(action, target, before, after, unit)
+
+
+def _apply_technical_requirement_action(
+    review: dict[str, Any],
+    action: dict[str, Any],
+) -> dict[str, Any] | None:
+    requirements = review.setdefault("technical_requirements", [])
+    if not isinstance(requirements, list):
+        requirements = []
+        review["technical_requirements"] = requirements
+
+    action_type = str(action.get("type") or "")
+    requirement_id = str(
+        action.get("requirement_id")
+        or action.get("target_requirement_id")
+        or ""
+    ).strip()
+    requirement_type = str(
+        action.get("requirement_type")
+        or action.get("proposed_type")
+        or action.get("technical_requirement_type")
+        or "other"
+    ).strip() or "other"
+    content = str(
+        action.get("content")
+        or action.get("proposed_content")
+        or ""
+    ).strip()
+
+    if action_type == "propose_technical_requirement_add":
+        if not content:
+            return None
+        if any(
+            isinstance(item, dict)
+            and str(item.get("type") or "other") == requirement_type
+            and str(item.get("content") or "").strip() == content
+            for item in requirements
+        ):
+            return None
+        requirement_id = requirement_id or f"techreq_preview_add_{len(requirements) + 1}"
+        after = {
+            "requirement_id": requirement_id,
+            "type": requirement_type,
+            "content": content,
+            "need_human_review": False,
+            "confirmation_source": "human_confirmed",
+        }
+        requirements.append(after)
+        return _technical_requirement_direct_change("add", requirement_id, None, after)
+
+    target_index = next(
+        (
+            index
+            for index, item in enumerate(requirements)
+            if isinstance(item, dict)
+            and str(item.get("requirement_id") or "").strip() == requirement_id
+        ),
+        None,
+    )
+    if target_index is None:
+        return None
+    current = requirements[target_index]
+    before = deepcopy(current)
+
+    if action_type == "propose_technical_requirement_delete":
+        requirements.pop(target_index)
+        return _technical_requirement_direct_change("delete", requirement_id, before, None)
+
+    if not content and not any(
+        key in action for key in ("requirement_type", "proposed_type", "technical_requirement_type")
+    ):
+        return None
+    updated = deepcopy(current)
+    if content:
+        updated["content"] = content
+    if any(key in action for key in ("requirement_type", "proposed_type", "technical_requirement_type")):
+        updated["type"] = requirement_type
+    updated["need_human_review"] = False
+    updated["confirmation_source"] = "human_confirmed"
+    requirements[target_index] = updated
+    return _technical_requirement_direct_change("update", requirement_id, before, updated)
+
+
+def _technical_requirement_direct_change(
+    operation: str,
+    requirement_id: str,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "field": f"technical_requirements.{requirement_id}",
+        "label": "技术要求",
+        "change_type": f"technical_requirement_{operation}",
+        "operation": operation,
+        "requirement_id": requirement_id,
+        "before": _public_requirement_change_value(before),
+        "after": _public_requirement_change_value(after),
+        "unit": None,
+        "confirmation_after": "human_confirmed" if after is not None else None,
+    }
+
+
+def _public_requirement_change_value(item: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    return {
+        "type": str(item.get("type") or "other"),
+        "content": str(item.get("content") or "").strip(),
+    }
 
 
 def _direct_change(
@@ -330,6 +462,7 @@ def _empty_impact(status: str, summary: str, baseline_state: dict[str, Any]) -> 
             "after_status": None,
             "parameter_package_changed": False,
             "changed_frozen_fields": [],
+            "technical_requirements_changed": False,
         },
         "workflow_effects": {
             "standardization_recalculation_required": False,
@@ -346,6 +479,22 @@ def _has_action_value(action: dict[str, Any]) -> bool:
             for key in ("suggested_tolerance_upper", "suggested_tolerance_lower", "tolerance_upper", "tolerance_lower")
         )
     return action.get("proposed_value") not in (None, "")
+
+
+def _is_applicable_action(action: dict[str, Any]) -> bool:
+    action_type = action.get("type")
+    if action_type in PARAMETER_ACTION_TYPES:
+        return bool(action.get("target_field")) and _has_action_value(action)
+    if action_type == "propose_technical_requirement_add":
+        return bool(str(action.get("content") or action.get("proposed_content") or "").strip())
+    if action_type == "propose_technical_requirement_update":
+        has_update = bool(str(action.get("content") or action.get("proposed_content") or "").strip()) or any(
+            key in action for key in ("requirement_type", "proposed_type", "technical_requirement_type")
+        )
+        return bool(action.get("requirement_id") or action.get("target_requirement_id")) and has_update
+    if action_type == "propose_technical_requirement_delete":
+        return bool(action.get("requirement_id") or action.get("target_requirement_id"))
+    return False
 
 
 def _action_tolerance(action: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:

@@ -86,6 +86,7 @@ from .standardization_chat_agent import (
 )
 from .standardization_chat_llm import standardization_chat_llm_runtime_status
 from .spring_feasibility import assess_parameter_reasonableness
+from .technical_requirements import ensure_technical_requirement_ids
 from .workflow import DrawingReviewWorkflow, apply_standardization_to_review
 
 
@@ -1575,11 +1576,12 @@ def apply_review_parameter_change_proposal(
             {
                 "event_type": "parameter_change_proposal_applied",
                 "source": "ai_chat",
-                "reason": "用户整体应用AI参数修改方案",
+                "reason": "用户整体应用AI审图修改方案",
                 "metadata": {
                     "proposal_id": proposal_id,
                     "proposal_version": version,
                     "changed_fields": [item.get("target_field") for item in result.get("patches") or []],
+                    "technical_requirement_changes": result.get("technical_requirement_changes") or [],
                 },
             }
         ],
@@ -1841,6 +1843,7 @@ def _create_review_persistence(
     identity: IdentityContext,
 ) -> dict[str, Any]:
     apply_generation_defaults(review)
+    ensure_technical_requirement_ids(review)
     try:
         return REVIEW_PERSISTENCE.create_review(
             job_id,
@@ -1868,11 +1871,13 @@ def _load_persisted_review(
             raise HTTPException(status_code=404, detail="Review not found.")
         review = stored["review"]
         apply_generation_defaults(review)
+        ensure_technical_requirement_ids(review)
         return review, stored["revision"]
     if not _local_job_owned(review_path.parent, identity.user_id) or not review_path.exists():
         raise HTTPException(status_code=404, detail="Review not found.")
     review = read_json(review_path)
     apply_generation_defaults(review)
+    ensure_technical_requirement_ids(review)
     return review, None
 
 
@@ -1890,6 +1895,7 @@ def _save_review_persistence(
     identity: IdentityContext,
 ) -> dict[str, Any]:
     apply_generation_defaults(review)
+    ensure_technical_requirement_ids(review)
     revision = _expected_review_revision(expected_revision)
     audit_events = []
     for raw_event in events or []:

@@ -16,6 +16,7 @@ from .generation_contract import (
 )
 from .spring_templates import FIELD_LABELS
 from .spring_feasibility import assess_parameter_reasonableness
+from .technical_requirements import canonical_technical_requirement_key
 
 
 def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
@@ -100,7 +101,7 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
     technical_requirements = [
         _generation_requirement(item)
         for item in review.get("technical_requirements") or []
-        if isinstance(item, dict) and str(item.get("content") or "").strip() and not item.get("need_human_review")
+        if _technical_requirement_is_confirmed(item)
     ]
     selection = review.get("standard_selection") or {}
     summary = review.get("drawing_summary") or {}
@@ -158,17 +159,49 @@ def _append_standardization_warnings(
 
 
 def _append_technical_requirement_state(review: dict[str, Any], pending: list[dict[str, Any]]) -> None:
+    seen: set[tuple[str, str]] = set()
     for index, item in enumerate(review.get("technical_requirements") or [], start=1):
-        if not isinstance(item, dict) or not str(item.get("content") or "").strip() or not item.get("need_human_review"):
+        if not isinstance(item, dict):
             continue
+        content = str(item.get("content") or "").strip()
         requirement_type = str(item.get("type") or "other")
-        pending.append(
-            _field_issue(
-                f"technical_requirements.{index}",
-                f"技术要求“{_technical_label(requirement_type)}”尚未人工确认。",
-                label=_technical_label(requirement_type),
-            )
+        canonical = canonical_technical_requirement_key(requirement_type, content)
+        duplicate = bool(content) and canonical in seen
+        if content:
+            seen.add(canonical)
+        if content and _technical_requirement_is_confirmed(item) and not duplicate:
+            continue
+        if duplicate:
+            reason = f"技术要求“{_technical_label(requirement_type)}”与已有内容重复，请修改或删除重复项。"
+        elif content:
+            reason = f"技术要求“{_technical_label(requirement_type)}”尚未人工确认。"
+        else:
+            reason = f"技术要求“{_technical_label(requirement_type)}”内容为空，请补充内容或删除该项。"
+        issue = _field_issue(
+            f"technical_requirements.{index}",
+            reason,
+            label=_technical_label(requirement_type),
         )
+        requirement_id = str(item.get("requirement_id") or "").strip()
+        if requirement_id:
+            issue["requirement_id"] = requirement_id
+        pending.append(issue)
+
+
+def _technical_requirement_is_confirmed(item: Any) -> bool:
+    """Only an explicit review decision releases a note to SolidWorks.
+
+    Treating a missing ``need_human_review`` flag as confirmed used to make
+    legacy or partially constructed notes leak into the generation package.
+    New and migrated review data must explicitly store ``False`` after the
+    reviewer confirms the note.
+    """
+
+    return (
+        isinstance(item, dict)
+        and bool(str(item.get("content") or "").strip())
+        and item.get("need_human_review") is False
+    )
 
 
 def _parameter_state(parameters: dict[str, Any], field: str) -> str:

@@ -334,3 +334,5 @@ docker compose --profile mock-solidworks stop
 docker compose --profile mock-solidworks start
 
 docker compose --profile mock-solidworks up -d
+
+docker compose --profile mock-solidworks stop mock-solidworks

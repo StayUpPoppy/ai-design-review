@@ -223,11 +223,20 @@ def _drawing_image(
     values: dict[str, Any],
     technical_requirements: list[Any],
 ) -> Image.Image:
-    width, height = 1600, 1000
-    image = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(image)
+    width = 1600
     title_font = _load_font(25)
     body_font = _load_font(20)
+    requirement_lines = _technical_requirement_lines(
+        technical_requirements,
+        body_font,
+        max_width=width - 160,
+    )
+    requirement_y = 810
+    requirement_line_height = 34
+    parameter_hash_y = max(900, requirement_y + len(requirement_lines) * requirement_line_height + 30)
+    height = max(1000, parameter_hash_y + 100)
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
     draw.rectangle((35, 35, width - 35, height - 35), outline="#1f2937", width=4)
     draw.text((70, 65), "MOCK SOLIDWORKS DRAWING - NOT FOR PRODUCTION", fill="#b91c1c", font=title_font)
     draw.text((70, 105), f"Generation: {job.get('generation_id')}", fill="#111827", font=body_font)
@@ -268,15 +277,77 @@ def _drawing_image(
         draw.text((table_x, y), f"{field}: {values[field]}", fill="#111827", font=body_font)
         y += 42
     draw.text((70, 770), "Technical requirements / 技术要求", fill="#111827", font=body_font)
-    requirement_y = 810
-    for index, item in enumerate(technical_requirements[:3], start=1):
-        if not isinstance(item, dict) or not str(item.get("content") or "").strip():
-            continue
-        content = str(item["content"]).strip().replace("\n", " ")[:100]
-        draw.text((70, requirement_y), f"{index}. {content}", fill="#111827", font=body_font)
+    for line in requirement_lines:
+        draw.text((70, requirement_y), line, fill="#111827", font=body_font)
         requirement_y += 34
-    draw.text((70, 900), f"Parameter hash: {job.get('parameter_hash')}", fill="#4b5563", font=body_font)
+    draw.text((70, parameter_hash_y), f"Parameter hash: {job.get('parameter_hash')}", fill="#4b5563", font=body_font)
     return image
+
+
+def _technical_requirement_lines(
+    technical_requirements: list[Any],
+    font: ImageFont.ImageFont,
+    *,
+    max_width: int,
+) -> list[str]:
+    """Wrap every supplied note without truncating its content.
+
+    SolidWorks owns the final production title-block layout.  The mock output
+    deliberately grows vertically so local integration tests can prove that
+    the complete ordered protocol array reached the drawing stage.
+    """
+
+    measure = ImageDraw.Draw(Image.new("RGB", (1, 1), "white"))
+    lines: list[str] = []
+    display_index = 0
+    for item in technical_requirements:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        display_index += 1
+        paragraphs = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        first_prefix = f"{display_index}. "
+        continuation_prefix = " " * len(first_prefix)
+        for paragraph_index, paragraph in enumerate(paragraphs):
+            prefix = first_prefix if paragraph_index == 0 else continuation_prefix
+            lines.extend(
+                _wrap_text_line(
+                    measure,
+                    paragraph,
+                    font,
+                    max_width=max_width,
+                    first_prefix=prefix,
+                    continuation_prefix=continuation_prefix,
+                )
+            )
+    return lines
+
+
+def _wrap_text_line(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    *,
+    max_width: int,
+    first_prefix: str,
+    continuation_prefix: str,
+) -> list[str]:
+    if not text:
+        return [first_prefix.rstrip()]
+
+    wrapped: list[str] = []
+    current = first_prefix
+    for character in text:
+        candidate = current + character
+        if current != first_prefix and draw.textlength(candidate, font=font) > max_width:
+            wrapped.append(current.rstrip())
+            current = continuation_prefix + character
+        else:
+            current = candidate
+    wrapped.append(current.rstrip())
+    return wrapped
 
 
 def _load_font(size: int) -> ImageFont.ImageFont:
