@@ -76,10 +76,36 @@ class GenerationTechnicalRequirementV1(BaseModel):
     confirmation_source: Literal["human_confirmed"] = Field(description="技术要求已经人工确认的固定标记。")
 
 
+class GenerationLoadHeightV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: float = Field(gt=0, description="指定载荷测试时的弹簧高度，必须大于 0。", examples=[25.0])
+    unit: Literal["mm"] = Field(description="固定单位 mm。")
+
+
+class GenerationLoadForceV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: float = Field(ge=0, description="指定测试高度下的载荷，不能为负值。", examples=[100.0])
+    unit: Literal["N"] = Field(description="固定单位 N。")
+    tolerance_upper: float | None = Field(default=None, description="可选载荷上偏差，单位 N。")
+    tolerance_lower: float | None = Field(default=None, description="可选载荷下偏差，单位 N。")
+
+
+class GenerationLoadPointV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(min_length=1, description="用户确认的唯一载荷测试点编号，例如 F1。", examples=["F1"])
+    height: GenerationLoadHeightV1 = Field(description="测试高度。")
+    force: GenerationLoadForceV1 = Field(description="测试力值及可选公差。")
+    confirmation_source: Literal["human_confirmed"] = Field(description="整组测试点已经人工确认。")
+
+
 class GenerationParametersV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     spring_parameters: CompressionSpringGenerationInputsV1 = Field(description="SolidWorks 必须解析的八个冻结建模字段。")
+    load_points: list[GenerationLoadPointV1] = Field(default_factory=list, description="可选的已确认载荷测试点，用于二维图标注与校核；不属于八个建模字段。")
     technical_requirements: list[GenerationTechnicalRequirementV1] = Field(default_factory=list, description="写入二维图固定区域的中文技术要求。")
 
 
@@ -125,6 +151,7 @@ class GenerationParameterPackageV1(BaseModel):
                     "end_grinding": {"label": "两端磨削", "value": 1, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "end_coils_closed": {"label": "端圈压并", "value": 1, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                 },
+                "load_points": [{"label": "F1", "height": {"value": 25.0, "unit": "mm"}, "force": {"value": 100.0, "unit": "N", "tolerance_upper": 6.0, "tolerance_lower": -6.0}, "confirmation_source": "human_confirmed"}],
                 "technical_requirements": [{"type": "other", "content": "两端磨平，表面镀锌。", "confirmation_source": "human_confirmed"}],
             },
             "derived_parameters": {},

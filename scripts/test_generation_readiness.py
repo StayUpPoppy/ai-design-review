@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai_design_review.generation_contract import COMPRESSION_GENERATION_INPUT_FIELDS
 from ai_design_review.generation_readiness import assess_generation_readiness, build_generation_parameter_package
+from ai_design_review.generation_schemas import GenerationParameterPackageV1
 from ai_design_review.standardization_chat_agent import chat_about_standardization
 
 
@@ -19,6 +20,7 @@ def main() -> None:
     _assert_pending_field_is_omitted_but_package_exports()
     _assert_technical_requirements_require_explicit_confirmation()
     _assert_duplicate_technical_requirements_block_release()
+    _assert_load_points_require_explicit_confirmation_and_export_cleanly()
     _assert_contract_validation()
     _assert_optional_standardization_is_warning()
     _assert_warning_blocked_and_not_applicable_states()
@@ -37,6 +39,7 @@ def _assert_ready_review_builds_frozen_package() -> None:
     assert readiness["confirmed_core_count"] == 8
     assert readiness["core_field_count"] == 8
     package = build_generation_parameter_package(review)
+    GenerationParameterPackageV1.model_validate(package)
     assert package["schema_version"] == "spring_generation_parameters/v1"
     assert package["package_type"] == "confirmed_compression_spring_generation_input"
     spring_parameters = package["generation_parameters"]["spring_parameters"]
@@ -50,7 +53,14 @@ def _assert_ready_review_builds_frozen_package() -> None:
     assert spring_parameters["end_coils_closed"]["value"] == 1
     for excluded in ("material", "outer_diameter", "inner_diameter", "solid_height", "spring_rate", "end_type"):
         assert excluded not in spring_parameters
-    assert "load_points" not in package["generation_parameters"]
+    assert package["generation_parameters"]["load_points"] == [
+        {
+            "label": "F1",
+            "height": {"value": 25.0, "unit": "mm"},
+            "force": {"value": 100.0, "unit": "N", "tolerance_upper": None, "tolerance_lower": None},
+            "confirmation_source": "human_confirmed",
+        }
+    ]
     assert "torque_points" not in package["generation_parameters"]
     assert package["generation_parameters"]["technical_requirements"][0]["content"] == "镀锌"
     assert package["derived_parameters"]["mean_diameter"]["value"] == 18
@@ -226,6 +236,33 @@ def _assert_duplicate_technical_requirements_block_release() -> None:
         if item.get("requirement_id") == "techreq_duplicate"
     )
     assert "重复" in duplicate["reason"]
+
+
+def _assert_load_points_require_explicit_confirmation_and_export_cleanly() -> None:
+    review = _ready_review()
+    review["spring_parameters"]["load_points"] = [
+        {"label": "F1", "height": 25, "force": 100, "need_human_review": False},
+        {"label": " F2 ", "height": 30, "force": 150, "load_tolerance_upper": 6, "load_tolerance_lower": -6, "need_human_review": True},
+        {"label": "f1", "height": 35, "force": 200, "need_human_review": False},
+        {"label": "F4", "height": None, "force": 250, "need_human_review": False},
+    ]
+    readiness = assess_generation_readiness(review)
+    assert readiness["status"] == "needs_confirmation", readiness
+    pending = [item for item in readiness["pending_fields"] if item["field"].startswith("load_points.")]
+    assert len(pending) == 3
+    assert any("重复" in item["reason"] for item in pending)
+    assert any("完整且有效" in item["reason"] for item in pending)
+    assert any("尚未人工确认" in item["reason"] for item in pending)
+
+    exported = build_generation_parameter_package(review)["generation_parameters"]["load_points"]
+    assert exported == [
+        {
+            "label": "F1",
+            "height": {"value": 25.0, "unit": "mm"},
+            "force": {"value": 100.0, "unit": "N", "tolerance_upper": None, "tolerance_lower": None},
+            "confirmation_source": "human_confirmed",
+        },
+    ]
 
 
 def _assert_contract_validation() -> None:

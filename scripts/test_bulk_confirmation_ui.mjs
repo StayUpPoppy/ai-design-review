@@ -15,6 +15,27 @@ const context = {
   ],
   TECH_LABELS: { surface: "表面处理", other: "其他要求" },
   state: { review: null },
+  ensureLoadPointIds(review) {
+    review.spring_parameters ||= {};
+    review.spring_parameters.load_points ||= [];
+    review.spring_parameters.load_points.forEach((item, index) => {
+      item.load_point_id ||= `loadpt-test-${index + 1}`;
+      item.label = String(item.label || "").trim();
+    });
+    return review;
+  },
+  normalizeLoadPointLabel(value) { return String(value || "").trim().replace(/\s+/g, " "); },
+  loadPointField(point, index = -1) { return `load_points.${String(point?.label || index + 1).trim() || index + 1}`; },
+  loadPointConfirmationKey(point, index = -1) { return `load_point_${point?.load_point_id || index}`; },
+  isValidLoadPoint(point) {
+    return point?.height != null && point.height !== "" && point?.force != null && point.force !== ""
+      && Boolean(String(point?.label || "").trim()) && Number(point?.height) > 0 && Number.isFinite(Number(point?.force)) && Number(point?.force) >= 0;
+  },
+  isDuplicateLoadPointLabel(review, label, excludedId = "") {
+    const canonical = String(label || "").trim().toLowerCase();
+    return (review.spring_parameters?.load_points || []).some((item) => String(item?.load_point_id || "") !== String(excludedId)
+      && String(item?.label || "").trim().toLowerCase() === canonical);
+  },
   getParameterFields(parameters) {
     return Object.keys(parameters).filter((field) => field !== "load_points");
   },

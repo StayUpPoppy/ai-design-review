@@ -55,6 +55,7 @@ const state = {
   identityReady: false,
   identityError: "",
   technicalRequirementUndo: null,
+  loadPointUndo: null,
 };
 
 window.addEventListener("beforeunload", (event) => {
@@ -1003,17 +1004,6 @@ function parameterAuditState(param) {
   };
 }
 
-function loadPointAuditState(point) {
-  return {
-    height: point?.height ?? null,
-    force: point?.force ?? null,
-    load_tolerance_upper: point?.load_tolerance_upper ?? null,
-    load_tolerance_lower: point?.load_tolerance_lower ?? null,
-    load_tolerance_percent: point?.load_tolerance_percent ?? null,
-    need_human_review: Boolean(point?.need_human_review),
-  };
-}
-
 function queueReviewAuditEvent(event) {
   if (!state.review || !event) return null;
   state.generationReadiness = null;
@@ -1250,8 +1240,11 @@ function syncParameterReasonablenessSurfaces(messageId = state.activeReviewMessa
     if (param) syncConfirmationControl(row, param, { kind: "parameter", field: row.dataset.field, review: state.review });
   });
   document.querySelectorAll('[data-kind="load_point"]').forEach((row) => {
-    const point = state.review.spring_parameters?.load_points?.[Number(row.dataset.index)];
-    const field = `load_points.${point?.label || `F${Number(row.dataset.index) + 1}`}`;
+    const points = state.review.spring_parameters?.load_points || [];
+    const point = points.find((item) => String(item?.load_point_id || "") === String(row.dataset.loadPointId || ""))
+      || points[Number(row.dataset.index)];
+    const pointIndex = points.indexOf(point);
+    const field = loadPointField(point, pointIndex);
     const severity = reasonablenessSeverityForField(state.review, field);
     ["blocked", "warning", "needs_input"].forEach((value) => row.classList.toggle(`parameter-risk-${value}`, severity === value));
     if (point) syncConfirmationControl(row, point, { kind: "load_point", field, review: state.review });
@@ -2039,15 +2032,7 @@ function renderParameterTableHtml(review) {
         ${parameterRows.join("")}
       </div>
       ${renderCompressionDesignCheckHtml(review)}
-      ${loadPointRows.length ? `
-        <div class="data-subsection">
-          <div class="data-subsection-head">载荷测试点</div>
-          <div class="data-table load-point-table">
-            ${loadPointTableHeadHtml()}
-            ${loadPointRows.join("")}
-          </div>
-        </div>
-      ` : ""}
+      ${renderLoadPointSectionHtml(review, loadPointRows)}
       ${advancedRows.length ? `
         <details class="advanced-parameters">
           <summary>
@@ -2114,6 +2099,9 @@ function auditEventLabel(eventType) {
     risk_value_confirmed: "确认风险值",
     load_point_value_updated: "修改载荷测试点",
     load_point_tolerance_updated: "修改载荷公差",
+    load_point_added: "新增载荷测试点",
+    load_point_deleted: "删除载荷测试点",
+    load_point_restored: "恢复载荷测试点",
     load_point_confirmed: "确认载荷测试点",
     load_point_reopened: "重新编辑",
     standardization_suggestion_applied: "应用标准化建议",
@@ -2402,7 +2390,7 @@ function loadPointRowHtml(point, index, review = state.review) {
   const tolerance = loadPointToleranceDisplay(point, label, review);
   const reasonablenessSeverity = reasonablenessSeverityForField(review, `load_points.${label}`);
   return `
-    <div class="data-row load-point${reasonablenessSeverity ? ` parameter-risk-${escapeHtml(reasonablenessSeverity)}` : ""}" data-kind="load_point" data-index="${index}">
+    <div class="data-row load-point${reasonablenessSeverity ? ` parameter-risk-${escapeHtml(reasonablenessSeverity)}` : ""}" data-kind="load_point" data-index="${index}" data-load-point-id="${escapeHtml(point.load_point_id || "")}">
       <div class="data-label">
         <strong title="${escapeHtml(label)}">${escapeHtml(label)}</strong>
         ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
@@ -2420,7 +2408,46 @@ function loadPointRowHtml(point, index, review = state.review) {
         <input data-role="load-tolerance" aria-label="${escapeHtml(label)}&#20844;&#24046;" value="${escapeHtml(tolerance.value)}" placeholder="${escapeHtml(tolerance.placeholder)}" title="${escapeHtml(tolerance.title)}">
         ${tolerance.note ? `<small>${escapeHtml(tolerance.note)}</small>` : ""}
       </label>
-      ${confirmationButtonHtml(point, { kind: "load_point", field: `load_points.${label}`, review })}
+      <div class="load-point-actions">
+        ${confirmationButtonHtml(point, { kind: "load_point", field: `load_points.${label}`, review })}
+        <button type="button" class="secondary-action load-point-delete-button" data-role="delete-load-point">删除</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderLoadPointSectionHtml(review, rows) {
+  ensureLoadPointIds(review);
+  const points = review.spring_parameters?.load_points || [];
+  const confirmed = points.filter((point) => isValidLoadPoint(point) && point.need_human_review === false).length;
+  const undo = state.loadPointUndo?.review === review ? state.loadPointUndo : null;
+  return `
+    <div class="data-subsection load-point-section">
+      <div class="data-subsection-head load-point-section-head">
+        <span>载荷测试点</span>
+        <div>
+          <small data-role="load-point-summary">已确认 ${confirmed} 项 · 待确认 ${points.length - confirmed} 项 · 将写入二维图纸 ${confirmed} 项</small>
+          <button type="button" class="secondary-action" data-action="show-load-point-create">+新增载荷测试点</button>
+        </div>
+      </div>
+      ${undo ? `
+        <div class="load-point-undo" role="status">
+          <span>已删除“${escapeHtml(String(undo.item?.label || "载荷测试点"))}”</span>
+          <button type="button" class="secondary-action" data-action="undo-load-point-delete">撤销删除</button>
+        </div>
+      ` : ""}
+      <form class="load-point-create" data-kind="load_point_create" hidden>
+        <label>编号<input data-role="new-load-label" placeholder="例如：F1"></label>
+        <label>高度 mm<input data-role="new-load-height" inputmode="decimal" placeholder="例如：25"></label>
+        <label>力值 N<input data-role="new-load-force" inputmode="decimal" placeholder="例如：100"></label>
+        <label>公差（可选）<input data-role="new-load-tolerance" placeholder="例如：±6 或 +6/-6"></label>
+        <small data-role="load-point-create-error" aria-live="polite"></small>
+        <div><button type="submit">添加</button><button type="button" class="secondary-action" data-action="cancel-load-point-create">取消</button></div>
+      </form>
+      <div class="data-table load-point-table">
+        ${loadPointTableHeadHtml()}
+        ${rows.join("") || '<div class="empty-line load-point-empty">尚未识别载荷测试点，可手动新增。</div>'}
+      </div>
     </div>
   `;
 }
@@ -2603,8 +2630,10 @@ function syncReviewConfirmationControls(root, review = state.review) {
     if (item) syncConfirmationControl(row, item, { kind: "parameter", field, review });
   });
   root.querySelectorAll('[data-kind="load_point"][data-index]').forEach((row) => {
-    const item = review.spring_parameters?.load_points?.[Number(row.dataset.index)];
-    const field = `load_points.${item?.label || `F${Number(row.dataset.index) + 1}`}`;
+    const points = review.spring_parameters?.load_points || [];
+    const item = points.find((point) => String(point?.load_point_id || "") === String(row.dataset.loadPointId || ""))
+      || points[Number(row.dataset.index)];
+    const field = loadPointField(item, points.indexOf(item));
     if (item) syncConfirmationControl(row, item, { kind: "load_point", field, review });
   });
   root.querySelectorAll('[data-kind="technical"][data-requirement-id]').forEach((row) => {
@@ -2906,6 +2935,7 @@ function assessGenerationReadiness(review) {
     };
   }
   applyGenerationDefaults(review);
+  ensureLoadPointIds(review);
   const parameters = review.spring_parameters || {};
   const reasonableness = review.parameter_reasonableness || {};
   const reasonablenessStale = Boolean(review.parameter_reasonableness_stale);
@@ -2976,6 +3006,20 @@ function assessGenerationReadiness(review) {
       ...generationIssue(technicalRequirementField(item, index), reason, label),
       requirement_id: item.requirement_id || null,
     });
+  });
+  const seenLoadPointLabels = new Set();
+  (parameters.load_points || []).forEach((point, index) => {
+    const label = normalizeLoadPointLabel(point?.label);
+    const canonical = canonicalLoadPointLabel(label);
+    const duplicate = Boolean(canonical) && seenLoadPointLabels.has(canonical);
+    if (canonical) seenLoadPointLabels.add(canonical);
+    if (duplicate) {
+      pending.push(generationIssue(loadPointField(point, index), `载荷测试点编号“${label}”重复，请修改或删除重复项。`, `载荷测试点 ${label}`));
+    } else if (!isValidLoadPoint(point)) {
+      pending.push(generationIssue(loadPointField(point, index), `载荷测试点“${label || index + 1}”的编号、高度和力值必须完整且有效。`, `载荷测试点 ${label || index + 1}`));
+    } else if (point.need_human_review !== false) {
+      pending.push(generationIssue(loadPointField(point, index), `载荷测试点“${label}”尚未人工确认。`, `载荷测试点 ${label}`));
+    }
   });
   const status = (!reasonablenessStale && reasonableness.status === "blocked") || contractIssues.length
     ? "blocked"
@@ -3644,12 +3688,13 @@ function renderParameterChangeProposalHtml(proposal, turnIndex) {
   const recommendations = Array.isArray(proposal?.recommendations) ? proposal.recommendations : [];
   const constraints = Array.isArray(proposal?.constraints) ? proposal.constraints : [];
   const technicalChanges = Array.isArray(proposal?.technical_requirement_changes) ? proposal.technical_requirement_changes : [];
+  const loadPointChanges = Array.isArray(proposal?.load_point_changes) ? proposal.load_point_changes : [];
   const readiness = proposal?.generation_readiness || {};
   const hasParameterChanges = direct.length > 0 || synchronized.length > 0 || derived.length > 0;
-  const proposalTitle = technicalChanges.length
-    ? (hasParameterChanges ? "审图修改方案" : "技术要求修改方案")
+  const proposalTitle = technicalChanges.length || loadPointChanges.length
+    ? (hasParameterChanges ? "审图修改方案" : (technicalChanges.length ? "技术要求修改方案" : "载荷测试点修改方案"))
     : "参数修改方案";
-  const parameterPackageChanged = Boolean(readiness.parameter_package_changed || technicalChanges.length);
+  const parameterPackageChanged = Boolean(readiness.parameter_package_changed || technicalChanges.length || loadPointChanges.length);
   const canApply = ["ready", "warning"].includes(status) && Boolean(state.lastJob?.job_id);
   const canDiscard = !["applied", "discarded"].includes(status) && Boolean(state.lastJob?.job_id);
   const statusLabels = {
@@ -3681,6 +3726,7 @@ function renderParameterChangeProposalHtml(proposal, turnIndex) {
       ${renderParameterProposalChangeGroup("自动同步参数", synchronized)}
       ${renderParameterProposalChangeGroup("计算影响", derived)}
       ${renderTechnicalRequirementProposalChanges(technicalChanges)}
+      ${renderLoadPointProposalChanges(loadPointChanges)}
       ${renderParameterProposalMessages("需要补充", questions)}
       ${renderParameterProposalIssues("阻断问题", blocking)}
       ${renderParameterProposalIssues("风险提示", introduced)}
@@ -3736,6 +3782,44 @@ function renderTechnicalRequirementProposalChanges(changes) {
           detail = `${beforeText} → ${afterText}`;
         }
         return `<li><span>${escapeHtml(label)}</span><small>${escapeHtml(detail)}</small></li>`;
+      }).join("")}</ul>
+    </div>
+  `;
+}
+
+function loadPointProposalSnapshot(change, side) {
+  const value = change?.[side] || null;
+  if (!value || typeof value !== "object") return null;
+  const toleranceUpper = value.load_tolerance_upper ?? null;
+  const toleranceLower = value.load_tolerance_lower ?? null;
+  return {
+    label: normalizeLoadPointLabel(value.label), height: value.height, force: value.force,
+    toleranceUpper, toleranceLower,
+  };
+}
+
+function formatLoadPointProposalValue(value) {
+  if (!value) return "-";
+  const tolerance = value.toleranceUpper != null || value.toleranceLower != null
+    ? `，公差 ${value.toleranceUpper ?? ""}/${value.toleranceLower ?? ""} N`
+    : "";
+  return `${value.label || "测试点"}：高度 ${value.height ?? "-"} mm，力值 ${value.force ?? "-"} N${tolerance}`;
+}
+
+function renderLoadPointProposalChanges(changes) {
+  if (!Array.isArray(changes) || !changes.length) return "";
+  const operationLabels = { add: "新增", update: "修改", delete: "删除" };
+  return `
+    <div class="parameter-change-proposal-group load-point-proposal-group">
+      <strong>载荷测试点变更</strong>
+      <ul>${changes.map((change) => {
+        const operation = String(change?.operation || "update");
+        const before = loadPointProposalSnapshot(change, "before");
+        const after = loadPointProposalSnapshot(change, "after");
+        const detail = operation === "update"
+          ? `${formatLoadPointProposalValue(before)} → ${formatLoadPointProposalValue(after)}`
+          : formatLoadPointProposalValue(after || before);
+        return `<li><span>${escapeHtml(operationLabels[operation] || "修改")}</span><small>${escapeHtml(detail)}</small></li>`;
       }).join("")}</ul>
     </div>
   `;
@@ -4121,6 +4205,99 @@ function ensureTechnicalRequirementIds(review) {
     if (typeof item.need_human_review !== "boolean") item.need_human_review = !confirmed;
   });
   return review;
+}
+
+function createLoadPointId(review = state.review) {
+  const existing = new Set((review?.spring_parameters?.load_points || []).map((item) => String(item?.load_point_id || "")));
+  let candidate = "";
+  do {
+    const unique = globalThis.crypto?.randomUUID
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    candidate = `loadpt_${unique}`;
+  } while (existing.has(candidate));
+  return candidate;
+}
+
+function normalizeLoadPointLabel(value) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function canonicalLoadPointLabel(value) {
+  return normalizeLoadPointLabel(value).toLocaleLowerCase();
+}
+
+function loadPointConfirmationKey(point, index = -1) {
+  const pointId = String(point?.load_point_id || "").trim();
+  return pointId ? `load_point_${pointId}` : `load_points_${Math.max(index, 0)}`;
+}
+
+function loadPointField(point, index = -1) {
+  return `load_points.${normalizeLoadPointLabel(point?.label) || Math.max(index + 1, 1)}`;
+}
+
+function ensureLoadPointIds(review) {
+  if (!review || typeof review !== "object") return review;
+  review.spring_parameters ||= {};
+  const points = review.spring_parameters.load_points ||= [];
+  const confirmations = review.manual_confirmations ||= {};
+  const seen = new Set();
+  points.forEach((point, index) => {
+    if (!point || typeof point !== "object") return;
+    const hadId = Boolean(String(point.load_point_id || "").trim());
+    let pointId = String(point.load_point_id || "").trim();
+    if (!pointId || seen.has(pointId)) pointId = createLoadPointId(review);
+    point.load_point_id = pointId;
+    point.label = normalizeLoadPointLabel(point.label);
+    point.height_unit ||= "mm";
+    point.force_unit ||= "N";
+    seen.add(pointId);
+    const stableKey = loadPointConfirmationKey(point, index);
+    const legacyKey = `load_points_${index}`;
+    const legacy = confirmations[legacyKey];
+    if (!hadId && !confirmations[stableKey] && legacy) {
+      confirmations[stableKey] = {
+        ...structuredClone(legacy),
+        load_point_id: pointId,
+        target_field: loadPointField(point, index),
+        migrated_from: legacyKey,
+      };
+    }
+    const confirmed = Boolean(confirmations[stableKey]?.confirmed || legacy?.confirmed);
+    if (typeof point.need_human_review !== "boolean") point.need_human_review = !confirmed;
+  });
+  return review;
+}
+
+function loadPointAuditState(point, extra = {}) {
+  if (!point || typeof point !== "object") return { ...extra };
+  return {
+    load_point_id: point.load_point_id || null,
+    label: normalizeLoadPointLabel(point.label),
+    height: point.height ?? null,
+    height_unit: point.height_unit || "mm",
+    force: point.force ?? null,
+    force_unit: point.force_unit || "N",
+    load_tolerance_upper: point.load_tolerance_upper ?? null,
+    load_tolerance_lower: point.load_tolerance_lower ?? null,
+    need_human_review: point.need_human_review !== false,
+    ...extra,
+  };
+}
+
+function isValidLoadPoint(point) {
+  if (point?.height == null || point.height === "" || point?.force == null || point.force === "") return false;
+  const height = Number(point?.height);
+  const force = Number(point?.force);
+  return Boolean(normalizeLoadPointLabel(point?.label)) && Number.isFinite(height) && Number.isFinite(force) && height > 0 && force >= 0;
+}
+
+function isDuplicateLoadPointLabel(review, label, excludedId = "") {
+  const expected = canonicalLoadPointLabel(label);
+  return Boolean(expected) && (review?.spring_parameters?.load_points || []).some((point) => {
+    return String(point?.load_point_id || "") !== String(excludedId || "")
+      && canonicalLoadPointLabel(point?.label) === expected;
+  });
 }
 
 function technicalRequirementAuditState(item, extra = {}) {
@@ -4516,10 +4693,83 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     });
   });
 
+  const createLoadPointForm = root.querySelector('[data-kind="load_point_create"]');
+  root.querySelector('[data-action="show-load-point-create"]')?.addEventListener("click", () => {
+    if (!createLoadPointForm) return;
+    createLoadPointForm.hidden = false;
+    createLoadPointForm.querySelector('[data-role="new-load-label"]')?.focus();
+  });
+  createLoadPointForm?.querySelector('[data-action="cancel-load-point-create"]')?.addEventListener("click", () => {
+    createLoadPointForm.reset();
+    createLoadPointForm.hidden = true;
+    const error = createLoadPointForm.querySelector('[data-role="load-point-create-error"]');
+    if (error) error.textContent = "";
+  });
+  createLoadPointForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    activateReviewContext(messageId);
+    ensureLoadPointIds(review);
+    const label = normalizeLoadPointLabel(createLoadPointForm.querySelector('[data-role="new-load-label"]')?.value);
+    const height = Number(createLoadPointForm.querySelector('[data-role="new-load-height"]')?.value);
+    const force = Number(createLoadPointForm.querySelector('[data-role="new-load-force"]')?.value);
+    const toleranceInput = createLoadPointForm.querySelector('[data-role="new-load-tolerance"]')?.value || "";
+    const error = createLoadPointForm.querySelector('[data-role="load-point-create-error"]');
+    if (!label) {
+      if (error) error.textContent = "请填写唯一的测试点编号，例如 F1。";
+      return;
+    }
+    if (isDuplicateLoadPointLabel(review, label)) {
+      if (error) error.textContent = `测试点编号“${label}”已经存在。`;
+      return;
+    }
+    if (!Number.isFinite(height) || height <= 0 || !Number.isFinite(force) || force < 0) {
+      if (error) error.textContent = "高度必须大于 0，力值不能为负数。";
+      return;
+    }
+    const point = {
+      load_point_id: createLoadPointId(review), label, height, height_unit: "mm", force, force_unit: "N",
+      source: ["human_added"], evidence: "人工新增载荷测试点", confidence: 1, need_human_review: true,
+    };
+    applyLoadPointTolerance(point, toleranceInput);
+    review.spring_parameters.load_points.push(point);
+    state.loadPointUndo = null;
+    markParameterChangeProposalsStale("载荷测试点已新增");
+    queueReviewAuditEvent({
+      event_type: "load_point_added", target_field: loadPointField(point, review.spring_parameters.load_points.length - 1),
+      before_state: null, after_state: loadPointAuditState(point),
+      metadata: { load_point_id: point.load_point_id, index: review.spring_parameters.load_points.length - 1 },
+    });
+    updateLatestReviewMessage("已新增载荷测试点，确认后才会写入生图参数包。");
+  });
+
+  root.querySelector('[data-action="undo-load-point-delete"]')?.addEventListener("click", () => {
+    activateReviewContext(messageId);
+    const undo = state.loadPointUndo;
+    if (!undo || undo.review !== review) return;
+    ensureLoadPointIds(review);
+    if ((review.spring_parameters.load_points || []).some((point) => point?.load_point_id === undo.item?.load_point_id)) {
+      state.loadPointUndo = null;
+      updateLatestReviewMessage("该载荷测试点已经恢复。");
+      return;
+    }
+    const points = review.spring_parameters.load_points;
+    const index = Math.min(Math.max(Number(undo.index) || 0, 0), points.length);
+    points.splice(index, 0, structuredClone(undo.item));
+    if (undo.confirmation) review.manual_confirmations[undo.confirmationKey] = structuredClone(undo.confirmation);
+    const restored = points[index];
+    state.loadPointUndo = null;
+    markParameterChangeProposalsStale("载荷测试点已恢复");
+    queueReviewAuditEvent({ event_type: "load_point_restored", target_field: loadPointField(restored, index), before_state: { load_point_id: restored.load_point_id, deleted: true }, after_state: loadPointAuditState(restored), metadata: { load_point_id: restored.load_point_id, index } });
+    updateLatestReviewMessage("已撤销删除，载荷测试点已恢复到原位置。");
+  });
+
   root.querySelectorAll('[data-kind="load_point"]').forEach((row) => {
-    const point = review.spring_parameters.load_points[Number(row.dataset.index)];
-    const pointField = `load_points.${point?.label || `F${Number(row.dataset.index) + 1}`}`;
-    const confirmationField = `load_points_${row.dataset.index}`;
+    const pointId = String(row.dataset.loadPointId || "");
+    const pointIndex = (review.spring_parameters.load_points || []).findIndex((item) => String(item?.load_point_id || "") === pointId);
+    const point = review.spring_parameters.load_points[pointIndex];
+    if (!point) return;
+    const pointField = loadPointField(point, pointIndex);
+    const confirmationField = loadPointConfirmationKey(point, pointIndex);
     const bindLoadPointDraft = (input, applyValue, eventType) => {
       let beforeState = null;
       const applyDraft = (event) => {
@@ -4536,7 +4786,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         if (!beforeState) applyDraft(event);
         const afterState = loadPointAuditState(point);
         if (JSON.stringify(beforeState) !== JSON.stringify(afterState)) {
-          queueReviewAuditEvent({ event_type: eventType, target_field: pointField, before_state: beforeState, after_state: afterState });
+          queueReviewAuditEvent({ event_type: eventType, target_field: pointField, before_state: beforeState, after_state: afterState, metadata: { load_point_id: point.load_point_id, index: pointIndex } });
           scheduleParameterReasonablenessRefresh(messageId);
         }
         beforeState = null;
@@ -4563,10 +4813,24 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         target_field: pointField,
         before_state: beforeState,
         after_state: loadPointAuditState(point),
-        metadata: eventType === "risk_value_confirmed" ? { accepted_warning: true } : {},
+        metadata: { ...(eventType === "risk_value_confirmed" ? { accepted_warning: true } : {}), load_point_id: point.load_point_id, index: pointIndex },
       });
       syncConfirmationControl(row, point, { kind: "load_point", field: pointField, review });
       scheduleParameterReasonablenessRefresh(messageId);
+    });
+    row.querySelector('[data-role="delete-load-point"]')?.addEventListener("click", () => {
+      activateReviewContext(messageId);
+      const currentIndex = (review.spring_parameters.load_points || []).findIndex((item) => String(item?.load_point_id || "") === pointId);
+      if (currentIndex < 0) return;
+      const removed = review.spring_parameters.load_points[currentIndex];
+      const key = loadPointConfirmationKey(removed, currentIndex);
+      const confirmation = review.manual_confirmations?.[key] ? structuredClone(review.manual_confirmations[key]) : null;
+      review.spring_parameters.load_points.splice(currentIndex, 1);
+      delete review.manual_confirmations[key];
+      state.loadPointUndo = { review, item: structuredClone(removed), index: currentIndex, confirmationKey: key, confirmation };
+      markParameterChangeProposalsStale("载荷测试点已删除");
+      queueReviewAuditEvent({ event_type: "load_point_deleted", target_field: loadPointField(removed, currentIndex), before_state: loadPointAuditState(removed), after_state: { load_point_id: removed.load_point_id, deleted: true }, metadata: { load_point_id: removed.load_point_id, index: currentIndex } });
+      updateLatestReviewMessage("已删除载荷测试点；可使用“撤销删除”恢复一次。");
     });
   });
 
@@ -5621,6 +5885,7 @@ function undoStandardizationChatApplication(logId) {
     state.review.standard_selection = structuredClone(snapshot.standard_selection || {});
     state.review.standardization_results = structuredClone(snapshot.standardization_results || []);
     ensureTechnicalRequirementIds(state.review);
+    ensureLoadPointIds(state.review);
     const proposal = (state.review.parameter_change_proposals || []).find((item) => {
       return String(item?.proposal_id || "") === String(log.rollback.proposal_id || "");
     });
@@ -6027,6 +6292,7 @@ function restoreComparePanelScrollPositions(positions, options = {}) {
 }
 
 function buildSafeConfirmationPlan(review) {
+  ensureLoadPointIds(review);
   const parameters = review?.spring_parameters || {};
   const fieldGroups = getParameterFieldGroups(parameters, review);
   const coreFields = new Set(fieldGroups.core);
@@ -6071,11 +6337,15 @@ function buildSafeConfirmationPlan(review) {
 
   (parameters.load_points || []).forEach((point, index) => {
     if (!point?.need_human_review) return;
-    const pointLabel = point.label || `F${index + 1}`;
-    const field = `load_points.${pointLabel}`;
+    const pointLabel = normalizeLoadPointLabel(point.label) || `F${index + 1}`;
+    const field = loadPointField(point, index);
     const label = `载荷测试点 ${pointLabel}`;
-    if (!isFiniteReviewNumber(point.height) || !isFiniteReviewNumber(point.force)) {
-      skip("load_point", field, label, "高度和力值需要完整填写为有效数字");
+    if (!isValidLoadPoint(point)) {
+      skip("load_point", field, label, "编号、高度和力值需要完整填写为有效内容");
+      return;
+    }
+    if (isDuplicateLoadPointLabel(review, pointLabel, point.load_point_id)) {
+      skip("load_point", field, label, "测试点编号重复，需要先修改或删除重复项");
       return;
     }
     const sources = sourceValues(point.source);
@@ -6088,7 +6358,7 @@ function buildSafeConfirmationPlan(review) {
       skip("load_point", field, label, `存在${reasonablenessSeverityLabel(severity)}，需要单独处理`);
       return;
     }
-    items.push({ kind: "load_point", group: "load_point", field, index, point, label });
+    items.push({ kind: "load_point", group: "load_point", field, index, point, label, load_point_id: point.load_point_id || null });
   });
 
   (review?.technical_requirements || []).forEach((item, index) => {
@@ -6156,7 +6426,16 @@ function confirmSafeRecognizedFields(plan = null) {
   const confirmationPlan = plan || buildSafeConfirmationPlan(state.review);
   confirmationPlan.items.forEach((item) => {
     if (item.kind === "parameter") confirmParam(item.param, item.field);
-    else if (item.kind === "load_point") confirmParam(item.point, `load_points_${item.index}`);
+    else if (item.kind === "load_point") {
+      const confirmationKey = loadPointConfirmationKey(item.point, item.index);
+      confirmParam(item.point, confirmationKey);
+      state.review.manual_confirmations[confirmationKey] = {
+        ...(state.review.manual_confirmations[confirmationKey] || {}),
+        load_point_id: item.point.load_point_id || null,
+        target_field: item.field,
+        label: normalizeLoadPointLabel(item.point.label),
+      };
+    }
     else if (item.kind === "technical") {
       const confirmationKey = technicalRequirementConfirmationKey(item.item, item.index);
       confirmParam(item.item, confirmationKey);
@@ -7528,6 +7807,7 @@ function normalizeReview(review) {
   cloned.balloons ||= [];
   cloned.manual_confirmations ||= {};
   ensureTechnicalRequirementIds(cloned);
+  ensureLoadPointIds(cloned);
   applyGenerationDefaults(cloned);
   return cloned;
 }
@@ -7872,6 +8152,25 @@ function makeGenerationParameterPackage(review = state.review) {
       content: item.content,
       confirmation_source: "human_confirmed",
     }));
+  const exportedLoadPointLabels = new Set();
+  const loadPoints = (review.spring_parameters?.load_points || [])
+    .filter((point) => {
+      if (!isValidLoadPoint(point) || point.need_human_review !== false) return false;
+      const label = canonicalLoadPointLabel(point.label);
+      if (!label || exportedLoadPointLabels.has(label)) return false;
+      exportedLoadPointLabels.add(label);
+      return true;
+    })
+    .map((point) => ({
+      label: normalizeLoadPointLabel(point.label),
+      height: { value: Number(Number(point.height).toFixed(3)), unit: "mm" },
+      force: {
+        value: Number(Number(point.force).toFixed(3)), unit: "N",
+        tolerance_upper: point.load_tolerance_upper != null && point.load_tolerance_upper !== "" && Number.isFinite(Number(point.load_tolerance_upper)) ? Number(Number(point.load_tolerance_upper).toFixed(3)) : null,
+        tolerance_lower: point.load_tolerance_lower != null && point.load_tolerance_lower !== "" && Number.isFinite(Number(point.load_tolerance_lower)) ? Number(Number(point.load_tolerance_lower).toFixed(3)) : null,
+      },
+      confirmation_source: "human_confirmed",
+    }));
   const summary = review.drawing_summary || {};
   const selection = review.standard_selection || {};
   return {
@@ -7895,6 +8194,7 @@ function makeGenerationParameterPackage(review = state.review) {
     },
     generation_parameters: {
       spring_parameters: confirmedParameters,
+      load_points: loadPoints,
       technical_requirements: requirements,
     },
     derived_parameters: generationDerivedParameters(review),

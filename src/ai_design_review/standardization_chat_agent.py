@@ -36,6 +36,7 @@ from .technical_requirements import (
     ensure_technical_requirement_ids,
     normalize_technical_requirement_type,
 )
+from .load_points import ensure_load_point_ids
 
 
 FIELD_SYNONYMS: dict[str, tuple[str, ...]] = {
@@ -163,6 +164,8 @@ TECHNICAL_REQUIREMENT_TYPE_KEYWORDS = {
     "lifetime": ("寿命", "循环次数", "疲劳"),
     "process": ("工艺", "去毛刺", "磨平", "磨削"),
 }
+LOAD_POINT_OBJECT_TERMS = ("载荷测试点", "载荷点", "负荷测试点", "测试点")
+LOAD_POINT_LABEL_PATTERN = re.compile(r"(?<![A-Za-z0-9])([Ff]\s*\d+)(?![A-Za-z0-9])")
 
 
 def parse_accuracy_standardization_request(message: str) -> dict[str, Any] | None:
@@ -238,6 +241,154 @@ def parse_generation_package_export_request(message: str) -> dict[str, Any] | No
     if any(term in normalized for term in GENERATION_PACKAGE_EXPORT_QUERY_TERMS):
         return {"status": "query", "source": "local_rule"}
     return {"status": "execute", "source": "local_rule"}
+
+
+def parse_load_point_change_request(review: dict[str, Any], message: str) -> dict[str, Any] | None:
+    """Parse clear load-point CRUD instructions without letting a model mutate data.
+
+    The parser intentionally only acts when the user explicitly identifies a
+    load-test point.  More conversational or ambiguous requests keep falling
+    through to the LLM, which must still return the same controlled actions.
+    """
+
+    text = str(message or "").strip()
+    if not text:
+        return None
+    has_action = any(
+        term in text
+        for term in (*TECHNICAL_REQUIREMENT_ADD_TERMS, *TECHNICAL_REQUIREMENT_UPDATE_TERMS, *TECHNICAL_REQUIREMENT_DELETE_TERMS)
+    )
+    label_match = LOAD_POINT_LABEL_PATTERN.search(text)
+    mentions_object = any(term in text for term in LOAD_POINT_OBJECT_TERMS)
+    # Keep historical terse instructions such as “将F1力值改为120N” on the
+    # existing single-field patch path. CRUD requests intentionally require
+    # an explicit “载荷测试点/载荷点” object phrase.
+    if not has_action or not mentions_object:
+        return None
+
+    label = _normalized_load_point_label(label_match.group(1)) if label_match else ""
+    points = [item for item in (review.get("spring_parameters") or {}).get("load_points", []) or [] if isinstance(item, dict)]
+    existing = next(
+        (item for item in points if _normalized_load_point_label(item.get("label")) == label),
+        None,
+    ) if label else None
+    action_terms = text
+    if any(term in action_terms for term in TECHNICAL_REQUIREMENT_DELETE_TERMS):
+        if not label:
+            return _load_point_request("need_clarification", [], ["请说明要删除的载荷测试点编号，例如 F1。"])
+        if existing is None:
+            return _load_point_request("need_clarification", [], [f"未找到载荷测试点“{label}”，请核对编号后再删除。"])
+        return _load_point_request(
+            "proposal_ready",
+            [{
+                "type": "propose_load_point_delete",
+                "load_point_id": existing.get("load_point_id"),
+                "reason": "用户要求删除载荷测试点。",
+                "apply_policy": "manual_confirm_required",
+            }],
+            [],
+        )
+
+    height = _extract_load_point_number(text, ("高度", "高程", "试验高度", "测试高度", "H"), "mm")
+    force = _extract_load_point_number(text, ("力值", "载荷", "负荷", "力"), "N")
+    tolerance_upper, tolerance_lower = _extract_load_point_tolerance(text)
+    if any(term in action_terms for term in TECHNICAL_REQUIREMENT_ADD_TERMS):
+        questions: list[str] = []
+        if not label:
+            questions.append("请补充新增载荷测试点的唯一编号，例如 F1。")
+        if height is None or force is None:
+            questions.append("请同时补充测试高度和力值，例如：高度25mm，力值100N。")
+        if label and existing is not None:
+            questions.append(f"载荷测试点“{label}”已存在；如需调整，请说明修改后的高度、力值或公差。")
+        if questions:
+            return _load_point_request("need_clarification", [], questions)
+        action: dict[str, Any] = {
+            "type": "propose_load_point_add",
+            "label": label,
+            "height": height,
+            "force": force,
+            "reason": "用户要求新增载荷测试点。",
+            "apply_policy": "manual_confirm_required",
+        }
+        if tolerance_upper is not None:
+            action["load_tolerance_upper"] = tolerance_upper
+        if tolerance_lower is not None:
+            action["load_tolerance_lower"] = tolerance_lower
+        return _load_point_request("proposal_ready", [action], [])
+
+    if not label:
+        return _load_point_request("need_clarification", [], ["请说明要修改的载荷测试点编号，例如 F1。"])
+    if existing is None:
+        return _load_point_request("need_clarification", [], [f"未找到载荷测试点“{label}”，请核对编号或先新增该测试点。"])
+    action = {
+        "type": "propose_load_point_update",
+        "load_point_id": existing.get("load_point_id"),
+        "reason": "用户要求修改载荷测试点。",
+        "apply_policy": "manual_confirm_required",
+    }
+    if height is not None:
+        action["height"] = height
+    if force is not None:
+        action["force"] = force
+    if tolerance_upper is not None:
+        action["load_tolerance_upper"] = tolerance_upper
+    if tolerance_lower is not None:
+        action["load_tolerance_lower"] = tolerance_lower
+    if len(action) == 4:
+        return _load_point_request("need_clarification", [], [f"请补充载荷测试点“{label}”要修改的高度、力值或公差。"])
+    return _load_point_request("proposal_ready", [action], [])
+
+
+def _normalized_load_point_label(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip()).upper()
+
+
+def _extract_load_point_number(text: str, names: tuple[str, ...], unit: str) -> float | None:
+    name_pattern = "|".join(re.escape(name) for name in names)
+    unit_pattern = re.escape(unit)
+    match = re.search(
+        rf"(?:{name_pattern})\s*(?:为|是|改为|改成|=|:|：)?\s*(-?\d+(?:\.\d+)?)\s*{unit_pattern}?",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    return int(value) if value.is_integer() else value
+
+
+def _extract_load_point_tolerance(text: str) -> tuple[float | None, float | None]:
+    segment = re.search(r"(?:公差|偏差)\s*(?:为|是|改为|=|:|：)?\s*([^，,；;。\s]+)", text)
+    if not segment:
+        return None, None
+    value = segment.group(1)
+    symmetric = re.fullmatch(r"±\s*(\d+(?:\.\d+)?)(?:\s*N)?", value, re.IGNORECASE)
+    if symmetric:
+        amount = float(symmetric.group(1))
+        return amount, -amount
+    pair = re.fullmatch(r"\+?\s*(\d+(?:\.\d+)?)\s*/\s*-?\s*(\d+(?:\.\d+)?)(?:\s*N)?", value, re.IGNORECASE)
+    if pair:
+        return float(pair.group(1)), -float(pair.group(2))
+    return None, None
+
+
+def _load_point_request(status: str, actions: list[dict[str, Any]], questions: list[str]) -> dict[str, Any]:
+    if status == "proposal_ready":
+        return {
+            "status": status,
+            "actions": actions,
+            "questions": [],
+            "message": "已生成载荷测试点修改方案；应用整个方案后才会写回参数并同步到生图参数包。",
+        }
+    return {
+        "status": status,
+        "actions": actions,
+        "questions": questions,
+        "message": "还需要补充载荷测试点信息，暂不会修改正式参数。",
+    }
 
 
 def parse_technical_requirement_change_request(
@@ -449,6 +600,15 @@ def standardization_chat_context_needs_refresh(review: dict[str, Any], message: 
             "result_count": len(review.get("standardization_results") or []),
             "stale_result_count": 0,
         }
+    load_point_request = parse_load_point_change_request(review, text)
+    if load_point_request is not None:
+        return {
+            "required": False,
+            "intent_type": "load_point_change_request",
+            "reasons": [],
+            "result_count": len(review.get("standardization_results") or []),
+            "stale_result_count": 0,
+        }
     intent_type = _detect_intent_type(text)
     results = [item for item in review.get("standardization_results", []) or [] if isinstance(item, dict)]
     selection = review.get("standard_selection") or {}
@@ -491,11 +651,13 @@ def chat_about_standardization(
     if not text:
         raise ValueError("message is required.")
     ensure_technical_requirement_ids(review)
+    ensure_load_point_ids(review)
 
     raw_supplements = supplements if isinstance(supplements, dict) else {}
     accuracy_request = parse_accuracy_standardization_request(text)
     package_export_request = parse_generation_package_export_request(text)
     technical_requirement_request = parse_technical_requirement_change_request(review, text)
+    load_point_request = parse_load_point_change_request(review, text)
     if package_export_request is None:
         review["parameter_reasonableness"] = assess_parameter_reasonableness(review)
     target = _detect_target_field(text)
@@ -551,6 +713,34 @@ def chat_about_standardization(
                 f"{result.get('reply') or ''}\n\n"
                 f"同时识别到 {len(mixed_parameter_actions)} 项参数修改；参数和技术要求会合并为一个整体方案，应用前不会写回正式数据。"
             ).strip()
+    elif load_point_request is not None:
+        result = _handle_load_point_change_request(load_point_request)
+        mixed_parameter_actions = _mixed_parameter_actions(review, text)
+        if mixed_parameter_actions:
+            load_actions = list(result.get("suggested_actions") or [])
+            result["suggested_actions"] = [*mixed_parameter_actions, *load_actions]
+            parameter_targets = [
+                str(item.get("target_field") or "")
+                for item in mixed_parameter_actions
+                if item.get("target_field")
+            ]
+            result["intent"] = {
+                **(result.get("intent") or {}),
+                "type": "multi_constraint_change_request",
+                "target_field": parameter_targets[0] if parameter_targets else "",
+                "target_fields": [*parameter_targets, "load_points"],
+                "status": (result.get("intent") or {}).get("status") or "proposal_ready",
+            }
+            result["affected_fields"] = list(dict.fromkeys([
+                *(result.get("affected_fields") or []),
+                *(field for action in mixed_parameter_actions for field in action.get("affected_fields") or []),
+                "load_points",
+                "generation_parameters.load_points",
+            ]))
+            result["reply"] = (
+                f"{result.get('reply') or ''}\n\n"
+                f"同时识别到 {len(mixed_parameter_actions)} 项参数修改；会和载荷测试点一起合并为一个整体方案。"
+            ).strip()
     elif intent_type == "parameter_reasonableness":
         result = _handle_parameter_reasonableness(review, text)
     elif intent_type == "generation_readiness":
@@ -574,7 +764,11 @@ def chat_about_standardization(
         technical_requirement_request
         and technical_requirement_request.get("status") in {"proposal_ready", "explained"}
     )
-    if use_llm and not raw_supplements and not deterministic_technical_complete and result["intent"]["type"] not in {
+    deterministic_load_point_complete = bool(
+        load_point_request
+        and load_point_request.get("status") in {"proposal_ready", "explained"}
+    )
+    if use_llm and not raw_supplements and not deterministic_technical_complete and not deterministic_load_point_complete and result["intent"]["type"] not in {
         "accuracy_standardization_request",
         "generation_package_export_request",
         "missing_context",
@@ -608,6 +802,9 @@ def chat_about_standardization(
             "propose_technical_requirement_add",
             "propose_technical_requirement_update",
             "propose_technical_requirement_delete",
+            "propose_load_point_add",
+            "propose_load_point_update",
+            "propose_load_point_delete",
         }
     ]
     selected_proposal_id = active_proposal_id or review.get("active_parameter_change_proposal_id")
@@ -616,6 +813,7 @@ def chat_about_standardization(
         (result.get("intent") or {}).get("type") in {
             "parameter_change_request",
             "technical_requirement_change_request",
+            "load_point_change_request",
             "multi_constraint_change_request",
         }
         and (result.get("intent") or {}).get("status") in {"need_clarification", "need_input"}
@@ -748,6 +946,24 @@ def _handle_technical_requirement_change_request(request: dict[str, Any]) -> dic
     )
 
 
+def _handle_load_point_change_request(request: dict[str, Any]) -> dict[str, Any]:
+    status = str(request.get("status") or "need_clarification")
+    actions = [item for item in request.get("actions") or [] if isinstance(item, dict)]
+    questions = [str(item) for item in request.get("questions") or [] if str(item).strip()]
+    reply = str(request.get("message") or "请明确需要新增、修改或删除的载荷测试点。")
+    if questions:
+        reply = f"{reply}\n\n" + "\n".join(f"- {item}" for item in questions)
+    return _response(
+        reply,
+        intent_type="load_point_change_request",
+        target_field="",
+        target_fields=["load_points"],
+        status=status,
+        suggested_actions=actions,
+        affected_fields=["load_points", "generation_parameters.load_points"],
+    )
+
+
 def _mixed_parameter_actions(review: dict[str, Any], message: str) -> list[dict[str, Any]]:
     """Extract explicit parameter edits from clauses that are not technical-note CRUD.
 
@@ -758,7 +974,15 @@ def _mixed_parameter_actions(review: dict[str, Any], message: str) -> list[dict[
 
     actions: list[dict[str, Any]] = []
     clauses = [part.strip() for part in re.split(r"(?:同时|并且|然后|再(?=增加|新增|添加|补充|删除|移除|去掉|删掉)|[，,；;])", message) if part.strip()]
+    message_has_load_point_command = parse_load_point_change_request(review, message) is not None
     for clause in clauses:
+        is_load_point_detail = any(term in clause for term in ("高度", "高程", "力值", "载荷", "负荷", "公差", "偏差"))
+        if message_has_load_point_command and (
+            any(term in clause for term in LOAD_POINT_OBJECT_TERMS)
+            or LOAD_POINT_LABEL_PATTERN.search(clause)
+            or is_load_point_detail
+        ):
+            continue
         has_technical_verb = any(
             term in clause
             for term in (
@@ -833,6 +1057,9 @@ def _attach_proposal_feasibility(review: dict[str, Any], result: dict[str, Any])
             "propose_technical_requirement_add",
             "propose_technical_requirement_update",
             "propose_technical_requirement_delete",
+            "propose_load_point_add",
+            "propose_load_point_update",
+            "propose_load_point_delete",
         }
     ]
     parameter_actions = [item for item in actions if item.get("type") == "propose_parameter_patch"]

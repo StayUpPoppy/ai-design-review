@@ -695,6 +695,9 @@ button:disabled {
 .technical-requirements-head > div,
 .technical-requirement-undo,
 .technical-requirement-create > div,
+.load-point-section-head > div,
+.load-point-undo,
+.load-point-create > div,
 .requirement-actions {
   display: flex;
   align-items: center;
@@ -704,6 +707,23 @@ button:disabled {
 .technical-requirements-head > div {
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.load-point-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.load-point-section-head > div {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.load-point-section-head small {
+  color: #62708a;
+  font-size: 12px;
 }
 
 .technical-requirements-head button,
@@ -725,6 +745,17 @@ button:disabled {
   font-size: 12px;
 }
 
+.load-point-undo {
+  justify-content: space-between;
+  margin: 0 0 9px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  padding: 8px 10px;
+  color: #1e4f91;
+  font-size: 12px;
+}
+
 .technical-requirement-create {
   display: grid;
   grid-template-columns: minmax(120px, .35fr) minmax(260px, 1fr);
@@ -735,6 +766,41 @@ button:disabled {
   background: #f8fbff;
   padding: 11px;
 }
+
+.load-point-create {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(110px, 1fr));
+  gap: 9px;
+  margin: 0 0 10px;
+  border: 1px solid #cbdaf0;
+  border-radius: 9px;
+  background: #f8fbff;
+  padding: 11px;
+}
+
+.load-point-create[hidden] { display: none; }
+
+.load-point-create > small,
+.load-point-create > div {
+  grid-column: 1 / -1;
+}
+
+.load-point-create > small {
+  min-height: 16px;
+  color: #b42318;
+}
+
+.load-point-create > div { justify-content: flex-end; }
+
+.load-point-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.load-point-actions button { min-height: 28px; padding: 0 7px; font-size: 12px; }
+
+.load-point-empty { grid-column: 1 / -1; }
 
 .technical-requirement-create[hidden] { display: none; }
 
@@ -1833,7 +1899,7 @@ button:disabled {
 }
 
 .load-point-table {
-  --data-columns: minmax(68px, 1fr) 68px 68px 84px 58px;
+  --data-columns: minmax(68px, 1fr) 68px 68px 84px 128px;
 }
 
 .load-point-tolerance {

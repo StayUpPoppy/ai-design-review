@@ -14,6 +14,7 @@ from .technical_requirements import (
     normalize_technical_requirement_type,
     technical_requirement_snapshot,
 )
+from .load_points import ensure_load_point_ids, new_load_point_id, normalize_load_point_label
 
 
 DEFAULT_STANDARDIZATION_CHAT_MODEL = "qwen3.7-plus"
@@ -27,10 +28,16 @@ TECHNICAL_REQUIREMENT_ACTION_TYPES = {
     "propose_technical_requirement_update",
     "propose_technical_requirement_delete",
 }
+LOAD_POINT_ACTION_TYPES = {
+    "propose_load_point_add",
+    "propose_load_point_update",
+    "propose_load_point_delete",
+}
 ALLOWED_CHAT_ACTION_TYPES = {
     "propose_parameter_patch",
     "propose_tolerance_patch",
     *TECHNICAL_REQUIREMENT_ACTION_TYPES,
+    *LOAD_POINT_ACTION_TYPES,
 }
 FULL_PLAN_TARGET_FIELDS = [
     "standard_no",
@@ -93,6 +100,7 @@ class StandardizationChatLLMEngine:
 
     def chat(self, review: dict[str, Any], message: str, rule_result: dict[str, Any] | None = None) -> dict[str, Any]:
         ensure_technical_requirement_ids(review)
+        ensure_load_point_ids(review)
         chunks = _retrieve_chunks(review, message, rule_result or {})
         request = {
             "model": self.model,
@@ -174,7 +182,7 @@ STANDARDIZATION_CHAT_SYSTEM_PROMPT = """你是弹簧标准化对话 Agent。你�
 1. 只输出 JSON，不要输出 Markdown。
 2. 不要直接修改参数，不要声称已写回系统。
 3. 只能把修改表达为 suggested_actions，apply_policy 必须是 manual_confirm_required。
-4. target_field 只能使用 allowed_target_fields 中的字段；载荷测试点只能用 load_points.<label>.force。
+4. target_field 只能使用 allowed_target_fields 中的字段；已有载荷测试点的普通修改可用 load_points.<label>.height 或 load_points.<label>.force。
 5. 如果用户表达模糊，status=need_clarification，并在 reply 中追问。
 6. 如果解释标准依据，只能引用输入 review.standardization_results 或 chunks，不要编造标准条款。
 7. 如果需要重新标准化，要说明受影响字段，但不要自己调用工具。
@@ -186,6 +194,9 @@ STANDARDIZATION_CHAT_SYSTEM_PROMPT = """你是弹簧标准化对话 Agent。你�
 13. 修改或删除现有技术要求时，requirement_id 必须来自 review.technical_requirements；无法唯一确定目标时 status=need_clarification 并追问，不能猜测。
 14. 新增技术要求填写 requirement_type 和 content；修改填写 requirement_id 以及需要变化的 requirement_type/content；删除只需填写 requirement_id。
 15. requirement_type 只能是 surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process、other。
+16. 载荷测试点新增、修改、删除使用 propose_load_point_add、propose_load_point_update、propose_load_point_delete；不要把新增或删除写成普通参数修改。
+17. 修改或删除既有载荷测试点时，load_point_id 必须来自 review.spring_parameters.load_points；找不到唯一目标必须追问。
+18. 新增必须填写 label、height、force；修改填写 load_point_id 及需要变化的 height、force、load_tolerance_upper、load_tolerance_lower；删除只需 load_point_id。标签不能修改。
 
 输出 JSON 结构：
 {
@@ -299,6 +310,8 @@ def normalize_chat_payload(
         normalized["type"] = action_type or "unknown"
         if action_type in TECHNICAL_REQUIREMENT_ACTION_TYPES:
             _normalize_technical_requirement_action(normalized, diagnostics, index)
+        elif action_type in LOAD_POINT_ACTION_TYPES:
+            _normalize_load_point_action(normalized, diagnostics, index)
         else:
             action_target = str(normalized.get("target_field") or "").strip()
             if action_target and action_target not in allowed:
@@ -387,6 +400,31 @@ def _normalize_technical_requirement_action(
         action["content"] = str(action.get("content") or "").strip()
     metadata["target_field_valid"] = True
     metadata["technical_requirement_action"] = True
+
+
+def _normalize_load_point_action(action: dict[str, Any], diagnostics: list[dict[str, Any]], index: int) -> None:
+    metadata = action.setdefault("metadata", {})
+    if action.get("target_load_point_id") and not action.get("load_point_id"):
+        action["load_point_id"] = action.get("target_load_point_id")
+    if action.get("type") == "propose_load_point_add" and not action.get("load_point_id"):
+        action["load_point_id"] = new_load_point_id()
+    if action.get("load_point_id") is not None:
+        action["load_point_id"] = str(action.get("load_point_id") or "").strip()
+    if action.get("label") is not None:
+        action["label"] = normalize_load_point_label(action.get("label"))
+    for target, aliases in {
+        "height": ("proposed_height", "test_height"),
+        "force": ("proposed_force", "load"),
+        "load_tolerance_upper": ("tolerance_upper", "suggested_tolerance_upper"),
+        "load_tolerance_lower": ("tolerance_lower", "suggested_tolerance_lower"),
+    }.items():
+        if target not in action:
+            for alias in aliases:
+                if alias in action:
+                    action[target] = action.get(alias)
+                    break
+    action["metadata"]["target_field_valid"] = True
+    action["metadata"]["load_point_action"] = True
 
 
 def _normalize_unchanged_load_value_action(
@@ -509,6 +547,7 @@ def _build_prompt(
 
 def _compact_review(review: dict[str, Any]) -> dict[str, Any]:
     ensure_technical_requirement_ids(review)
+    ensure_load_point_ids(review)
     active_proposal_id = str(review.get("active_parameter_change_proposal_id") or "")
     active_proposal = next(
         (
@@ -538,6 +577,7 @@ def _compact_review(review: dict[str, Any]) -> dict[str, Any]:
             "version": active_proposal.get("version"),
             "status": active_proposal.get("status"),
             "technical_requirement_changes": active_proposal.get("technical_requirement_changes") or [],
+            "load_point_changes": active_proposal.get("load_point_changes") or [],
         }
         if isinstance(active_proposal, dict)
         else None,
@@ -651,6 +691,7 @@ def _allowed_target_fields(review: dict[str, Any]) -> list[str]:
         label = str(point.get("label") or f"F{index}").strip()
         if label:
             fields.append(f"load_points.{label}.force")
+            fields.append(f"load_points.{label}.height")
     return fields
 
 

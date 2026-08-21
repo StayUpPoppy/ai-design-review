@@ -23,6 +23,15 @@ const context = {
   COMPRESSION_GENERATION_LABELS: { wire_diameter: "线径", mean_diameter: "中径", free_length: "自由长度", total_coils: "总圈数", active_coils: "有效圈数", handedness: "旋向", end_grinding: "两端磨削", end_coils_closed: "端圈压并" },
   currentSpringType: (review) => review.drawing_summary?.spring_type || "unknown_spring",
   normalizeTechnicalRequirementType: (value) => String(value || "other").trim() || "other",
+  normalizeLoadPointLabel: (value) => String(value || "").trim().replace(/\s+/g, " "),
+  canonicalLoadPointLabel: (value) => String(value || "").trim().replace(/\s+/g, " ").toLocaleLowerCase(),
+  ensureLoadPointIds: (review) => review,
+  loadPointField: (point, index = -1) => `load_points.${String(point?.label || index + 1).trim() || index + 1}`,
+  isValidLoadPoint: (point) => {
+    const height = Number(point?.height);
+    const force = Number(point?.force);
+    return Boolean(String(point?.label || "").trim()) && Number.isFinite(height) && Number.isFinite(force) && height > 0 && force >= 0;
+  },
   targetFieldLabel: (field) => ({ material: "材料", mean_diameter: "中径", active_coils: "有效圈数" }[field] || field),
 };
 vm.createContext(context);
@@ -43,7 +52,12 @@ assert.equal(packageData.generation_parameters.spring_parameters.handedness.valu
 assert.equal(packageData.generation_parameters.spring_parameters.end_grinding.value, 1);
 assert.equal(packageData.generation_parameters.spring_parameters.end_coils_closed.value, 1);
 assert.equal(packageData.generation_parameters.spring_parameters.material, undefined);
-assert.equal(packageData.generation_parameters.load_points, undefined);
+assert.equal(JSON.stringify(packageData.generation_parameters.load_points), JSON.stringify([{
+  label: "F1",
+  height: { value: 25, unit: "mm" },
+  force: { value: 100, unit: "N", tolerance_upper: null, tolerance_lower: null },
+  confirmation_source: "human_confirmed",
+}]));
 assert.equal(packageData.generation_parameters.technical_requirements[0].content, "镀锌");
 assert.equal(packageData.generation_parameters.technical_requirements[0].requirement_id, undefined);
 
@@ -61,6 +75,14 @@ assert.deepEqual(
   Object.keys(filteredPackage.generation_parameters.technical_requirements[0]),
   ["type", "content", "confirmation_source"],
 );
+
+const pendingLoadPointReview = structuredClone(review);
+pendingLoadPointReview.spring_parameters.load_points.push({ label: "F2", height: 30, force: 150, need_human_review: true });
+const pendingLoadReadiness = context.assessGenerationReadiness(pendingLoadPointReview);
+assert.equal(pendingLoadReadiness.status, "needs_confirmation");
+assert.ok(pendingLoadReadiness.pending_fields.some((item) => item.field === "load_points.F2"));
+const filteredLoadPackage = context.makeGenerationParameterPackage(pendingLoadPointReview);
+assert.equal(filteredLoadPackage.generation_parameters.load_points.length, 1);
 
 const directReview = structuredClone(review);
 directReview.standard_selection = {

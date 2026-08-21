@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai_design_review.mock_solidworks_worker import (  # noqa: E402
     _load_font,
+    _load_point_lines,
     _technical_requirement_lines,
     render_mock_artifacts,
 )
@@ -32,8 +33,26 @@ def main() -> None:
     assert "唯一结尾-7" in rendered_text
     assert "第二行内容也必须保留。" in rendered_text
     assert len(lines) > len(requirements)
+    load_points = [
+        {
+            "label": "F1",
+            "height": {"value": 25, "unit": "mm"},
+            "force": {"value": 100, "unit": "N", "tolerance_upper": 6, "tolerance_lower": -6},
+            "confirmation_source": "human_confirmed",
+        },
+        {
+            "label": "F2",
+            "height": {"value": 30, "unit": "mm"},
+            "force": {"value": 150, "unit": "N", "tolerance_upper": None, "tolerance_lower": None},
+            "confirmation_source": "human_confirmed",
+        },
+    ]
+    assert _load_point_lines(load_points) == [
+        "F1: H=25 mm, F=100 N (+6/-6 N)",
+        "F2: H=30 mm, F=150 N",
+    ]
 
-    job = _mock_job(requirements)
+    job = _mock_job(requirements, load_points)
     artifacts = render_mock_artifacts(job)
     png = next(content for kind, _, _, content in artifacts if kind == "png")
     pdf = next(content for kind, _, _, content in artifacts if kind == "pdf")
@@ -44,10 +63,11 @@ def main() -> None:
     assert pdf.startswith(b"%PDF")
     manifest = json.loads(manifest_bytes.decode("utf-8"))
     assert manifest["technical_requirements"] == requirements
-    print("mock SolidWorks technical requirement rendering tests passed")
+    assert manifest["load_points"] == load_points
+    print("mock SolidWorks technical requirement and load point rendering tests passed")
 
 
-def _mock_job(requirements: list[dict[str, str]]) -> dict:
+def _mock_job(requirements: list[dict[str, str]], load_points: list[dict[str, object]]) -> dict:
     return {
         "generation_id": "generation-techreq-render",
         "template_code": "mock/compression-spring",
@@ -66,6 +86,7 @@ def _mock_job(requirements: list[dict[str, str]]) -> dict:
                     "end_grinding": {"value": 1},
                     "end_coils_closed": {"value": 1},
                 },
+                "load_points": load_points,
                 "technical_requirements": requirements,
             },
         },

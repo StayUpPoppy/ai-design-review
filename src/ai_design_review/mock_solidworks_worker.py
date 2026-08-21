@@ -181,13 +181,15 @@ class MockGenerationFailure(RuntimeError):
 
 def render_mock_artifacts(job: dict[str, Any]) -> list[tuple[str, str, str, bytes]]:
     package = job.get("parameter_package") or {}
-    parameters = ((package.get("generation_parameters") or {}).get("spring_parameters") or {})
-    technical_requirements = ((package.get("generation_parameters") or {}).get("technical_requirements") or [])
+    generation_parameters = package.get("generation_parameters") or {}
+    parameters = generation_parameters.get("spring_parameters") or {}
+    load_points = generation_parameters.get("load_points") or []
+    technical_requirements = generation_parameters.get("technical_requirements") or []
     values = {
         field: item.get("value") if isinstance(item, dict) else item
         for field, item in parameters.items()
     }
-    image = _drawing_image(job, values, technical_requirements)
+    image = _drawing_image(job, values, load_points, technical_requirements)
     png_buffer = io.BytesIO()
     image.save(png_buffer, format="PNG")
     pdf_buffer = io.BytesIO()
@@ -200,6 +202,7 @@ def render_mock_artifacts(job: dict[str, Any]) -> list[tuple[str, str, str, byte
         "template_version": job.get("template_version"),
         "parameter_hash": job.get("parameter_hash"),
         "parameters": values,
+        "load_points": load_points,
         "technical_requirements": technical_requirements,
         "notice": "This manifest represents a mock 3D model. It is not a SolidWorks file.",
     }
@@ -221,6 +224,7 @@ def render_mock_artifacts(job: dict[str, Any]) -> list[tuple[str, str, str, byte
 def _drawing_image(
     job: dict[str, Any],
     values: dict[str, Any],
+    load_points: list[Any],
     technical_requirements: list[Any],
 ) -> Image.Image:
     width = 1600
@@ -231,8 +235,10 @@ def _drawing_image(
         body_font,
         max_width=width - 160,
     )
-    requirement_y = 810
+    load_point_lines = _load_point_lines(load_points)
+    load_point_y = 810
     requirement_line_height = 34
+    requirement_y = load_point_y + max(42, len(load_point_lines) * requirement_line_height + 42)
     parameter_hash_y = max(900, requirement_y + len(requirement_lines) * requirement_line_height + 30)
     height = max(1000, parameter_hash_y + 100)
     image = Image.new("RGB", (width, height), "white")
@@ -276,12 +282,47 @@ def _drawing_image(
             continue
         draw.text((table_x, y), f"{field}: {values[field]}", fill="#111827", font=body_font)
         y += 42
-    draw.text((70, 770), "Technical requirements / 技术要求", fill="#111827", font=body_font)
+    draw.text((70, 770), "Load test points / 载荷测试点", fill="#111827", font=body_font)
+    if load_point_lines:
+        for line in load_point_lines:
+            draw.text((70, load_point_y), line, fill="#111827", font=body_font)
+            load_point_y += requirement_line_height
+    else:
+        draw.text((70, load_point_y), "None", fill="#4b5563", font=body_font)
+    draw.text((70, requirement_y), "Technical requirements / 技术要求", fill="#111827", font=body_font)
+    requirement_y += requirement_line_height
     for line in requirement_lines:
         draw.text((70, requirement_y), line, fill="#111827", font=body_font)
         requirement_y += 34
     draw.text((70, parameter_hash_y), f"Parameter hash: {job.get('parameter_hash')}", fill="#4b5563", font=body_font)
     return image
+
+
+def _load_point_lines(load_points: list[Any]) -> list[str]:
+    """Create a compact, complete protocol table for confirmed load points."""
+
+    lines: list[str] = []
+    for item in load_points:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()
+        height = item.get("height") if isinstance(item.get("height"), dict) else {}
+        force = item.get("force") if isinstance(item.get("force"), dict) else {}
+        height_value = height.get("value")
+        force_value = force.get("value")
+        if not label or height_value is None or force_value is None:
+            continue
+        tolerance_upper = force.get("tolerance_upper")
+        tolerance_lower = force.get("tolerance_lower")
+        tolerance = ""
+        if tolerance_upper is not None or tolerance_lower is not None:
+            upper = "" if tolerance_upper is None else f"+{_number(tolerance_upper, 0):g}"
+            lower = "" if tolerance_lower is None else f"{_number(tolerance_lower, 0):g}"
+            tolerance = f" ({upper}/{lower} N)"
+        lines.append(
+            f"{label}: H={_number(height_value, 0):g} mm, F={_number(force_value, 0):g} N{tolerance}"
+        )
+    return lines
 
 
 def _technical_requirement_lines(

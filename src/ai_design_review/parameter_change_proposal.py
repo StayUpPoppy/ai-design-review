@@ -18,6 +18,14 @@ from .end_conditions import (
 )
 from .generation_contract import apply_generation_defaults
 from .generation_readiness import assess_generation_readiness
+from .load_points import (
+    canonical_load_point_label,
+    ensure_load_point_ids,
+    load_point_confirmation_key,
+    load_point_snapshot,
+    new_load_point_id,
+    normalize_load_point_label,
+)
 from .parameter_impact import assess_parameter_change_impact
 from .spring_feasibility import assess_parameter_reasonableness
 from .spring_templates import FIELD_LABELS
@@ -50,11 +58,17 @@ TECHNICAL_REQUIREMENT_ACTION_TYPES = {
     "propose_technical_requirement_update",
     "propose_technical_requirement_delete",
 }
+LOAD_POINT_ACTION_TYPES = {
+    "propose_load_point_add",
+    "propose_load_point_update",
+    "propose_load_point_delete",
+}
 APPLICABLE_ACTION_TYPES = {
     "propose_parameter_patch",
     "propose_tolerance_patch",
     "proposal_constraint",
     *TECHNICAL_REQUIREMENT_ACTION_TYPES,
+    *LOAD_POINT_ACTION_TYPES,
 }
 DIAMETER_FIELDS = ("wire_diameter", "mean_diameter", "outer_diameter", "inner_diameter")
 DESIGN_GOAL_FIELDS = {"spring_index", "slenderness_ratio", "solid_height", "spring_rate"}
@@ -85,6 +99,7 @@ def parameter_state_hash(review: dict[str, Any]) -> str:
 
     normalized_review = deepcopy(review)
     apply_generation_defaults(normalized_review)
+    ensure_load_point_ids(normalized_review)
     ensure_technical_requirement_ids(normalized_review)
     payload = {
         "spring_type": (normalized_review.get("drawing_summary") or {}).get("spring_type"),
@@ -157,6 +172,7 @@ def build_parameter_change_proposal(
     clarification: str | None = None,
 ) -> dict[str, Any] | None:
     ensure_technical_requirement_ids(review)
+    ensure_load_point_ids(review)
     normalized_actions = [_normalize_action(deepcopy(item)) for item in actions if _is_applicable_action(item)]
     applicable = [item for item in normalized_actions if _is_applicable_action(item)]
     existing = find_parameter_change_proposal(review, active_proposal_id) if active_proposal_id else None
@@ -218,6 +234,7 @@ def apply_parameter_change_proposal(
     version: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     ensure_technical_requirement_ids(review)
+    ensure_load_point_ids(review)
     stored = find_parameter_change_proposal(review, proposal_id)
     if not stored:
         raise ParameterProposalError("proposal_not_found", "参数修改方案不存在。")
@@ -248,7 +265,8 @@ def apply_parameter_change_proposal(
     _apply_resolved_changes(applied_review, refreshed)
     parameter_change_count = len(refreshed.get("direct_changes") or []) + len(refreshed.get("synchronized_changes") or [])
     technical_change_count = len(refreshed.get("technical_requirement_changes") or [])
-    if parameter_change_count:
+    load_point_change_count = len(refreshed.get("load_point_changes") or [])
+    if parameter_change_count or load_point_change_count:
         _refresh_review_after_apply(applied_review)
     else:
         applied_review["parameter_reasonableness"] = assess_parameter_reasonableness(applied_review)
@@ -260,7 +278,7 @@ def apply_parameter_change_proposal(
     applied.update(refreshed)
     applied["status"] = "applied"
     applied["applied_at"] = _now()
-    applied["summary"] = f"已应用审图修改方案，共更新 {parameter_change_count + technical_change_count} 项参数或技术要求。"
+    applied["summary"] = f"已应用审图修改方案，共更新 {parameter_change_count + technical_change_count + load_point_change_count} 项参数、载荷测试点或技术要求。"
     applied_review["active_parameter_change_proposal_id"] = None
     _sync_proposal_turn_snapshots(applied_review, applied)
 
@@ -290,6 +308,7 @@ def apply_parameter_change_proposal(
             "applied_at": applied["applied_at"],
             "applied_patches": patches,
             "technical_requirement_changes": deepcopy(refreshed.get("technical_requirement_changes") or []),
+            "load_point_changes": deepcopy(refreshed.get("load_point_changes") or []),
             "rollback": {
                 "turn_created_at": stored.get("source_turn_created_at"),
                 "proposal_id": proposal_id,
@@ -298,8 +317,8 @@ def apply_parameter_change_proposal(
                 "action_states": [],
             },
             "turn_created_at": stored.get("source_turn_created_at"),
-            "restandardized": bool(parameter_change_count),
-            "restandardization_status": "completed" if parameter_change_count else "not_required",
+            "restandardized": bool(parameter_change_count or load_point_change_count),
+            "restandardization_status": "completed" if parameter_change_count or load_point_change_count else "not_required",
         }
     )
     return applied_review, {
@@ -307,6 +326,7 @@ def apply_parameter_change_proposal(
         "log_id": log_id,
         "patches": patches,
         "technical_requirement_changes": deepcopy(refreshed.get("technical_requirement_changes") or []),
+        "load_point_changes": deepcopy(refreshed.get("load_point_changes") or []),
     }
 
 
@@ -342,12 +362,14 @@ def _resolve_proposal(
     candidate = deepcopy(review)
     direct_changes: list[dict[str, Any]] = []
     technical_requirement_changes: list[dict[str, Any]] = []
+    load_point_changes: list[dict[str, Any]] = []
     recommendations: list[dict[str, Any]] = []
     blocking: list[dict[str, Any]] = []
     questions: list[str] = []
 
     actionable: list[dict[str, Any]] = []
     technical_actions: list[dict[str, Any]] = []
+    load_point_actions: list[dict[str, Any]] = []
     constraints: list[dict[str, Any]] = []
     for action in actions:
         if action.get("type") == "proposal_constraint":
@@ -355,6 +377,9 @@ def _resolve_proposal(
             continue
         if action.get("type") in TECHNICAL_REQUIREMENT_ACTION_TYPES:
             technical_actions.append(action)
+            continue
+        if action.get("type") in LOAD_POINT_ACTION_TYPES:
+            load_point_actions.append(action)
             continue
         target = str(action.get("target_field") or "")
         root = target.split(".")[0]
@@ -381,6 +406,12 @@ def _resolve_proposal(
     )
     questions.extend(technical_questions)
     blocking.extend(technical_blocking)
+    load_point_changes, load_point_questions, load_point_blocking = _resolve_load_point_actions(
+        candidate,
+        load_point_actions,
+    )
+    questions.extend(load_point_questions)
+    blocking.extend(load_point_blocking)
 
     synchronized_changes, diameter_issues = _solve_diameter_group(review, candidate, actionable)
     for issue in diameter_issues:
@@ -399,6 +430,7 @@ def _resolve_proposal(
     resolved_actions = [
         *actionable,
         *technical_actions,
+        *load_point_actions,
         *[
             {
                 "type": "propose_parameter_patch",
@@ -417,8 +449,8 @@ def _resolve_proposal(
         questions.append(clarification)
     if constraints and not actionable and not technical_actions and not questions:
         questions.append("当前约束已经满足；如需继续修改，请再提供一个明确目标参数。")
-    if not actionable and not technical_actions and not constraints and not questions:
-        questions.append("请提供需要修改的参数或技术要求，以及明确的目标内容。")
+    if not actionable and not technical_actions and not load_point_actions and not constraints and not questions:
+        questions.append("请提供需要修改的参数、载荷测试点或技术要求，以及明确的目标内容。")
 
     if blocking:
         status = "blocked"
@@ -429,7 +461,7 @@ def _resolve_proposal(
     else:
         status = "ready"
 
-    count = len(direct_changes) + len(synchronized_changes) + len(technical_requirement_changes)
+    count = len(direct_changes) + len(synchronized_changes) + len(technical_requirement_changes) + len(load_point_changes)
     covered_fields = {
         str(item.get("field") or "")
         for item in [*direct_changes, *synchronized_changes]
@@ -460,6 +492,7 @@ def _resolve_proposal(
         "direct_changes": direct_changes,
         "synchronized_changes": synchronized_changes,
         "technical_requirement_changes": technical_requirement_changes,
+        "load_point_changes": load_point_changes,
         "derived_changes": derived_changes,
         "recommendations": recommendations,
         "clarifying_questions": list(dict.fromkeys(str(item) for item in questions if item)),
@@ -691,6 +724,139 @@ def _confirmed_technical_requirement(
         for key in surface_only_keys:
             item.pop(key, None)
     return item
+
+
+def _resolve_load_point_actions(
+    candidate: dict[str, Any],
+    actions: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
+    if not actions:
+        return [], [], []
+
+    ensure_load_point_ids(candidate)
+    parameters = candidate.setdefault("spring_parameters", {})
+    points = parameters.setdefault("load_points", [])
+    questions: list[str] = []
+    blocking: list[dict[str, Any]] = []
+    changes: list[dict[str, Any]] = []
+
+    operations_by_id: dict[str, set[str]] = {}
+    for action in actions:
+        point_id = str(action.get("load_point_id") or "").strip()
+        if point_id:
+            operations_by_id.setdefault(point_id, set()).add(str(action.get("type") or ""))
+    for point_id, operations in operations_by_id.items():
+        if "propose_load_point_delete" in operations and len(operations) > 1:
+            blocking.append({
+                "code": "load_point_operation_conflict",
+                "load_point_id": point_id,
+                "message": "同一载荷测试点不能在一个方案中同时删除和修改。",
+            })
+    if blocking:
+        return [], [], blocking
+
+    for action in actions:
+        action_type = str(action.get("type") or "")
+        operation = action_type.removeprefix("propose_load_point_")
+        point_id = str(action.get("load_point_id") or "").strip()
+
+        if action_type == "propose_load_point_add":
+            point_id = point_id or new_load_point_id()
+            label = normalize_load_point_label(action.get("label"))
+            height = _number(action.get("height"))
+            force = _number(action.get("force"))
+            if not label:
+                questions.append("请补充新增载荷测试点的唯一编号，例如 F1。")
+                continue
+            if height is None or force is None:
+                questions.append(f"请补充载荷测试点“{label}”的高度和力值。")
+                continue
+            if height <= 0 or force < 0:
+                blocking.append({
+                    "code": "load_point_value_invalid",
+                    "load_point_id": point_id,
+                    "message": f"载荷测试点“{label}”的高度必须大于 0，力值不能为负数。",
+                })
+                continue
+            if _find_load_point_index(points, point_id) is not None:
+                blocking.append({"code": "load_point_id_conflict", "load_point_id": point_id, "message": "新增载荷测试点的内部标识已经存在，请重新生成方案。"})
+                continue
+            if _has_duplicate_load_point_label(points, label):
+                blocking.append({"code": "load_point_label_duplicate", "load_point_id": point_id, "message": f"载荷测试点编号“{label}”已经存在，不能重复新增。"})
+                continue
+            added = _confirmed_load_point({}, point_id=point_id, label=label, action=action)
+            points.append(added)
+            changes.append({"operation": operation, "load_point_id": point_id, "before": None, "after": load_point_snapshot(added)})
+            continue
+
+        if not point_id:
+            questions.append("请明确要修改或删除哪一个载荷测试点。")
+            continue
+        point_index = _find_load_point_index(points, point_id)
+        if point_index is None:
+            questions.append(f"没有找到编号为 {point_id} 的载荷测试点，请重新选择目标。")
+            continue
+        current = points[point_index]
+        before = load_point_snapshot(current)
+        if action_type == "propose_load_point_delete":
+            points.pop(point_index)
+            changes.append({"operation": operation, "load_point_id": point_id, "before": before, "after": None})
+            continue
+
+        if action.get("label") not in (None, "") and normalize_load_point_label(action.get("label")) != before["label"]:
+            blocking.append({"code": "load_point_label_immutable", "load_point_id": point_id, "message": "当前版本不支持修改载荷测试点编号；请删除后使用新编号重新添加。"})
+            continue
+        editable = ("height", "force", "load_tolerance_upper", "load_tolerance_lower")
+        if not any(key in action for key in editable):
+            questions.append(f"请补充要修改的载荷测试点“{before['label']}”高度、力值或公差。")
+            continue
+        updated = _confirmed_load_point(current, point_id=point_id, label=before["label"], action=action)
+        if not _load_point_values_valid(updated):
+            blocking.append({"code": "load_point_value_invalid", "load_point_id": point_id, "message": f"载荷测试点“{before['label']}”的高度必须大于 0，力值不能为负数。"})
+            continue
+        points[point_index] = updated
+        after = load_point_snapshot(updated)
+        if before != after:
+            changes.append({"operation": operation, "load_point_id": point_id, "before": before, "after": after})
+    return changes, list(dict.fromkeys(questions)), _dedupe_issues(blocking)
+
+
+def _confirmed_load_point(current: dict[str, Any], *, point_id: str, label: str, action: dict[str, Any]) -> dict[str, Any]:
+    item = deepcopy(current)
+    for field in ("height", "force", "load_tolerance_upper", "load_tolerance_lower"):
+        if field in action:
+            value = _number(action.get(field))
+            item[field] = value if value is not None else action.get(field)
+    item.update({
+        "load_point_id": point_id,
+        "label": normalize_load_point_label(label),
+        "height_unit": "mm",
+        "force_unit": "N",
+        "source": _merge_sources(item.get("source"), ["ai_chat", "human_confirmed"]),
+        "evidence": "AI对话载荷测试点方案经用户整体确认",
+        "confidence": 1.0,
+        "need_human_review": False,
+    })
+    return item
+
+
+def _load_point_values_valid(item: dict[str, Any]) -> bool:
+    height = _number(item.get("height"))
+    force = _number(item.get("force"))
+    return height is not None and force is not None and height > 0 and force >= 0
+
+
+def _find_load_point_index(points: list[Any], point_id: str) -> int | None:
+    return next((index for index, item in enumerate(points) if isinstance(item, dict) and str(item.get("load_point_id") or "") == point_id), None)
+
+
+def _has_duplicate_load_point_label(points: list[Any], label: str, *, exclude_load_point_id: str | None = None) -> bool:
+    canonical = canonical_load_point_label(label)
+    return any(
+        canonical_load_point_label(item.get("label")) == canonical
+        for item in points
+        if isinstance(item, dict) and str(item.get("load_point_id") or "") != str(exclude_load_point_id or "")
+    )
 
 
 def _find_technical_requirement_index(requirements: list[Any], requirement_id: str) -> int | None:
@@ -1117,7 +1283,7 @@ def _apply_action(review: dict[str, Any], action: dict[str, Any], *, confirmatio
 
 def _apply_resolved_changes(review: dict[str, Any], proposal: dict[str, Any]) -> None:
     for action in proposal.get("explicit_actions") or []:
-        if action.get("type") == "proposal_constraint" or action.get("type") in TECHNICAL_REQUIREMENT_ACTION_TYPES:
+        if action.get("type") == "proposal_constraint" or action.get("type") in TECHNICAL_REQUIREMENT_ACTION_TYPES or action.get("type") in LOAD_POINT_ACTION_TYPES:
             continue
         if str(action.get("target_field") or "").split(".")[0] in DESIGN_GOAL_FIELDS:
             continue
@@ -1141,6 +1307,7 @@ def _apply_resolved_changes(review: dict[str, Any], proposal: dict[str, Any]) ->
             source_fields=list(change.get("source_fields") or []),
         )
     _apply_technical_requirement_changes(review, proposal.get("technical_requirement_changes") or [], proposal)
+    _apply_load_point_changes(review, proposal.get("load_point_changes") or [], proposal)
 
 
 def _apply_technical_requirement_changes(
@@ -1178,6 +1345,47 @@ def _apply_technical_requirement_changes(
             "confirmed": True,
             "requirement_id": requirement_id,
             "value": item.get("content"),
+            "confirmation_source": "ai_parameter_change_proposal",
+            "proposal_id": proposal.get("proposal_id"),
+            "proposal_version": proposal.get("version"),
+            "confirmed_at": _now(),
+        }
+
+
+def _apply_load_point_changes(
+    review: dict[str, Any],
+    changes: list[dict[str, Any]],
+    proposal: dict[str, Any],
+) -> None:
+    ensure_load_point_ids(review)
+    parameters = review.setdefault("spring_parameters", {})
+    points = parameters.setdefault("load_points", [])
+    confirmations = review.setdefault("manual_confirmations", {})
+    for change in changes:
+        point_id = str(change.get("load_point_id") or "")
+        index = _find_load_point_index(points, point_id)
+        if change.get("operation") == "delete":
+            if index is not None:
+                points.pop(index)
+            confirmations.pop(load_point_confirmation_key(point_id), None)
+            continue
+        after = change.get("after")
+        if not isinstance(after, dict):
+            continue
+        item = _confirmed_load_point(
+            points[index] if index is not None and isinstance(points[index], dict) else {},
+            point_id=point_id,
+            label=str(after.get("label") or ""),
+            action=after,
+        )
+        if index is None:
+            points.append(item)
+        else:
+            points[index] = item
+        confirmations[load_point_confirmation_key(point_id)] = {
+            "confirmed": True,
+            "load_point_id": point_id,
+            "target_field": f"load_points.{item.get('label')}",
             "confirmation_source": "ai_parameter_change_proposal",
             "proposal_id": proposal.get("proposal_id"),
             "proposal_version": proposal.get("version"),
@@ -1275,6 +1483,7 @@ def _proposal_history_entry(proposal: dict[str, Any]) -> dict[str, Any]:
         "direct_changes": deepcopy(proposal.get("direct_changes") or []),
         "synchronized_changes": deepcopy(proposal.get("synchronized_changes") or []),
         "technical_requirement_changes": deepcopy(proposal.get("technical_requirement_changes") or []),
+        "load_point_changes": deepcopy(proposal.get("load_point_changes") or []),
     }
 
 
@@ -1305,6 +1514,8 @@ def _merge_actions(previous: list[dict[str, Any]], current: list[dict[str, Any]]
         action_target = (
             str(action.get("requirement_id") or "")
             if action_type in TECHNICAL_REQUIREMENT_ACTION_TYPES
+            else str(action.get("load_point_id") or "")
+            if action_type in LOAD_POINT_ACTION_TYPES
             else str(action.get("target_field") or "")
         )
         key = (action_type, action_target)
@@ -1334,6 +1545,27 @@ def _normalize_action(action: dict[str, Any]) -> dict[str, Any]:
         if action.get("content") is not None:
             action["content"] = str(action.get("content") or "").strip()
         return action
+    if action.get("type") in LOAD_POINT_ACTION_TYPES:
+        if action.get("target_load_point_id") and not action.get("load_point_id"):
+            action["load_point_id"] = action.get("target_load_point_id")
+        if action.get("type") == "propose_load_point_add" and not action.get("load_point_id"):
+            action["load_point_id"] = new_load_point_id()
+        if action.get("load_point_id") is not None:
+            action["load_point_id"] = str(action.get("load_point_id") or "").strip()
+        if action.get("label") is not None:
+            action["label"] = normalize_load_point_label(action.get("label"))
+        for target, aliases in {
+            "height": ("proposed_height", "test_height"),
+            "force": ("proposed_force", "load"),
+            "load_tolerance_upper": ("tolerance_upper", "suggested_tolerance_upper"),
+            "load_tolerance_lower": ("tolerance_lower", "suggested_tolerance_lower"),
+        }.items():
+            if target not in action:
+                for alias in aliases:
+                    if alias in action:
+                        action[target] = action.get(alias)
+                        break
+        return action
     if action.get("type") != "propose_parameter_patch":
         return action
     target = str(action.get("target_field") or "")
@@ -1360,7 +1592,7 @@ def _normalize_action(action: dict[str, Any]) -> dict[str, Any]:
 def _is_applicable_action(action: Any) -> bool:
     if not isinstance(action, dict) or action.get("type") not in APPLICABLE_ACTION_TYPES:
         return False
-    if action.get("type") in TECHNICAL_REQUIREMENT_ACTION_TYPES:
+    if action.get("type") in TECHNICAL_REQUIREMENT_ACTION_TYPES or action.get("type") in LOAD_POINT_ACTION_TYPES:
         return True
     if not action.get("target_field"):
         return False

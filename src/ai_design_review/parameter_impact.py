@@ -9,6 +9,7 @@ from .generation_contract import (
     generation_source_item,
 )
 from .generation_readiness import assess_generation_readiness, build_generation_parameter_package
+from .load_points import canonical_load_point_label, load_point_snapshot, new_load_point_id, normalize_load_point_label
 from .spring_templates import FIELD_LABELS
 from .standardizers.compression import calculate_compression_solid_height, derive_compression_parameters
 
@@ -19,7 +20,8 @@ TECHNICAL_REQUIREMENT_ACTION_TYPES = {
     "propose_technical_requirement_update",
     "propose_technical_requirement_delete",
 }
-APPLICABLE_ACTION_TYPES = PARAMETER_ACTION_TYPES | TECHNICAL_REQUIREMENT_ACTION_TYPES
+LOAD_POINT_ACTION_TYPES = {"propose_load_point_add", "propose_load_point_update", "propose_load_point_delete"}
+APPLICABLE_ACTION_TYPES = PARAMETER_ACTION_TYPES | TECHNICAL_REQUIREMENT_ACTION_TYPES | LOAD_POINT_ACTION_TYPES
 
 
 def assess_parameter_change_impact(review: dict[str, Any], actions: list[dict[str, Any]]) -> dict[str, Any]:
@@ -91,7 +93,10 @@ def assess_parameter_change_impact(review: dict[str, Any], actions: list[dict[st
     before_requirements = before_generation_parameters.get("technical_requirements") or []
     after_requirements = after_generation_parameters.get("technical_requirements") or []
     technical_requirements_changed = before_requirements != after_requirements
-    package_changed = package_changed or technical_requirements_changed
+    before_load_points = before_generation_parameters.get("load_points") or []
+    after_load_points = after_generation_parameters.get("load_points") or []
+    load_points_changed = before_load_points != after_load_points
+    package_changed = package_changed or technical_requirements_changed or load_points_changed
     frozen_changes = [
         field
         for field in COMPRESSION_GENERATION_INPUT_FIELDS
@@ -120,6 +125,7 @@ def assess_parameter_change_impact(review: dict[str, Any], actions: list[dict[st
             "parameter_package_changed": package_changed,
             "changed_frozen_fields": frozen_changes,
             "technical_requirements_changed": technical_requirements_changed,
+            "load_points_changed": load_points_changed,
         },
         "workflow_effects": {
             "standardization_recalculation_required": parameter_changes_applied,
@@ -146,6 +152,8 @@ def build_impact_baseline_state(review: dict[str, Any]) -> dict[str, Any]:
 def _apply_action(review: dict[str, Any], action: dict[str, Any]) -> dict[str, Any] | None:
     if action.get("type") in TECHNICAL_REQUIREMENT_ACTION_TYPES:
         return _apply_technical_requirement_action(review, action)
+    if action.get("type") in LOAD_POINT_ACTION_TYPES:
+        return _apply_load_point_action(review, action)
 
     parameters = review.setdefault("spring_parameters", {})
     target = str(action.get("target_field") or "")
@@ -293,6 +301,58 @@ def _technical_requirement_direct_change(
         "requirement_id": requirement_id,
         "before": _public_requirement_change_value(before),
         "after": _public_requirement_change_value(after),
+        "unit": None,
+        "confirmation_after": "human_confirmed" if after is not None else None,
+    }
+
+
+def _apply_load_point_action(review: dict[str, Any], action: dict[str, Any]) -> dict[str, Any] | None:
+    parameters = review.setdefault("spring_parameters", {})
+    points = parameters.setdefault("load_points", [])
+    operation = str(action.get("type") or "").removeprefix("propose_load_point_")
+    point_id = str(action.get("load_point_id") or action.get("target_load_point_id") or "").strip()
+    if operation == "add":
+        label = normalize_load_point_label(action.get("label"))
+        if not label or action.get("height") in (None, "") or action.get("force") in (None, ""):
+            return None
+        if any(isinstance(item, dict) and canonical_load_point_label(item.get("label")) == canonical_load_point_label(label) for item in points):
+            return None
+        point_id = point_id or new_load_point_id()
+        after = _preview_load_point({}, point_id, label, action)
+        points.append(after)
+        return _load_point_direct_change(operation, point_id, None, after)
+    if not point_id:
+        return None
+    index = next((index for index, item in enumerate(points) if isinstance(item, dict) and str(item.get("load_point_id") or "") == point_id), None)
+    if index is None:
+        return None
+    before = deepcopy(points[index])
+    if operation == "delete":
+        points.pop(index)
+        return _load_point_direct_change(operation, point_id, before, None)
+    after = _preview_load_point(before, point_id, str(before.get("label") or ""), action)
+    points[index] = after
+    return _load_point_direct_change(operation, point_id, before, after)
+
+
+def _preview_load_point(current: dict[str, Any], point_id: str, label: str, action: dict[str, Any]) -> dict[str, Any]:
+    item = deepcopy(current)
+    for field in ("height", "force", "load_tolerance_upper", "load_tolerance_lower"):
+        if field in action:
+            item[field] = action.get(field)
+    item.update({"load_point_id": point_id, "label": label, "height_unit": "mm", "force_unit": "N", "need_human_review": False})
+    return item
+
+
+def _load_point_direct_change(operation: str, point_id: str, before: dict[str, Any] | None, after: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "field": f"load_points.{point_id}",
+        "label": "载荷测试点",
+        "change_type": f"load_point_{operation}",
+        "operation": operation,
+        "load_point_id": point_id,
+        "before": load_point_snapshot(before) if isinstance(before, dict) else None,
+        "after": load_point_snapshot(after) if isinstance(after, dict) else None,
         "unit": None,
         "confirmation_after": "human_confirmed" if after is not None else None,
     }
@@ -463,6 +523,7 @@ def _empty_impact(status: str, summary: str, baseline_state: dict[str, Any]) -> 
             "parameter_package_changed": False,
             "changed_frozen_fields": [],
             "technical_requirements_changed": False,
+            "load_points_changed": False,
         },
         "workflow_effects": {
             "standardization_recalculation_required": False,
@@ -485,6 +546,10 @@ def _is_applicable_action(action: dict[str, Any]) -> bool:
     action_type = action.get("type")
     if action_type in PARAMETER_ACTION_TYPES:
         return bool(action.get("target_field")) and _has_action_value(action)
+    if action_type == "propose_load_point_add":
+        return True
+    if action_type in {"propose_load_point_update", "propose_load_point_delete"}:
+        return bool(action.get("load_point_id") or action.get("target_load_point_id"))
     if action_type == "propose_technical_requirement_add":
         return bool(str(action.get("content") or action.get("proposed_content") or "").strip())
     if action_type == "propose_technical_requirement_update":

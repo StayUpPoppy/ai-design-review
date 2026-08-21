@@ -16,6 +16,13 @@ from .generation_contract import (
 )
 from .spring_templates import FIELD_LABELS
 from .spring_feasibility import assess_parameter_reasonableness
+from .load_points import (
+    canonical_load_point_label,
+    ensure_load_point_ids,
+    load_point_is_complete,
+    load_point_is_confirmed,
+    normalize_load_point_label,
+)
 from .technical_requirements import canonical_technical_requirement_key
 
 
@@ -34,6 +41,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
         }
 
     defaulted_fields = apply_generation_defaults(review)
+    ensure_load_point_ids(review)
     parameters = review.get("spring_parameters") or {}
     # Generation export is a release boundary, so always recalculate instead of
     # trusting a diagnostic that may predate an external/manual parameter edit.
@@ -61,6 +69,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
 
     _append_standardization_warnings(review, warnings)
     _append_technical_requirement_state(review, pending)
+    _append_load_point_state(review, pending)
 
     if blocking_reasonableness:
         status = "blocked"
@@ -96,6 +105,7 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
     """Build a compact drawing package from the fields the reviewer has confirmed."""
 
     apply_generation_defaults(review)
+    ensure_load_point_ids(review)
     parameters = review.get("spring_parameters") or {}
     confirmed_parameters = export_generation_parameters(parameters)
     technical_requirements = [
@@ -103,6 +113,16 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
         for item in review.get("technical_requirements") or []
         if _technical_requirement_is_confirmed(item)
     ]
+    load_points: list[dict[str, Any]] = []
+    exported_load_point_labels: set[str] = set()
+    for item in parameters.get("load_points") or []:
+        if not load_point_is_complete(item) or not load_point_is_confirmed(item):
+            continue
+        canonical_label = canonical_load_point_label(item.get("label"))
+        if not canonical_label or canonical_label in exported_load_point_labels:
+            continue
+        exported_load_point_labels.add(canonical_label)
+        load_points.append(_generation_load_point(item))
     selection = review.get("standard_selection") or {}
     summary = review.get("drawing_summary") or {}
     return {
@@ -126,6 +146,7 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
         },
         "generation_parameters": {
             "spring_parameters": confirmed_parameters,
+            "load_points": load_points,
             "technical_requirements": technical_requirements,
         },
         "derived_parameters": _export_derived_parameters(review, parameters),
@@ -202,6 +223,36 @@ def _technical_requirement_is_confirmed(item: Any) -> bool:
         and bool(str(item.get("content") or "").strip())
         and item.get("need_human_review") is False
     )
+
+
+def _append_load_point_state(review: dict[str, Any], pending: list[dict[str, Any]]) -> None:
+    parameters = review.get("spring_parameters") or {}
+    seen: set[str] = set()
+    for index, item in enumerate(parameters.get("load_points") or [], start=1):
+        if not isinstance(item, dict):
+            pending.append(_field_issue(f"load_points.{index}", "载荷测试点格式无效，请删除后重新添加。", label="载荷测试点"))
+            continue
+        label = normalize_load_point_label(item.get("label"))
+        field = f"load_points.{label or index}"
+        canonical = canonical_load_point_label(label)
+        duplicate = bool(canonical) and canonical in seen
+        if canonical:
+            seen.add(canonical)
+        if duplicate:
+            reason = f"载荷测试点编号“{label}”重复，请修改或删除重复项。"
+        elif not label:
+            reason = "载荷测试点缺少编号，请补充唯一编号或删除该项。"
+        elif not load_point_is_complete(item):
+            reason = f"载荷测试点“{label}”的高度和力值必须完整且有效。"
+        elif not load_point_is_confirmed(item):
+            reason = f"载荷测试点“{label}”尚未人工确认。"
+        else:
+            continue
+        issue = _field_issue(field, reason, label=f"载荷测试点 {label or index}")
+        point_id = str(item.get("load_point_id") or "").strip()
+        if point_id:
+            issue["load_point_id"] = point_id
+        pending.append(issue)
 
 
 def _parameter_state(parameters: dict[str, Any], field: str) -> str:
@@ -292,6 +343,31 @@ def _generation_requirement(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": item.get("type"),
         "content": str(item.get("content") or "").strip(),
+        "confirmation_source": "human_confirmed",
+    }
+
+
+def _generation_load_point(item: dict[str, Any]) -> dict[str, Any]:
+    def number(value: Any) -> float:
+        rounded = round(float(value), 3)
+        return int(rounded) if rounded.is_integer() else rounded
+
+    def optional_number(value: Any) -> float | int | None:
+        try:
+            candidate = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number(candidate) if isfinite(candidate) else None
+
+    return {
+        "label": normalize_load_point_label(item.get("label")),
+        "height": {"value": number(item.get("height")), "unit": "mm"},
+        "force": {
+            "value": number(item.get("force")),
+            "unit": "N",
+            "tolerance_upper": optional_number(item.get("load_tolerance_upper")),
+            "tolerance_lower": optional_number(item.get("load_tolerance_lower")),
+        },
         "confirmation_source": "human_confirmed",
     }
 

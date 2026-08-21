@@ -22,6 +22,7 @@ const context = {
   },
   TECH_LABELS: { surface: "表面处理", salt_spray: "盐雾试验", other: "其他要求" },
   normalizeTechnicalRequirementType: (value) => ["surface", "salt_spray", "other"].includes(String(value)) ? String(value) : "other",
+  normalizeLoadPointLabel: (value) => String(value || "").trim(),
   targetFieldLabel: (field) => field,
   formatParameterImpactValue: (value, unit = "") => value == null ? "-" : `${value}${unit || ""}`,
   generationReadinessStatusLabel: (status) => ({ ready: "可生成", ready_with_warnings: "可生成（有提示）" })[status] || status,
@@ -98,6 +99,32 @@ assert.match(technicalHtml, /表面镀锌/);
 assert.match(technicalHtml, /盐雾试验72小时。 → 盐雾试验：盐雾试验96小时。/);
 assert.match(technicalHtml, /删除·其他要求/);
 assert.match(technicalHtml, /SolidWorks参数包将变化/);
+
+const loadPointHtml = context.renderParameterChangeProposalHtml({
+  ...proposal,
+  direct_changes: [],
+  synchronized_changes: [],
+  derived_changes: [],
+  load_point_changes: [
+    {
+      operation: "add",
+      load_point_id: "loadpt-new",
+      before: null,
+      after: { label: "F2", height: 30, force: 150, load_tolerance_upper: 6, load_tolerance_lower: -6 },
+    },
+    {
+      operation: "delete",
+      load_point_id: "loadpt-old",
+      before: { label: "F1", height: 25, force: 100, load_tolerance_upper: null, load_tolerance_lower: null },
+      after: null,
+    },
+  ],
+}, 3);
+assert.match(loadPointHtml, /载荷测试点修改方案 V2/);
+assert.match(loadPointHtml, /载荷测试点变更/);
+assert.match(loadPointHtml, /F2：高度 30 mm，力值 150 N，公差 6\/-6 N/);
+assert.match(loadPointHtml, /删除/);
+assert.match(loadPointHtml, /SolidWorks参数包将变化/);
 
 const turn = { change_proposal: { ...proposal, status: "ready" } };
 context.state.review.parameter_change_proposals[0] = { ...proposal, status: "applied" };

@@ -139,6 +139,26 @@ class DrawingSummaryDocument(BaseModel):
     summary: str | None = Field(default=None, description="审图结果摘要。")
 
 
+class ReviewLoadPointDocument(BaseModel):
+    """审图阶段的载荷测试点；内部ID仅用于当前系统稳定定位。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    load_point_id: str | None = Field(
+        default=None,
+        description="载荷测试点内部稳定ID，仅用于人工编辑、AI方案、审计和撤销，不发送给SolidWorks。",
+        examples=["loadpt_a1b2c3"],
+    )
+    label: str = Field(default="", description="用户填写且唯一的测试点编号，忽略大小写和空格后不可重复。", examples=["F1"])
+    height: float | None = Field(default=None, gt=0, description="测试高度，单位mm；新增或修改后需要人工确认。", examples=[25.0])
+    height_unit: Literal["mm"] = Field(default="mm", description="测试高度固定单位mm。")
+    force: float | None = Field(default=None, ge=0, description="测试力值，单位N；新增或修改后需要人工确认。", examples=[100.0])
+    force_unit: Literal["N"] = Field(default="N", description="测试力值固定单位N。")
+    load_tolerance_upper: float | None = Field(default=None, description="可选力值上偏差，单位N。", examples=[6.0])
+    load_tolerance_lower: float | None = Field(default=None, description="可选力值下偏差，单位N。", examples=[-6.0])
+    need_human_review: bool = Field(default=True, description="是否待人工确认；仅false且内容完整的测试点写入生图参数包。")
+
+
 class SpringParametersDocument(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -164,7 +184,7 @@ class SpringParametersDocument(BaseModel):
     end_type: ReviewParameterValue | None = Field(default=None, description="端部结构形式。")
     end_grinding: ReviewParameterValue | None = Field(default=None, description="端面磨削方式。")
     spring_rate: ReviewParameterValue | None = Field(default=None, description="弹簧刚度。")
-    load_points: list[dict[str, Any]] = Field(default_factory=list, description="载荷测试点，通常包含高度和力值。")
+    load_points: list[ReviewLoadPointDocument] = Field(default_factory=list, description="载荷测试点；人工确认后会同步进入生图参数包二维图标注区。")
 
 
 class TechnicalRequirementDocument(BaseModel):
@@ -413,6 +433,15 @@ class TechnicalRequirementProposalChange(BaseModel):
     after: dict[str, Any] | None = Field(default=None, description="应用后的类型、内容和确认状态；删除时为null。")
 
 
+class LoadPointProposalChange(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    operation: Literal["add", "update", "delete"] = Field(description="载荷测试点操作：add、update或delete。", examples=["add"])
+    load_point_id: str = Field(description="载荷测试点的稳定内部ID，仅用于审图端方案操作。", examples=["loadpt_a1b2c3"])
+    before: dict[str, Any] | None = Field(default=None, description="应用前的编号、高度、力值、公差和确认状态；新增时为null。")
+    after: dict[str, Any] | None = Field(default=None, description="应用后的编号、高度、力值、公差和确认状态；删除时为null。")
+
+
 class ParameterChangeProposal(BaseModel):
     model_config = ConfigDict(
         extra="allow",
@@ -443,6 +472,10 @@ class ParameterChangeProposal(BaseModel):
     technical_requirement_changes: list[TechnicalRequirementProposalChange] = Field(
         default_factory=list,
         description="本方案将原子执行的技术要求新增、修改和删除操作。",
+    )
+    load_point_changes: list[LoadPointProposalChange] = Field(
+        default_factory=list,
+        description="本方案将原子执行的载荷测试点新增、修改和删除操作。",
     )
     derived_changes: list[dict[str, Any]] = Field(default_factory=list, description="旋绕比、细长比、刚度等计算影响。")
     recommendations: list[dict[str, Any]] = Field(default_factory=list, description="尚未加入应用范围的可选调整建议。")
@@ -678,6 +711,7 @@ class ApiErrorResponse(BaseModel):
 DOCUMENTATION_MODELS: tuple[type[BaseModel], ...] = (
     ReviewParameterValue,
     DrawingSummaryDocument,
+    ReviewLoadPointDocument,
     SpringParametersDocument,
     TechnicalRequirementDocument,
     ReviewDocument,
@@ -699,6 +733,7 @@ DOCUMENTATION_MODELS: tuple[type[BaseModel], ...] = (
     ParameterImpactPreview,
     ParameterChangeProposalItem,
     TechnicalRequirementProposalChange,
+    LoadPointProposalChange,
     ParameterChangeProposal,
     ParameterChangeProposalCommand,
     ParameterChangeProposalResponse,
