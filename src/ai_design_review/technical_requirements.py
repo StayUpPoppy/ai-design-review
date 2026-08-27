@@ -28,6 +28,44 @@ TECHNICAL_REQUIREMENT_TYPE_LABELS = {
     "other": "其他要求",
 }
 
+
+def build_technical_requirements_text(requirements: list[Any]) -> str:
+    """Format ordered generation notes as one SolidWorks-ready text block.
+
+    The structured array remains the source of truth.  This deterministic
+    projection only makes it easier for a drawing worker to put the complete
+    note block into a title block without knowing the internal type codes.
+    """
+
+    lines: list[str] = []
+    for item in requirements:
+        if not isinstance(item, dict):
+            continue
+        content = _single_line_technical_requirement_content(item.get("content"))
+        if not content:
+            continue
+        requirement_type = normalize_technical_requirement_type(item.get("type"), default="other") or "other"
+        label = TECHNICAL_REQUIREMENT_TYPE_LABELS.get(requirement_type, "其他要求")
+        without_duplicate_label = re.sub(
+            rf"^{re.escape(label)}\s*[:：]\s*",
+            "",
+            content,
+            count=1,
+        ).strip()
+        body = without_duplicate_label or content
+        lines.append(f"{len(lines) + 1}.{label}：{body}")
+    return "\n".join(lines)
+
+
+def _single_line_technical_requirement_content(value: Any) -> str:
+    content = str(value or "").strip()
+    if not content:
+        return ""
+    content = re.sub(r"(?:\s*(?:\r\n?|\n)\s*)+", "；", content)
+    content = re.sub(r"[\t ]+", " ", content).strip()
+    return re.sub(r"；{2,}", "；", content)
+
+
 _TYPE_ALIASES = {
     "surface_requirement": "surface",
     "surface_treatment": "surface",

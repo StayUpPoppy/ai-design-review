@@ -107,6 +107,11 @@ class GenerationParametersV1(BaseModel):
     spring_parameters: CompressionSpringGenerationInputsV1 = Field(description="SolidWorks 必须解析的八个冻结建模字段。")
     load_points: list[GenerationLoadPointV1] = Field(default_factory=list, description="可选的已确认载荷测试点，用于二维图标注与校核；不属于八个建模字段。")
     technical_requirements: list[GenerationTechnicalRequirementV1] = Field(default_factory=list, description="写入二维图固定区域的中文技术要求。")
+    technical_requirements_text: str = Field(
+        default="",
+        description="将已确认技术要求按页面顺序汇总的二维图备注文本；每行格式为“序号.中文类型：内容”。SolidWorks 可直接写入备注区。",
+        examples=["1.表面处理：表面镀锌。\n2.盐雾试验：96小时。"],
+    )
 
 
 class GenerationExportPolicyV1(BaseModel):
@@ -153,6 +158,7 @@ class GenerationParameterPackageV1(BaseModel):
                 },
                 "load_points": [{"label": "F1", "height": {"value": 25.0, "unit": "mm"}, "force": {"value": 100.0, "unit": "N", "tolerance_upper": 6.0, "tolerance_lower": -6.0}, "confirmation_source": "human_confirmed"}],
                 "technical_requirements": [{"type": "other", "content": "两端磨平，表面镀锌。", "confirmation_source": "human_confirmed"}],
+                "technical_requirements_text": "1.其他要求：两端磨平，表面镀锌。",
             },
             "derived_parameters": {},
         }]},

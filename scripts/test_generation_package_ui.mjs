@@ -16,6 +16,16 @@ assert.notEqual(packageEnd, -1, "generation package helper block must be complet
 const context = {
   structuredClone,
   TECH_LABELS: { surface: "表面处理" },
+  GENERATION_TECHNICAL_REQUIREMENT_LABELS: {
+    surface: "表面处理",
+    hardness: "硬度要求",
+    heat_treatment: "热处理",
+    salt_spray: "盐雾试验",
+    environmental: "环保要求",
+    lifetime: "寿命要求",
+    process: "工艺要求",
+    other: "其他要求",
+  },
   SPRING_TYPE_LABELS: { compression_spring: "压缩弹簧" },
   COMPRESSION_GENERATION_CORE_FIELDS: ["wire_diameter", "mean_diameter", "free_length", "total_coils", "active_coils", "handedness", "end_grinding", "end_coils_closed"],
   COMPRESSION_GENERATION_DEFAULTS: { wire_diameter: 3, mean_diameter: 23, free_length: 45, total_coils: 10, active_coils: 8, end_grinding: 1, end_coils_closed: 1 },
@@ -60,6 +70,7 @@ assert.equal(JSON.stringify(packageData.generation_parameters.load_points), JSON
 }]));
 assert.equal(packageData.generation_parameters.technical_requirements[0].content, "镀锌");
 assert.equal(packageData.generation_parameters.technical_requirements[0].requirement_id, undefined);
+assert.equal(packageData.generation_parameters.technical_requirements_text, "1.表面处理：镀锌");
 
 const pendingRequirementReview = structuredClone(review);
 pendingRequirementReview.technical_requirements[0].requirement_id = "techreq-confirmed";
@@ -75,6 +86,22 @@ assert.deepEqual(
   Object.keys(filteredPackage.generation_parameters.technical_requirements[0]),
   ["type", "content", "confirmation_source"],
 );
+assert.equal(filteredPackage.generation_parameters.technical_requirements_text, "1.表面处理：镀锌");
+
+const formattedRequirementsReview = structuredClone(review);
+formattedRequirementsReview.technical_requirements = [
+  { type: "surface", content: "表面处理：表面镀锌。", need_human_review: false },
+  { type: "salt_spray", content: "盐雾试验: 96小时。", need_human_review: false },
+  { type: "process", content: "去除毛刺。\n不得有锐边。", need_human_review: false },
+];
+assert.equal(
+  context.makeGenerationParameterPackage(formattedRequirementsReview).generation_parameters.technical_requirements_text,
+  "1.表面处理：表面镀锌。\n2.盐雾试验：96小时。\n3.工艺要求：去除毛刺。；不得有锐边。",
+);
+
+const noRequirementsReview = structuredClone(review);
+noRequirementsReview.technical_requirements = [];
+assert.equal(context.makeGenerationParameterPackage(noRequirementsReview).generation_parameters.technical_requirements_text, "");
 
 const pendingLoadPointReview = structuredClone(review);
 pendingLoadPointReview.spring_parameters.load_points.push({ label: "F2", height: 30, force: 150, need_human_review: true });

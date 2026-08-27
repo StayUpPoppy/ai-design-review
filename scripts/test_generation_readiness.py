@@ -9,6 +9,7 @@ from ai_design_review.generation_contract import COMPRESSION_GENERATION_INPUT_FI
 from ai_design_review.generation_readiness import assess_generation_readiness, build_generation_parameter_package
 from ai_design_review.generation_schemas import GenerationParameterPackageV1
 from ai_design_review.standardization_chat_agent import chat_about_standardization
+from ai_design_review.technical_requirements import build_technical_requirements_text
 
 
 def main() -> None:
@@ -19,6 +20,7 @@ def main() -> None:
     _assert_handedness_has_no_default()
     _assert_pending_field_is_omitted_but_package_exports()
     _assert_technical_requirements_require_explicit_confirmation()
+    _assert_technical_requirements_text_formatting()
     _assert_duplicate_technical_requirements_block_release()
     _assert_load_points_require_explicit_confirmation_and_export_cleanly()
     _assert_contract_validation()
@@ -63,6 +65,7 @@ def _assert_ready_review_builds_frozen_package() -> None:
     ]
     assert "torque_points" not in package["generation_parameters"]
     assert package["generation_parameters"]["technical_requirements"][0]["content"] == "镀锌"
+    assert package["generation_parameters"]["technical_requirements_text"] == "1.表面处理：镀锌"
     assert package["derived_parameters"]["mean_diameter"]["value"] == 18
     assert package["derived_parameters"]["spring_index"]["value"] == 9
     assert package["derived_parameters"]["slenderness_ratio"]["value"] == round(40 / 18, 4)
@@ -217,6 +220,34 @@ def _assert_technical_requirements_require_explicit_confirmation() -> None:
     ]
     assert "requirement_id" not in requirements[0]
     assert "source" not in requirements[0]
+    assert build_generation_parameter_package(review)["generation_parameters"]["technical_requirements_text"] == (
+        "1.表面处理：表面镀锌。"
+    )
+
+
+def _assert_technical_requirements_text_formatting() -> None:
+    requirements = [
+        {"type": "surface", "content": "表面处理：表面镀锌。"},
+        {"type": "hardness", "content": "硬度 HRC 45～50。"},
+        {"type": "heat_treatment", "content": "淬火并回火。"},
+        {"type": "salt_spray", "content": "盐雾试验: 96小时。"},
+        {"type": "environmental", "content": "符合 RoHS。"},
+        {"type": "lifetime", "content": "寿命不少于10万次。"},
+        {"type": "process", "content": "去除毛刺。\n不得有锐边。"},
+        {"type": "unexpected_type", "content": "包装时防潮。"},
+        {"type": "other", "content": "  "},
+    ]
+    assert build_technical_requirements_text(requirements) == "\n".join((
+        "1.表面处理：表面镀锌。",
+        "2.硬度要求：硬度 HRC 45～50。",
+        "3.热处理：淬火并回火。",
+        "4.盐雾试验：96小时。",
+        "5.环保要求：符合 RoHS。",
+        "6.寿命要求：寿命不少于10万次。",
+        "7.工艺要求：去除毛刺。；不得有锐边。",
+        "8.其他要求：包装时防潮。",
+    ))
+    assert build_technical_requirements_text([]) == ""
 
 
 def _assert_duplicate_technical_requirements_block_release() -> None:

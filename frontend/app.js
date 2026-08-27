@@ -174,6 +174,17 @@ const TECH_LABELS = {
   other: "其他",
 };
 
+const GENERATION_TECHNICAL_REQUIREMENT_LABELS = {
+  surface: "表面处理",
+  hardness: "硬度要求",
+  heat_treatment: "热处理",
+  salt_spray: "盐雾试验",
+  environmental: "环保要求",
+  lifetime: "寿命要求",
+  process: "工艺要求",
+  other: "其他要求",
+};
+
 const TECH_REQUIREMENT_TYPES = Object.freeze(Object.keys(TECH_LABELS));
 
 const VLM_AVAILABLE = false;
@@ -8152,6 +8163,7 @@ function makeGenerationParameterPackage(review = state.review) {
       content: item.content,
       confirmation_source: "human_confirmed",
     }));
+  const technicalRequirementsText = makeTechnicalRequirementsText(requirements);
   const exportedLoadPointLabels = new Set();
   const loadPoints = (review.spring_parameters?.load_points || [])
     .filter((point) => {
@@ -8196,9 +8208,29 @@ function makeGenerationParameterPackage(review = state.review) {
       spring_parameters: confirmedParameters,
       load_points: loadPoints,
       technical_requirements: requirements,
+      technical_requirements_text: technicalRequirementsText,
     },
     derived_parameters: generationDerivedParameters(review),
   };
+}
+
+function makeTechnicalRequirementsText(requirements) {
+  const lines = [];
+  (Array.isArray(requirements) ? requirements : []).forEach((item) => {
+    let content = String(item?.content || "").trim();
+    if (!content) return;
+    content = content
+      .replace(/(?:\s*(?:\r\n?|\n)\s*)+/g, "；")
+      .replace(/[\t ]+/g, " ")
+      .replace(/；{2,}/g, "；")
+      .trim();
+    const type = normalizeTechnicalRequirementType(item?.type);
+    const label = GENERATION_TECHNICAL_REQUIREMENT_LABELS[type] || "其他要求";
+    const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const withoutDuplicateLabel = content.replace(new RegExp(`^${escapedLabel}\\s*[:：]\\s*`), "").trim();
+    lines.push(`${lines.length + 1}.${label}：${withoutDuplicateLabel || content}`);
+  });
+  return lines.join("\n");
 }
 
 function generationDerivedParameters(review) {

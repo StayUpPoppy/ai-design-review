@@ -70,7 +70,20 @@ def ready_review(*, wire: float = 2.0, free_length: float = 50.0) -> dict[str, o
             "human_confirmed": False,
         },
         "standardization_results": [],
-        "technical_requirements": [],
+        "technical_requirements": [
+            {
+                "requirement_id": "techreq_surface",
+                "type": "surface",
+                "content": "表面处理：表面镀锌。",
+                "need_human_review": False,
+            },
+            {
+                "requirement_id": "techreq_process",
+                "type": "process",
+                "content": "去除毛刺。\n不得有锐边。",
+                "need_human_review": False,
+            },
+        ],
         "derived_parameters": {},
         "derived_parameters_stale": False,
     }
@@ -134,6 +147,8 @@ def main() -> None:
                 assert frozen_parameters["handedness"]["value"] == "right"
                 assert frozen_parameters["end_grinding"]["value"] == 1
                 assert frozen_parameters["end_coils_closed"]["value"] == 1
+                package_technical_text = package.json()["parameter_package"]["generation_parameters"]["technical_requirements_text"]
+                assert package_technical_text == "1.表面处理：表面镀锌。\n2.工艺要求：去除毛刺。；不得有锐边。"
 
                 assert client.patch(
                     "/api/admin/generation-templates/mock/compression-spring/versions/v3/status",
@@ -193,6 +208,10 @@ def main() -> None:
                 claimed_parameters = worker_job["parameter_package"]["generation_parameters"]["spring_parameters"]
                 assert claimed_parameters["mean_diameter"]["value"] == 18
                 assert "outer_diameter" not in claimed_parameters
+                assert (
+                    worker_job["parameter_package"]["generation_parameters"]["technical_requirements_text"]
+                    == package_technical_text
+                )
 
                 upload_too_early = client.post(
                     f"/api/generation-worker/jobs/{generation_id}/artifacts",

@@ -14,6 +14,8 @@ from typing import Any
 import httpx
 from PIL import Image, ImageDraw, ImageFont
 
+from .technical_requirements import build_technical_requirements_text
+
 
 STOP_EVENT = Event()
 CAPABILITY = "mock_solidworks_compression_v1"
@@ -185,11 +187,16 @@ def render_mock_artifacts(job: dict[str, Any]) -> list[tuple[str, str, str, byte
     parameters = generation_parameters.get("spring_parameters") or {}
     load_points = generation_parameters.get("load_points") or []
     technical_requirements = generation_parameters.get("technical_requirements") or []
+    supplied_technical_text = generation_parameters.get("technical_requirements_text")
+    if isinstance(supplied_technical_text, str) and (supplied_technical_text or not technical_requirements):
+        technical_requirements_text = supplied_technical_text
+    else:
+        technical_requirements_text = build_technical_requirements_text(technical_requirements)
     values = {
         field: item.get("value") if isinstance(item, dict) else item
         for field, item in parameters.items()
     }
-    image = _drawing_image(job, values, load_points, technical_requirements)
+    image = _drawing_image(job, values, load_points, technical_requirements, technical_requirements_text)
     png_buffer = io.BytesIO()
     image.save(png_buffer, format="PNG")
     pdf_buffer = io.BytesIO()
@@ -204,6 +211,7 @@ def render_mock_artifacts(job: dict[str, Any]) -> list[tuple[str, str, str, byte
         "parameters": values,
         "load_points": load_points,
         "technical_requirements": technical_requirements,
+        "technical_requirements_text": technical_requirements_text,
         "notice": "This manifest represents a mock 3D model. It is not a SolidWorks file.",
     }
     log = {
@@ -226,6 +234,7 @@ def _drawing_image(
     values: dict[str, Any],
     load_points: list[Any],
     technical_requirements: list[Any],
+    technical_requirements_text: str | None = None,
 ) -> Image.Image:
     width = 1600
     title_font = _load_font(25)
@@ -234,6 +243,7 @@ def _drawing_image(
         technical_requirements,
         body_font,
         max_width=width - 160,
+        technical_requirements_text=technical_requirements_text,
     )
     load_point_lines = _load_point_lines(load_points)
     load_point_y = 810
@@ -330,6 +340,7 @@ def _technical_requirement_lines(
     font: ImageFont.ImageFont,
     *,
     max_width: int,
+    technical_requirements_text: str | None = None,
 ) -> list[str]:
     """Wrap every supplied note without truncating its content.
 
@@ -340,29 +351,24 @@ def _technical_requirement_lines(
 
     measure = ImageDraw.Draw(Image.new("RGB", (1, 1), "white"))
     lines: list[str] = []
-    display_index = 0
-    for item in technical_requirements:
-        if not isinstance(item, dict):
+    text = (
+        technical_requirements_text
+        if isinstance(technical_requirements_text, str)
+        else build_technical_requirements_text(technical_requirements)
+    )
+    for paragraph in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not paragraph.strip():
             continue
-        content = str(item.get("content") or "").strip()
-        if not content:
-            continue
-        display_index += 1
-        paragraphs = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-        first_prefix = f"{display_index}. "
-        continuation_prefix = " " * len(first_prefix)
-        for paragraph_index, paragraph in enumerate(paragraphs):
-            prefix = first_prefix if paragraph_index == 0 else continuation_prefix
-            lines.extend(
-                _wrap_text_line(
-                    measure,
-                    paragraph,
-                    font,
-                    max_width=max_width,
-                    first_prefix=prefix,
-                    continuation_prefix=continuation_prefix,
-                )
+        lines.extend(
+            _wrap_text_line(
+                measure,
+                paragraph,
+                font,
+                max_width=max_width,
+                first_prefix="",
+                continuation_prefix="  ",
             )
+        )
     return lines
 
 

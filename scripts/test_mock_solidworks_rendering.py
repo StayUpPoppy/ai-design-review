@@ -33,6 +33,15 @@ def main() -> None:
     assert "唯一结尾-7" in rendered_text
     assert "第二行内容也必须保留。" in rendered_text
     assert len(lines) > len(requirements)
+    supplied_text = "1.表面处理：以汇总文本为准。\n2.工艺要求：不得截断。"
+    supplied_lines = _technical_requirement_lines(
+        requirements,
+        _load_font(20),
+        max_width=1440,
+        technical_requirements_text=supplied_text,
+    )
+    assert "\n".join(supplied_lines) == supplied_text
+    assert "唯一结尾" not in "\n".join(supplied_lines)
     load_points = [
         {
             "label": "F1",
@@ -52,7 +61,7 @@ def main() -> None:
         "F2: H=30 mm, F=150 N",
     ]
 
-    job = _mock_job(requirements, load_points)
+    job = _mock_job(requirements, load_points, supplied_text)
     artifacts = render_mock_artifacts(job)
     png = next(content for kind, _, _, content in artifacts if kind == "png")
     pdf = next(content for kind, _, _, content in artifacts if kind == "pdf")
@@ -63,11 +72,45 @@ def main() -> None:
     assert pdf.startswith(b"%PDF")
     manifest = json.loads(manifest_bytes.decode("utf-8"))
     assert manifest["technical_requirements"] == requirements
+    assert manifest["technical_requirements_text"] == supplied_text
     assert manifest["load_points"] == load_points
+    legacy_manifest_bytes = next(
+        content for kind, _, _, content in render_mock_artifacts(_mock_job(requirements, load_points))
+        if kind == "model_manifest"
+    )
+    legacy_manifest = json.loads(legacy_manifest_bytes.decode("utf-8"))
+    assert legacy_manifest["technical_requirements_text"].startswith("1.其他要求：")
+    assert "第二行内容也必须保留。" in legacy_manifest["technical_requirements_text"]
+    legacy_defaulted_manifest_bytes = next(
+        content for kind, _, _, content in render_mock_artifacts(_mock_job(requirements, load_points, ""))
+        if kind == "model_manifest"
+    )
+    legacy_defaulted_manifest = json.loads(legacy_defaulted_manifest_bytes.decode("utf-8"))
+    assert legacy_defaulted_manifest["technical_requirements_text"].startswith("1.其他要求：")
     print("mock SolidWorks technical requirement and load point rendering tests passed")
 
 
-def _mock_job(requirements: list[dict[str, str]], load_points: list[dict[str, object]]) -> dict:
+def _mock_job(
+    requirements: list[dict[str, str]],
+    load_points: list[dict[str, object]],
+    technical_requirements_text: str | None = None,
+) -> dict:
+    generation_parameters = {
+        "spring_parameters": {
+            "wire_diameter": {"value": 3},
+            "mean_diameter": {"value": 23},
+            "free_length": {"value": 45},
+            "total_coils": {"value": 10},
+            "active_coils": {"value": 8},
+            "handedness": {"value": "right"},
+            "end_grinding": {"value": 1},
+            "end_coils_closed": {"value": 1},
+        },
+        "load_points": load_points,
+        "technical_requirements": requirements,
+    }
+    if technical_requirements_text is not None:
+        generation_parameters["technical_requirements_text"] = technical_requirements_text
     return {
         "generation_id": "generation-techreq-render",
         "template_code": "mock/compression-spring",
@@ -75,20 +118,7 @@ def _mock_job(requirements: list[dict[str, str]], load_points: list[dict[str, ob
         "parameter_hash": "a" * 64,
         "parameter_package": {
             "source": {"drawing_no": "TECHREQ-001"},
-            "generation_parameters": {
-                "spring_parameters": {
-                    "wire_diameter": {"value": 3},
-                    "mean_diameter": {"value": 23},
-                    "free_length": {"value": 45},
-                    "total_coils": {"value": 10},
-                    "active_coils": {"value": 8},
-                    "handedness": {"value": "right"},
-                    "end_grinding": {"value": 1},
-                    "end_coils_closed": {"value": 1},
-                },
-                "load_points": load_points,
-                "technical_requirements": requirements,
-            },
+            "generation_parameters": generation_parameters,
         },
     }
 

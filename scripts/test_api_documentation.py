@@ -225,6 +225,11 @@ def main() -> None:
     }
     claim_job = schema["components"]["schemas"]["GenerationWorkerClaimJobView"]
     assert claim_job["properties"]["parameter_package"]["$ref"].endswith("GenerationParameterPackageV1")
+    generation_parameters = schema["components"]["schemas"]["GenerationParametersV1"]
+    technical_text = generation_parameters["properties"]["technical_requirements_text"]
+    assert technical_text["default"] == ""
+    assert technical_text["description"]
+    assert technical_text["examples"] == ["1.表面处理：表面镀锌。\n2.盐雾试验：96小时。"]
     chat_response = schema["components"]["schemas"]["StandardizationChatResponse"]
     assert chat_response["properties"]["generation_package_export"]["anyOf"][0]["$ref"].endswith(
         "GenerationPackageExportAction"

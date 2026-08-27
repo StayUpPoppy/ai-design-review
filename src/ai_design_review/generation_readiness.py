@@ -23,7 +23,10 @@ from .load_points import (
     load_point_is_confirmed,
     normalize_load_point_label,
 )
-from .technical_requirements import canonical_technical_requirement_key
+from .technical_requirements import (
+    build_technical_requirements_text,
+    canonical_technical_requirement_key,
+)
 
 
 def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
@@ -148,6 +151,7 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
             "spring_parameters": confirmed_parameters,
             "load_points": load_points,
             "technical_requirements": technical_requirements,
+            "technical_requirements_text": build_technical_requirements_text(technical_requirements),
         },
         "derived_parameters": _export_derived_parameters(review, parameters),
     }
