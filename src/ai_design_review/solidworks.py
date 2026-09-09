@@ -64,7 +64,7 @@ def build_solidworks_command(
         "TaskId": task_id,
         "models": [
             {
-                "modelId": None,
+                "modelId": 1,
                 "modelName": str(source.get("drawing_name") or spring_label),
                 "modelLabel": spring_label,
                 "materialCode": None,

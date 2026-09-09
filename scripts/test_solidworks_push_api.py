@@ -171,7 +171,7 @@ def main() -> None:
                 assert isinstance(payload, dict)
                 assert payload["TaskId"] == task_id
                 model = payload["models"][0]
-                assert model["modelId"] is None
+                assert model["modelId"] == 1
                 assert model["materialCode"] is None
                 assert model["modelParameters"] == {
                     "线径": 3,
