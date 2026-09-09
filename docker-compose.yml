@@ -83,6 +83,8 @@ services:
       - api
     environment:
       AI_REVIEW_FRAME_ANCESTORS: ${AI_REVIEW_FRAME_ANCESTORS:-'self'}
+      # This unauthenticated callback must remain inside the SolidWorks intranet.
+      SOLIDWORKS_CALLBACK_ALLOWED_CIDR: ${SOLIDWORKS_CALLBACK_ALLOWED_CIDR:-192.168.31.0/24}
     ports:
       - "${AI_REVIEW_WEB_PORT:-8088}:80"
     volumes:

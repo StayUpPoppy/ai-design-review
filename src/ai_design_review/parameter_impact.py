@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 from .generation_contract import (
+    COMPRESSION_GENERATION_EXPORT_FIELDS,
     COMPRESSION_GENERATION_INPUT_FIELDS,
     COMPRESSION_GENERATION_LABELS,
     generation_source_item,
@@ -99,7 +100,7 @@ def assess_parameter_change_impact(review: dict[str, Any], actions: list[dict[st
     package_changed = package_changed or technical_requirements_changed or load_points_changed
     frozen_changes = [
         field
-        for field in COMPRESSION_GENERATION_INPUT_FIELDS
+        for field in COMPRESSION_GENERATION_EXPORT_FIELDS
         if before_package.get(field) != after_package.get(field)
     ]
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class GenerationReadinessIssue(BaseModel):
@@ -53,6 +53,11 @@ class GenerationHandednessParameter(GenerationParameterBase):
 class GenerationBinaryParameter(GenerationParameterBase):
     value: Literal[0, 1] = Field(description="二值开关，只允许 0 或 1。", examples=[1])
     unit: None = Field(default=None, description="无单位。")
+
+
+class GenerationMaterialParameter(GenerationParameterBase):
+    value: str = Field(min_length=1, description="已人工确认的材料名称；SolidWorks 使用该值匹配本地材料库。", examples=["65Mn"])
+    unit: None = Field(default=None, description="材料名称不使用单位。")
 
 
 class CompressionSpringGenerationInputsV1(BaseModel):
@@ -174,6 +179,69 @@ class GenerationParameterPackageV1(BaseModel):
     derived_parameters: dict[str, Any] = Field(default_factory=dict, description="审图端保存的派生计算结果，SolidWorks V1 不解析。")
 
 
+class CompressionSpringGenerationInputsV2(CompressionSpringGenerationInputsV1):
+    """V2 keeps every V1 geometry input and adds a non-blocking material property."""
+
+    material: GenerationMaterialParameter | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="可选材料。仅当前值已人工确认且非空时发送；缺失时 Worker 仍可生成，但不设置模型材料或二维图材料标注。",
+    )
+
+
+class GenerationParametersV2(GenerationParametersV1):
+    spring_parameters: CompressionSpringGenerationInputsV2 = Field(
+        description="SolidWorks 的八个必填建模字段，以及可选的材料字段。"
+    )
+
+
+class GenerationExportPolicyV2(BaseModel):
+    parameter_filter: Literal["frozen_compression_inputs_v2_human_confirmed_only"] = Field(
+        description="V2 固定参数白名单策略：八个必填建模字段加可选已确认材料。"
+    )
+    readiness_is_advisory: bool = Field(description="参数包可导出但创建任务仍必须通过服务端就绪检查。")
+
+
+class GenerationParameterPackageV2(GenerationParameterPackageV1):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{
+            "schema_version": "spring_generation_parameters/v2",
+            "package_type": "confirmed_compression_spring_generation_input",
+            "generated_at": "2026-09-08T08:00:00+00:00",
+            "export_policy": {
+                "parameter_filter": "frozen_compression_inputs_v2_human_confirmed_only",
+                "readiness_is_advisory": True,
+            },
+            "source": {"drawing_no": "SPRING-001", "drawing_name": "压缩弹簧", "spring_type": "compression_spring", "spring_type_label": "圆柱螺旋压缩弹簧"},
+            "standard_context": {"selected_standard": "GB/T 1239.2-2009", "selection_status": "confirmed", "human_confirmed": True},
+            "generation_parameters": {
+                "spring_parameters": {
+                    "material": {"label": "材料", "value": "65Mn", "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "wire_diameter": {"label": "线径", "value": 3.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "mean_diameter": {"label": "中径", "value": 23.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "free_length": {"label": "自由长度", "value": 45.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "total_coils": {"label": "总圈数", "value": 10, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "active_coils": {"label": "有效圈数", "value": 8, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "handedness": {"label": "旋向", "value": "right", "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "end_grinding": {"label": "两端磨削", "value": 1, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "end_coils_closed": {"label": "端圈压并", "value": 1, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                },
+                "load_points": [{"label": "F1", "height": {"value": 25.0, "unit": "mm"}, "force": {"value": 100.0, "unit": "N", "tolerance_upper": 6.0, "tolerance_lower": -6.0}, "confirmation_source": "human_confirmed"}],
+                "technical_requirements": [{"type": "other", "content": "两端磨平，表面镀锌。", "confirmation_source": "human_confirmed"}],
+                "technical_requirements_text": "1.其他要求：两端磨平，表面镀锌。",
+            },
+            "derived_parameters": {},
+        }]},
+    )
+
+    schema_version: Literal["spring_generation_parameters/v2"] = Field(description="V2 冻结协议版本。")
+    export_policy: GenerationExportPolicyV2
+    standard_context: GenerationStandardContextV1 = Field(description="可选标准化上下文；SolidWorks V2 不需要解析，空标准上下文不阻止生图。")
+    generation_parameters: GenerationParametersV2
+    derived_parameters: dict[str, Any] = Field(default_factory=dict, description="审图端保存的派生计算结果，SolidWorks V2 不解析。")
+
+
 class GenerationTemplateView(BaseModel):
     template_code: str = Field(description="稳定的模板代码。", examples=["mock/compression-spring"])
     version: str = Field(description="不可变模板版本号。", examples=["v1"])
@@ -225,7 +293,7 @@ class GenerationJobView(BaseModel):
     generation_id: str = Field(description="生图任务 ID。")
     review_id: str = Field(description="关联的审图任务 ID。")
     review_revision: int = Field(description="创建任务时固化的审图修订号。")
-    parent_generation_id: str | None = Field(default=None, description="参数修改后再次生图所关联的上一版本任务 ID。")
+    parent_generation_id: str | None = Field(default=None, description="历史 Mock 任务的上一版本关联 ID；真实 SolidWorks 推送任务始终为 null。")
     template_code: str = Field(description="任务固化的模板代码。")
     template_version: str = Field(description="任务固化的模板版本。")
     worker_capability: str = Field(description="领取任务所需的 Worker 能力代码。")
@@ -238,6 +306,7 @@ class GenerationJobView(BaseModel):
     status: Literal["queued", "claimed", "generating_3d", "generating_2d", "uploading", "completed", "failed", "cancelled"] = Field(description="生图任务状态。")
     stage: str = Field(description="当前执行阶段。")
     progress: int = Field(description="当前进度百分比。")
+    status_message: str | None = Field(default=None, description="SolidWorks最近一次回传的阶段说明。")
     error_code: str | None = Field(default=None, description="失败时的稳定机器可读错误代码。")
     error_message: str | None = Field(default=None, description="失败时供用户或开发人员查看的错误说明。")
     attempt_count: int = Field(description="任务领取或重试次数。")
@@ -261,7 +330,7 @@ class GenerationReadinessResponse(BaseModel):
 
 
 class GenerationPackageResponse(GenerationReadinessResponse):
-    parameter_package: GenerationParameterPackageV1 = Field(description="冻结的 spring_generation_parameters/v1 生图参数包。")
+    parameter_package: GenerationParameterPackageV2 = Field(description="当前生成的 spring_generation_parameters/v2 生图参数包。")
 
 
 class GenerationTemplateListResponse(BaseModel):
@@ -288,7 +357,9 @@ class GenerationJobResponse(BaseModel):
 
 
 class GenerationWorkerClaimJobView(GenerationJobView):
-    parameter_package: GenerationParameterPackageV1 = Field(description="领取任务时返回的完整冻结参数包。")
+    parameter_package: GenerationParameterPackageV1 | GenerationParameterPackageV2 = Field(
+        description="领取任务时返回的完整冻结参数包；旧任务保留 V1，新任务使用 V2。"
+    )
 
 
 class GenerationWorkerClaimResponse(BaseModel):
@@ -324,7 +395,7 @@ class GenerationTemplateCreate(BaseModel):
         "required_fields": ["wire_diameter", "mean_diameter", "free_length", "total_coils"],
         "match_rules": {"ranges": {"wire_diameter": [0.5, 8.0]}},
         "parameter_mapping": {"wire_diameter": "D1@Sketch1"},
-        "worker_capability": "solidworks_compression_v1",
+        "worker_capability": "solidworks_compression_v2",
     }]})
 
     template_code: str = Field(min_length=1, max_length=192, description="稳定的模板代码；同一模板的后续版本复用该代码。", examples=["compression/round-wire"])
@@ -366,7 +437,6 @@ class GenerationJobCreate(BaseModel):
         "expected_review_revision": 3,
         "idempotency_key": "review-123-r3-generation-1",
         "template_code": "mock/compression-spring",
-        "parent_generation_id": None,
         "requested_artifact_types": ["pdf"],
         "mock_scenario": "success",
     }]})
@@ -374,10 +444,10 @@ class GenerationJobCreate(BaseModel):
     expected_review_revision: int = Field(ge=1, description="客户端当前审图修订号；不一致时返回 409。", examples=[3])
     idempotency_key: str = Field(min_length=8, max_length=128, description="调用方生成的幂等键，避免重复创建任务。", examples=["review-123-r3-generation-1"])
     template_code: str | None = Field(default=None, max_length=192, description="可选的指定模板代码；省略时自动选择唯一匹配模板。")
-    parent_generation_id: str | None = Field(default=None, max_length=64, description="修改参数再次生图时关联的上一版本任务 ID。")
+    parent_generation_id: str | None = Field(default=None, max_length=64, description="仅保留给历史 Mock 链路兼容；真实 SolidWorks 推送任务忽略该字段并始终创建新的 TaskId。")
     requested_artifact_types: list[str] = Field(
         default_factory=lambda: ["pdf"],
-        description="希望 Worker 生成的产物类型；SolidWorks V1 默认只需上传 PDF，PNG 由服务器生成。",
+        description="希望 Worker 生成的产物类型；SolidWorks V2 默认只需上传 PDF，PNG 由服务器生成。",
         json_schema_extra={"default": ["pdf"]},
     )
     mock_scenario: Literal["success", "fail_3d", "fail_2d", "timeout"] = Field(default="success", description="模拟 Worker 测试场景；真实 Worker 可忽略。")
@@ -395,7 +465,7 @@ class GenerationJobCreate(BaseModel):
 class GenerationWorkerClaim(BaseModel):
     model_config = ConfigDict(json_schema_extra={"examples": [{
         "worker_id": "solidworks-station-01",
-        "capabilities": ["solidworks_compression_v1", "mock_solidworks_compression_v1"],
+        "capabilities": ["solidworks_compression_v2", "mock_solidworks_compression_v2"],
     }]})
 
     worker_id: str = Field(min_length=1, max_length=128, description="Worker 实例唯一标识。", examples=["solidworks-station-01"])
@@ -430,12 +500,65 @@ class GenerationWorkerComplete(BaseModel):
 
 
 class GenerationWorkerFailed(BaseModel):
-    model_config = ConfigDict(json_schema_extra={"examples": [{
-        "worker_id": "solidworks-station-01",
-        "error_code": "solidworks_rebuild_failed",
-        "error_message": "模板重建失败：尺寸约束冲突。",
-    }]})
+    model_config = ConfigDict(json_schema_extra={"examples": [
+        {
+            "worker_id": "solidworks-station-01",
+            "error_code": "solidworks_rebuild_failed",
+            "error_message": "模板重建失败：尺寸约束冲突。",
+        },
+        {
+            "worker_id": "solidworks-station-01",
+            "error_code": "solidworks_material_not_found",
+            "error_message": "SolidWorks 本地材料库未找到材料：65Mn。",
+        },
+    ]})
 
     worker_id: str = Field(min_length=1, max_length=128, description="当前持有任务租约的 Worker ID。")
-    error_code: str = Field(min_length=1, max_length=96, description="稳定的机器可读错误代码。", examples=["solidworks_rebuild_failed"])
+    error_code: str = Field(min_length=1, max_length=96, description="稳定的机器可读错误代码；材料已提供但本地材料库无法匹配时使用 solidworks_material_not_found。", examples=["solidworks_rebuild_failed", "solidworks_material_not_found"])
     error_message: str = Field(min_length=1, max_length=4000, description="无敏感信息的可读错误说明。")
+
+
+class SolidWorksPdfFile(BaseModel):
+    """The single preview PDF returned with a completed SolidWorks callback."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fileName: str = Field(min_length=5, max_length=240, description="二维PDF文件名，必须以 .pdf 结尾。", examples=["SPRING-001.pdf"])
+    mimeType: Literal["application/pdf"] = Field(description="固定为 application/pdf。")
+    contentBase64: str = Field(min_length=1, description="纯Base64编码的PDF内容，不包含Data URL前缀。")
+
+    @field_validator("fileName")
+    @classmethod
+    def validate_pdf_filename(cls, value: str) -> str:
+        if not value.lower().endswith(".pdf"):
+            raise ValueError("fileName must end with .pdf")
+        return value
+
+
+class SolidWorksStatusCallback(BaseModel):
+    """Trusted-network callback used by SolidWorks push generation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    TaskId: int = Field(ge=1_000_000_000, le=9_999_999_999, description="我方生成的十位Long任务号。", examples=[6378676753])
+    status: Literal["generating_3d", "generating_2d", "completed", "failed"] = Field(description="SolidWorks当前阶段。")
+    progress: int = Field(ge=0, le=100, description="当前进度百分比。")
+    message: str | None = Field(default=None, max_length=1000, description="供页面展示的当前阶段说明。")
+    file: SolidWorksPdfFile | None = Field(default=None, description="仅status为completed时必传的二维PDF。")
+    errorCode: str | None = Field(default=None, min_length=1, max_length=96, description="仅失败时可选的机器可读错误码。")
+
+    @model_validator(mode="after")
+    def validate_terminal_payload(self) -> "SolidWorksStatusCallback":
+        if self.status == "completed" and self.file is None:
+            raise ValueError("file is required when status is completed")
+        if self.status != "completed" and self.file is not None:
+            raise ValueError("file is only allowed when status is completed")
+        if self.status != "failed" and self.errorCode is not None:
+            raise ValueError("errorCode is only allowed when status is failed")
+        return self
+
+
+class SolidWorksStatusCallbackResponse(BaseModel):
+    TaskId: int = Field(description="已处理的十位Long任务号。")
+    status: Literal["generating_3d", "generating_2d", "completed", "failed"] = Field(description="已保存的SolidWorks状态。")
+    duplicate: bool = Field(description="本次是否为已处理回调的幂等重试。")

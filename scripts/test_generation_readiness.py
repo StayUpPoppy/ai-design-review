@@ -5,9 +5,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_design_review.generation_contract import COMPRESSION_GENERATION_INPUT_FIELDS
+from copy import deepcopy
+
+from ai_design_review.generation_contract import COMPRESSION_GENERATION_EXPORT_FIELDS, COMPRESSION_GENERATION_INPUT_FIELDS
 from ai_design_review.generation_readiness import assess_generation_readiness, build_generation_parameter_package
-from ai_design_review.generation_schemas import GenerationParameterPackageV1
+from ai_design_review.generation_schemas import GenerationParameterPackageV1, GenerationParameterPackageV2
 from ai_design_review.standardization_chat_agent import chat_about_standardization
 from ai_design_review.technical_requirements import build_technical_requirements_text
 
@@ -18,6 +20,7 @@ def main() -> None:
     _assert_mean_diameter_source_precedence()
     _assert_missing_values_receive_pending_defaults()
     _assert_handedness_has_no_default()
+    _assert_optional_material_export_and_warning()
     _assert_pending_field_is_omitted_but_package_exports()
     _assert_technical_requirements_require_explicit_confirmation()
     _assert_technical_requirements_text_formatting()
@@ -41,11 +44,15 @@ def _assert_ready_review_builds_frozen_package() -> None:
     assert readiness["confirmed_core_count"] == 8
     assert readiness["core_field_count"] == 8
     package = build_generation_parameter_package(review)
-    GenerationParameterPackageV1.model_validate(package)
-    assert package["schema_version"] == "spring_generation_parameters/v1"
+    GenerationParameterPackageV2.model_validate(package)
+    assert package["schema_version"] == "spring_generation_parameters/v2"
     assert package["package_type"] == "confirmed_compression_spring_generation_input"
     spring_parameters = package["generation_parameters"]["spring_parameters"]
-    assert tuple(spring_parameters) == COMPRESSION_GENERATION_INPUT_FIELDS
+    assert tuple(spring_parameters) == COMPRESSION_GENERATION_EXPORT_FIELDS
+    assert spring_parameters["material"]["value"] == "SUS304 raw"
+    assert spring_parameters["material"]["unit"] is None
+    assert spring_parameters["material"]["tolerance_upper"] is None
+    assert spring_parameters["material"]["tolerance_lower"] is None
     assert spring_parameters["wire_diameter"]["value"] == 2
     assert spring_parameters["mean_diameter"]["value"] == 18
     assert spring_parameters["total_coils"]["value"] == 12
@@ -53,7 +60,7 @@ def _assert_ready_review_builds_frozen_package() -> None:
     assert spring_parameters["handedness"]["value"] == "right"
     assert spring_parameters["end_grinding"]["value"] == 1
     assert spring_parameters["end_coils_closed"]["value"] == 1
-    for excluded in ("material", "outer_diameter", "inner_diameter", "solid_height", "spring_rate", "end_type"):
+    for excluded in ("outer_diameter", "inner_diameter", "solid_height", "spring_rate", "end_type"):
         assert excluded not in spring_parameters
     assert package["generation_parameters"]["load_points"] == [
         {
@@ -146,7 +153,7 @@ def _assert_missing_values_receive_pending_defaults() -> None:
         "wire_diameter", "mean_diameter", "free_length", "total_coils", "active_coils", "end_grinding", "end_type"
     ))
     package = build_generation_parameter_package(review)
-    assert set(package["generation_parameters"]["spring_parameters"]) == {"handedness"}
+    assert set(package["generation_parameters"]["spring_parameters"]) == {"material", "handedness"}
 
 
 def _assert_handedness_has_no_default() -> None:
@@ -156,6 +163,35 @@ def _assert_handedness_has_no_default() -> None:
     assert readiness["status"] == "needs_input"
     assert any(item["field"] == "handedness" for item in readiness["missing_fields"])
     assert "handedness" not in readiness["defaulted_fields"]
+
+
+def _assert_optional_material_export_and_warning() -> None:
+    missing = _ready_review()
+    del missing["spring_parameters"]["material"]
+    readiness = assess_generation_readiness(missing)
+    assert readiness["status"] == "ready_with_warnings", readiness
+    assert any(item["field"] == "material" for item in readiness["warnings"])
+    assert "material" not in build_generation_parameter_package(missing)["generation_parameters"]["spring_parameters"]
+
+    pending = _ready_review()
+    pending["spring_parameters"]["material"]["need_human_review"] = True
+    readiness = assess_generation_readiness(pending)
+    assert readiness["status"] == "ready_with_warnings", readiness
+    assert any(item["field"] == "material" for item in readiness["warnings"])
+    assert "material" not in build_generation_parameter_package(pending)["generation_parameters"]["spring_parameters"]
+
+    invalid = _ready_review()
+    invalid["spring_parameters"]["material"]["value"] = 65
+    readiness = assess_generation_readiness(invalid)
+    assert readiness["status"] == "ready_with_warnings", readiness
+    assert any(item["field"] == "material" for item in readiness["warnings"])
+
+    package = build_generation_parameter_package(_ready_review())
+    legacy = deepcopy(package)
+    legacy["schema_version"] = "spring_generation_parameters/v1"
+    legacy["export_policy"]["parameter_filter"] = "frozen_compression_inputs_v1_human_confirmed_only"
+    legacy["generation_parameters"]["spring_parameters"].pop("material")
+    GenerationParameterPackageV1.model_validate(legacy)
 
 
 def _assert_pending_field_is_omitted_but_package_exports() -> None:
@@ -335,7 +371,7 @@ def _assert_optional_standardization_is_warning() -> None:
         "selection_status": "not_started",
         "human_confirmed": False,
     }
-    assert tuple(package["generation_parameters"]["spring_parameters"]) == COMPRESSION_GENERATION_INPUT_FIELDS
+    assert tuple(package["generation_parameters"]["spring_parameters"]) == COMPRESSION_GENERATION_EXPORT_FIELDS
 
     pending_standard = _ready_review()
     pending_standard["standard_selection"]["need_human_review"] = True
@@ -411,7 +447,12 @@ def _ready_review() -> dict:
             "human_confirmed": True,
         },
         "spring_parameters": {
-            "material": _param("SUS304 raw", standard_value="SUS304"),
+            "material": _param(
+                "SUS304 raw",
+                standard_value="SUS304",
+                tolerance_upper=1,
+                tolerance_lower=-1,
+            ),
             "wire_diameter": _param(2, "mm"),
             "outer_diameter": _param(20, "mm"),
             "inner_diameter": _param(16, "mm"),

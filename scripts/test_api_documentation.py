@@ -72,6 +72,7 @@ EXPECTED_OPERATION_KEYS = {
     ("POST", "/api/generation-worker/jobs/{generation_id}/artifacts"),
     ("POST", "/api/generation-worker/jobs/{generation_id}/complete"),
     ("POST", "/api/generation-worker/jobs/{generation_id}/failed"),
+    ("POST", "/api/solidworks/status"),
 }
 
 EXPECTED_OPERATION_IDS = {
@@ -112,6 +113,7 @@ EXPECTED_OPERATION_IDS = {
     "retry_generation_job_api_generation_jobs__generation_id__retry_post",
     "retry_recognition_job_api_reviews__job_id__retry_post",
     "root__get",
+    "receive_solidworks_status_api_solidworks_status_post",
     "save_existing_review_api_reviews__job_id__patch",
     "search_standard_knowledge_api_standard_knowledge_search_get",
     "standardization_chat_existing_review_api_reviews__job_id__standardization_chat_post",
@@ -172,7 +174,7 @@ def main() -> None:
                 operations[key] = operation
 
     assert set(operations) == EXPECTED_OPERATION_KEYS
-    assert len(operations) == 46
+    assert len(operations) == 47
     assert {operation["operationId"] for operation in operations.values()} == EXPECTED_OPERATION_IDS
 
     for key, operation in operations.items():
@@ -201,6 +203,7 @@ def main() -> None:
     assert operations[("GET", "/api/session")]["security"] == [{"ErpIdentityCookie": []}]
     assert operations[("POST", "/api/admin/generation-templates")]["security"] == [{"GenerationAdminBearer": []}]
     assert operations[("POST", "/api/generation-worker/jobs/claim")]["security"] == [{"GenerationWorkerBearer": []}]
+    assert operations[("POST", "/api/solidworks/status")]["security"] == []
 
     assert operations[("PATCH", "/api/reviews/{job_id}")]["requestBody"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/SaveReviewRequest"
@@ -219,12 +222,18 @@ def main() -> None:
     assert set(frozen_inputs["required"]) == frozen_fields
     assert frozen_inputs.get("additionalProperties") is False
     assert frozen_inputs["properties"]["handedness"]["$ref"].endswith("GenerationHandednessParameter")
+    frozen_inputs_v2 = schema["components"]["schemas"]["CompressionSpringGenerationInputsV2"]
+    assert set(frozen_inputs_v2["required"]) == frozen_fields
+    assert frozen_inputs_v2["properties"]["material"]["anyOf"][0]["$ref"].endswith("GenerationMaterialParameter")
     claim_response = operations[("POST", "/api/generation-worker/jobs/claim")]["responses"]["200"]
     assert claim_response["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/GenerationWorkerClaimResponse"
     }
     claim_job = schema["components"]["schemas"]["GenerationWorkerClaimJobView"]
-    assert claim_job["properties"]["parameter_package"]["$ref"].endswith("GenerationParameterPackageV1")
+    claim_package = claim_job["properties"]["parameter_package"]
+    assert {item["$ref"].split("/")[-1] for item in claim_package["anyOf"]} == {
+        "GenerationParameterPackageV1", "GenerationParameterPackageV2",
+    }
     generation_parameters = schema["components"]["schemas"]["GenerationParametersV1"]
     technical_text = generation_parameters["properties"]["technical_requirements_text"]
     assert technical_text["default"] == ""
@@ -235,11 +244,16 @@ def main() -> None:
         "GenerationPackageExportAction"
     )
     package_export_action = schema["components"]["schemas"]["GenerationPackageExportAction"]
-    assert package_export_action["properties"]["schema_version"]["examples"] == ["spring_generation_parameters/v1"]
+    assert package_export_action["properties"]["schema_version"]["examples"] == ["spring_generation_parameters/v2"]
     assert package_export_action["properties"]["parameter_fields"]["description"]
     job_create = schema["components"]["schemas"]["GenerationJobCreate"]
     requested_artifacts = job_create["properties"]["requested_artifact_types"]
     assert requested_artifacts.get("default") == ["pdf"]
+    solidworks_callback = schema["components"]["schemas"]["SolidWorksStatusCallback"]
+    assert set(solidworks_callback["required"]) == {"TaskId", "status", "progress"}
+    assert solidworks_callback["properties"]["TaskId"]["minimum"] == 1_000_000_000
+    assert solidworks_callback["properties"]["TaskId"]["maximum"] == 9_999_999_999
+    assert solidworks_callback["properties"]["file"]["description"]
     assert operations[("POST", "/api/reviews")]["responses"]["413"]["content"]["application/json"]["example"]
     assert operations[("POST", "/api/generation-worker/jobs/{generation_id}/artifacts")]["responses"]["415"]["content"]["application/json"]["example"]
 

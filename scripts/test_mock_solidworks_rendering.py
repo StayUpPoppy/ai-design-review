@@ -74,6 +74,7 @@ def main() -> None:
     assert manifest["technical_requirements"] == requirements
     assert manifest["technical_requirements_text"] == supplied_text
     assert manifest["load_points"] == load_points
+    assert manifest["material"] == "65Mn"
     legacy_manifest_bytes = next(
         content for kind, _, _, content in render_mock_artifacts(_mock_job(requirements, load_points))
         if kind == "model_manifest"
@@ -87,6 +88,13 @@ def main() -> None:
     )
     legacy_defaulted_manifest = json.loads(legacy_defaulted_manifest_bytes.decode("utf-8"))
     assert legacy_defaulted_manifest["technical_requirements_text"].startswith("1.其他要求：")
+    no_material_job = _mock_job(requirements, load_points)
+    no_material_job["parameter_package"]["generation_parameters"]["spring_parameters"].pop("material")
+    no_material_manifest_bytes = next(
+        content for kind, _, _, content in render_mock_artifacts(no_material_job)
+        if kind == "model_manifest"
+    )
+    assert json.loads(no_material_manifest_bytes.decode("utf-8"))["material"] is None
     print("mock SolidWorks technical requirement and load point rendering tests passed")
 
 
@@ -97,6 +105,7 @@ def _mock_job(
 ) -> dict:
     generation_parameters = {
         "spring_parameters": {
+            "material": {"value": "65Mn"},
             "wire_diameter": {"value": 3},
             "mean_diameter": {"value": 23},
             "free_length": {"value": 45},
@@ -114,7 +123,7 @@ def _mock_job(
     return {
         "generation_id": "generation-techreq-render",
         "template_code": "mock/compression-spring",
-        "template_version": "v3",
+        "template_version": "v4",
         "parameter_hash": "a" * 64,
         "parameter_package": {
             "source": {"drawing_no": "TECHREQ-001"},

@@ -18,7 +18,7 @@ from .technical_requirements import build_technical_requirements_text
 
 
 STOP_EVENT = Event()
-CAPABILITY = "mock_solidworks_compression_v1"
+CAPABILITY = "mock_solidworks_compression_v2"
 
 
 def _positive_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
@@ -62,7 +62,7 @@ class MockSolidWorksWorker:
         while not STOP_EVENT.is_set():
             try:
                 response = self.client.patch(
-                    "/api/admin/generation-templates/mock/compression-spring/versions/v3/status",
+                    "/api/admin/generation-templates/mock/compression-spring/versions/v4/status",
                     headers={"Authorization": f"Bearer {self.admin_api_key}"},
                     json={"enabled": True},
                 )
@@ -74,10 +74,10 @@ class MockSolidWorksWorker:
                         headers={"Authorization": f"Bearer {self.admin_api_key}"},
                         json={
                             "template_code": "mock/compression-spring",
-                            "version": "v3",
+                            "version": "v4",
                             "drawing_type": "compression_spring",
-                            "label": "模拟圆柱螺旋压缩弹簧（冻结协议 V1）",
-                            "priority": 1002,
+                            "label": "模拟圆柱螺旋压缩弹簧（冻结协议 V2）",
+                            "priority": 1003,
                             "enabled": True,
                             "is_mock": True,
                             "required_fields": [
@@ -85,7 +85,7 @@ class MockSolidWorksWorker:
                                 "active_coils", "handedness", "end_grinding", "end_coils_closed",
                             ],
                             "match_rules": {},
-                            "parameter_mapping": {},
+                            "parameter_mapping": {"material": "SolidWorks material / 二维图材料标注"},
                             "worker_capability": CAPABILITY,
                         },
                     )
@@ -209,6 +209,7 @@ def render_mock_artifacts(job: dict[str, Any]) -> list[tuple[str, str, str, byte
         "template_version": job.get("template_version"),
         "parameter_hash": job.get("parameter_hash"),
         "parameters": values,
+        "material": values.get("material") or None,
         "load_points": load_points,
         "technical_requirements": technical_requirements,
         "technical_requirements_text": technical_requirements_text,
@@ -282,11 +283,13 @@ def _drawing_image(
     table_x, table_y = 1080, 210
     draw.rectangle((table_x - 25, table_y - 35, 1510, 820), outline="#9ca3af", width=2)
     draw.text((table_x, table_y - 15), "Confirmed parameters", fill="#111827", font=body_font)
+    material = str(values.get("material") or "未指定材料")
+    draw.text((table_x, table_y + 30), f"material / 材料: {material}", fill="#111827", font=body_font)
     fields = [
         "wire_diameter", "mean_diameter", "free_length", "total_coils",
         "active_coils", "handedness", "end_grinding", "end_coils_closed",
     ]
-    y = table_y + 30
+    y = table_y + 72
     for field in fields:
         if values.get(field) in (None, ""):
             continue

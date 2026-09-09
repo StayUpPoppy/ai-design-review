@@ -13,7 +13,10 @@ from .end_conditions import (
 )
 
 
-GENERATION_SCHEMA_VERSION = "spring_generation_parameters/v1"
+# V2 adds a non-geometric, optional material property.  Keep the mandatory
+# geometry contract separate so all readiness and template matching rules stay
+# anchored to the original eight SolidWorks modelling inputs.
+GENERATION_SCHEMA_VERSION = "spring_generation_parameters/v2"
 COMPRESSION_GENERATION_INPUT_FIELDS = (
     "wire_diameter",
     "mean_diameter",
@@ -23,6 +26,11 @@ COMPRESSION_GENERATION_INPUT_FIELDS = (
     "handedness",
     "end_grinding",
     "end_coils_closed",
+)
+COMPRESSION_GENERATION_OPTIONAL_EXPORT_FIELDS = ("material",)
+COMPRESSION_GENERATION_EXPORT_FIELDS = (
+    *COMPRESSION_GENERATION_OPTIONAL_EXPORT_FIELDS,
+    *COMPRESSION_GENERATION_INPUT_FIELDS,
 )
 COMPRESSION_GENERATION_DEFAULTS: dict[str, int | float] = {
     "wire_diameter": 3.0,
@@ -34,6 +42,7 @@ COMPRESSION_GENERATION_DEFAULTS: dict[str, int | float] = {
     "end_coils_closed": 1,
 }
 COMPRESSION_GENERATION_UNITS: dict[str, str | None] = {
+    "material": None,
     "wire_diameter": "mm",
     "mean_diameter": "mm",
     "free_length": "mm",
@@ -44,6 +53,7 @@ COMPRESSION_GENERATION_UNITS: dict[str, str | None] = {
     "end_coils_closed": None,
 }
 COMPRESSION_GENERATION_LABELS = {
+    "material": "材料",
     "wire_diameter": "线径",
     "mean_diameter": "中径",
     "free_length": "自由长度",
@@ -121,6 +131,13 @@ def generation_parameter_state(parameters: dict[str, Any], field: str) -> str:
 
 
 def normalize_generation_value(field: str, value: Any) -> float | int | str:
+    if field == "material":
+        if not isinstance(value, str):
+            raise ValueError("material must be a non-empty string")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("material must be a non-empty string")
+        return normalized
     if field in {"wire_diameter", "mean_diameter", "free_length"}:
         number = _finite_number(value, field)
         if number <= 0:
@@ -166,7 +183,7 @@ def normalize_generation_value(field: str, value: Any) -> float | int | str:
 
 def export_generation_parameters(parameters: dict[str, Any]) -> dict[str, dict[str, Any]]:
     exported: dict[str, dict[str, Any]] = {}
-    for field in COMPRESSION_GENERATION_INPUT_FIELDS:
+    for field in COMPRESSION_GENERATION_EXPORT_FIELDS:
         item = generation_source_item(parameters, field)
         if item is None or item.get("need_human_review"):
             continue
@@ -178,8 +195,10 @@ def export_generation_parameters(parameters: dict[str, Any]) -> dict[str, dict[s
             "label": COMPRESSION_GENERATION_LABELS[field],
             "value": value,
             "unit": COMPRESSION_GENERATION_UNITS[field],
-            "tolerance_upper": item.get("tolerance_upper"),
-            "tolerance_lower": item.get("tolerance_lower"),
+            # Material is a named library property, not a dimensional value.
+            # Its V2 representation intentionally keeps unit and tolerances null.
+            "tolerance_upper": None if field == "material" else item.get("tolerance_upper"),
+            "tolerance_lower": None if field == "material" else item.get("tolerance_lower"),
             "confirmation_source": "human_confirmed",
         }
     return exported

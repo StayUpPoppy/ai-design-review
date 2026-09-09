@@ -14,6 +14,7 @@ from .end_conditions import (
     normalize_end_type,
 )
 from .generation_contract import (
+    COMPRESSION_GENERATION_EXPORT_FIELDS,
     COMPRESSION_GENERATION_INPUT_FIELDS,
     COMPRESSION_GENERATION_LABELS,
     GENERATION_SCHEMA_VERSION,
@@ -1221,7 +1222,7 @@ def _handle_generation_package_export(
     parameters = export_review.get("spring_parameters") or {}
     field_summary = []
     baseline_parameter_fields = []
-    for field in COMPRESSION_GENERATION_INPUT_FIELDS:
+    for field in COMPRESSION_GENERATION_EXPORT_FIELDS:
         item = generation_source_item(parameters, field)
         value = item.get("value") if isinstance(item, dict) else item
         unit = item.get("unit") if isinstance(item, dict) else None

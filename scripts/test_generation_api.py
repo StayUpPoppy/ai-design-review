@@ -133,7 +133,7 @@ def main() -> None:
                 assert not any(item["field"] == "standard_no" for item in readiness_view["missing_fields"])
                 package = client.get("/api/reviews/review-generation/generation-package")
                 assert package.status_code == 200, package.text
-                assert package.json()["parameter_package"]["schema_version"] == "spring_generation_parameters/v1"
+                assert package.json()["parameter_package"]["schema_version"] == "spring_generation_parameters/v2"
                 assert package.json()["parameter_package"]["standard_context"] == {
                     "selected_standard": None,
                     "selection_status": "not_started",
@@ -141,9 +141,10 @@ def main() -> None:
                 }
                 frozen_parameters = package.json()["parameter_package"]["generation_parameters"]["spring_parameters"]
                 assert set(frozen_parameters) == {
-                    "wire_diameter", "mean_diameter", "free_length", "total_coils",
+                    "material", "wire_diameter", "mean_diameter", "free_length", "total_coils",
                     "active_coils", "handedness", "end_grinding", "end_coils_closed",
                 }
+                assert frozen_parameters["material"]["value"] == "60Si2MnA"
                 assert frozen_parameters["handedness"]["value"] == "right"
                 assert frozen_parameters["end_grinding"]["value"] == 1
                 assert frozen_parameters["end_coils_closed"]["value"] == 1
@@ -151,23 +152,23 @@ def main() -> None:
                 assert package_technical_text == "1.表面处理：表面镀锌。\n2.工艺要求：去除毛刺。；不得有锐边。"
 
                 assert client.patch(
-                    "/api/admin/generation-templates/mock/compression-spring/versions/v3/status",
+                    "/api/admin/generation-templates/mock/compression-spring/versions/v4/status",
                     json={"enabled": True},
                 ).status_code == 401
                 enabled = client.patch(
-                    "/api/admin/generation-templates/mock/compression-spring/versions/v3/status",
+                    "/api/admin/generation-templates/mock/compression-spring/versions/v4/status",
                     headers=bearer("test-admin-key"),
                     json={"enabled": True},
                 )
                 assert enabled.status_code == 200, enabled.text
-                assert enabled.json()["template"]["priority"] == 1002
+                assert enabled.json()["template"]["priority"] == 1003
                 matched = client.post(
                     "/api/reviews/review-generation/generation-template-match",
                     json={},
                 )
                 assert matched.status_code == 200, matched.text
                 assert matched.json()["template_match"]["selected_template"]["template_code"] == "mock/compression-spring"
-                assert matched.json()["template_match"]["selected_template"]["version"] == "v3"
+                assert matched.json()["template_match"]["selected_template"]["version"] == "v4"
 
                 request_body = {
                     "expected_review_revision": 1,
@@ -186,7 +187,7 @@ def main() -> None:
 
                 unauthenticated_claim = client.post(
                     "/api/generation-worker/jobs/claim",
-                    json={"worker_id": "worker-a", "capabilities": ["mock_solidworks_compression_v1"]},
+                    json={"worker_id": "worker-a", "capabilities": ["mock_solidworks_compression_v2"]},
                 )
                 assert unauthenticated_claim.status_code == 401
                 no_capability = client.post(
@@ -199,14 +200,15 @@ def main() -> None:
                 claimed = client.post(
                     "/api/generation-worker/jobs/claim",
                     headers=bearer("test-worker-key"),
-                    json={"worker_id": "worker-a", "capabilities": ["mock_solidworks_compression_v1"]},
+                    json={"worker_id": "worker-a", "capabilities": ["mock_solidworks_compression_v2"]},
                 )
                 assert claimed.status_code == 200, claimed.text
                 worker_job = claimed.json()["generation_job"]
                 assert worker_job["generation_id"] == generation_id
-                assert worker_job["parameter_package"]["schema_version"] == "spring_generation_parameters/v1"
+                assert worker_job["parameter_package"]["schema_version"] == "spring_generation_parameters/v2"
                 claimed_parameters = worker_job["parameter_package"]["generation_parameters"]["spring_parameters"]
                 assert claimed_parameters["mean_diameter"]["value"] == 18
+                assert claimed_parameters["material"]["value"] == "60Si2MnA"
                 assert "outer_diameter" not in claimed_parameters
                 assert (
                     worker_job["parameter_package"]["generation_parameters"]["technical_requirements_text"]
@@ -304,7 +306,7 @@ def main() -> None:
                 failed_preview_claim = client.post(
                     "/api/generation-worker/jobs/claim",
                     headers=bearer("test-worker-key"),
-                    json={"worker_id": "preview-failure-worker", "capabilities": ["mock_solidworks_compression_v1"]},
+                    json={"worker_id": "preview-failure-worker", "capabilities": ["mock_solidworks_compression_v2"]},
                 )
                 assert failed_preview_claim.status_code == 200
                 assert failed_preview_claim.json()["generation_job"]["generation_id"] == preview_failure_id

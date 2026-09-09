@@ -320,10 +320,11 @@ def _assert_generation_package_export_readiness_gate() -> None:
     assert action["source_mode"] == "server"
     assert action["review_revision"] == 9
     assert [item["field"] for item in action["parameter_fields"]] == [
-        "wire_diameter", "mean_diameter", "free_length", "total_coils",
+        "material", "wire_diameter", "mean_diameter", "free_length", "total_coils",
         "active_coils", "handedness", "end_grinding", "end_coils_closed",
     ]
-    assert action["parameter_fields"][1]["value"] == 23
+    assert action["parameter_fields"][0]["value"] is None
+    assert action["parameter_fields"][2]["value"] == 23
     assert action["baseline_state"]["technical_requirements"][0]["content"] == "两端磨平"
     assert payload["turn"]["generation_package_export"] == action
 

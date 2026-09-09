@@ -31,6 +31,10 @@ const context = {
     "wire_diameter", "mean_diameter", "free_length", "total_coils",
     "active_coils", "handedness", "end_grinding", "end_coils_closed",
   ],
+  COMPRESSION_GENERATION_EXPORT_FIELDS: [
+    "material", "wire_diameter", "mean_diameter", "free_length", "total_coils",
+    "active_coils", "handedness", "end_grinding", "end_coils_closed",
+  ],
   FIELD_LABELS: {
     wire_diameter: "线径", mean_diameter: "中径", free_length: "自由长度",
     total_coils: "总圈数", active_coils: "有效圈数", handedness: "旋向",
@@ -53,11 +57,11 @@ const context = {
     ok: true,
     json: async () => ({
       review_revision: 5,
-      parameter_package: { schema_version: "spring_generation_parameters/v1", trusted: true },
+      parameter_package: { schema_version: "spring_generation_parameters/v2", trusted: true },
     }),
   }),
   assessGenerationReadiness: () => ({ status: "ready", summary: "可以导出" }),
-  makeGenerationParameterPackage: () => ({ schema_version: "spring_generation_parameters/v1", local: true }),
+  makeGenerationParameterPackage: () => ({ schema_version: "spring_generation_parameters/v2", local: true }),
   downloadJson: (data, filename) => downloads.push({ data, filename }),
   updateLatestReviewMessage: () => {},
 };
@@ -79,7 +83,7 @@ assert.match(html, /仅下载JSON，不会创建生图任务/);
 
 assert.equal(await context.executeGenerationPackageExport(serverAction, 0, "message-1"), true);
 assert.equal(downloads.length, 1);
-assert.deepEqual(downloads[0].data, { schema_version: "spring_generation_parameters/v1", trusted: true });
+assert.deepEqual(downloads[0].data, { schema_version: "spring_generation_parameters/v2", trusted: true });
 assert.equal(downloads[0].filename, "compression_spring_generation_parameters.json");
 assert.equal(serverAction.download_status, "downloaded");
 assert.equal(serverAction.automatic_download, false);
@@ -101,7 +105,7 @@ const localAction = makeAction({
 review.standardization_chat = [{ generation_package_export: localAction }];
 state.lastJob = null;
 assert.equal(await context.executeGenerationPackageExport(localAction, 0, "message-1"), true);
-assert.deepEqual(downloads[1].data, { schema_version: "spring_generation_parameters/v1", local: true });
+assert.deepEqual(downloads[1].data, { schema_version: "spring_generation_parameters/v2", local: true });
 
 review.spring_parameters.mean_diameter.value = 24;
 assert.equal(context.generationPackageExportDisplayStatus(localAction), "stale");
@@ -126,7 +130,7 @@ function makeAction(overrides = {}) {
     status: "ready_with_warnings",
     source_mode: "server",
     filename: "compression_spring_generation_parameters.json",
-    schema_version: "spring_generation_parameters/v1",
+    schema_version: "spring_generation_parameters/v2",
     review_revision: 5,
     can_download: true,
     automatic_download: true,

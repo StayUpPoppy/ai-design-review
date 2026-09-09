@@ -21,7 +21,8 @@ API_DESCRIPTION = """
 
 - **ERP 身份 Cookie**：审图、标准化、模板查询和用户生图接口按 ERP 用户隔离数据。本地 `mock` 身份模式不要求浏览器携带 Cookie。
 - **GenerationAdminBearer**：模板管理员专用 Bearer API Key。
-- **GenerationWorkerBearer**：模拟或真实 SolidWorks Worker 专用 Bearer API Key。
+- **GenerationWorkerBearer**：保留给模拟和兼容 Worker 链路的 Bearer API Key。
+- **SolidWorks 状态回调**：`POST /api/solidworks/status` 仅限可信内网调用，联调阶段不鉴权；请通过防火墙、反向代理或网络隔离限制来源。
 
 管理员 Key 与 Worker Key 必须使用不同值，文档页面不会预填或保存服务端密钥。
 
@@ -30,8 +31,9 @@ API_DESCRIPTION = """
 1. 上传图纸并轮询识别状态。
 2. 获取审图结果，人工修改、标准化并保存参数。
 3. 查询生图就绪状态并匹配模板。
-4. 创建生图任务，轮询任务状态并下载生成产物。
-5. 修改参数后创建关联版本，最终确认当前修订对应的完成版本。
+4. 创建生图任务后，服务端为真实 SolidWorks 分配十位 `TaskId` 并主动提交冻结参数；前端轮询任务状态并下载生成产物。
+5. SolidWorks 通过可信内网的状态回调上报进度，完成时回传二维 PDF 的纯 Base64 数据。
+6. 修改参数或失败后重新生图时创建新的 `TaskId`；最终确认当前修订对应的完成版本。
 """.strip()
 
 
@@ -47,7 +49,7 @@ OPENAPI_TAGS = [
     {"name": "生图任务", "description": "创建、查询、取消、重试和确认生图版本。"},
     {"name": "生成产物", "description": "查询和下载生图任务生成的预览或模型文件。"},
     {"name": "模板管理", "description": "管理员注册模板版本以及启用或禁用模板。"},
-    {"name": "SolidWorks Worker", "description": "SolidWorks Worker 领取任务、续租、上报进度和上传产物。"},
+    {"name": "SolidWorks Worker", "description": "SolidWorks 主动推送回调，以及兼容 Worker 的领取、续租、进度和产物接口。"},
 ]
 
 OPENAPI_TAG_GROUPS = [
@@ -88,27 +90,28 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/apply"): _operation("标准化与合理性", "应用完整参数修改方案", "按方案版本和审图修订执行乐观锁校验，重新求解全部关联参数并原子写入。ready 或 warning 方案可以应用；过期、缺信息或存在冲突时返回409。"),
     ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/discard"): _operation("标准化与合理性", "放弃参数修改方案", "关闭尚未应用的方案草稿并保存审计事件，不修改正式参数；已应用或版本已变化时返回409。"),
     ("GET", "/api/reviews/{job_id}/generation-readiness"): _operation("生图准备", "检查审图是否可以生图", "由服务端根据当前审图修订重新计算缺失字段、待确认字段、警告和参数矛盾，是前端启用“生成图纸”的唯一可信依据。标准化为可选功能；未标准化、标准未确认或标准化结果过期只产生警告，不阻止按当前人工确认参数生图。"),
-    ("GET", "/api/reviews/{job_id}/generation-package"): _operation("生图准备", "获取 SolidWorks 生图参数包", "仅 ready 或 ready_with_warnings 状态返回冻结的 spring_generation_parameters/v1 参数快照。spring_parameters 固定包含线径、中径、自由长度、总圈数、有效圈数、旋向、两端磨削和端圈压并八个字段；SolidWorks 根据中径和线径计算外径、内径。未执行标准化时 standard_context 保持空值，参数包仍可用于生图；其他未就绪状态返回 409 和具体原因。"),
+    ("GET", "/api/reviews/{job_id}/generation-package"): _operation("生图准备", "获取 SolidWorks 生图参数包", "仅 ready 或 ready_with_warnings 状态返回冻结的 spring_generation_parameters/v2 参数快照。spring_parameters 包含线径、中径、自由长度、总圈数、有效圈数、旋向、两端磨削和端圈压并八个必填字段，以及可选的已确认材料字段 material；SolidWorks 根据中径和线径计算外径、内径。材料缺失或待确认时仍可生成，但参数包省略 material 并在就绪状态中给出警告。未执行标准化时 standard_context 保持空值，参数包仍可用于生图；其他未就绪状态返回 409 和具体原因。"),
     ("POST", "/api/reviews/{job_id}/generation-template-match"): _operation("生图准备", "匹配 SolidWorks 生图模板", "根据图纸类型、必填字段、匹配规则和优先级返回模板候选；可指定 template_code，也可由后端自动选择。"),
     ("GET", "/api/generation-templates"): _operation("模板查询", "查询启用的生图模板", "返回当前启用的模板及匹配规则、参数映射和 Worker 能力要求；不返回已禁用版本。"),
     ("GET", "/api/generation-templates/{template_code}/versions"): _operation("模板查询", "查询模板的启用版本", "返回指定 template_code 当前所有启用版本；模板代码可包含斜杠。"),
-    ("POST", "/api/reviews/{job_id}/generation-jobs"): _operation("生图任务", "创建生图任务", "校验审图修订、八个建模参数、技术要求、参数合理性和模板后创建不可变参数快照。标准化为可选功能；未应用的标准化建议不会进入参数包。新任务返回 202；相同 idempotency_key 和相同请求返回原任务及 200。"),
+    ("POST", "/api/reviews/{job_id}/generation-jobs"): _operation("生图任务", "创建生图任务", "校验审图修订、八个建模参数、技术要求、参数合理性和模板后创建不可变参数快照。真实 SolidWorks 模板会分配固定十位 TaskId，立即将冻结的完整 JSON 主动提交到 SOLIDWORKS_GENERATION_URL；任意非 2xx、超时或网络异常会置为 solidworks_submit_failed。标准化为可选功能；未应用的标准化建议不会进入参数包。新任务返回 202；相同 idempotency_key 和相同请求返回原任务及 200，不分配第二个 TaskId。"),
     ("GET", "/api/reviews/{job_id}/generation-jobs"): _operation("生图任务", "查询审图单的全部生图版本", "返回指定审图单的全部生图任务，并标记最终版本和因审图修订变化而过期的版本。"),
     ("GET", "/api/generation-jobs/{generation_id}"): _operation("生图任务", "查询生图任务详情", "返回任务状态、阶段、进度、模板、参数哈希、租约、错误和产物摘要，供前端轮询。"),
     ("POST", "/api/generation-jobs/{generation_id}/cancel"): _operation("生图任务", "取消生图任务", "取消排队中或正在处理的任务；Worker 后续使用旧租约更新时将收到冲突响应。"),
-    ("POST", "/api/generation-jobs/{generation_id}/retry"): _operation("生图任务", "重试失败的生图任务", "使用任务原有参数快照和模板重新排队，清除旧失败产物并增加尝试次数；参数修改后应创建新任务。"),
+    ("POST", "/api/generation-jobs/{generation_id}/retry"): _operation("生图任务", "重试失败的兼容 Worker 任务", "仅用于 Mock 和历史兼容 Worker 任务：使用原有参数快照和模板重新排队，清除旧失败产物并增加尝试次数。真实 SolidWorks 推送任务必须重新创建，以分配新的十位 TaskId。"),
     ("POST", "/api/generation-jobs/{generation_id}/approve"): _operation("生图任务", "设为最终生图版本", "仅允许确认已完成且对应当前审图修订的任务；同一审图单只保留一个最终版本。模拟任务会保留 is_mock 标识。"),
     ("GET", "/api/generation-jobs/{generation_id}/artifacts"): _operation("生成产物", "查询生图任务产物", "列出任务上传的 PNG、PDF、模型、清单和日志文件，包含大小、MIME、SHA-256 和模拟标识。"),
     ("GET", "/api/generation-jobs/{generation_id}/artifacts/{artifact_id}"): _operation("生成产物", "下载生图任务产物", "按 artifact_id 下载指定任务的生成文件，并校验当前 ERP 用户的数据权限和安全路径。"),
     ("POST", "/api/admin/generation-templates"): _operation("模板管理", "注册生图模板", "使用管理员 Bearer Key 创建首个模板版本。template_code 与 version 组合必须唯一，模板内容创建后不可直接修改。"),
     ("POST", "/api/admin/generation-templates/{template_code}/versions"): _operation("模板管理", "创建模板新版本", "为已有 template_code 创建不可变新版本；参数映射、匹配规则或能力要求变化时使用此接口。"),
     ("PATCH", "/api/admin/generation-templates/{template_code}/versions/{version}/status"): _operation("模板管理", "启用或禁用模板版本", "只修改指定模板版本的 enabled 状态，不修改模板内容。被禁用版本不参与用户查询和自动匹配。"),
-    ("POST", "/api/generation-worker/jobs/claim"): _operation("SolidWorks Worker", "领取兼容的生图任务", "Worker 使用独立 Bearer Key 和 capabilities 原子领取最早兼容任务并获得租约；成功响应的 generation_job.parameter_package 直接展开冻结的八字段参数包，当前无任务时返回 204。"),
+    ("POST", "/api/generation-worker/jobs/claim"): _operation("SolidWorks Worker", "领取兼容的生图任务", "Worker 使用独立 Bearer Key 和 capabilities 原子领取最早兼容任务并获得租约。正式压簧 Worker 传 solidworks_compression_v2，Mock Worker 传 mock_solidworks_compression_v2；成功响应的 generation_job.parameter_package 是不可变 V1 或 V2 快照，V2 为八个必填建模字段加可选材料，当前无兼容任务时返回 204。"),
     ("POST", "/api/generation-worker/jobs/{generation_id}/heartbeat"): _operation("SolidWorks Worker", "续期生图任务租约", "当前持有租约的 Worker 上报心跳、阶段和进度并延长租约；旧 Worker 或租约失效时返回 409。"),
     ("PATCH", "/api/generation-worker/jobs/{generation_id}/status"): _operation("SolidWorks Worker", "更新生图任务阶段", "按 generating_3d → generating_2d → uploading 的固定流程更新状态，progress 取值 0 至 99。"),
     ("POST", "/api/generation-worker/jobs/{generation_id}/artifacts"): _operation("SolidWorks Worker", "上传 SolidWorks 生成产物", "以 multipart/form-data 上传文件并记录 MIME、大小、SHA-256 和 is_mock；校验任务租约、文件类型和大小限制。上传 PDF 后服务器自动把第一页转换为 PNG 对比预览，转换失败不丢失原 PDF。"),
-    ("POST", "/api/generation-worker/jobs/{generation_id}/complete"): _operation("SolidWorks Worker", "完成生图任务", "当前 Worker 确认任务完成；SolidWorks V1 只需上传 PDF，服务器生成 PNG 对比预览。至少已有一个 PDF 或 PNG 才能完成。"),
-    ("POST", "/api/generation-worker/jobs/{generation_id}/failed"): _operation("SolidWorks Worker", "上报生图任务失败", "当前 Worker 保存稳定错误代码和可读错误说明，并将任务置为 failed，供用户查看和重试。"),
+    ("POST", "/api/generation-worker/jobs/{generation_id}/complete"): _operation("SolidWorks Worker", "完成生图任务", "当前 Worker 确认任务完成；SolidWorks V2 只需上传 PDF，服务器生成 PNG 对比预览。至少已有一个 PDF 或 PNG 才能完成。"),
+    ("POST", "/api/generation-worker/jobs/{generation_id}/failed"): _operation("SolidWorks Worker", "上报生图任务失败", "当前 Worker 保存稳定错误代码和可读错误说明，并将任务置为 failed，供用户查看和重试。若参数包已提供 material 但 SolidWorks 本地材料库没有对应名称，固定传 error_code=solidworks_material_not_found。"),
+    ("POST", "/api/solidworks/status"): _operation("SolidWorks Worker", "接收 SolidWorks 状态和二维 PDF", "可信内网回调，无 Bearer 鉴权。TaskId 必须是我方分配的十位正数 Long；状态仅允许 generating_3d、generating_2d、completed、failed，progress 范围为 0 至 100。completed 必须携带 mimeType=application/pdf、文件头正确且不含 Data URL 前缀的纯 Base64 二维 PDF；系统保存 PDF 和 SHA-256，并尽力生成首页 PNG。相同 TaskId 和相同 PDF 可幂等重试，不同 PDF 返回 409；未知 TaskId 返回 404，终态不允许回退。部署时必须仅向可信内网暴露该接口。"),
 }
 
 
@@ -608,7 +611,7 @@ class GenerationPackageExportAction(BaseModel):
                 "status": "ready_with_warnings",
                 "source_mode": "server",
                 "filename": "compression_spring_generation_parameters.json",
-                "schema_version": "spring_generation_parameters/v1",
+                "schema_version": "spring_generation_parameters/v2",
                 "review_revision": 12,
                 "can_download": True,
                 "automatic_download": True,
@@ -634,12 +637,12 @@ class GenerationPackageExportAction(BaseModel):
     status: str = Field(description="服务端重新计算的生图就绪状态。", examples=["ready_with_warnings"])
     source_mode: str = Field(description="参数包来源：server 为正式审图，local 为本地导入JSON。", examples=["server"])
     filename: str = Field(description="建议下载文件名。", examples=["compression_spring_generation_parameters.json"])
-    schema_version: str = Field(description="冻结参数包协议版本。", examples=["spring_generation_parameters/v1"])
+    schema_version: str = Field(description="冻结参数包协议版本。", examples=["spring_generation_parameters/v2"])
     review_revision: int | None = Field(default=None, description="生成该导出动作时的审图修订号；本地模式为空。")
     can_download: bool = Field(description="当前是否允许下载。")
     automatic_download: bool = Field(description="前端收到本轮响应后是否应立即触发下载。")
     action_type: str = Field(description="前端动作；可下载时为 download_generation_package，否则为 resolve_generation_readiness。")
-    parameter_fields: list[GenerationPackageExportField] = Field(default_factory=list, description="冻结8个SolidWorks建模字段摘要。")
+    parameter_fields: list[GenerationPackageExportField] = Field(default_factory=list, description="八个冻结SolidWorks建模字段和可选已确认材料的摘要。")
     missing_fields: list[dict[str, Any]] = Field(default_factory=list, description="缺失字段及中文原因。")
     pending_fields: list[dict[str, Any]] = Field(default_factory=list, description="待人工确认字段及中文原因。")
     blocking_reasonableness: list[dict[str, Any]] = Field(default_factory=list, description="阻止导出的合理性问题。")
@@ -1019,7 +1022,10 @@ def _apply_documented_response_schema(key: tuple[str, str], operation: dict[str,
 def _apply_operation_security_and_responses(key: tuple[str, str], tag: str, operation: dict[str, Any]) -> None:
     method, path = key
     public_tags = {"系统状态"}
-    if tag == "模板管理":
+    trusted_network_callbacks = {("POST", "/api/solidworks/status")}
+    if key in trusted_network_callbacks:
+        operation["security"] = []
+    elif tag == "模板管理":
         operation["security"] = [{"GenerationAdminBearer": []}]
     elif tag == "SolidWorks Worker":
         operation["security"] = [{"GenerationWorkerBearer": []}]

@@ -70,6 +70,8 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
         else:
             confirmed_count += 1
 
+    _append_material_warning(parameters, warnings)
+
     _append_standardization_warnings(review, warnings)
     _append_technical_requirement_state(review, pending)
     _append_load_point_state(review, pending)
@@ -133,7 +135,7 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
         "package_type": "confirmed_compression_spring_generation_input",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "export_policy": {
-            "parameter_filter": "frozen_compression_inputs_v1_human_confirmed_only",
+            "parameter_filter": "frozen_compression_inputs_v2_human_confirmed_only",
             "readiness_is_advisory": True,
         },
         "source": {
@@ -155,6 +157,20 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
         },
         "derived_parameters": _export_derived_parameters(review, parameters),
     }
+
+
+def _append_material_warning(parameters: dict[str, Any], warnings: list[dict[str, Any]]) -> None:
+    """Material is optional for V2 geometry but useful to the CAD worker."""
+
+    state = generation_parameter_state(parameters, "material")
+    if state == "confirmed":
+        return
+    reason_by_state = {
+        "missing": "未确认材料；本次 SolidWorks 不会设置模型材料或二维图材料标注。",
+        "pending": "材料尚未人工确认；本次 SolidWorks 不会设置模型材料或二维图材料标注。",
+        "invalid": "材料格式无效；本次 SolidWorks 不会设置模型材料或二维图材料标注。",
+    }
+    warnings.append(_field_issue("material", reason_by_state[state]))
 
 
 def _append_standardization_warnings(

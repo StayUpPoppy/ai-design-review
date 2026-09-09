@@ -116,7 +116,7 @@ const review = {
   spring_parameters: {
     wire_diameter: pending(2),
     mean_diameter: confirmed(18),
-    free_length: pending(45, { source: ["solidworks_protocol_default"], default_source: "spring_generation_parameters/v1" }),
+    free_length: pending(45, { source: ["solidworks_protocol_default"], default_source: "spring_generation_parameters/v2" }),
     total_coils: pending(10),
     active_coils: confirmed(8),
     standard_no: pending("GB/T 1239.2-2009"),

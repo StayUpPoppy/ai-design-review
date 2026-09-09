@@ -38,7 +38,7 @@ def main() -> None:
         "required_fields": ["wire_diameter", "mean_diameter", "free_length"],
         "match_rules": {"ranges": {"wire_diameter": [0.5, 8.0]}},
         "parameter_mapping": {},
-        "worker_capability": "solidworks_compression_v1",
+        "worker_capability": "solidworks_compression_v2",
     }
     selected = match_generation_template(review, package, [base])
     assert selected["status"] == "selected"

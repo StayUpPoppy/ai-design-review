@@ -17,6 +17,7 @@ def main() -> None:
     _assert_tolerance_can_change_solid_height_risk()
     _assert_batch_is_simulated_as_one_change_set()
     _assert_non_protocol_field_does_not_change_package()
+    _assert_material_change_updates_v2_package()
     _assert_technical_requirement_changes_update_generation_package()
     print("parameter impact preview tests passed")
 
@@ -123,6 +124,14 @@ def _assert_non_protocol_field_does_not_change_package() -> None:
     preview = assess_parameter_change_impact(_ready_review(), [_patch("spring_rate", 1.25, "N/mm")])
     assert preview["generation_readiness"]["parameter_package_changed"] is False
     assert preview["workflow_effects"]["new_generation_required"] is False
+
+
+def _assert_material_change_updates_v2_package() -> None:
+    preview = assess_parameter_change_impact(_ready_review(), [_patch("material", "65Mn")])
+    assert preview["status"] in {"ready", "warning"}, preview
+    assert preview["generation_readiness"]["parameter_package_changed"] is True
+    assert preview["generation_readiness"]["changed_frozen_fields"] == ["material"]
+    assert preview["workflow_effects"]["new_generation_required"] is True
 
 
 def _assert_technical_requirement_changes_update_generation_package() -> None:

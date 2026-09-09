@@ -226,6 +226,11 @@ const COMPRESSION_GENERATION_CORE_FIELDS = [
   "end_grinding",
   "end_coils_closed",
 ];
+const COMPRESSION_GENERATION_OPTIONAL_EXPORT_FIELDS = ["material"];
+const COMPRESSION_GENERATION_EXPORT_FIELDS = [
+  ...COMPRESSION_GENERATION_OPTIONAL_EXPORT_FIELDS,
+  ...COMPRESSION_GENERATION_CORE_FIELDS,
+];
 
 const COMPRESSION_GENERATION_DEFAULTS = {
   wire_diameter: 3,
@@ -238,6 +243,7 @@ const COMPRESSION_GENERATION_DEFAULTS = {
 };
 
 const COMPRESSION_GENERATION_UNITS = {
+  material: null,
   wire_diameter: "mm",
   mean_diameter: "mm",
   free_length: "mm",
@@ -249,6 +255,7 @@ const COMPRESSION_GENERATION_UNITS = {
 };
 
 const COMPRESSION_GENERATION_LABELS = {
+  material: "材料",
   wire_diameter: "线径",
   mean_diameter: "中径",
   free_length: "自由长度",
@@ -2735,7 +2742,7 @@ function renderGenerationJobsHtml(review) {
   if (review !== state.review || !state.lastJob?.job_id) return "";
   const jobs = Array.isArray(state.generationJobs) ? state.generationJobs : [];
   if (!jobs.length) {
-    return '<div class="generation-empty">尚未生成版本。创建后会在这里显示 SolidWorks 模拟任务进度。</div>';
+    return '<div class="generation-empty">尚未生成版本。创建后会在这里显示 SolidWorks 生图进度和二维图。</div>';
   }
   return `
     <section class="generation-version-section">
@@ -2769,6 +2776,10 @@ function renderGenerationJobHtml(job, versionNumber) {
   const pdf = (job.artifacts || []).find((item) => item.artifact_type === "pdf" || item.mime_type === "application/pdf");
   const isMock = (job.artifacts || []).some((item) => item.is_mock) || String(job.template_code || "").startsWith("mock");
   const terminal = ["completed", "failed", "cancelled"].includes(job.status);
+  const statusMessage = String(job.status_message || "").trim();
+  const statusLabel = job.status === "claimed" && !isMock
+    ? "已提交至 SolidWorks"
+    : (labels[job.status] || job.status || "未知");
   return `
     <article class="generation-version-card ${escapeHtml(job.status || "queued")}${job.is_final ? " final" : ""}${job.is_stale ? " stale" : ""}">
       <div class="generation-version-title">
@@ -2776,20 +2787,29 @@ function renderGenerationJobHtml(job, versionNumber) {
           <strong>版本 ${escapeHtml(String(versionNumber))}${job.is_final ? ` · ${isMock ? "模拟最终版本" : "最终版本"}` : ""}</strong>
           <small>审图修订 r${escapeHtml(String(job.review_revision ?? "-"))} · ${escapeHtml(job.template_code || "未匹配模板")} / ${escapeHtml(job.template_version || "-")}</small>
         </div>
-        <span class="generation-job-status">${escapeHtml(labels[job.status] || job.status || "未知")}</span>
+        <span class="generation-job-status">${escapeHtml(statusLabel)}</span>
       </div>
       ${!terminal ? `<div class="generation-progress"><span style="width:${Math.min(Math.max(Number(job.progress) || 0, 0), 100)}%"></span></div>` : ""}
       <div class="generation-version-meta">
+        <span>TaskId ${escapeHtml(job.generation_id || "-")}</span>
         <span>${escapeHtml(formatRecentReviewTime(job.completed_at || job.updated_at || job.created_at))}</span>
         ${isMock ? "<span>模拟产物</span>" : ""}
-        ${job.parent_generation_id ? "<span>基于上一版本</span>" : ""}
         ${job.is_stale ? "<span class=\"generation-stale-label\">参数已过期</span>" : ""}
       </div>
+      ${statusMessage ? `<p class="generation-status-message">${escapeHtml(statusMessage)}</p>` : ""}
       ${job.error_message ? `<p class="generation-error">${escapeHtml(job.error_code || "generation_failed")}：${escapeHtml(job.error_message)}</p>` : ""}
+      ${png ? `
+        <button type="button" class="generation-preview-thumbnail" data-action="compare-generation" data-generation-id="${escapeHtml(job.generation_id)}">
+          <img src="${escapeHtml(toBackendAssetUrl(png.url))}" alt="${escapeHtml(isMock ? "模拟生成二维图首页" : "SolidWorks 生成二维图首页")}">
+          <span>二维图首页缩略图 · 点击对比原图</span>
+        </button>
+      ` : ""}
       <div class="generation-version-actions">
         ${png ? `<button type="button" data-action="compare-generation" data-generation-id="${escapeHtml(job.generation_id)}">对比图纸</button>` : ""}
-        ${pdf ? `<a class="button-link" href="${escapeHtml(toBackendAssetUrl(pdf.url))}" target="_blank" rel="noopener">查看 PDF</a>` : ""}
-        ${job.status === "failed" ? `<button type="button" data-action="retry-generation" data-generation-id="${escapeHtml(job.generation_id)}">原参数重试</button>` : ""}
+        ${pdf ? `<button type="button" data-action="preview-generation-pdf" data-generation-id="${escapeHtml(job.generation_id)}">预览 PDF</button><a class="button-link" href="${escapeHtml(toBackendAssetUrl(pdf.url))}" download="${escapeHtml(pdf.filename || "drawing.pdf")}">下载 PDF</a>` : ""}
+        ${job.status === "failed" ? (isMock
+          ? `<button type="button" data-action="retry-generation" data-generation-id="${escapeHtml(job.generation_id)}">原参数重试</button>`
+          : '<button type="button" data-action="recreate-generation">重新生图</button>') : ""}
         ${!terminal ? `<button type="button" class="secondary-action" data-action="cancel-generation" data-generation-id="${escapeHtml(job.generation_id)}">取消</button>` : ""}
         ${job.status === "completed" && !job.is_stale && !job.is_final ? `<button type="button" class="primary-action" data-action="approve-generation" data-generation-id="${escapeHtml(job.generation_id)}">设为最终版本</button>` : ""}
       </div>
@@ -2861,6 +2881,10 @@ function rawGenerationParameter(parameters, field) {
 }
 
 function generationContractValue(field, rawValue) {
+  if (field === "material") {
+    if (typeof rawValue !== "string" || !rawValue.trim()) throw new Error("材料必须为非空文本");
+    return rawValue.trim();
+  }
   if (["wire_diameter", "mean_diameter", "free_length"].includes(field)) {
     const value = Number(rawValue);
     if (!Number.isFinite(value) || value <= 0) throw new Error(`${targetFieldLabel(field)}必须大于 0`);
@@ -2924,7 +2948,7 @@ function applyGenerationDefaults(review) {
       value: internalValue,
       unit: COMPRESSION_GENERATION_UNITS[field],
       source: ["solidworks_protocol_default"],
-      default_source: "spring_generation_parameters/v1",
+      default_source: "spring_generation_parameters/v2",
       need_human_review: true,
     };
     applied.push(field);
@@ -2968,6 +2992,15 @@ function assessGenerationReadiness(review) {
     }
     else confirmed += 1;
   });
+  const materialState = generationContractState(parameters, "material");
+  if (materialState !== "confirmed") {
+    const materialWarnings = {
+      missing: "未确认材料；本次 SolidWorks 不会设置模型材料或二维图材料标注。",
+      pending: "材料尚未人工确认；本次 SolidWorks 不会设置模型材料或二维图材料标注。",
+      invalid: "材料格式无效；本次 SolidWorks 不会设置模型材料或二维图材料标注。",
+    };
+    warnings.push(generationIssue("material", materialWarnings[materialState], "材料"));
+  }
   if (generationContractState(parameters, "wire_diameter") === "confirmed" && generationContractState(parameters, "mean_diameter") === "confirmed") {
     const wire = generationContractValue("wire_diameter", generationSourceParameter(parameters, "wire_diameter").value);
     const mean = generationContractValue("mean_diameter", generationSourceParameter(parameters, "mean_diameter").value);
@@ -3341,7 +3374,7 @@ function generationPackageExportBaseline(review = state.review) {
   const parameters = review?.spring_parameters || {};
   return {
     spring_type: review?.drawing_summary?.spring_type ?? null,
-    parameter_fields: COMPRESSION_GENERATION_CORE_FIELDS.map((field) => {
+    parameter_fields: COMPRESSION_GENERATION_EXPORT_FIELDS.map((field) => {
       const item = generationSourceParameter(parameters, field);
       return {
         field,
@@ -3428,7 +3461,7 @@ function renderGenerationPackageExportHtml(action, turnIndex) {
     <section class="generation-package-export-card ${escapeHtml(status)}" data-kind="generation_package_export" data-turn-index="${turnIndex}">
       <div class="generation-package-export-head">
         <div><strong>${escapeHtml(title)}</strong><small>${escapeHtml(subtitle)}</small></div>
-        <span>${escapeHtml(action?.schema_version || "spring_generation_parameters/v1")}</span>
+        <span>${escapeHtml(action?.schema_version || "spring_generation_parameters/v2")}</span>
       </div>
       <p class="generation-package-export-source">${escapeHtml(sourceLabel)}</p>
       ${fields.length ? `
@@ -4978,8 +5011,16 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     button.addEventListener("click", () => openGenerationCompare(button.dataset.generationId || ""));
   });
 
+  root.querySelectorAll('[data-action="preview-generation-pdf"]').forEach((button) => {
+    button.addEventListener("click", () => openGenerationPdf(button.dataset.generationId || ""));
+  });
+
   root.querySelectorAll('[data-action="retry-generation"]').forEach((button) => {
     button.addEventListener("click", () => void retryGenerationJob(button.dataset.generationId || ""));
+  });
+
+  root.querySelectorAll('[data-action="recreate-generation"]').forEach((button) => {
+    button.addEventListener("click", () => void createGenerationJob({ isRegeneration: true }));
   });
 
   root.querySelectorAll('[data-action="cancel-generation"]').forEach((button) => {
@@ -7349,7 +7390,7 @@ async function reloadGenerationReadiness(reviewId = state.lastJob?.job_id) {
   return payload;
 }
 
-async function createGenerationJob() {
+async function createGenerationJob(options = {}) {
   const reviewId = state.lastJob?.job_id;
   if (!reviewId || state.generationBusy) return;
   state.generationBusy = true;
@@ -7368,14 +7409,12 @@ async function createGenerationJob() {
       const warningText = (readiness.warnings || []).map((item) => item.reason).filter(Boolean).join("\n");
       if (!window.confirm(`当前参数可以生图。标准化为可选功能，未应用的标准化建议不会进入参数包；任务将按当前已确认参数生成。\n\n风险提示：\n${warningText || readiness.summary}\n\n是否继续生成？`)) return;
     }
-    const parent = state.generationJobs.find((job) => job.status === "completed") || state.generationJobs[0];
     const response = await apiFetch(`/api/reviews/${encodeURIComponent(reviewId)}/generation-jobs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         expected_review_revision: Number(readinessPayload.review_revision),
         idempotency_key: createGenerationIdempotencyKey(reviewId, readinessPayload.review_revision),
-        parent_generation_id: parent?.generation_id || null,
         requested_artifact_types: ["pdf"],
         mock_scenario: "success",
       }),
@@ -7385,7 +7424,13 @@ async function createGenerationJob() {
     const job = payload.generation_job;
     state.generationJobs = [job, ...state.generationJobs.filter((item) => item.generation_id !== job.generation_id)];
     trackGenerationJob(job.generation_id);
-    appendAssistantText("已创建生图任务，SolidWorks Worker 将按正式协议领取并生成 PDF；服务器会自动生成对比预览。", false, { scroll: false });
+    appendAssistantText(
+      options.isRegeneration
+        ? "已创建新的生图任务和 TaskId，已重新提交给 SolidWorks。"
+        : "已创建生图任务和 TaskId，已提交给 SolidWorks；服务器会自动生成二维图对比预览。",
+      false,
+      { scroll: false },
+    );
   } catch (error) {
     appendAssistantText(`无法生成图纸：${error.message || String(error)}`, true, { scroll: false });
   } finally {
@@ -7473,6 +7518,7 @@ function generationApiError(payload, fallback) {
     template_selection_required: "存在多个同优先级模板，需要人工选择",
     generation_queue_not_configured: "生图队列需要 PostgreSQL",
     generation_conflict: "生图任务状态冲突，请刷新后重试",
+    solidworks_requires_new_task: "此 SolidWorks 任务需要重新生图，以分配新的 TaskId",
   };
   return labels[detail?.code] || detail?.code || fallback;
 }
@@ -7484,12 +7530,44 @@ function resetGenerationState() {
   state.generationQueueAvailable = null;
   state.generationBusy = false;
   document.querySelector(".generation-compare-dialog[open]")?.close();
+  document.querySelector(".generation-pdf-dialog[open]")?.close();
+}
+
+function openGenerationPdf(generationId) {
+  const job = state.generationJobs.find((item) => item.generation_id === generationId);
+  const artifact = (job?.artifacts || []).find((item) => item.artifact_type === "pdf" || item.mime_type === "application/pdf");
+  if (!job || !artifact?.url) return;
+  document.querySelector(".generation-pdf-dialog")?.remove();
+  const pdfUrl = toBackendAssetUrl(artifact.url);
+  const dialog = document.createElement("dialog");
+  dialog.className = "generation-pdf-dialog";
+  dialog.innerHTML = `
+    <div class="generation-pdf-shell">
+      <header>
+        <div><strong>二维 PDF 图纸</strong><small>TaskId ${escapeHtml(job.generation_id)} · ${escapeHtml(artifact.filename || "SolidWorks drawing.pdf")}</small></div>
+        <div>
+          <a class="button-link" href="${escapeHtml(pdfUrl)}" download="${escapeHtml(artifact.filename || "drawing.pdf")}">下载</a>
+          <button type="button" data-role="close-generation-pdf" aria-label="关闭 PDF 预览">×</button>
+        </div>
+      </header>
+      <iframe src="${escapeHtml(pdfUrl)}" title="SolidWorks 二维 PDF 图纸预览"></iframe>
+    </div>
+  `;
+  document.body.appendChild(dialog);
+  const close = () => dialog.close();
+  dialog.querySelector('[data-role="close-generation-pdf"]')?.addEventListener("click", close);
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) close();
+  });
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.showModal();
 }
 
 function openGenerationCompare(generationId) {
   const job = state.generationJobs.find((item) => item.generation_id === generationId);
   const artifact = (job?.artifacts || []).find((item) => item.artifact_type === "png" || item.mime_type === "image/png");
   if (!job || !artifact) return;
+  const isMock = (job.artifacts || []).some((item) => item.is_mock) || String(job.template_code || "").startsWith("mock");
   document.querySelector(".generation-compare-dialog")?.remove();
   const dialog = document.createElement("dialog");
   dialog.className = "generation-compare-dialog";
@@ -7523,8 +7601,8 @@ function openGenerationCompare(generationId) {
             : '<p class="generation-compare-empty">原图预览不可用</p>'}
         </figure>
         <figure class="generation-output">
-          <figcaption>生成二维图（模拟）</figcaption>
-          <div class="generation-compare-viewport" data-role="generation-compare-viewport"><img src="${escapeHtml(generatedUrl)}" alt="模拟 SolidWorks 生成图" draggable="false"></div>
+          <figcaption>${isMock ? "生成二维图（模拟）" : "SolidWorks 生成二维图"}</figcaption>
+          <div class="generation-compare-viewport" data-role="generation-compare-viewport"><img src="${escapeHtml(generatedUrl)}" alt="${escapeHtml(isMock ? "模拟 SolidWorks 生成图" : "SolidWorks 生成二维图")}" draggable="false"></div>
         </figure>
       </div>
     </div>
@@ -8143,7 +8221,7 @@ function makeExportReview() {
 
 function makeGenerationParameterPackage(review = state.review) {
   const confirmedParameters = {};
-  COMPRESSION_GENERATION_CORE_FIELDS.forEach((field) => {
+  COMPRESSION_GENERATION_EXPORT_FIELDS.forEach((field) => {
     const param = generationSourceParameter(review.spring_parameters || {}, field);
     if (!param || generationContractState(review.spring_parameters || {}, field) !== "confirmed") return;
     const value = generationContractValue(field, param.value);
@@ -8151,8 +8229,8 @@ function makeGenerationParameterPackage(review = state.review) {
       label: COMPRESSION_GENERATION_LABELS[field],
       value,
       unit: COMPRESSION_GENERATION_UNITS[field],
-      tolerance_upper: param.tolerance_upper ?? null,
-      tolerance_lower: param.tolerance_lower ?? null,
+      tolerance_upper: field === "material" ? null : param.tolerance_upper ?? null,
+      tolerance_lower: field === "material" ? null : param.tolerance_lower ?? null,
       confirmation_source: "human_confirmed",
     };
   });
@@ -8186,11 +8264,11 @@ function makeGenerationParameterPackage(review = state.review) {
   const summary = review.drawing_summary || {};
   const selection = review.standard_selection || {};
   return {
-    schema_version: "spring_generation_parameters/v1",
+    schema_version: "spring_generation_parameters/v2",
     package_type: "confirmed_compression_spring_generation_input",
     generated_at: new Date().toISOString(),
     export_policy: {
-      parameter_filter: "frozen_compression_inputs_v1_human_confirmed_only",
+      parameter_filter: "frozen_compression_inputs_v2_human_confirmed_only",
       readiness_is_advisory: true,
     },
     source: {

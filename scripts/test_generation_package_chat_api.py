@@ -71,7 +71,7 @@ def main() -> None:
                 package_payload = package_response.json()
                 assert package_payload["review_revision"] == action["review_revision"]
                 package = package_payload["parameter_package"]
-                assert package["schema_version"] == "spring_generation_parameters/v1"
+                assert package["schema_version"] == "spring_generation_parameters/v2"
                 assert set(package["generation_parameters"]["spring_parameters"]) == {
                     "wire_diameter", "mean_diameter", "free_length", "total_coils",
                     "active_coils", "handedness", "end_grinding", "end_coils_closed",

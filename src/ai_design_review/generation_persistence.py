@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -162,22 +163,22 @@ class GenerationStore:
                 raise PersistenceError(f"Unable to create generation template: {exc}") from exc
 
     def ensure_mock_template(self, *, enabled: bool) -> dict[str, Any]:
-        for legacy_version in ("v1", "v2"):
+        for legacy_version in ("v1", "v2", "v3"):
             legacy = self.get_template("mock/compression-spring", legacy_version, include_disabled=True)
             if legacy and legacy["enabled"]:
                 self.set_template_status("mock/compression-spring", legacy_version, enabled=False)
-        existing = self.get_template("mock/compression-spring", "v3", include_disabled=True)
+        existing = self.get_template("mock/compression-spring", "v4", include_disabled=True)
         if existing:
             if existing["enabled"] != enabled:
-                return self.set_template_status("mock/compression-spring", "v3", enabled=enabled)
+                return self.set_template_status("mock/compression-spring", "v4", enabled=enabled)
             return existing
         return self.create_template(
             {
                 "template_code": "mock/compression-spring",
-                "version": "v3",
+                "version": "v4",
                 "drawing_type": "compression_spring",
-                "label": "模拟圆柱螺旋压缩弹簧（冻结协议 V1）",
-                "priority": 1002,
+                "label": "模拟圆柱螺旋压缩弹簧（冻结协议 V2）",
+                "priority": 1003,
                 "enabled": enabled,
                 "is_mock": True,
                 "required_fields": [
@@ -186,6 +187,7 @@ class GenerationStore:
                 ],
                 "match_rules": {},
                 "parameter_mapping": {
+                    "material": "SolidWorks material / 二维图材料标注",
                     "wire_diameter": "直径",
                     "mean_diameter": "中径",
                     "free_length": "自由高度",
@@ -195,7 +197,42 @@ class GenerationStore:
                     "end_grinding": "两端磨削",
                     "end_coils_closed": "端圈压并",
                 },
-                "worker_capability": "mock_solidworks_compression_v1",
+                "worker_capability": "mock_solidworks_compression_v2",
+            }
+        )
+
+    def ensure_solidworks_push_template(self, *, enabled: bool) -> dict[str, Any]:
+        """Register the production template used by the HTTP push integration."""
+
+        existing = self.get_template("solidworks/compression-spring", "v1", include_disabled=True)
+        if existing:
+            if existing["enabled"] != enabled:
+                return self.set_template_status("solidworks/compression-spring", "v1", enabled=enabled)
+            return existing
+        return self.create_template(
+            {
+                "template_code": "solidworks/compression-spring",
+                "version": "v1",
+                "drawing_type": "compression_spring",
+                "label": "SolidWorks 圆柱螺旋压缩弹簧（主动推送）",
+                "priority": 2000,
+                "enabled": enabled,
+                "is_mock": False,
+                "required_fields": [
+                    "wire_diameter", "mean_diameter", "free_length", "total_coils",
+                    "active_coils", "handedness", "end_grinding", "end_coils_closed",
+                ],
+                "match_rules": {},
+                "parameter_mapping": {
+                    "wire_diameter": "线径",
+                    "mean_diameter": "中径",
+                    "free_length": "自由高度",
+                    "total_coils": "圈数",
+                    "solid_height": "压并高度Hb",
+                    "load_points.F1": "工作高度H1 / F1",
+                    "load_points.F2": "工作高度H2 / F2",
+                },
+                "worker_capability": "solidworks_compression_v2",
             }
         )
 
@@ -313,6 +350,111 @@ class GenerationStore:
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise PersistenceError(f"Unable to create generation job: {exc}") from exc
+
+    def find_idempotent_job(
+        self,
+        *,
+        review_job_id: str,
+        owner_user_id: str,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> dict[str, Any] | None:
+        """Return an existing equivalent request before allocating a new TaskId."""
+
+        self._require_database()
+        try:
+            with self.repository._session() as session:
+                existing = session.execute(
+                    select(GenerationJobRecord).where(
+                        GenerationJobRecord.owner_erp_user_id == owner_user_id,
+                        GenerationJobRecord.review_job_id == review_job_id,
+                        GenerationJobRecord.idempotency_key == idempotency_key,
+                    )
+                ).scalar_one_or_none()
+                if existing is None:
+                    return None
+                if existing.request_fingerprint != request_fingerprint:
+                    raise PersistenceError("Idempotency key was reused with a different request.")
+                return self._job(session, existing)
+        except PersistenceError:
+            raise
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Unable to read idempotent generation job: {exc}") from exc
+
+    def next_generation_id(self) -> str:
+        """Return a unique ten-digit task identifier without changing the string PK schema."""
+
+        self._require_database()
+        try:
+            with self.repository._session() as session:
+                dialect = str(getattr(session.bind.dialect, "name", "") or "")
+                if dialect == "postgresql":
+                    value = session.execute(text("SELECT nextval('solidworks_task_id_seq')")).scalar_one()
+                    return str(value)
+                for _ in range(20):
+                    value = secrets.randbelow(9_000_000_000) + 1_000_000_000
+                    existing = session.get(GenerationJobRecord, str(value))
+                    if existing is None:
+                        return str(value)
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Unable to allocate SolidWorks TaskId: {exc}") from exc
+        raise PersistenceError("Unable to allocate a unique ten-digit SolidWorks TaskId.")
+
+    def mark_solidworks_submitted(self, generation_id: str, *, message: str | None = None) -> dict[str, Any] | None:
+        """Record that a push task was accepted by SolidWorks without using a worker lease."""
+
+        self._require_database()
+        now = _utcnow()
+        with self.repository._session() as session:
+            try:
+                record = session.execute(
+                    select(GenerationJobRecord)
+                    .where(GenerationJobRecord.generation_id == generation_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if record is None:
+                    return None
+                if record.status == "queued":
+                    record.status = "claimed"
+                    record.stage = "submitted_to_solidworks"
+                    record.progress = max(record.progress, 1)
+                    record.worker_id = "solidworks-push"
+                    record.attempt_count += 1
+                    record.started_at = record.started_at or now
+                    record.updated_at = now
+                    self._set_solidworks_message(record, message)
+                    self._event(session, record, "solidworks_command_accepted", "system", {"message": message or ""})
+                session.commit()
+                return self._job(session, record)
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise PersistenceError(f"Unable to mark SolidWorks submission: {exc}") from exc
+
+    def fail_solidworks_submission(self, generation_id: str, *, error_message: str) -> dict[str, Any] | None:
+        self._require_database()
+        now = _utcnow()
+        with self.repository._session() as session:
+            try:
+                record = session.execute(
+                    select(GenerationJobRecord)
+                    .where(GenerationJobRecord.generation_id == generation_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if record is None or record.status in {"completed", "cancelled"}:
+                    return None
+                record.status = "failed"
+                record.stage = "failed"
+                record.error_code = "solidworks_submit_failed"
+                record.error_message = error_message[:4000]
+                record.completed_at = now
+                record.lease_expires_at = None
+                record.updated_at = now
+                self._event(session, record, "solidworks_command_failed", "system", {"reason": record.error_message})
+                session.commit()
+                return self._job(session, record)
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise PersistenceError(f"Unable to record SolidWorks submission failure: {exc}") from exc
 
     def get_job(self, generation_id: str, *, owner_user_id: str | None = None) -> dict[str, Any] | None:
         if not self.configured:
@@ -481,6 +623,151 @@ class GenerationStore:
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise PersistenceError(f"Unable to save generation artifact: {exc}") from exc
+
+    def apply_solidworks_status(
+        self,
+        generation_id: str,
+        *,
+        status: str,
+        progress: int,
+        message: str | None,
+        error_code: str | None = None,
+        artifact_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Apply a trusted-network push callback and atomically register its PDF."""
+
+        self._require_database()
+        now = _utcnow()
+        with self.repository._session() as session:
+            try:
+                record = session.execute(
+                    select(GenerationJobRecord)
+                    .where(GenerationJobRecord.generation_id == generation_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if record is None:
+                    return None
+                if str((record.execution_options or {}).get("integration") or "") != "solidworks_push":
+                    raise PersistenceError("Generation job is not a SolidWorks push task.")
+
+                existing_pdf = session.execute(
+                    select(GenerationArtifactRecord)
+                    .where(
+                        GenerationArtifactRecord.generation_id == generation_id,
+                        GenerationArtifactRecord.artifact_type == "pdf",
+                    )
+                    .order_by(GenerationArtifactRecord.created_at.asc())
+                ).scalar_one_or_none()
+                if record.status in {"completed", "failed", "cancelled"}:
+                    if status == "completed" and record.status == "completed" and artifact_payload is not None:
+                        if existing_pdf and existing_pdf.sha256 == artifact_payload["sha256"]:
+                            return {"job": self._job(session, record), "artifact": None, "duplicate": True}
+                        raise PersistenceError("SolidWorks callback PDF conflicts with the completed task.")
+                    if status == record.status:
+                        return {"job": self._job(session, record), "artifact": None, "duplicate": True}
+                    raise PersistenceError("SolidWorks callback cannot move a terminal task to another state.")
+
+                current_rank = {"queued": 0, "claimed": 0, "generating_3d": 1, "generating_2d": 2}.get(record.status, 0)
+                incoming_rank = {"generating_3d": 1, "generating_2d": 2}.get(status, 3)
+                if status in {"generating_3d", "generating_2d"} and status == record.status and int(progress) <= record.progress:
+                    return {"job": self._job(session, record), "artifact": None, "duplicate": True}
+                if status in {"generating_3d", "generating_2d"} and incoming_rank < current_rank:
+                    return {"job": self._job(session, record), "artifact": None, "duplicate": True}
+
+                artifact: GenerationArtifactRecord | None = None
+                if status == "completed":
+                    if artifact_payload is None:
+                        raise PersistenceError("A completed SolidWorks callback requires a PDF artifact.")
+                    if existing_pdf is not None:
+                        if existing_pdf.sha256 == artifact_payload["sha256"]:
+                            return {"job": self._job(session, record), "artifact": None, "duplicate": True}
+                        raise PersistenceError("SolidWorks callback PDF conflicts with an existing task artifact.")
+                    artifact = GenerationArtifactRecord(**copy.deepcopy(artifact_payload))
+                    session.add(artifact)
+                    session.flush()
+                    self._event(
+                        session,
+                        record,
+                        "solidworks_pdf_received",
+                        "solidworks",
+                        {"artifact_id": artifact.artifact_id, "sha256": artifact.sha256},
+                    )
+                    record.status = "completed"
+                    record.stage = "completed"
+                    record.progress = 100
+                    record.completed_at = now
+                    record.lease_expires_at = None
+                    record.error_code = None
+                    record.error_message = None
+                    self._event(session, record, "generation_completed", "solidworks", {})
+                elif status == "failed":
+                    record.status = "failed"
+                    record.stage = "failed"
+                    record.progress = min(max(int(progress), 0), 100)
+                    record.error_code = str(error_code or "solidworks_generation_failed")[:96]
+                    record.error_message = str(message or "SolidWorks 生图失败。")[:4000]
+                    record.completed_at = now
+                    record.lease_expires_at = None
+                    self._event(session, record, "generation_failed", "solidworks", {"error_code": record.error_code})
+                else:
+                    record.status = status
+                    record.stage = status
+                    record.progress = min(max(int(progress), 0), 99)
+                    self._event(session, record, "generation_status_updated", "solidworks", {"status": status})
+
+                self._set_solidworks_message(record, message)
+                record.worker_id = "solidworks-push"
+                record.updated_at = now
+                session.commit()
+                return {
+                    "job": self._job(session, record),
+                    "artifact": self._artifact(artifact) if artifact is not None else None,
+                    "duplicate": False,
+                }
+            except PersistenceError:
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise PersistenceError(f"Unable to apply SolidWorks callback: {exc}") from exc
+
+    def add_system_artifact(
+        self,
+        payload: dict[str, Any],
+        *,
+        event_type: str,
+        event_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Save a server-derived artifact such as a PNG rendered from a callback PDF."""
+
+        self._require_database()
+        with self.repository._session() as session:
+            try:
+                job = session.execute(
+                    select(GenerationJobRecord)
+                    .where(GenerationJobRecord.generation_id == payload["generation_id"])
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if job is None:
+                    return None
+                existing = session.get(GenerationArtifactRecord, payload["artifact_id"])
+                if existing is not None:
+                    return self._artifact(existing)
+                artifact = GenerationArtifactRecord(**copy.deepcopy(payload))
+                session.add(artifact)
+                session.flush()
+                self._event(
+                    session,
+                    job,
+                    event_type,
+                    "system",
+                    {"artifact_id": artifact.artifact_id, "artifact_type": artifact.artifact_type, **copy.deepcopy(event_payload or {})},
+                )
+                session.commit()
+                return self._artifact(artifact)
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise PersistenceError(f"Unable to save system generation artifact: {exc}") from exc
 
     def record_event(
         self,
@@ -673,6 +960,14 @@ class GenerationStore:
         )
 
     @staticmethod
+    def _set_solidworks_message(record: GenerationJobRecord, message: str | None) -> None:
+        if message is None:
+            return
+        options = copy.deepcopy(record.execution_options or {})
+        options["solidworks_status_message"] = str(message)[:1000]
+        record.execution_options = options
+
+    @staticmethod
     def _event(session: Any, job: GenerationJobRecord, event_type: str, source: str, payload: dict[str, Any]) -> None:
         sequence = session.execute(select(GenerationEventRecord.sequence).where(GenerationEventRecord.generation_id == job.generation_id).order_by(GenerationEventRecord.sequence.desc()).limit(1)).scalar_one_or_none()
         session.add(GenerationEventRecord(generation_id=job.generation_id, sequence=(sequence or 0) + 1, event_type=event_type, source=source, payload=copy.deepcopy(payload)))
@@ -695,6 +990,7 @@ class GenerationStore:
             "status": record.status,
             "stage": record.stage,
             "progress": record.progress,
+            "status_message": str((record.execution_options or {}).get("solidworks_status_message") or "") or None,
             "error_code": record.error_code,
             "error_message": record.error_message,
             "attempt_count": record.attempt_count,

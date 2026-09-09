@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import shutil
 import uuid
 import os
@@ -12,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+import httpx
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -67,6 +70,8 @@ from .generation_schemas import (
     GenerationWorkerFailed,
     GenerationWorkerHeartbeat,
     GenerationWorkerStatus,
+    SolidWorksStatusCallback,
+    SolidWorksStatusCallbackResponse,
 )
 from .generation_service import match_generation_template, request_fingerprint, stable_payload_hash
 from .llm_standardization_engine import LLMStandardizationEngine, llm_standardization_runtime_status
@@ -86,6 +91,7 @@ from .standardization_chat_agent import (
 )
 from .standardization_chat_llm import standardization_chat_llm_runtime_status
 from .spring_feasibility import assess_parameter_reasonableness
+from .solidworks import build_solidworks_command
 from .load_points import ensure_load_point_ids
 from .technical_requirements import ensure_technical_requirement_ids
 from .workflow import DrawingReviewWorkflow, apply_standardization_to_review
@@ -164,21 +170,20 @@ def refresh_runtime_startup_status() -> None:
     RAGFLOW_STARTUP_STATUS = ragflow_runtime_status(check_health=True)
     DATABASE_STARTUP_STATUS = REVIEW_PERSISTENCE.health(check_connection=True)
     mock_enabled = _env_flag("MOCK_SOLIDWORKS_ENABLED", False)
-    if REVIEW_PERSISTENCE.configured and mock_enabled:
+    # Explicit Mock mode takes precedence so the local compatibility chain can
+    # be exercised even when a developer's .env also contains the real URL.
+    solidworks_push_enabled = bool(_solidworks_generation_url()) and not mock_enabled
+    if REVIEW_PERSISTENCE.configured:
         try:
-            template = GenerationStore(REVIEW_PERSISTENCE).ensure_mock_template(enabled=True)
+            store = GenerationStore(REVIEW_PERSISTENCE)
+            mock_template = store.ensure_mock_template(enabled=True) if mock_enabled else None
+            if not mock_enabled:
+                store.disable_mock_templates()
+            push_template = store.ensure_solidworks_push_template(enabled=solidworks_push_enabled)
             GENERATION_TEMPLATE_STARTUP_STATUS = {
                 "status": "available",
-                "mock_template_enabled": bool(template.get("enabled")),
-            }
-        except PersistenceError as exc:
-            GENERATION_TEMPLATE_STARTUP_STATUS = {"status": "unavailable", "reason": str(exc)}
-    elif REVIEW_PERSISTENCE.configured:
-        try:
-            disabled_count = GenerationStore(REVIEW_PERSISTENCE).disable_mock_templates()
-            GENERATION_TEMPLATE_STARTUP_STATUS = {
-                "status": "disabled",
-                "mock_templates_disabled": disabled_count,
+                "mock_template_enabled": bool(mock_template and mock_template.get("enabled")),
+                "solidworks_push_enabled": bool(push_template.get("enabled")),
             }
         except PersistenceError as exc:
             GENERATION_TEMPLATE_STARTUP_STATUS = {"status": "unavailable", "reason": str(exc)}
@@ -540,29 +545,50 @@ def create_generation_job(
     if match["status"] != "selected":
         raise HTTPException(status_code=409, detail={"code": match["status"], **match})
     selected = match["selected_template"]
-    if body.parent_generation_id:
+    legacy_parent_generation_id = None
+    if bool(selected.get("is_mock")) and body.parent_generation_id:
         parent = store.get_job(body.parent_generation_id, owner_user_id=identity.user_id)
         if parent is None or parent.get("review_id") != job_id:
             raise HTTPException(status_code=400, detail={"code": "invalid_parent_generation"})
+        legacy_parent_generation_id = body.parent_generation_id
     normalized_request = {
         "review_id": job_id,
         "review_revision": revision,
-        "parent_generation_id": body.parent_generation_id,
+        "parent_generation_id": legacy_parent_generation_id,
         "template_code": selected["template_code"],
         "template_version": selected["version"],
         "requested_artifact_types": body.requested_artifact_types,
         "mock_scenario": body.mock_scenario,
     }
-    generation_id = uuid.uuid4().hex[:16]
+    fingerprint = request_fingerprint(normalized_request)
+    try:
+        idempotent_job = store.find_idempotent_job(
+            review_job_id=job_id,
+            owner_user_id=identity.user_id,
+            idempotency_key=body.idempotency_key,
+            request_fingerprint=fingerprint,
+        )
+    except PersistenceError as exc:
+        raise _generation_http_error(exc) from exc
+    if idempotent_job is not None:
+        return JSONResponse(
+            status_code=200,
+            content={"created": False, "generation_job": _generation_job_response(idempotent_job)},
+        )
+    generation_id = store.next_generation_id()
+    is_solidworks_push = bool(_solidworks_generation_url()) and not bool(selected.get("is_mock"))
+    solidworks_payload = build_solidworks_command(generation_id, package, review) if is_solidworks_push else None
     try:
         job, created = store.create_job(
             {
                 "generation_id": generation_id,
                 "review_job_id": job_id,
                 "review_revision": revision,
-                "parent_generation_id": body.parent_generation_id,
+                # The legacy relationship remains available only for Mock compatibility.
+                # New SolidWorks push jobs intentionally never populate it.
+                "parent_generation_id": legacy_parent_generation_id,
                 "idempotency_key": body.idempotency_key,
-                "request_fingerprint": request_fingerprint(normalized_request),
+                "request_fingerprint": fingerprint,
                 "template_code": selected["template_code"],
                 "template_version": selected["version"],
                 "worker_capability": selected["worker_capability"],
@@ -571,12 +597,24 @@ def create_generation_job(
                 "parameter_package": package,
                 "readiness": readiness,
                 "requested_artifact_types": body.requested_artifact_types,
-                "execution_options": {"mock_scenario": body.mock_scenario},
+                "execution_options": {
+                    "mock_scenario": body.mock_scenario,
+                    **(
+                        {
+                            "integration": "solidworks_push",
+                            "solidworks_payload": solidworks_payload,
+                        }
+                        if solidworks_payload is not None
+                        else {}
+                    ),
+                },
             },
             owner=identity.as_owner_dict(),
         )
     except PersistenceError as exc:
         raise _generation_http_error(exc) from exc
+    if created and solidworks_payload is not None:
+        job = _submit_solidworks_generation(store, generation_id, solidworks_payload) or job
     return JSONResponse(
         status_code=202 if created else 200,
         content={"created": created, "generation_job": _generation_job_response(job)},
@@ -627,8 +665,17 @@ def retry_generation_job(
     identity: IdentityContext = Depends(require_identity),
 ) -> dict[str, Any]:
     _require_generation_database()
+    store = GenerationStore(REVIEW_PERSISTENCE)
+    existing = store.get_job(generation_id, owner_user_id=identity.user_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Generation job not found.")
+    if str((existing.get("execution_options") or {}).get("integration") or "") == "solidworks_push":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "solidworks_requires_new_task", "message": "SolidWorks 任务请重新创建，以分配新的 TaskId。"},
+        )
     try:
-        job = GenerationStore(REVIEW_PERSISTENCE).retry_job(generation_id, owner_user_id=identity.user_id)
+        job = store.retry_job(generation_id, owner_user_id=identity.user_id)
     except PersistenceError as exc:
         raise _generation_http_error(exc) from exc
     if job is None:
@@ -880,6 +927,93 @@ def fail_generation_worker_job(
     if job is None:
         raise HTTPException(status_code=409, detail={"code": "worker_lease_or_state_conflict"})
     return {"generation_job": _generation_job_response(job)}
+
+
+@app.post(
+    "/api/solidworks/status",
+    response_model=SolidWorksStatusCallbackResponse,
+    responses={
+        404: {"description": "Unknown SolidWorks TaskId"},
+        409: {"description": "Terminal status or PDF content conflict"},
+        413: {"description": "Decoded PDF exceeds GENERATION_MAX_ARTIFACT_MB"},
+        415: {"description": "Callback file is not a valid PDF"},
+    },
+    tags=["SolidWorks Worker"],
+)
+def receive_solidworks_status(body: SolidWorksStatusCallback) -> dict[str, Any]:
+    """Receive trusted-network SolidWorks progress and the completed PDF preview."""
+
+    _require_generation_database()
+    generation_id = str(body.TaskId)
+    artifact_payload: dict[str, Any] | None = None
+    artifact_path: Path | None = None
+    if body.file is not None:
+        content = _decode_solidworks_pdf(body.file.contentBase64)
+        artifact_id = uuid.uuid4().hex[:16]
+        safe_name = _safe_filename(body.file.fileName)[:240]
+        relative = Path(generation_id) / f"{artifact_id}_{safe_name}"
+        artifact_path = _generation_artifact_path(relative.as_posix())
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = artifact_path.with_suffix(f"{artifact_path.suffix}.tmp")
+        temporary_path.write_bytes(content)
+        temporary_path.replace(artifact_path)
+        artifact_payload = {
+            "artifact_id": artifact_id,
+            "generation_id": generation_id,
+            "artifact_type": "pdf",
+            "filename": safe_name,
+            "relative_path": relative.as_posix(),
+            "mime_type": body.file.mimeType,
+            "size_bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "is_mock": False,
+        }
+
+    store = GenerationStore(REVIEW_PERSISTENCE)
+    try:
+        result = store.apply_solidworks_status(
+            generation_id,
+            status=body.status,
+            progress=body.progress,
+            message=body.message,
+            error_code=body.errorCode,
+            artifact_payload=artifact_payload,
+        )
+    except PersistenceError as exc:
+        if artifact_path is not None:
+            artifact_path.unlink(missing_ok=True)
+        raise _generation_http_error(exc) from exc
+    if result is None:
+        if artifact_path is not None:
+            artifact_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=404, detail={"code": "solidworks_task_not_found"})
+    if result["duplicate"] and artifact_path is not None:
+        artifact_path.unlink(missing_ok=True)
+
+    artifact = result.get("artifact")
+    if artifact is not None and artifact_path is not None:
+        try:
+            _create_generation_pdf_preview(
+                store,
+                generation_id=generation_id,
+                worker_id=None,
+                pdf_artifact=artifact,
+                pdf_path=artifact_path,
+            )
+        except Exception as exc:
+            try:
+                store.record_event(
+                    generation_id,
+                    "generation_preview_failed",
+                    source="system",
+                    payload={
+                        "source_artifact_id": artifact["artifact_id"],
+                        "reason": f"{type(exc).__name__}: {exc}"[:1000],
+                    },
+                )
+            except PersistenceError:
+                pass
+    return {"TaskId": body.TaskId, "status": body.status, "duplicate": bool(result["duplicate"])}
 
 
 async def run_recognition_execution(
@@ -2494,6 +2628,68 @@ def _require_service_key(
         raise HTTPException(status_code=401, detail=f"Invalid {label.lower()} API key.")
 
 
+def _solidworks_generation_url() -> str:
+    return str(os.getenv("SOLIDWORKS_GENERATION_URL") or "").strip().rstrip("/")
+
+
+def _solidworks_request_timeout_seconds() -> float:
+    try:
+        return min(max(float(os.getenv("SOLIDWORKS_REQUEST_TIMEOUT_SECONDS", "10")), 1), 120)
+    except (TypeError, ValueError):
+        return 10.0
+
+
+def _submit_solidworks_generation(
+    store: GenerationStore,
+    generation_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    url = _solidworks_generation_url()
+    if not url:
+        return store.fail_solidworks_submission(
+            generation_id,
+            error_message="SOLIDWORKS_GENERATION_URL is not configured.",
+        )
+    try:
+        _post_solidworks_command(url, payload, timeout_seconds=_solidworks_request_timeout_seconds())
+    except Exception as exc:
+        return store.fail_solidworks_submission(
+            generation_id,
+            error_message=f"SolidWorks command submission failed: {type(exc).__name__}: {exc}",
+        )
+    return store.mark_solidworks_submitted(
+        generation_id,
+        message="已提交至 SolidWorks，等待生成进度回调。",
+    )
+
+
+def _post_solidworks_command(url: str, payload: dict[str, Any], *, timeout_seconds: float) -> None:
+    response = httpx.post(url, json=payload, timeout=timeout_seconds)
+    if not 200 <= response.status_code < 300:
+        detail = response.text.strip().replace("\n", " ")[:500]
+        raise RuntimeError(f"SolidWorks command returned HTTP {response.status_code}: {detail}")
+
+
+def _decode_solidworks_pdf(content_base64: str) -> bytes:
+    if content_base64.startswith("data:"):
+        raise HTTPException(status_code=422, detail={"code": "solidworks_pdf_data_url_not_allowed"})
+    max_bytes = _generation_max_artifact_bytes()
+    max_base64_size = ((max_bytes + 2) // 3) * 4 + 4
+    if len(content_base64) > max_base64_size:
+        raise HTTPException(status_code=413, detail={"code": "solidworks_pdf_too_large"})
+    try:
+        content = base64.b64decode(content_base64, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise HTTPException(status_code=422, detail={"code": "solidworks_pdf_base64_invalid"}) from exc
+    if not content:
+        raise HTTPException(status_code=422, detail={"code": "solidworks_pdf_empty"})
+    if len(content) > max_bytes:
+        raise HTTPException(status_code=413, detail={"code": "solidworks_pdf_too_large"})
+    if not content.startswith(b"%PDF-"):
+        raise HTTPException(status_code=415, detail={"code": "solidworks_pdf_invalid"})
+    return content
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = str(os.getenv(name, "true" if default else "false") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
@@ -2543,7 +2739,7 @@ def _create_generation_pdf_preview(
     store: GenerationStore,
     *,
     generation_id: str,
-    worker_id: str,
+    worker_id: str | None,
     pdf_artifact: dict[str, Any],
     pdf_path: Path,
 ) -> dict[str, Any] | None:
@@ -2576,22 +2772,30 @@ def _create_generation_pdf_preview(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
         try:
-            preview = store.add_artifact(
-                {
-                    "artifact_id": preview_id,
-                    "generation_id": generation_id,
-                    "artifact_type": "png",
-                    "filename": filename,
-                    "relative_path": relative.as_posix(),
-                    "mime_type": "image/png",
-                    "size_bytes": len(content),
-                    "sha256": hashlib.sha256(content).hexdigest(),
-                    "is_mock": bool(pdf_artifact.get("is_mock")),
-                },
-                worker_id=worker_id,
-                event_source="system",
-                event_payload={"generated_from_artifact_id": source_artifact_id},
-            )
+            preview_payload = {
+                "artifact_id": preview_id,
+                "generation_id": generation_id,
+                "artifact_type": "png",
+                "filename": filename,
+                "relative_path": relative.as_posix(),
+                "mime_type": "image/png",
+                "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "is_mock": bool(pdf_artifact.get("is_mock")),
+            }
+            if worker_id is None:
+                preview = store.add_system_artifact(
+                    preview_payload,
+                    event_type="generation_preview_created",
+                    event_payload={"generated_from_artifact_id": source_artifact_id},
+                )
+            else:
+                preview = store.add_artifact(
+                    preview_payload,
+                    worker_id=worker_id,
+                    event_source="system",
+                    event_payload={"generated_from_artifact_id": source_artifact_id},
+                )
         except Exception:
             target.unlink(missing_ok=True)
             raise
