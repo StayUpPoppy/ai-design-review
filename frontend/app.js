@@ -2772,14 +2772,22 @@ function renderGenerationJobHtml(job, versionNumber) {
     failed: "失败",
     cancelled: "已取消",
   };
+  const failureStageLabels = {
+    generating_3d_error: "三维模型生成失败",
+    generating_2d_error: "二维图生成失败",
+  };
   const png = (job.artifacts || []).find((item) => item.artifact_type === "png" || item.mime_type === "image/png");
   const pdf = (job.artifacts || []).find((item) => item.artifact_type === "pdf" || item.mime_type === "application/pdf");
   const isMock = (job.artifacts || []).some((item) => item.is_mock) || String(job.template_code || "").startsWith("mock");
   const terminal = ["completed", "failed", "cancelled"].includes(job.status);
   const statusMessage = String(job.status_message || "").trim();
-  const statusLabel = job.status === "claimed" && !isMock
+  const failureLabel = failureStageLabels[job.stage] || (job.status === "failed" ? "生图失败" : "");
+  const failureMessage = String(job.error_message || statusMessage || "").trim();
+  const progressValue = Math.min(Math.max(Number(job.progress) || 0, 0), 100);
+  const showProgress = !terminal || job.status === "failed";
+  const statusLabel = failureLabel || (job.status === "claimed" && !isMock
     ? "已提交至 SolidWorks"
-    : (labels[job.status] || job.status || "未知");
+    : (labels[job.status] || job.status || "未知"));
   return `
     <article class="generation-version-card ${escapeHtml(job.status || "queued")}${job.is_final ? " final" : ""}${job.is_stale ? " stale" : ""}">
       <div class="generation-version-title">
@@ -2789,15 +2797,15 @@ function renderGenerationJobHtml(job, versionNumber) {
         </div>
         <span class="generation-job-status">${escapeHtml(statusLabel)}</span>
       </div>
-      ${!terminal ? `<div class="generation-progress"><span style="width:${Math.min(Math.max(Number(job.progress) || 0, 0), 100)}%"></span></div>` : ""}
+      ${showProgress ? `<div class="generation-progress${job.status === "failed" ? " failed" : ""}" role="progressbar" aria-label="${escapeHtml(statusLabel)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progressValue}"><span style="transform:scaleX(${progressValue / 100})"></span></div>` : ""}
       <div class="generation-version-meta">
         <span>TaskId ${escapeHtml(job.generation_id || "-")}</span>
         <span>${escapeHtml(formatRecentReviewTime(job.completed_at || job.updated_at || job.created_at))}</span>
         ${isMock ? "<span>模拟产物</span>" : ""}
         ${job.is_stale ? "<span class=\"generation-stale-label\">参数已过期</span>" : ""}
       </div>
-      ${statusMessage ? `<p class="generation-status-message">${escapeHtml(statusMessage)}</p>` : ""}
-      ${job.error_message ? `<p class="generation-error">${escapeHtml(job.error_code || "generation_failed")}：${escapeHtml(job.error_message)}</p>` : ""}
+      ${statusMessage && job.status !== "failed" ? `<p class="generation-status-message">${escapeHtml(statusMessage)}</p>` : ""}
+      ${job.status === "failed" ? `<p class="generation-error"><strong>${escapeHtml(failureLabel || "生图失败")}</strong>${failureMessage ? `：${escapeHtml(failureMessage)}` : ""}</p>` : ""}
       ${png ? `
         <button type="button" class="generation-preview-thumbnail" data-action="compare-generation" data-generation-id="${escapeHtml(job.generation_id)}">
           <img src="${escapeHtml(toBackendAssetUrl(png.url))}" alt="${escapeHtml(isMock ? "模拟生成二维图首页" : "SolidWorks 生成二维图首页")}">

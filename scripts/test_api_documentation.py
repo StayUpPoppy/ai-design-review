@@ -250,9 +250,12 @@ def main() -> None:
     requested_artifacts = job_create["properties"]["requested_artifact_types"]
     assert requested_artifacts.get("default") == ["pdf"]
     solidworks_callback = schema["components"]["schemas"]["SolidWorksStatusCallback"]
-    assert set(solidworks_callback["required"]) == {"TaskId", "status", "progress"}
+    assert set(solidworks_callback["required"]) == {"TaskId", "status"}
     assert solidworks_callback["properties"]["TaskId"]["minimum"] == 1_000_000_000
     assert solidworks_callback["properties"]["TaskId"]["maximum"] == 9_999_999_999
+    callback_statuses = set(solidworks_callback["properties"]["status"]["enum"])
+    assert {"generating_3d_error", "generating_2d_error"} <= callback_statuses
+    assert solidworks_callback["properties"]["progress"]["description"]
     assert solidworks_callback["properties"]["file"]["description"]
     assert operations[("POST", "/api/reviews")]["responses"]["413"]["content"]["application/json"]["example"]
     assert operations[("POST", "/api/generation-worker/jobs/{generation_id}/artifacts")]["responses"]["415"]["content"]["application/json"]["example"]

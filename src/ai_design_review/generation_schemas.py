@@ -541,14 +541,31 @@ class SolidWorksStatusCallback(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     TaskId: int = Field(ge=1_000_000_000, le=9_999_999_999, description="我方生成的十位Long任务号。", examples=[6378676753])
-    status: Literal["generating_3d", "generating_2d", "completed", "failed"] = Field(description="SolidWorks当前阶段。")
-    progress: int = Field(ge=0, le=100, description="当前进度百分比。")
+    status: Literal[
+        "generating_3d",
+        "generating_2d",
+        "generating_3d_error",
+        "generating_2d_error",
+        "completed",
+        "failed",
+    ] = Field(description="SolidWorks当前阶段；failed仅为旧协议兼容值。")
+    progress: int | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="当前进度百分比；两个阶段错误状态可省略，其他状态必传。",
+    )
     message: str | None = Field(default=None, max_length=1000, description="供页面展示的当前阶段说明。")
     file: SolidWorksPdfFile | None = Field(default=None, description="仅status为completed时必传的二维PDF。")
     errorCode: str | None = Field(default=None, min_length=1, max_length=96, description="仅失败时可选的机器可读错误码。")
 
     @model_validator(mode="after")
     def validate_terminal_payload(self) -> "SolidWorksStatusCallback":
+        stage_error_statuses = {"generating_3d_error", "generating_2d_error"}
+        if self.status not in stage_error_statuses and self.progress is None:
+            raise ValueError("progress is required unless status is a stage error")
+        if self.status in stage_error_statuses and not str(self.message or "").strip():
+            raise ValueError("message is required when status is a stage error")
         if self.status == "completed" and self.file is None:
             raise ValueError("file is required when status is completed")
         if self.status != "completed" and self.file is not None:
@@ -560,5 +577,22 @@ class SolidWorksStatusCallback(BaseModel):
 
 class SolidWorksStatusCallbackResponse(BaseModel):
     TaskId: int = Field(description="已处理的十位Long任务号。")
-    status: Literal["generating_3d", "generating_2d", "completed", "failed"] = Field(description="已保存的SolidWorks状态。")
+    status: Literal[
+        "generating_3d",
+        "generating_2d",
+        "generating_3d_error",
+        "generating_2d_error",
+        "completed",
+        "failed",
+    ] = Field(description="已接收的SolidWorks状态。")
     duplicate: bool = Field(description="本次是否为已处理回调的幂等重试。")
+
+
+class SolidWorksCancelledCallbackResponse(BaseModel):
+    """The exact response SolidWorks uses as its cancellation signal."""
+
+    TaskId: int = Field(
+        ge=1_000_000_000,
+        le=9_999_999_999,
+        description="已被用户取消、应立即释放的十位Long任务号。",
+    )

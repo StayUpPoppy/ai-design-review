@@ -12,6 +12,16 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .review_persistence import Base, PersistenceError, ReviewPersistence
 
 
+class SolidWorksTaskCancelledError(PersistenceError):
+    """Raised when a SolidWorks callback reaches a user-cancelled task."""
+
+
+SOLIDWORKS_STAGE_ERRORS: dict[str, tuple[str, str]] = {
+    "generating_3d_error": ("solidworks_3d_generation_failed", "SolidWorks 三维模型生成失败。"),
+    "generating_2d_error": ("solidworks_2d_generation_failed", "SolidWorks 二维图生成失败。"),
+}
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
@@ -468,6 +478,25 @@ class GenerationStore:
         except SQLAlchemyError as exc:
             raise PersistenceError(f"Unable to read generation job: {exc}") from exc
 
+    def is_solidworks_task_cancelled(self, generation_id: str) -> bool:
+        """Return whether a trusted SolidWorks callback should stop this task.
+
+        This lightweight preflight avoids decoding or storing a completed
+        callback's PDF after a user has already cancelled the task. The
+        authoritative check still happens under a row lock during persistence.
+        """
+
+        self._require_database()
+        try:
+            with self.repository._session() as session:
+                record = session.get(GenerationJobRecord, generation_id)
+                if record is None:
+                    return False
+                integration = str((record.execution_options or {}).get("integration") or "")
+                return integration == "solidworks_push" and record.status == "cancelled"
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Unable to read SolidWorks callback state: {exc}") from exc
+
     def list_jobs(self, review_job_id: str, *, owner_user_id: str) -> list[dict[str, Any]]:
         if not self.configured:
             return []
@@ -629,7 +658,7 @@ class GenerationStore:
         generation_id: str,
         *,
         status: str,
-        progress: int,
+        progress: int | None,
         message: str | None,
         error_code: str | None = None,
         artifact_payload: dict[str, Any] | None = None,
@@ -650,6 +679,11 @@ class GenerationStore:
                 if str((record.execution_options or {}).get("integration") or "") != "solidworks_push":
                     raise PersistenceError("Generation job is not a SolidWorks push task.")
 
+                if record.status == "cancelled":
+                    raise SolidWorksTaskCancelledError(
+                        f"SolidWorks task {generation_id} was cancelled by the user."
+                    )
+
                 existing_pdf = session.execute(
                     select(GenerationArtifactRecord)
                     .where(
@@ -658,12 +692,17 @@ class GenerationStore:
                     )
                     .order_by(GenerationArtifactRecord.created_at.asc())
                 ).scalar_one_or_none()
-                if record.status in {"completed", "failed", "cancelled"}:
+                if record.status in {"completed", "failed"}:
                     if status == "completed" and record.status == "completed" and artifact_payload is not None:
                         if existing_pdf and existing_pdf.sha256 == artifact_payload["sha256"]:
                             return {"job": self._job(session, record), "artifact": None, "duplicate": True}
                         raise PersistenceError("SolidWorks callback PDF conflicts with the completed task.")
-                    if status == record.status:
+                    same_failed_callback = record.status == "failed" and (
+                        (status == "failed" and record.stage == "failed")
+                        or (status in SOLIDWORKS_STAGE_ERRORS and record.stage == status)
+                    )
+                    same_completed_callback = record.status == "completed" and status == "completed"
+                    if same_completed_callback or same_failed_callback:
                         return {"job": self._job(session, record), "artifact": None, "duplicate": True}
                     raise PersistenceError("SolidWorks callback cannot move a terminal task to another state.")
 
@@ -703,16 +742,31 @@ class GenerationStore:
                 elif status == "failed":
                     record.status = "failed"
                     record.stage = "failed"
-                    record.progress = min(max(int(progress), 0), 100)
+                    record.progress = min(max(int(progress if progress is not None else record.progress), 0), 100)
                     record.error_code = str(error_code or "solidworks_generation_failed")[:96]
                     record.error_message = str(message or "SolidWorks 生图失败。")[:4000]
                     record.completed_at = now
                     record.lease_expires_at = None
                     self._event(session, record, "generation_failed", "solidworks", {"error_code": record.error_code})
+                elif status in SOLIDWORKS_STAGE_ERRORS:
+                    stage_error_code, default_message = SOLIDWORKS_STAGE_ERRORS[status]
+                    record.status = "failed"
+                    record.stage = status
+                    record.error_code = stage_error_code
+                    record.error_message = str(message or default_message)[:4000]
+                    record.completed_at = now
+                    record.lease_expires_at = None
+                    self._event(
+                        session,
+                        record,
+                        "generation_failed",
+                        "solidworks",
+                        {"error_code": record.error_code, "stage": status},
+                    )
                 else:
                     record.status = status
                     record.stage = status
-                    record.progress = min(max(int(progress), 0), 99)
+                    record.progress = min(max(int(progress if progress is not None else 0), 0), 99)
                     self._event(session, record, "generation_status_updated", "solidworks", {"status": status})
 
                 self._set_solidworks_message(record, message)

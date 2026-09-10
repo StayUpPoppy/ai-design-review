@@ -45,7 +45,7 @@ from .engines.werk24_adapter import Werk24Engine
 from .identity import IdentityContext, IdentityError, resolve_request_identity
 from .io_utils import project_path, read_json, write_json
 from .generation_contract import apply_generation_defaults
-from .generation_persistence import GenerationStore
+from .generation_persistence import GenerationStore, SolidWorksTaskCancelledError
 from .generation_readiness import assess_generation_readiness, build_generation_parameter_package
 from .generation_schemas import (
     GenerationArtifactListResponse,
@@ -70,6 +70,7 @@ from .generation_schemas import (
     GenerationWorkerFailed,
     GenerationWorkerHeartbeat,
     GenerationWorkerStatus,
+    SolidWorksCancelledCallbackResponse,
     SolidWorksStatusCallback,
     SolidWorksStatusCallbackResponse,
 )
@@ -934,17 +935,24 @@ def fail_generation_worker_job(
     response_model=SolidWorksStatusCallbackResponse,
     responses={
         404: {"description": "Unknown SolidWorks TaskId"},
-        409: {"description": "Terminal status or PDF content conflict"},
+        409: {
+            "description": "Cancelled task returns root-level TaskId; other conflicts use the standard error body",
+            "model": SolidWorksCancelledCallbackResponse,
+        },
         413: {"description": "Decoded PDF exceeds GENERATION_MAX_ARTIFACT_MB"},
         415: {"description": "Callback file is not a valid PDF"},
     },
     tags=["SolidWorks Worker"],
 )
-def receive_solidworks_status(body: SolidWorksStatusCallback) -> dict[str, Any]:
+def receive_solidworks_status(body: SolidWorksStatusCallback) -> dict[str, Any] | JSONResponse:
     """Receive trusted-network SolidWorks progress and the completed PDF preview."""
 
     _require_generation_database()
     generation_id = str(body.TaskId)
+    store = GenerationStore(REVIEW_PERSISTENCE)
+    if store.is_solidworks_task_cancelled(generation_id):
+        return _solidworks_cancelled_callback_response(body.TaskId)
+
     artifact_payload: dict[str, Any] | None = None
     artifact_path: Path | None = None
     if body.file is not None:
@@ -969,7 +977,6 @@ def receive_solidworks_status(body: SolidWorksStatusCallback) -> dict[str, Any]:
             "is_mock": False,
         }
 
-    store = GenerationStore(REVIEW_PERSISTENCE)
     try:
         result = store.apply_solidworks_status(
             generation_id,
@@ -979,6 +986,10 @@ def receive_solidworks_status(body: SolidWorksStatusCallback) -> dict[str, Any]:
             error_code=body.errorCode,
             artifact_payload=artifact_payload,
         )
+    except SolidWorksTaskCancelledError:
+        if artifact_path is not None:
+            artifact_path.unlink(missing_ok=True)
+        return _solidworks_cancelled_callback_response(body.TaskId)
     except PersistenceError as exc:
         if artifact_path is not None:
             artifact_path.unlink(missing_ok=True)
@@ -2668,6 +2679,16 @@ def _post_solidworks_command(url: str, payload: dict[str, Any], *, timeout_secon
     if not 200 <= response.status_code < 300:
         detail = response.text.strip().replace("\n", " ")[:500]
         raise RuntimeError(f"SolidWorks command returned HTTP {response.status_code}: {detail}")
+
+
+def _solidworks_cancelled_callback_response(task_id: int) -> JSONResponse:
+    """Return the compact cancellation signal agreed with SolidWorks.
+
+    Raising ``HTTPException`` would wrap the payload in ``detail`` and violate
+    the agreed root-level TaskId response contract.
+    """
+
+    return JSONResponse(status_code=409, content={"TaskId": task_id})
 
 
 def _decode_solidworks_pdf(content_base64: str) -> bytes:

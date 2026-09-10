@@ -119,9 +119,9 @@ docker compose logs -f mock-solidworks
 
 真实对接设置 `SOLIDWORKS_GENERATION_URL=http://192.168.31.200:5000/solidworks/command` 和 `SOLIDWORKS_REQUEST_TIMEOUT_SECONDS=10` 后，用户点击“生成图纸”时服务端会分配唯一、固定十位的正数 `TaskId`，冻结当前参数，并立即 `POST` 到 SolidWorks。相同幂等键的网络重试只返回原任务，不会分配或发送第二个 TaskId；修改参数或失败后点击“重新生图”会创建新的 TaskId。任何连接异常、超时或非 2xx 受理响应都会把本次任务置为 `failed`，错误码为 `solidworks_submit_failed`。
 
-发送给 SolidWorks 的数据以 `TaskId` 和 `models` 为根；`modelId`、`materialCode` 固定为 `null`。核心尺寸映射为“线径 / 中径 / 自由高度 / 圈数”，旋向转换为“左旋 / 右旋”；`Fb`、`F1`、`F2` 以及对应的 `Hb`、`H1`、`H2` 缺失时保留字段并传 `null`。完整发送 JSON 同时冻结在 `generation_job.execution_options.solidworks_payload`，用于联调排错和追溯。
+发送给 SolidWorks 的数据以 `TaskId` 和 `models` 为根；`modelId` 固定为整型 `1`，`materialCode` 固定为 `null`。核心尺寸映射为“线径 / 中径 / 自由高度 / 圈数”，旋向转换为“左旋 / 右旋”；`Fb`、`F1`、`F2` 以及对应的 `Hb`、`H1`、`H2` 缺失时保留字段并传 `null`。完整发送 JSON 同时冻结在 `generation_job.execution_options.solidworks_payload`，用于联调排错和追溯。
 
-SolidWorks 通过 `POST /api/solidworks/status` 回调 `generating_3d`、`generating_2d`、`completed` 或 `failed` 状态。完成状态必须附带：
+SolidWorks 通过 `POST /api/solidworks/status` 回调 `generating_3d`、`generating_2d`、`generating_3d_error`、`generating_2d_error` 或 `completed` 状态；旧 `failed` 状态暂时保留兼容，新接入不再使用。完成状态必须附带：
 
 ```json
 {
@@ -136,7 +136,21 @@ SolidWorks 通过 `POST /api/solidworks/status` 回调 `generating_3d`、`genera
 }
 ```
 
+三维或二维生成失败时只需传 TaskId、阶段错误状态和非空 message，不需要传 progress：
+
+```json
+{
+  "TaskId": 6378676753,
+  "status": "generating_3d_error",
+  "message": "模型重建失败"
+}
+```
+
+`generating_2d_error` 使用相同结构。我方成功保存阶段错误后返回 HTTP 200，并将任务内部状态统一置为 `failed`，保留最后一次成功上报的进度；前端显示对应的三维或二维失败提示和红色进度条。
+
 `contentBase64` 必须是纯 Base64，不能携带 `data:` 前缀。服务端校验 PDF MIME、文件名、大小和 `%PDF-` 文件头，保存 PDF、大小与 SHA-256，并尽力生成首页 PNG；PNG 转换失败不会影响任务完成或 PDF 下载。相同 TaskId 回传相同 PDF 可安全重试；回传不同 PDF 返回 409，不会覆盖原文件。
+
+用户点击取消后，我方立即将任务置为 `cancelled`。SolidWorks 下一次调用状态接口时，会收到 `409 Conflict` 和根级响应 `{"TaskId": 1000000000}`；只有该格式的 `409` 表示应停止后续步骤、丢弃临时结果并释放任务。其他 `409` 仍是标准 `detail` 错误结构，不应当作取消信号。
 
 状态回调在联调阶段不使用应用层鉴权，**只能对可信内网开放**。Docker Nginx 会按 `SOLIDWORKS_CALLBACK_ALLOWED_CIDR` 限制来源；默认示例为 `192.168.31.0/24`。如果直接部署 API，请在防火墙或反向代理配置同样的来源限制，绝不能将此接口暴露到公网。
 

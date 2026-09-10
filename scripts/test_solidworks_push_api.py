@@ -238,7 +238,10 @@ def main() -> None:
                 assert duplicate_pdf.status_code == 200, duplicate_pdf.text
                 assert duplicate_pdf.json()["duplicate"] is True
                 conflicting = {**completed, "file": {**completed["file"], "contentBase64": pdf_base64(color="black")}}
-                assert client.post("/api/solidworks/status", json=conflicting).status_code == 409
+                conflict_response = client.post("/api/solidworks/status", json=conflicting)
+                assert conflict_response.status_code == 409
+                assert "detail" in conflict_response.json()
+                assert "TaskId" not in conflict_response.json()
                 assert client.post("/api/solidworks/status", json={**progress, "progress": 60}).status_code == 409
                 assert client.post(
                     "/api/solidworks/status",
@@ -256,6 +259,195 @@ def main() -> None:
                     "/api/solidworks/status",
                     json={"TaskId": task_id, "status": "completed", "progress": 100},
                 ).status_code == 422
+
+                cancelled_create = client.post(
+                    "/api/reviews/review-solidworks-push/generation-jobs",
+                    json=create_request("solidworks-push-r1-cancelled"),
+                )
+                assert cancelled_create.status_code == 202, cancelled_create.text
+                cancelled_task_id = int(cancelled_create.json()["generation_job"]["generation_id"])
+                cancelled = client.post(f"/api/generation-jobs/{cancelled_task_id}/cancel")
+                assert cancelled.status_code == 200, cancelled.text
+                assert cancelled.json()["generation_job"]["status"] == "cancelled"
+
+                cancelled_progress = {
+                    "TaskId": cancelled_task_id,
+                    "status": "generating_3d",
+                    "progress": 35,
+                    "message": "正在生成三维图",
+                }
+                cancelled_progress_response = client.post("/api/solidworks/status", json=cancelled_progress)
+                assert cancelled_progress_response.status_code == 409, cancelled_progress_response.text
+                assert cancelled_progress_response.json() == {"TaskId": cancelled_task_id}
+                repeated_cancelled_progress = client.post("/api/solidworks/status", json=cancelled_progress)
+                assert repeated_cancelled_progress.status_code == 409, repeated_cancelled_progress.text
+                assert repeated_cancelled_progress.json() == {"TaskId": cancelled_task_id}
+                cancelled_error_response = client.post(
+                    "/api/solidworks/status",
+                    json={
+                        "TaskId": cancelled_task_id,
+                        "status": "generating_3d_error",
+                        "message": "该错误不应覆盖取消状态",
+                    },
+                )
+                assert cancelled_error_response.status_code == 409, cancelled_error_response.text
+                assert cancelled_error_response.json() == {"TaskId": cancelled_task_id}
+
+                cancelled_completed = {
+                    "TaskId": cancelled_task_id,
+                    "status": "completed",
+                    "progress": 100,
+                    "file": {
+                        "fileName": "cancelled-drawing.pdf",
+                        "mimeType": "application/pdf",
+                        "contentBase64": pdf_base64(),
+                    },
+                }
+                cancelled_completed_response = client.post("/api/solidworks/status", json=cancelled_completed)
+                assert cancelled_completed_response.status_code == 409, cancelled_completed_response.text
+                assert cancelled_completed_response.json() == {"TaskId": cancelled_task_id}
+                cancelled_job = client.get(f"/api/generation-jobs/{cancelled_task_id}").json()["generation_job"]
+                assert cancelled_job["status"] == "cancelled"
+                assert cancelled_job["artifacts"] == []
+                cancelled_artifact_dir = api.API_RUN_ROOT / "_generation_artifacts" / str(cancelled_task_id)
+                assert not cancelled_artifact_dir.exists()
+
+                race_create = client.post(
+                    "/api/reviews/review-solidworks-push/generation-jobs",
+                    json=create_request("solidworks-push-r1-cancel-race"),
+                )
+                assert race_create.status_code == 202, race_create.text
+                race_task_id = int(race_create.json()["generation_job"]["generation_id"])
+                original_decode = api._decode_solidworks_pdf
+
+                def cancel_after_preflight(content_base64: str) -> bytes:
+                    content = original_decode(content_base64)
+                    raced_cancel = api.GenerationStore(repository).cancel_job(
+                        str(race_task_id), owner_user_id=OWNER["user_id"]
+                    )
+                    assert raced_cancel is not None
+                    assert raced_cancel["status"] == "cancelled"
+                    return content
+
+                api._decode_solidworks_pdf = cancel_after_preflight
+                try:
+                    race_response = client.post(
+                        "/api/solidworks/status",
+                        json={
+                            "TaskId": race_task_id,
+                            "status": "completed",
+                            "progress": 100,
+                            "file": {
+                                "fileName": "race-cancelled.pdf",
+                                "mimeType": "application/pdf",
+                                "contentBase64": pdf_base64(),
+                            },
+                        },
+                    )
+                finally:
+                    api._decode_solidworks_pdf = original_decode
+                assert race_response.status_code == 409, race_response.text
+                assert race_response.json() == {"TaskId": race_task_id}
+                race_job = client.get(f"/api/generation-jobs/{race_task_id}").json()["generation_job"]
+                assert race_job["status"] == "cancelled"
+                assert race_job["artifacts"] == []
+                race_artifact_dir = api.API_RUN_ROOT / "_generation_artifacts" / str(race_task_id)
+                assert not list(race_artifact_dir.glob("*")) if race_artifact_dir.exists() else True
+
+                three_d_error_create = client.post(
+                    "/api/reviews/review-solidworks-push/generation-jobs",
+                    json=create_request("solidworks-push-r1-3d-error"),
+                )
+                assert three_d_error_create.status_code == 202, three_d_error_create.text
+                three_d_error_task_id = int(three_d_error_create.json()["generation_job"]["generation_id"])
+                three_d_started = client.post(
+                    "/api/solidworks/status",
+                    json={
+                        "TaskId": three_d_error_task_id,
+                        "status": "generating_3d",
+                        "progress": 35,
+                        "message": "正在生成三维图",
+                    },
+                )
+                assert three_d_started.status_code == 200, three_d_started.text
+                three_d_error = {
+                    "TaskId": three_d_error_task_id,
+                    "status": "generating_3d_error",
+                    "message": "模型重建失败",
+                }
+                three_d_error_response = client.post("/api/solidworks/status", json=three_d_error)
+                assert three_d_error_response.status_code == 200, three_d_error_response.text
+                assert three_d_error_response.json() == {
+                    "TaskId": three_d_error_task_id,
+                    "status": "generating_3d_error",
+                    "duplicate": False,
+                }
+                three_d_error_job = client.get(
+                    f"/api/generation-jobs/{three_d_error_task_id}"
+                ).json()["generation_job"]
+                assert three_d_error_job["status"] == "failed"
+                assert three_d_error_job["stage"] == "generating_3d_error"
+                assert three_d_error_job["progress"] == 35
+                assert three_d_error_job["error_code"] == "solidworks_3d_generation_failed"
+                assert three_d_error_job["error_message"] == "模型重建失败"
+                assert three_d_error_job["status_message"] == "模型重建失败"
+                duplicate_three_d_error = client.post("/api/solidworks/status", json=three_d_error)
+                assert duplicate_three_d_error.status_code == 200, duplicate_three_d_error.text
+                assert duplicate_three_d_error.json()["duplicate"] is True
+                changed_stage_error = client.post(
+                    "/api/solidworks/status",
+                    json={
+                        "TaskId": three_d_error_task_id,
+                        "status": "generating_2d_error",
+                        "message": "不能覆盖三维失败终态",
+                    },
+                )
+                assert changed_stage_error.status_code == 409, changed_stage_error.text
+                assert "detail" in changed_stage_error.json()
+                assert "TaskId" not in changed_stage_error.json()
+                assert client.post(
+                    "/api/solidworks/status",
+                    json={"TaskId": three_d_error_task_id, "status": "generating_3d_error"},
+                ).status_code == 422
+                assert client.post(
+                    "/api/solidworks/status",
+                    json={**three_d_error, "file": completed["file"]},
+                ).status_code == 422
+
+                two_d_error_create = client.post(
+                    "/api/reviews/review-solidworks-push/generation-jobs",
+                    json=create_request("solidworks-push-r1-2d-error"),
+                )
+                assert two_d_error_create.status_code == 202, two_d_error_create.text
+                two_d_error_task_id = int(two_d_error_create.json()["generation_job"]["generation_id"])
+                two_d_started = client.post(
+                    "/api/solidworks/status",
+                    json={
+                        "TaskId": two_d_error_task_id,
+                        "status": "generating_2d",
+                        "progress": 68,
+                        "message": "正在生成二维图",
+                    },
+                )
+                assert two_d_started.status_code == 200, two_d_started.text
+                two_d_error_response = client.post(
+                    "/api/solidworks/status",
+                    json={
+                        "TaskId": two_d_error_task_id,
+                        "status": "generating_2d_error",
+                        "message": "二维工程图生成失败",
+                    },
+                )
+                assert two_d_error_response.status_code == 200, two_d_error_response.text
+                assert two_d_error_response.json()["status"] == "generating_2d_error"
+                two_d_error_job = client.get(
+                    f"/api/generation-jobs/{two_d_error_task_id}"
+                ).json()["generation_job"]
+                assert two_d_error_job["status"] == "failed"
+                assert two_d_error_job["stage"] == "generating_2d_error"
+                assert two_d_error_job["progress"] == 68
+                assert two_d_error_job["error_code"] == "solidworks_2d_generation_failed"
+                assert two_d_error_job["error_message"] == "二维工程图生成失败"
 
                 failed_create = client.post(
                     "/api/reviews/review-solidworks-push/generation-jobs",
@@ -308,7 +500,7 @@ def main() -> None:
             api.API_RUN_ROOT = original_run_root
             repository.dispose()
 
-    print("SolidWorks push API tests passed: ten-digit TaskId, command payload, callbacks, PDF storage, and failures.")
+    print("SolidWorks push API tests passed: ten-digit TaskId, command payload, callbacks, PDF storage, failures, and cancellation.")
 
 
 if __name__ == "__main__":

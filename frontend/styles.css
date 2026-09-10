@@ -3281,6 +3281,11 @@ textarea {
   font-size: 12px;
 }
 
+.generation-version-card.failed .generation-job-status {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
 .generation-progress {
   height: 6px;
   margin-top: 11px;
@@ -3291,10 +3296,20 @@ textarea {
 
 .generation-progress span {
   display: block;
+  width: 100%;
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, #0284c7, #22c55e);
-  transition: width 180ms ease;
+  transform-origin: left center;
+  transition: transform 180ms ease-out;
+}
+
+.generation-progress.failed {
+  background: #fee2e2;
+}
+
+.generation-progress.failed span {
+  background: #dc2626;
 }
 
 .generation-version-meta {
@@ -3308,14 +3323,16 @@ textarea {
   color: #94a3b8;
 }
 
-.generation-stale-label,
-.generation-error {
+.generation-stale-label {
   color: #b45309 !important;
 }
 
 .generation-error {
   margin: 9px 0 0;
+  color: #b91c1c;
   font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .generation-status-message {
