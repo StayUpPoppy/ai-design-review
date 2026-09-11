@@ -97,7 +97,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/reviews/{job_id}/generation-jobs"): _operation("生图任务", "创建生图任务", "校验审图修订、八个建模参数、技术要求、参数合理性和模板后创建不可变参数快照。真实 SolidWorks 模板会分配固定十位 TaskId，立即将冻结的完整 JSON 主动提交到 SOLIDWORKS_GENERATION_URL；任意非 2xx、超时或网络异常会置为 solidworks_submit_failed。标准化为可选功能；未应用的标准化建议不会进入参数包。新任务返回 202；相同 idempotency_key 和相同请求返回原任务及 200，不分配第二个 TaskId。"),
     ("GET", "/api/reviews/{job_id}/generation-jobs"): _operation("生图任务", "查询审图单的全部生图版本", "返回指定审图单的全部生图任务，并标记最终版本和因审图修订变化而过期的版本。"),
     ("GET", "/api/generation-jobs/{generation_id}"): _operation("生图任务", "查询生图任务详情", "返回任务状态、阶段、进度、模板、参数哈希、租约、错误和产物摘要，供前端轮询。"),
-    ("POST", "/api/generation-jobs/{generation_id}/cancel"): _operation("生图任务", "取消生图任务", "取消排队中或正在处理的任务并立即标记为 cancelled。真实SolidWorks任务会在下一次状态回调收到 409 和根级 TaskId，据此停止后续步骤并释放资源。"),
+    ("POST", "/api/generation-jobs/{generation_id}/cancel"): _operation("生图任务", "取消生图任务", "取消排队中或正在处理的任务并立即标记为 cancelled。真实SolidWorks任务会在下一次状态回调收到 HTTP 409 和根级 {\"TaskId\":任务号,\"code\":409}，据此停止后续步骤并释放资源。"),
     ("POST", "/api/generation-jobs/{generation_id}/retry"): _operation("生图任务", "重试失败的兼容 Worker 任务", "仅用于 Mock 和历史兼容 Worker 任务：使用原有参数快照和模板重新排队，清除旧失败产物并增加尝试次数。真实 SolidWorks 推送任务必须重新创建，以分配新的十位 TaskId。"),
     ("POST", "/api/generation-jobs/{generation_id}/approve"): _operation("生图任务", "设为最终生图版本", "仅允许确认已完成且对应当前审图修订的任务；同一审图单只保留一个最终版本。模拟任务会保留 is_mock 标识。"),
     ("GET", "/api/generation-jobs/{generation_id}/artifacts"): _operation("生成产物", "查询生图任务产物", "列出任务上传的 PNG、PDF、模型、清单和日志文件，包含大小、MIME、SHA-256 和模拟标识。"),
@@ -111,7 +111,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/generation-worker/jobs/{generation_id}/artifacts"): _operation("SolidWorks Worker", "上传 SolidWorks 生成产物", "以 multipart/form-data 上传文件并记录 MIME、大小、SHA-256 和 is_mock；校验任务租约、文件类型和大小限制。上传 PDF 后服务器自动把第一页转换为 PNG 对比预览，转换失败不丢失原 PDF。"),
     ("POST", "/api/generation-worker/jobs/{generation_id}/complete"): _operation("SolidWorks Worker", "完成生图任务", "当前 Worker 确认任务完成；SolidWorks V2 只需上传 PDF，服务器生成 PNG 对比预览。至少已有一个 PDF 或 PNG 才能完成。"),
     ("POST", "/api/generation-worker/jobs/{generation_id}/failed"): _operation("SolidWorks Worker", "上报生图任务失败", "当前 Worker 保存稳定错误代码和可读错误说明，并将任务置为 failed，供用户查看和重试。若参数包已提供 material 但 SolidWorks 本地材料库没有对应名称，固定传 error_code=solidworks_material_not_found。"),
-    ("POST", "/api/solidworks/status"): _operation("SolidWorks Worker", "接收 SolidWorks 状态和二维 PDF", "可信内网回调，无 Bearer 鉴权。TaskId 必须是我方分配的十位正数 Long。正常阶段使用 generating_3d、generating_2d 和 completed；三维或二维失败分别使用 generating_3d_error、generating_2d_error，只需提供非空 message，progress 可省略，成功接收仍返回 200。旧 failed 状态暂时保留兼容。completed 必须携带 mimeType=application/pdf、文件头正确且不含 Data URL 前缀的纯 Base64 二维 PDF；系统保存 PDF 和 SHA-256，并尽力生成首页 PNG。相同 TaskId 和相同状态或PDF可幂等重试；不同终态或PDF冲突返回 409。若用户已取消任务，固定返回 409 和根级 {\"TaskId\":任务号}，SolidWorks应停止后续步骤并释放资源。未知 TaskId 返回 404，其他终态冲突仍返回标准 detail 错误结构。部署时必须仅向可信内网暴露该接口。"),
+    ("POST", "/api/solidworks/status"): _operation("SolidWorks Worker", "接收 SolidWorks 状态和二维 PDF", "可信内网回调，无 Bearer 鉴权。TaskId 必须是我方分配的十位正数 Long。正常阶段使用 generating_3d、generating_2d 和 completed；三维或二维失败分别使用 generating_3d_error、generating_2d_error，只需提供非空 message，progress 可省略。成功接收（包括幂等重复和失败状态上报）固定返回 HTTP 200 与根级 {\"TaskId\":任务号,\"code\":200}。旧 failed 状态暂时保留兼容。completed 必须携带 mimeType=application/pdf、文件头正确且不含 Data URL 前缀的纯 Base64 二维 PDF；系统保存 PDF 和 SHA-256，并尽力生成首页 PNG。相同 TaskId 和相同状态或PDF可幂等重试；不同终态或PDF冲突返回 409。若用户已取消任务，固定返回 HTTP 409 和根级 {\"TaskId\":任务号,\"code\":409}，SolidWorks应停止后续步骤并释放资源。未知 TaskId 返回 404，其他终态冲突仍返回标准 detail 错误结构。部署时必须仅向可信内网暴露该接口。"),
 }
 
 

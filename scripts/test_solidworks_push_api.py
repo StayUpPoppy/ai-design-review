@@ -200,10 +200,10 @@ def main() -> None:
                 progress = {"TaskId": task_id, "status": "generating_3d", "progress": 35, "message": "正在生成三维图"}
                 progress_response = client.post("/api/solidworks/status", json=progress)
                 assert progress_response.status_code == 200, progress_response.text
-                assert progress_response.json()["duplicate"] is False
+                assert progress_response.json() == {"TaskId": task_id, "code": 200}
                 duplicate_progress = client.post("/api/solidworks/status", json=progress)
                 assert duplicate_progress.status_code == 200, duplicate_progress.text
-                assert duplicate_progress.json()["duplicate"] is True
+                assert duplicate_progress.json() == {"TaskId": task_id, "code": 200}
 
                 completed = {
                     "TaskId": task_id,
@@ -218,7 +218,7 @@ def main() -> None:
                 }
                 completed_response = client.post("/api/solidworks/status", json=completed)
                 assert completed_response.status_code == 200, completed_response.text
-                assert completed_response.json()["duplicate"] is False
+                assert completed_response.json() == {"TaskId": task_id, "code": 200}
                 job_response = client.get(f"/api/generation-jobs/{task_id}")
                 assert job_response.status_code == 200, job_response.text
                 completed_job = job_response.json()["generation_job"]
@@ -236,7 +236,7 @@ def main() -> None:
 
                 duplicate_pdf = client.post("/api/solidworks/status", json=completed)
                 assert duplicate_pdf.status_code == 200, duplicate_pdf.text
-                assert duplicate_pdf.json()["duplicate"] is True
+                assert duplicate_pdf.json() == {"TaskId": task_id, "code": 200}
                 conflicting = {**completed, "file": {**completed["file"], "contentBase64": pdf_base64(color="black")}}
                 conflict_response = client.post("/api/solidworks/status", json=conflicting)
                 assert conflict_response.status_code == 409
@@ -278,10 +278,10 @@ def main() -> None:
                 }
                 cancelled_progress_response = client.post("/api/solidworks/status", json=cancelled_progress)
                 assert cancelled_progress_response.status_code == 409, cancelled_progress_response.text
-                assert cancelled_progress_response.json() == {"TaskId": cancelled_task_id}
+                assert cancelled_progress_response.json() == {"TaskId": cancelled_task_id, "code": 409}
                 repeated_cancelled_progress = client.post("/api/solidworks/status", json=cancelled_progress)
                 assert repeated_cancelled_progress.status_code == 409, repeated_cancelled_progress.text
-                assert repeated_cancelled_progress.json() == {"TaskId": cancelled_task_id}
+                assert repeated_cancelled_progress.json() == {"TaskId": cancelled_task_id, "code": 409}
                 cancelled_error_response = client.post(
                     "/api/solidworks/status",
                     json={
@@ -291,7 +291,7 @@ def main() -> None:
                     },
                 )
                 assert cancelled_error_response.status_code == 409, cancelled_error_response.text
-                assert cancelled_error_response.json() == {"TaskId": cancelled_task_id}
+                assert cancelled_error_response.json() == {"TaskId": cancelled_task_id, "code": 409}
 
                 cancelled_completed = {
                     "TaskId": cancelled_task_id,
@@ -305,7 +305,7 @@ def main() -> None:
                 }
                 cancelled_completed_response = client.post("/api/solidworks/status", json=cancelled_completed)
                 assert cancelled_completed_response.status_code == 409, cancelled_completed_response.text
-                assert cancelled_completed_response.json() == {"TaskId": cancelled_task_id}
+                assert cancelled_completed_response.json() == {"TaskId": cancelled_task_id, "code": 409}
                 cancelled_job = client.get(f"/api/generation-jobs/{cancelled_task_id}").json()["generation_job"]
                 assert cancelled_job["status"] == "cancelled"
                 assert cancelled_job["artifacts"] == []
@@ -347,7 +347,7 @@ def main() -> None:
                 finally:
                     api._decode_solidworks_pdf = original_decode
                 assert race_response.status_code == 409, race_response.text
-                assert race_response.json() == {"TaskId": race_task_id}
+                assert race_response.json() == {"TaskId": race_task_id, "code": 409}
                 race_job = client.get(f"/api/generation-jobs/{race_task_id}").json()["generation_job"]
                 assert race_job["status"] == "cancelled"
                 assert race_job["artifacts"] == []
@@ -377,11 +377,7 @@ def main() -> None:
                 }
                 three_d_error_response = client.post("/api/solidworks/status", json=three_d_error)
                 assert three_d_error_response.status_code == 200, three_d_error_response.text
-                assert three_d_error_response.json() == {
-                    "TaskId": three_d_error_task_id,
-                    "status": "generating_3d_error",
-                    "duplicate": False,
-                }
+                assert three_d_error_response.json() == {"TaskId": three_d_error_task_id, "code": 200}
                 three_d_error_job = client.get(
                     f"/api/generation-jobs/{three_d_error_task_id}"
                 ).json()["generation_job"]
@@ -393,7 +389,7 @@ def main() -> None:
                 assert three_d_error_job["status_message"] == "模型重建失败"
                 duplicate_three_d_error = client.post("/api/solidworks/status", json=three_d_error)
                 assert duplicate_three_d_error.status_code == 200, duplicate_three_d_error.text
-                assert duplicate_three_d_error.json()["duplicate"] is True
+                assert duplicate_three_d_error.json() == {"TaskId": three_d_error_task_id, "code": 200}
                 changed_stage_error = client.post(
                     "/api/solidworks/status",
                     json={
@@ -439,7 +435,7 @@ def main() -> None:
                     },
                 )
                 assert two_d_error_response.status_code == 200, two_d_error_response.text
-                assert two_d_error_response.json()["status"] == "generating_2d_error"
+                assert two_d_error_response.json() == {"TaskId": two_d_error_task_id, "code": 200}
                 two_d_error_job = client.get(
                     f"/api/generation-jobs/{two_d_error_task_id}"
                 ).json()["generation_job"]
@@ -466,7 +462,7 @@ def main() -> None:
                     },
                 )
                 assert failed_callback.status_code == 200, failed_callback.text
-                assert failed_callback.json()["duplicate"] is False
+                assert failed_callback.json() == {"TaskId": int(failed_task["generation_id"]), "code": 200}
                 assert client.post(f"/api/generation-jobs/{failed_task['generation_id']}/retry").status_code == 409
 
                 def reject_command(url: str, payload: dict[str, object], *, timeout_seconds: float) -> None:

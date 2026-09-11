@@ -936,7 +936,7 @@ def fail_generation_worker_job(
     responses={
         404: {"description": "Unknown SolidWorks TaskId"},
         409: {
-            "description": "Cancelled task returns root-level TaskId; other conflicts use the standard error body",
+            "description": "Cancelled task returns root-level TaskId and code=409; other conflicts use the standard error body",
             "model": SolidWorksCancelledCallbackResponse,
         },
         413: {"description": "Decoded PDF exceeds GENERATION_MAX_ARTIFACT_MB"},
@@ -1024,7 +1024,7 @@ def receive_solidworks_status(body: SolidWorksStatusCallback) -> dict[str, Any] 
                 )
             except PersistenceError:
                 pass
-    return {"TaskId": body.TaskId, "status": body.status, "duplicate": bool(result["duplicate"])}
+    return {"TaskId": body.TaskId, "code": 200}
 
 
 async def run_recognition_execution(
@@ -2685,10 +2685,10 @@ def _solidworks_cancelled_callback_response(task_id: int) -> JSONResponse:
     """Return the compact cancellation signal agreed with SolidWorks.
 
     Raising ``HTTPException`` would wrap the payload in ``detail`` and violate
-    the agreed root-level TaskId response contract.
+    the agreed root-level TaskId plus code response contract.
     """
 
-    return JSONResponse(status_code=409, content={"TaskId": task_id})
+    return JSONResponse(status_code=409, content={"TaskId": task_id, "code": 409})
 
 
 def _decode_solidworks_pdf(content_base64: str) -> bytes:

@@ -577,15 +577,7 @@ class SolidWorksStatusCallback(BaseModel):
 
 class SolidWorksStatusCallbackResponse(BaseModel):
     TaskId: int = Field(description="已处理的十位Long任务号。")
-    status: Literal[
-        "generating_3d",
-        "generating_2d",
-        "generating_3d_error",
-        "generating_2d_error",
-        "completed",
-        "failed",
-    ] = Field(description="已接收的SolidWorks状态。")
-    duplicate: bool = Field(description="本次是否为已处理回调的幂等重试。")
+    code: Literal[200] = Field(description="HTTP 200 的响应体回显，表示本次回调已成功接收。")
 
 
 class SolidWorksCancelledCallbackResponse(BaseModel):
@@ -596,3 +588,4 @@ class SolidWorksCancelledCallbackResponse(BaseModel):
         le=9_999_999_999,
         description="已被用户取消、应立即释放的十位Long任务号。",
     )
+    code: Literal[409] = Field(description="HTTP 409 的响应体回显，表示任务已被用户取消。")

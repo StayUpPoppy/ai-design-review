@@ -257,6 +257,12 @@ def main() -> None:
     assert {"generating_3d_error", "generating_2d_error"} <= callback_statuses
     assert solidworks_callback["properties"]["progress"]["description"]
     assert solidworks_callback["properties"]["file"]["description"]
+    callback_response = schema["components"]["schemas"]["SolidWorksStatusCallbackResponse"]
+    assert set(callback_response["required"]) == {"TaskId", "code"}
+    assert callback_response["properties"]["code"].get("const") == 200
+    cancelled_response = schema["components"]["schemas"]["SolidWorksCancelledCallbackResponse"]
+    assert set(cancelled_response["required"]) == {"TaskId", "code"}
+    assert cancelled_response["properties"]["code"].get("const") == 409
     assert operations[("POST", "/api/reviews")]["responses"]["413"]["content"]["application/json"]["example"]
     assert operations[("POST", "/api/generation-worker/jobs/{generation_id}/artifacts")]["responses"]["415"]["content"]["application/json"]["example"]
 

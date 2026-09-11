@@ -146,11 +146,11 @@ SolidWorks 通过 `POST /api/solidworks/status` 回调 `generating_3d`、`genera
 }
 ```
 
-`generating_2d_error` 使用相同结构。我方成功保存阶段错误后返回 HTTP 200，并将任务内部状态统一置为 `failed`，保留最后一次成功上报的进度；前端显示对应的三维或二维失败提示和红色进度条。
+`generating_2d_error` 使用相同结构。我方成功保存阶段错误后返回 HTTP 200 和 `{"TaskId": 6378676753, "code": 200}`，并将任务内部状态统一置为 `failed`，保留最后一次成功上报的进度；前端显示对应的三维或二维失败提示和红色进度条。正常进度、完成、失败和幂等重复回调成功接收时均使用相同的 `TaskId + code=200` 响应体。
 
 `contentBase64` 必须是纯 Base64，不能携带 `data:` 前缀。服务端校验 PDF MIME、文件名、大小和 `%PDF-` 文件头，保存 PDF、大小与 SHA-256，并尽力生成首页 PNG；PNG 转换失败不会影响任务完成或 PDF 下载。相同 TaskId 回传相同 PDF 可安全重试；回传不同 PDF 返回 409，不会覆盖原文件。
 
-用户点击取消后，我方立即将任务置为 `cancelled`。SolidWorks 下一次调用状态接口时，会收到 `409 Conflict` 和根级响应 `{"TaskId": 1000000000}`；只有该格式的 `409` 表示应停止后续步骤、丢弃临时结果并释放任务。其他 `409` 仍是标准 `detail` 错误结构，不应当作取消信号。
+用户点击取消后，我方立即将任务置为 `cancelled`。SolidWorks 下一次调用状态接口时，会收到 `409 Conflict` 和根级响应 `{"TaskId": 1000000000, "code": 409}`；只有 HTTP 状态码、根级数值型 `TaskId` 和数值型 `code=409` 均匹配时，才表示应停止后续步骤、丢弃临时结果并释放任务。其他 `409` 仍是标准 `detail` 错误结构，不应当作取消信号。
 
 状态回调在联调阶段不使用应用层鉴权，**只能对可信内网开放**。Docker Nginx 会按 `SOLIDWORKS_CALLBACK_ALLOWED_CIDR` 限制来源；默认示例为 `192.168.31.0/24`。如果直接部署 API，请在防火墙或反向代理配置同样的来源限制，绝不能将此接口暴露到公网。
 
@@ -375,3 +375,5 @@ docker compose --profile mock-solidworks start
 docker compose --profile mock-solidworks up -d
 
 docker compose --profile mock-solidworks stop mock-solidworks
+
+docker compose logs -f --tail 100 web api
