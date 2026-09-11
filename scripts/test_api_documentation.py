@@ -62,6 +62,7 @@ EXPECTED_OPERATION_KEYS = {
     ("PATCH", "/api/admin/generation-templates/{template_code}/versions/{version}/status"),
     ("GET", "/api/generation-jobs/{generation_id}"),
     ("POST", "/api/generation-jobs/{generation_id}/cancel"),
+    ("POST", "/api/generation-jobs/{generation_id}/preview/retry"),
     ("POST", "/api/generation-jobs/{generation_id}/retry"),
     ("POST", "/api/generation-jobs/{generation_id}/approve"),
     ("GET", "/api/generation-jobs/{generation_id}/artifacts"),
@@ -111,6 +112,7 @@ EXPECTED_OPERATION_IDS = {
     "list_reviews_api_reviews_get",
     "match_review_generation_template_api_reviews__job_id__generation_template_match_post",
     "retry_generation_job_api_generation_jobs__generation_id__retry_post",
+    "retry_generation_preview_api_generation_jobs__generation_id__preview_retry_post",
     "retry_recognition_job_api_reviews__job_id__retry_post",
     "root__get",
     "receive_solidworks_status_api_solidworks_status_post",
@@ -174,7 +176,7 @@ def main() -> None:
                 operations[key] = operation
 
     assert set(operations) == EXPECTED_OPERATION_KEYS
-    assert len(operations) == 47
+    assert len(operations) == 48
     assert {operation["operationId"] for operation in operations.values()} == EXPECTED_OPERATION_IDS
 
     for key, operation in operations.items():
@@ -249,6 +251,10 @@ def main() -> None:
     job_create = schema["components"]["schemas"]["GenerationJobCreate"]
     requested_artifacts = job_create["properties"]["requested_artifact_types"]
     assert requested_artifacts.get("default") == ["pdf"]
+    generation_job = schema["components"]["schemas"]["GenerationJobView"]
+    assert set(generation_job["properties"]["preview_status"]["enum"]) == {"pending", "ready", "failed"}
+    assert generation_job["properties"]["preview_attempt_count"]["minimum"] == 0
+    assert generation_job["properties"]["preview_error_message"]["description"]
     solidworks_callback = schema["components"]["schemas"]["SolidWorksStatusCallback"]
     assert set(solidworks_callback["required"]) == {"TaskId", "status"}
     assert solidworks_callback["properties"]["TaskId"]["minimum"] == 1_000_000_000

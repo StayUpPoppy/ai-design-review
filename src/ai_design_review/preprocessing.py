@@ -11,6 +11,15 @@ CAD_EXTENSIONS = {".dwg", ".dxf", ".step", ".stp", ".iges", ".igs"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 
 
+def pdftoppm_runtime_status() -> dict[str, Any]:
+    candidates = _pdftoppm_candidates()
+    return {
+        "status": "available" if candidates else "unavailable",
+        "engine": "pdftoppm",
+        "candidate_count": len(candidates),
+    }
+
+
 def probe_file(file_path: str | Path) -> dict[str, Any]:
     path = Path(file_path)
     suffix = path.suffix.lower()

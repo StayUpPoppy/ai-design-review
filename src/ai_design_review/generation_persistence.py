@@ -94,6 +94,9 @@ class GenerationJobRecord(Base):
     readiness: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     requested_artifact_types: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
     execution_options: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    preview_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    preview_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    preview_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     stage: Mapped[str] = mapped_column(String(64), nullable=False, default="queued")
     progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -621,6 +624,7 @@ class GenerationStore:
         worker_id: str,
         event_source: str = "worker",
         event_payload: dict[str, Any] | None = None,
+        preview_attempt_count: int = 0,
     ) -> dict[str, Any] | None:
         self._require_database()
         now = _utcnow()
@@ -647,6 +651,20 @@ class GenerationStore:
                         **copy.deepcopy(event_payload or {}),
                     },
                 )
+                if artifact.artifact_type == "png":
+                    job.preview_status = "ready"
+                    job.preview_attempt_count += max(int(preview_attempt_count), 0)
+                    job.preview_error_message = None
+                    self._event(
+                        session,
+                        job,
+                        "generation_preview_created",
+                        "system",
+                        {
+                            "artifact_id": artifact.artifact_id,
+                            "attempt_count": max(int(preview_attempt_count), 0),
+                        },
+                    )
                 session.commit()
                 return self._artifact(artifact)
             except SQLAlchemyError as exc:
@@ -662,6 +680,9 @@ class GenerationStore:
         message: str | None,
         error_code: str | None = None,
         artifact_payload: dict[str, Any] | None = None,
+        preview_payload: dict[str, Any] | None = None,
+        preview_attempt_count: int = 0,
+        preview_error_message: str | None = None,
     ) -> dict[str, Any] | None:
         """Apply a trusted-network push callback and atomically register its PDF."""
 
@@ -714,6 +735,7 @@ class GenerationStore:
                     return {"job": self._job(session, record), "artifact": None, "duplicate": True}
 
                 artifact: GenerationArtifactRecord | None = None
+                preview_artifact: GenerationArtifactRecord | None = None
                 if status == "completed":
                     if artifact_payload is None:
                         raise PersistenceError("A completed SolidWorks callback requires a PDF artifact.")
@@ -731,6 +753,40 @@ class GenerationStore:
                         "solidworks",
                         {"artifact_id": artifact.artifact_id, "sha256": artifact.sha256},
                     )
+                    if preview_payload is not None:
+                        preview_artifact = GenerationArtifactRecord(**copy.deepcopy(preview_payload))
+                        session.add(preview_artifact)
+                        session.flush()
+                        record.preview_status = "ready"
+                        record.preview_error_message = None
+                        self._event(
+                            session,
+                            record,
+                            "generation_preview_created",
+                            "system",
+                            {
+                                "artifact_id": preview_artifact.artifact_id,
+                                "source_artifact_id": artifact.artifact_id,
+                                "attempt_count": max(int(preview_attempt_count), 0),
+                            },
+                        )
+                    else:
+                        record.preview_status = "failed"
+                        record.preview_error_message = str(
+                            preview_error_message or "PDF 对比预览生成失败。"
+                        )[:2000]
+                        self._event(
+                            session,
+                            record,
+                            "generation_preview_failed",
+                            "system",
+                            {
+                                "source_artifact_id": artifact.artifact_id,
+                                "attempt_count": max(int(preview_attempt_count), 0),
+                                "reason": record.preview_error_message,
+                            },
+                        )
+                    record.preview_attempt_count = max(int(preview_attempt_count), 0)
                     record.status = "completed"
                     record.stage = "completed"
                     record.progress = 100
@@ -776,6 +832,7 @@ class GenerationStore:
                 return {
                     "job": self._job(session, record),
                     "artifact": self._artifact(artifact) if artifact is not None else None,
+                    "preview_artifact": self._artifact(preview_artifact) if preview_artifact is not None else None,
                     "duplicate": False,
                 }
             except PersistenceError:
@@ -791,6 +848,7 @@ class GenerationStore:
         *,
         event_type: str,
         event_payload: dict[str, Any] | None = None,
+        preview_attempt_count: int = 0,
     ) -> dict[str, Any] | None:
         """Save a server-derived artifact such as a PNG rendered from a callback PDF."""
 
@@ -817,11 +875,140 @@ class GenerationStore:
                     "system",
                     {"artifact_id": artifact.artifact_id, "artifact_type": artifact.artifact_type, **copy.deepcopy(event_payload or {})},
                 )
+                if artifact.artifact_type == "png":
+                    job.preview_status = "ready"
+                    job.preview_attempt_count += max(int(preview_attempt_count), 0)
+                    job.preview_error_message = None
                 session.commit()
                 return self._artifact(artifact)
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise PersistenceError(f"Unable to save system generation artifact: {exc}") from exc
+
+    def record_preview_failure(
+        self,
+        generation_id: str,
+        *,
+        attempt_count: int,
+        error_message: str,
+        source_artifact_id: str,
+    ) -> bool:
+        self._require_database()
+        with self.repository._session() as session:
+            try:
+                job = session.execute(
+                    select(GenerationJobRecord)
+                    .where(GenerationJobRecord.generation_id == generation_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if job is None:
+                    return False
+                existing_preview = session.execute(
+                    select(GenerationArtifactRecord.artifact_id)
+                    .where(
+                        GenerationArtifactRecord.generation_id == generation_id,
+                        GenerationArtifactRecord.artifact_type == "png",
+                    )
+                    .limit(1)
+                ).scalar_one_or_none()
+                if existing_preview is not None:
+                    job.preview_status = "ready"
+                    job.preview_error_message = None
+                    session.commit()
+                    return False
+                attempts = max(int(attempt_count), 0)
+                job.preview_status = "failed"
+                job.preview_attempt_count += attempts
+                job.preview_error_message = str(error_message or "PDF 对比预览生成失败。")[:2000]
+                self._event(
+                    session,
+                    job,
+                    "generation_preview_failed",
+                    "system",
+                    {
+                        "source_artifact_id": source_artifact_id,
+                        "attempt_count": attempts,
+                        "reason": job.preview_error_message,
+                    },
+                )
+                session.commit()
+                return True
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise PersistenceError(f"Unable to save generation preview failure: {exc}") from exc
+
+    def retry_preview(
+        self,
+        generation_id: str,
+        *,
+        owner_user_id: str,
+        preview_payload: dict[str, Any] | None,
+        attempt_count: int,
+        error_message: str | None,
+    ) -> dict[str, Any] | None:
+        """Apply one user-requested preview regeneration without changing job completion."""
+
+        self._require_database()
+        with self.repository._session() as session:
+            try:
+                job = session.execute(
+                    select(GenerationJobRecord)
+                    .where(GenerationJobRecord.generation_id == generation_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if job is None or job.owner_erp_user_id != owner_user_id:
+                    return None
+                artifacts = session.execute(
+                    select(GenerationArtifactRecord)
+                    .where(GenerationArtifactRecord.generation_id == generation_id)
+                    .order_by(GenerationArtifactRecord.created_at.asc())
+                ).scalars().all()
+                if any(item.artifact_type == "png" for item in artifacts):
+                    return self._job(session, job)
+                if job.status != "completed" or not any(item.artifact_type == "pdf" for item in artifacts):
+                    raise PersistenceError("Only a completed generation with a PDF can retry its preview.")
+
+                attempts = max(int(attempt_count), 0)
+                job.preview_attempt_count += attempts
+                self._event(
+                    session,
+                    job,
+                    "generation_preview_retried",
+                    "user",
+                    {"attempt_count": attempts},
+                )
+                if preview_payload is not None:
+                    artifact = GenerationArtifactRecord(**copy.deepcopy(preview_payload))
+                    session.add(artifact)
+                    session.flush()
+                    job.preview_status = "ready"
+                    job.preview_error_message = None
+                    self._event(
+                        session,
+                        job,
+                        "generation_preview_created",
+                        "system",
+                        {"artifact_id": artifact.artifact_id, "attempt_count": attempts, "retry": True},
+                    )
+                else:
+                    job.preview_status = "failed"
+                    job.preview_error_message = str(error_message or "PDF 对比预览生成失败。")[:2000]
+                    self._event(
+                        session,
+                        job,
+                        "generation_preview_failed",
+                        "user",
+                        {"attempt_count": attempts, "reason": job.preview_error_message, "retry": True},
+                    )
+                job.updated_at = _utcnow()
+                session.commit()
+                return self._job(session, job)
+            except PersistenceError:
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise PersistenceError(f"Unable to retry generation preview: {exc}") from exc
 
     def record_event(
         self,
@@ -859,6 +1046,12 @@ class GenerationStore:
                 types = set(session.execute(select(GenerationArtifactRecord.artifact_type).where(GenerationArtifactRecord.generation_id == generation_id)).scalars())
                 if not types.intersection({"pdf", "png"}):
                     raise PersistenceError("A PDF or PNG preview is required before completion.")
+                if "png" in types:
+                    record.preview_status = "ready"
+                    record.preview_error_message = None
+                elif record.preview_status == "pending":
+                    record.preview_status = "failed"
+                    record.preview_error_message = "PDF 已生成，但对比预览尚未成功生成。"
                 record.status = "completed"
                 record.stage = "completed"
                 record.progress = 100
@@ -985,6 +1178,9 @@ class GenerationStore:
                     record.worker_id = None
                     record.lease_expires_at = None
                     record.completed_at = None
+                    record.preview_status = "pending"
+                    record.preview_attempt_count = 0
+                    record.preview_error_message = None
                     event = "generation_retried"
                 record.updated_at = now
                 self._event(session, record, event, "user", {})
@@ -1041,6 +1237,9 @@ class GenerationStore:
             "readiness": copy.deepcopy(record.readiness),
             "requested_artifact_types": copy.deepcopy(record.requested_artifact_types),
             "execution_options": copy.deepcopy(record.execution_options),
+            "preview_status": record.preview_status,
+            "preview_attempt_count": record.preview_attempt_count,
+            "preview_error_message": record.preview_error_message,
             "status": record.status,
             "stage": record.stage,
             "progress": record.progress,

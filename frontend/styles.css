@@ -3342,6 +3342,18 @@ textarea {
   line-height: 1.5;
 }
 
+.generation-preview-status {
+  margin: 9px 0 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.generation-preview-status.failed {
+  color: #b45309;
+  overflow-wrap: anywhere;
+}
+
 .generation-preview-thumbnail {
   display: grid;
   width: 100%;

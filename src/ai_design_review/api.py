@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 import shutil
 import uuid
 import os
 import re
 import secrets
 import hashlib
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,7 +78,7 @@ from .generation_schemas import (
 )
 from .generation_service import match_generation_template, request_fingerprint, stable_payload_hash
 from .llm_standardization_engine import LLMStandardizationEngine, llm_standardization_runtime_status
-from .preprocessing import IMAGE_EXTENSIONS, probe_file, render_pdf_with_pdftoppm
+from .preprocessing import IMAGE_EXTENSIONS, pdftoppm_runtime_status, probe_file, render_pdf_with_pdftoppm
 from .parameter_change_proposal import (
     ParameterProposalError,
     apply_parameter_change_proposal,
@@ -98,6 +100,7 @@ from .technical_requirements import ensure_technical_requirement_ids
 from .workflow import DrawingReviewWorkflow, apply_standardization_to_review
 
 
+LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = project_path()
 OUTPUT_ROOT = PROJECT_ROOT / "outputs"
 API_RUN_ROOT = OUTPUT_ROOT / "api_runs"
@@ -289,6 +292,7 @@ def health() -> dict[str, Any]:
             "backend": "postgresql",
             "template_registry": GENERATION_TEMPLATE_STARTUP_STATUS,
             "mock_mode": _env_flag("MOCK_SOLIDWORKS_ENABLED", False),
+            "preview_renderer": pdftoppm_runtime_status(),
         },
         "ocr_runtime": ocr_runtime_status(),
         "geometry_runtime": {"status": "ready", "engine": "geometry"},
@@ -660,6 +664,69 @@ def cancel_generation_job(
     return {"generation_job": _generation_job_response(job)}
 
 
+@app.post(
+    "/api/generation-jobs/{generation_id}/preview/retry",
+    response_model=GenerationJobResponse,
+    tags=["Generation"],
+)
+def retry_generation_preview(
+    generation_id: str,
+    identity: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
+    _require_generation_database()
+    store = GenerationStore(REVIEW_PERSISTENCE)
+    job = store.get_job(generation_id, owner_user_id=identity.user_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Generation job not found.")
+
+    artifacts = job.get("artifacts") or []
+    if any(item.get("artifact_type") == "png" for item in artifacts):
+        return {"generation_job": _generation_job_response(job)}
+    pdf = next((item for item in artifacts if item.get("artifact_type") == "pdf"), None)
+    if job.get("status") != "completed" or pdf is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "generation_preview_retry_not_ready",
+                "message": "Only a completed generation with a PDF can retry its preview.",
+            },
+        )
+    pdf_path = _generation_artifact_path(str(pdf["relative_path"]))
+    if not pdf_path.is_file():
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "generation_preview_pdf_missing", "message": "The source PDF file is missing."},
+        )
+
+    outcome = _render_generation_pdf_preview(
+        generation_id=generation_id,
+        pdf_artifact=pdf,
+        pdf_path=pdf_path,
+    )
+    preview_path = outcome["path"]
+    try:
+        updated = store.retry_preview(
+            generation_id,
+            owner_user_id=identity.user_id,
+            preview_payload=outcome["payload"],
+            attempt_count=int(outcome["attempt_count"]),
+            error_message=outcome["error_message"],
+        )
+    except PersistenceError as exc:
+        if preview_path is not None:
+            Path(preview_path).unlink(missing_ok=True)
+        raise _generation_http_error(exc) from exc
+    if updated is None:
+        if preview_path is not None:
+            Path(preview_path).unlink(missing_ok=True)
+        raise HTTPException(status_code=404, detail="Generation job not found.")
+    if outcome["payload"] is not None:
+        registered_ids = {str(item.get("artifact_id")) for item in updated.get("artifacts") or []}
+        if str(outcome["payload"]["artifact_id"]) not in registered_ids and preview_path is not None:
+            Path(preview_path).unlink(missing_ok=True)
+    return {"generation_job": _generation_job_response(updated)}
+
+
 @app.post("/api/generation-jobs/{generation_id}/retry", status_code=202, response_model=GenerationJobResponse, tags=["Generation"])
 def retry_generation_job(
     generation_id: str,
@@ -879,15 +946,14 @@ async def upload_generation_worker_artifact(
             )
         except Exception as exc:
             try:
-                store.record_event(
-                    generation_id,
-                    "generation_preview_failed",
-                    source="system",
-                    payload={
-                        "source_artifact_id": artifact_id,
-                        "reason": f"{type(exc).__name__}: {exc}"[:1000],
-                    },
-                )
+                current = store.get_job(generation_id, owner_user_id=None)
+                if current is not None and current.get("preview_status") != "failed":
+                    store.record_preview_failure(
+                        generation_id,
+                        attempt_count=0,
+                        error_message=_generation_preview_user_message(exc),
+                        source_artifact_id=artifact_id,
+                    )
             except PersistenceError:
                 pass
     return {"artifact": _generation_artifact_response(artifact)}
@@ -955,6 +1021,10 @@ def receive_solidworks_status(body: SolidWorksStatusCallback) -> dict[str, Any] 
 
     artifact_payload: dict[str, Any] | None = None
     artifact_path: Path | None = None
+    preview_payload: dict[str, Any] | None = None
+    preview_path: Path | None = None
+    preview_attempt_count = 0
+    preview_error_message: str | None = None
     if body.file is not None:
         content = _decode_solidworks_pdf(body.file.contentBase64)
         artifact_id = uuid.uuid4().hex[:16]
@@ -976,6 +1046,15 @@ def receive_solidworks_status(body: SolidWorksStatusCallback) -> dict[str, Any] 
             "sha256": hashlib.sha256(content).hexdigest(),
             "is_mock": False,
         }
+        preview_outcome = _render_generation_pdf_preview(
+            generation_id=generation_id,
+            pdf_artifact=artifact_payload,
+            pdf_path=artifact_path,
+        )
+        preview_payload = preview_outcome["payload"]
+        preview_path = preview_outcome["path"]
+        preview_attempt_count = int(preview_outcome["attempt_count"])
+        preview_error_message = preview_outcome["error_message"]
 
     try:
         result = store.apply_solidworks_status(
@@ -985,45 +1064,33 @@ def receive_solidworks_status(body: SolidWorksStatusCallback) -> dict[str, Any] 
             message=body.message,
             error_code=body.errorCode,
             artifact_payload=artifact_payload,
+            preview_payload=preview_payload,
+            preview_attempt_count=preview_attempt_count,
+            preview_error_message=preview_error_message,
         )
     except SolidWorksTaskCancelledError:
         if artifact_path is not None:
             artifact_path.unlink(missing_ok=True)
+        if preview_path is not None:
+            preview_path.unlink(missing_ok=True)
         return _solidworks_cancelled_callback_response(body.TaskId)
     except PersistenceError as exc:
         if artifact_path is not None:
             artifact_path.unlink(missing_ok=True)
+        if preview_path is not None:
+            preview_path.unlink(missing_ok=True)
         raise _generation_http_error(exc) from exc
     if result is None:
         if artifact_path is not None:
             artifact_path.unlink(missing_ok=True)
+        if preview_path is not None:
+            preview_path.unlink(missing_ok=True)
         raise HTTPException(status_code=404, detail={"code": "solidworks_task_not_found"})
-    if result["duplicate"] and artifact_path is not None:
-        artifact_path.unlink(missing_ok=True)
-
-    artifact = result.get("artifact")
-    if artifact is not None and artifact_path is not None:
-        try:
-            _create_generation_pdf_preview(
-                store,
-                generation_id=generation_id,
-                worker_id=None,
-                pdf_artifact=artifact,
-                pdf_path=artifact_path,
-            )
-        except Exception as exc:
-            try:
-                store.record_event(
-                    generation_id,
-                    "generation_preview_failed",
-                    source="system",
-                    payload={
-                        "source_artifact_id": artifact["artifact_id"],
-                        "reason": f"{type(exc).__name__}: {exc}"[:1000],
-                    },
-                )
-            except PersistenceError:
-                pass
+    if result["duplicate"]:
+        if artifact_path is not None:
+            artifact_path.unlink(missing_ok=True)
+        if preview_path is not None:
+            preview_path.unlink(missing_ok=True)
     return {"TaskId": body.TaskId, "code": 200}
 
 
@@ -2756,6 +2823,113 @@ def _generation_artifact_path(relative_path: str) -> Path:
     return path
 
 
+def _render_generation_pdf_preview(
+    *,
+    generation_id: str,
+    pdf_artifact: dict[str, Any],
+    pdf_path: Path,
+    max_attempts: int = 3,
+) -> dict[str, Any]:
+    """Render a preview file without publishing it to the database."""
+
+    source_artifact_id = str(pdf_artifact["artifact_id"])
+    render_dir = pdf_path.parent / f".{source_artifact_id}_preview"
+    attempts = 0
+    error_message = "PDF 对比预览生成失败。"
+    error_detail = ""
+    try:
+        for attempt in range(1, max(int(max_attempts), 1) + 1):
+            attempts = attempt
+            target: Path | None = None
+            try:
+                rendered = render_pdf_with_pdftoppm(
+                    pdf_path,
+                    render_dir,
+                    prefix="preview",
+                    dpi=160,
+                    first_page_only=True,
+                )
+                if not rendered:
+                    raise RuntimeError("PDF renderer did not produce a preview image.")
+                content = Path(rendered[0]).read_bytes()
+                if not content:
+                    raise RuntimeError("Generated PDF preview is empty.")
+                if len(content) > _generation_max_artifact_bytes():
+                    raise RuntimeError("Generated PDF preview exceeds GENERATION_MAX_ARTIFACT_MB.")
+                preview_id = uuid.uuid4().hex[:16]
+                source_stem = Path(str(pdf_artifact.get("filename") or "drawing.pdf")).stem
+                filename = _safe_filename(f"{source_stem}_preview.png")[:240]
+                relative = Path(generation_id) / f"{preview_id}_{filename}"
+                target = _generation_artifact_path(relative.as_posix())
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+                return {
+                    "payload": {
+                        "artifact_id": preview_id,
+                        "generation_id": generation_id,
+                        "artifact_type": "png",
+                        "filename": filename,
+                        "relative_path": relative.as_posix(),
+                        "mime_type": "image/png",
+                        "size_bytes": len(content),
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                        "is_mock": bool(pdf_artifact.get("is_mock")),
+                    },
+                    "path": target,
+                    "attempt_count": attempts,
+                    "error_message": None,
+                }
+            except Exception as exc:
+                if target is not None:
+                    target.unlink(missing_ok=True)
+                error_detail = f"{type(exc).__name__}: {exc}"[:4000]
+                error_message = _generation_preview_user_message(exc)
+                if attempt >= max_attempts or not _generation_preview_error_is_retryable(exc):
+                    break
+                time.sleep(0.2 * (2 ** (attempt - 1)))
+        LOGGER.warning(
+            "Generation preview rendering failed for task %s after %s attempt(s): %s",
+            generation_id,
+            attempts,
+            error_detail,
+        )
+        return {
+            "payload": None,
+            "path": None,
+            "attempt_count": attempts,
+            "error_message": error_message,
+        }
+    finally:
+        if render_dir.exists():
+            shutil.rmtree(render_dir, ignore_errors=True)
+
+
+def _generation_preview_error_is_retryable(exc: Exception) -> bool:
+    message = f"{type(exc).__name__}: {exc}".lower()
+    deterministic_markers = (
+        "not available on path",
+        "syntax error",
+        "not a pdf",
+        "invalid pdf",
+        "couldn't read xref",
+        "pdf document is damaged",
+        "exceeds generation_max_artifact_mb",
+    )
+    return not any(marker in message for marker in deterministic_markers)
+
+
+def _generation_preview_user_message(exc: Exception) -> str:
+    message = f"{type(exc).__name__}: {exc}".lower()
+    if "not available on path" in message:
+        return "服务器未安装或无法访问 PDF 预览渲染器。"
+    if "exceeds generation_max_artifact_mb" in message:
+        return "生成的对比预览超过服务器大小限制。"
+    invalid_markers = ("syntax error", "not a pdf", "invalid pdf", "couldn't read xref", "pdf document is damaged")
+    if any(marker in message for marker in invalid_markers):
+        return "PDF 文件无法解析或已损坏。"
+    return "服务器生成 PDF 对比预览时发生临时错误。"
+
+
 def _create_generation_pdf_preview(
     store: GenerationStore,
     *,
@@ -2768,65 +2942,45 @@ def _create_generation_pdf_preview(
     if job is not None and any(item.get("artifact_type") == "png" for item in job.get("artifacts") or []):
         return None
 
-    source_artifact_id = str(pdf_artifact["artifact_id"])
-    preview_id = uuid.uuid4().hex[:16]
-    render_dir = pdf_path.parent / f".{source_artifact_id}_preview"
-    try:
-        rendered = render_pdf_with_pdftoppm(
-            pdf_path,
-            render_dir,
-            prefix="preview",
-            dpi=160,
-            first_page_only=True,
+    outcome = _render_generation_pdf_preview(
+        generation_id=generation_id,
+        pdf_artifact=pdf_artifact,
+        pdf_path=pdf_path,
+    )
+    preview_payload = outcome["payload"]
+    if preview_payload is None:
+        store.record_preview_failure(
+            generation_id,
+            attempt_count=int(outcome["attempt_count"]),
+            error_message=str(outcome["error_message"] or "PDF 对比预览生成失败。"),
+            source_artifact_id=str(pdf_artifact["artifact_id"]),
         )
-        if not rendered:
-            raise RuntimeError("PDF renderer did not produce a preview image.")
-        content = Path(rendered[0]).read_bytes()
-        if not content:
-            raise RuntimeError("Generated PDF preview is empty.")
-        if len(content) > _generation_max_artifact_bytes():
-            raise RuntimeError("Generated PDF preview exceeds GENERATION_MAX_ARTIFACT_MB.")
-        source_stem = Path(str(pdf_artifact.get("filename") or "drawing.pdf")).stem
-        filename = _safe_filename(f"{source_stem}_preview.png")[:240]
-        relative = Path(generation_id) / f"{preview_id}_{filename}"
-        target = _generation_artifact_path(relative.as_posix())
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
-        try:
-            preview_payload = {
-                "artifact_id": preview_id,
-                "generation_id": generation_id,
-                "artifact_type": "png",
-                "filename": filename,
-                "relative_path": relative.as_posix(),
-                "mime_type": "image/png",
-                "size_bytes": len(content),
-                "sha256": hashlib.sha256(content).hexdigest(),
-                "is_mock": bool(pdf_artifact.get("is_mock")),
-            }
-            if worker_id is None:
-                preview = store.add_system_artifact(
-                    preview_payload,
-                    event_type="generation_preview_created",
-                    event_payload={"generated_from_artifact_id": source_artifact_id},
-                )
-            else:
-                preview = store.add_artifact(
-                    preview_payload,
-                    worker_id=worker_id,
-                    event_source="system",
-                    event_payload={"generated_from_artifact_id": source_artifact_id},
-                )
-        except Exception:
-            target.unlink(missing_ok=True)
-            raise
-        if preview is None:
-            target.unlink(missing_ok=True)
-            raise RuntimeError("Worker lease changed while the PDF preview was being registered.")
-        return preview
-    finally:
-        if render_dir.exists():
-            shutil.rmtree(render_dir, ignore_errors=True)
+        return None
+
+    target = Path(outcome["path"])
+    try:
+        if worker_id is None:
+            preview = store.add_system_artifact(
+                preview_payload,
+                event_type="generation_preview_created",
+                event_payload={"generated_from_artifact_id": str(pdf_artifact["artifact_id"])},
+                preview_attempt_count=int(outcome["attempt_count"]),
+            )
+        else:
+            preview = store.add_artifact(
+                preview_payload,
+                worker_id=worker_id,
+                event_source="system",
+                event_payload={"generated_from_artifact_id": str(pdf_artifact["artifact_id"])},
+                preview_attempt_count=int(outcome["attempt_count"]),
+            )
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    if preview is None:
+        target.unlink(missing_ok=True)
+        raise RuntimeError("Worker lease changed while the PDF preview was being registered.")
+    return preview
 
 
 def _generation_artifact_response(artifact: dict[str, Any]) -> dict[str, Any]:

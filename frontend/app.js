@@ -49,6 +49,9 @@ const state = {
   generationJobs: [],
   generationQueueAvailable: null,
   generationPollers: {},
+  generationPreviewWaitStarted: {},
+  generationPreviewWaitTimedOut: {},
+  generationPreviewRetrying: {},
   generationBusy: false,
   generationCompare: null,
   identity: null,
@@ -2761,6 +2764,29 @@ function renderGenerationJobsHtml(review) {
   `;
 }
 
+function generationPreviewStatus(job) {
+  const artifacts = job?.artifacts || [];
+  if (artifacts.some((item) => item.artifact_type === "png" || item.mime_type === "image/png")) return "ready";
+  if (["pending", "ready", "failed"].includes(job?.preview_status)) return job.preview_status;
+  return "pending";
+}
+
+function generationJobNeedsTracking(job) {
+  if (!job?.generation_id) return false;
+  if (!["completed", "failed", "cancelled"].includes(job.status)) return true;
+  if (job.status !== "completed" || generationPreviewStatus(job) !== "pending") {
+    delete state.generationPreviewWaitStarted[job.generation_id];
+    delete state.generationPreviewWaitTimedOut[job.generation_id];
+    return false;
+  }
+  if (state.generationPreviewWaitTimedOut[job.generation_id]) return false;
+  const started = state.generationPreviewWaitStarted[job.generation_id] || Date.now();
+  state.generationPreviewWaitStarted[job.generation_id] = started;
+  if (Date.now() - started < 30000) return true;
+  state.generationPreviewWaitTimedOut[job.generation_id] = true;
+  return false;
+}
+
 function renderGenerationJobHtml(job, versionNumber) {
   const labels = {
     queued: "排队中",
@@ -2778,6 +2804,11 @@ function renderGenerationJobHtml(job, versionNumber) {
   };
   const png = (job.artifacts || []).find((item) => item.artifact_type === "png" || item.mime_type === "image/png");
   const pdf = (job.artifacts || []).find((item) => item.artifact_type === "pdf" || item.mime_type === "application/pdf");
+  const previewStatus = generationPreviewStatus(job);
+  const previewWaitTimedOut = Boolean(state.generationPreviewWaitTimedOut[job.generation_id]);
+  const previewRetrying = Boolean(state.generationPreviewRetrying[job.generation_id]);
+  const previewPending = job.status === "completed" && Boolean(pdf) && !png && previewStatus === "pending" && !previewWaitTimedOut;
+  const previewFailed = job.status === "completed" && Boolean(pdf) && !png && (previewStatus === "failed" || previewWaitTimedOut);
   const isMock = (job.artifacts || []).some((item) => item.is_mock) || String(job.template_code || "").startsWith("mock");
   const terminal = ["completed", "failed", "cancelled"].includes(job.status);
   const statusMessage = String(job.status_message || "").trim();
@@ -2806,6 +2837,8 @@ function renderGenerationJobHtml(job, versionNumber) {
       </div>
       ${statusMessage && job.status !== "failed" ? `<p class="generation-status-message">${escapeHtml(statusMessage)}</p>` : ""}
       ${job.status === "failed" ? `<p class="generation-error"><strong>${escapeHtml(failureLabel || "生图失败")}</strong>${failureMessage ? `：${escapeHtml(failureMessage)}` : ""}</p>` : ""}
+      ${previewPending ? '<p class="generation-preview-status">PDF 已生成，正在生成对比预览…</p>' : ""}
+      ${previewFailed ? `<p class="generation-preview-status failed">PDF 已生成，对比预览生成失败${job.preview_error_message ? `：${escapeHtml(job.preview_error_message)}` : (previewWaitTimedOut ? "：等待预览超时，可重新生成。" : "。")}</p>` : ""}
       ${png ? `
         <button type="button" class="generation-preview-thumbnail" data-action="compare-generation" data-generation-id="${escapeHtml(job.generation_id)}">
           <img src="${escapeHtml(toBackendAssetUrl(png.url))}" alt="${escapeHtml(isMock ? "模拟生成二维图首页" : "SolidWorks 生成二维图首页")}">
@@ -2815,6 +2848,7 @@ function renderGenerationJobHtml(job, versionNumber) {
       <div class="generation-version-actions">
         ${png ? `<button type="button" data-action="compare-generation" data-generation-id="${escapeHtml(job.generation_id)}">对比图纸</button>` : ""}
         ${pdf ? `<button type="button" data-action="preview-generation-pdf" data-generation-id="${escapeHtml(job.generation_id)}">预览 PDF</button><a class="button-link" href="${escapeHtml(toBackendAssetUrl(pdf.url))}" download="${escapeHtml(pdf.filename || "drawing.pdf")}">下载 PDF</a>` : ""}
+        ${previewFailed ? `<button type="button" class="secondary-action" data-action="retry-generation-preview" data-generation-id="${escapeHtml(job.generation_id)}" ${previewRetrying ? "disabled" : ""}>${previewRetrying ? "正在生成对比预览…" : "重新生成预览"}</button>` : ""}
         ${job.status === "failed" ? (isMock
           ? `<button type="button" data-action="retry-generation" data-generation-id="${escapeHtml(job.generation_id)}">原参数重试</button>`
           : '<button type="button" data-action="recreate-generation">重新生图</button>') : ""}
@@ -5025,6 +5059,10 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
 
   root.querySelectorAll('[data-action="retry-generation"]').forEach((button) => {
     button.addEventListener("click", () => void retryGenerationJob(button.dataset.generationId || ""));
+  });
+
+  root.querySelectorAll('[data-action="retry-generation-preview"]').forEach((button) => {
+    button.addEventListener("click", () => void retryGenerationPreview(button.dataset.generationId || ""));
   });
 
   root.querySelectorAll('[data-action="recreate-generation"]').forEach((button) => {
@@ -7381,7 +7419,7 @@ async function loadGenerationState(reviewId = state.lastJob?.job_id, options = {
       throw new Error(generationApiError(jobsPayload, "无法读取生图版本"));
     }
     state.generationJobs.forEach((job) => {
-      if (!["completed", "failed", "cancelled"].includes(job.status)) trackGenerationJob(job.generation_id);
+      if (generationJobNeedsTracking(job)) trackGenerationJob(job.generation_id);
     });
     if (options.render !== false) refreshReviewSurfaces();
   } catch (error) {
@@ -7458,7 +7496,7 @@ function trackGenerationJob(generationId) {
       const index = state.generationJobs.findIndex((item) => item.generation_id === generationId);
       if (index >= 0) state.generationJobs.splice(index, 1, job);
       else state.generationJobs.unshift(job);
-      if (["completed", "failed", "cancelled"].includes(job.status)) {
+      if (!generationJobNeedsTracking(job)) {
         stopTrackingGenerationJob(generationId);
         await loadGenerationState(job.review_id, { silent: true });
       } else {
@@ -7480,6 +7518,31 @@ function stopTrackingGenerationJob(generationId) {
 
 async function retryGenerationJob(generationId) {
   await generationJobAction(generationId, "retry", "已按原参数创建重试任务。", true);
+}
+
+async function retryGenerationPreview(generationId) {
+  if (!generationId || state.generationPreviewRetrying[generationId]) return;
+  delete state.generationPreviewWaitStarted[generationId];
+  delete state.generationPreviewWaitTimedOut[generationId];
+  state.generationPreviewRetrying[generationId] = true;
+  refreshReviewSurfaces();
+  try {
+    const response = await apiFetch(`/api/generation-jobs/${encodeURIComponent(generationId)}/preview/retry`, { method: "POST" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(generationApiError(payload, "重新生成对比预览失败"));
+    const job = payload.generation_job;
+    state.generationJobs = [job, ...state.generationJobs.filter((item) => item.generation_id !== job.generation_id)];
+    if (generationPreviewStatus(job) === "ready") {
+      appendAssistantText("对比预览已重新生成。", false, { scroll: false });
+    } else {
+      appendAssistantText(`对比预览仍未生成：${job.preview_error_message || "请检查 PDF 预览渲染服务。"}`, true, { scroll: false });
+    }
+  } catch (error) {
+    appendAssistantText(`重新生成对比预览失败：${error.message || String(error)}`, true, { scroll: false });
+  } finally {
+    delete state.generationPreviewRetrying[generationId];
+    refreshReviewSurfaces();
+  }
 }
 
 async function cancelGenerationJob(generationId) {
@@ -7527,6 +7590,8 @@ function generationApiError(payload, fallback) {
     generation_queue_not_configured: "生图队列需要 PostgreSQL",
     generation_conflict: "生图任务状态冲突，请刷新后重试",
     solidworks_requires_new_task: "此 SolidWorks 任务需要重新生图，以分配新的 TaskId",
+    generation_preview_retry_not_ready: "只有已完成且已有 PDF 的任务才能重新生成预览",
+    generation_preview_pdf_missing: "服务器上的源 PDF 文件缺失",
   };
   return labels[detail?.code] || detail?.code || fallback;
 }
@@ -7536,6 +7601,9 @@ function resetGenerationState() {
   state.generationReadiness = null;
   state.generationJobs = [];
   state.generationQueueAvailable = null;
+  state.generationPreviewWaitStarted = {};
+  state.generationPreviewWaitTimedOut = {};
+  state.generationPreviewRetrying = {};
   state.generationBusy = false;
   document.querySelector(".generation-compare-dialog[open]")?.close();
   document.querySelector(".generation-pdf-dialog[open]")?.close();

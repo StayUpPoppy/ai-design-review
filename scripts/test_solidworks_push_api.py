@@ -26,6 +26,7 @@ os.environ["SOLIDWORKS_REQUEST_TIMEOUT_SECONDS"] = "10"
 os.environ["GENERATION_MAX_ARTIFACT_MB"] = "1"
 
 from ai_design_review import api  # noqa: E402
+from ai_design_review.generation_persistence import GenerationEventRecord  # noqa: E402
 from ai_design_review.review_persistence import ReviewPersistence  # noqa: E402
 from ai_design_review.solidworks import build_solidworks_command  # noqa: E402
 
@@ -139,6 +140,8 @@ def main() -> None:
         original_run_root = api.API_RUN_ROOT
         original_post = api._post_solidworks_command
         original_http_post = api.httpx.post
+        original_preview_renderer = api.render_pdf_with_pdftoppm
+        original_sleep = api.time.sleep
         submissions: list[dict[str, object]] = []
 
         def accept_command(url: str, payload: dict[str, object], *, timeout_seconds: float) -> None:
@@ -150,6 +153,9 @@ def main() -> None:
         api._post_solidworks_command = accept_command
         try:
             with TestClient(api.app) as client:
+                preview_runtime = client.get("/api/health").json()["generation_runtime"]["preview_renderer"]
+                assert preview_runtime["engine"] == "pdftoppm"
+                assert preview_runtime["status"] in {"available", "unavailable"}
                 created = client.post(
                     "/api/reviews/review-solidworks-push/generation-jobs",
                     json=create_request("solidworks-push-r1-first"),
@@ -216,14 +222,30 @@ def main() -> None:
                         "contentBase64": pdf_base64(),
                     },
                 }
-                completed_response = client.post("/api/solidworks/status", json=completed)
+                observed_statuses: list[str] = []
+
+                def render_after_status_check(*args, **kwargs):
+                    current = api.GenerationStore(repository).get_job(str(task_id), owner_user_id=OWNER["user_id"])
+                    observed_statuses.append(str(current["status"]))
+                    assert current["status"] != "completed"
+                    return original_preview_renderer(*args, **kwargs)
+
+                api.render_pdf_with_pdftoppm = render_after_status_check
+                try:
+                    completed_response = client.post("/api/solidworks/status", json=completed)
+                finally:
+                    api.render_pdf_with_pdftoppm = original_preview_renderer
                 assert completed_response.status_code == 200, completed_response.text
                 assert completed_response.json() == {"TaskId": task_id, "code": 200}
+                assert observed_statuses
                 job_response = client.get(f"/api/generation-jobs/{task_id}")
                 assert job_response.status_code == 200, job_response.text
                 completed_job = job_response.json()["generation_job"]
                 assert completed_job["status"] == "completed"
                 assert completed_job["progress"] == 100
+                assert completed_job["preview_status"] == "ready"
+                assert completed_job["preview_attempt_count"] == 1
+                assert completed_job["preview_error_message"] is None
                 assert completed_job["status_message"] == "二维图和三维模型生成完成"
                 pdf = next(item for item in completed_job["artifacts"] if item["artifact_type"] == "pdf")
                 preview_png = next(item for item in completed_job["artifacts"] if item["artifact_type"] == "png")
@@ -259,6 +281,71 @@ def main() -> None:
                     "/api/solidworks/status",
                     json={"TaskId": task_id, "status": "completed", "progress": 100},
                 ).status_code == 422
+
+                preview_failure_create = client.post(
+                    "/api/reviews/review-solidworks-push/generation-jobs",
+                    json=create_request("solidworks-push-r1-preview-failure"),
+                )
+                assert preview_failure_create.status_code == 202, preview_failure_create.text
+                preview_failure_task_id = int(preview_failure_create.json()["generation_job"]["generation_id"])
+                render_attempts = 0
+
+                def fail_preview_render(*args, **kwargs):
+                    nonlocal render_attempts
+                    render_attempts += 1
+                    raise OSError("temporary preview renderer failure")
+
+                api.render_pdf_with_pdftoppm = fail_preview_render
+                api.time.sleep = lambda _: None
+                try:
+                    preview_failure_response = client.post(
+                        "/api/solidworks/status",
+                        json={
+                            **completed,
+                            "TaskId": preview_failure_task_id,
+                            "file": {**completed["file"], "fileName": "preview-failure.pdf"},
+                        },
+                    )
+                finally:
+                    api.render_pdf_with_pdftoppm = original_preview_renderer
+                    api.time.sleep = original_sleep
+                assert preview_failure_response.status_code == 200, preview_failure_response.text
+                assert render_attempts == 3
+                preview_failure_job = client.get(
+                    f"/api/generation-jobs/{preview_failure_task_id}"
+                ).json()["generation_job"]
+                assert preview_failure_job["status"] == "completed"
+                assert preview_failure_job["preview_status"] == "failed"
+                assert preview_failure_job["preview_attempt_count"] == 3
+                assert preview_failure_job["preview_error_message"] == "服务器生成 PDF 对比预览时发生临时错误。"
+                assert [item["artifact_type"] for item in preview_failure_job["artifacts"]] == ["pdf"]
+
+                preview_retry = client.post(
+                    f"/api/generation-jobs/{preview_failure_task_id}/preview/retry"
+                )
+                assert preview_retry.status_code == 200, preview_retry.text
+                preview_retry_job = preview_retry.json()["generation_job"]
+                assert preview_retry_job["status"] == "completed"
+                assert preview_retry_job["preview_status"] == "ready"
+                assert preview_retry_job["preview_attempt_count"] == 4
+                assert preview_retry_job["preview_error_message"] is None
+                assert [item["artifact_type"] for item in preview_retry_job["artifacts"]].count("png") == 1
+                idempotent_preview_retry = client.post(
+                    f"/api/generation-jobs/{preview_failure_task_id}/preview/retry"
+                )
+                assert idempotent_preview_retry.status_code == 200, idempotent_preview_retry.text
+                assert [
+                    item["artifact_type"]
+                    for item in idempotent_preview_retry.json()["generation_job"]["artifacts"]
+                ].count("png") == 1
+                with repository._session() as session:
+                    preview_events = session.query(GenerationEventRecord).filter_by(
+                        generation_id=str(preview_failure_task_id)
+                    ).all()
+                    event_types = [item.event_type for item in preview_events]
+                    assert event_types.count("generation_preview_created") == 1
+                    assert event_types.count("generation_preview_failed") == 1
+                    assert event_types.count("generation_preview_retried") == 1
 
                 cancelled_create = client.post(
                     "/api/reviews/review-solidworks-push/generation-jobs",
@@ -492,6 +579,8 @@ def main() -> None:
         finally:
             api._post_solidworks_command = original_post
             api.httpx.post = original_http_post
+            api.render_pdf_with_pdftoppm = original_preview_renderer
+            api.time.sleep = original_sleep
             api.REVIEW_PERSISTENCE = original_repository
             api.API_RUN_ROOT = original_run_root
             repository.dispose()

@@ -303,6 +303,12 @@ class GenerationJobView(BaseModel):
     readiness: GenerationReadinessView = Field(description="任务创建时固化的生图就绪状态。")
     requested_artifact_types: list[str] = Field(description="调用方希望 Worker 生成的产物类型。")
     execution_options: dict[str, Any] = Field(default_factory=dict, description="任务执行选项；模拟模式包含 mock_scenario。")
+    preview_status: Literal["pending", "ready", "failed"] = Field(
+        default="pending",
+        description="PDF 首页对比预览状态；失败不影响 PDF 和主生图任务完成状态。",
+    )
+    preview_attempt_count: int = Field(default=0, ge=0, description="PDF 首页预览累计生成尝试次数。")
+    preview_error_message: str | None = Field(default=None, description="预览生成失败原因；成功或尚未尝试时为空。")
     status: Literal["queued", "claimed", "generating_3d", "generating_2d", "uploading", "completed", "failed", "cancelled"] = Field(description="生图任务状态。")
     stage: str = Field(description="当前执行阶段。")
     progress: int = Field(description="当前进度百分比。")
