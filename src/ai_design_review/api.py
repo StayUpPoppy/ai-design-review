@@ -797,6 +797,7 @@ def list_generation_artifacts(
 def download_generation_artifact(
     generation_id: str,
     artifact_id: str,
+    inline: bool = False,
     identity: IdentityContext = Depends(require_identity),
 ) -> FileResponse:
     _require_generation_database()
@@ -810,7 +811,12 @@ def download_generation_artifact(
     path = _generation_artifact_path(str(artifact["relative_path"]))
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Generation artifact file not found.")
-    return FileResponse(str(path), filename=str(artifact["filename"]), media_type=artifact.get("mime_type"))
+    return FileResponse(
+        str(path),
+        filename=str(artifact["filename"]),
+        media_type=artifact.get("mime_type"),
+        content_disposition_type="inline" if inline and artifact.get("artifact_type") == "pdf" else "attachment",
+    )
 
 
 @app.post("/api/generation-worker/jobs/claim", response_model=GenerationWorkerClaimResponse, responses={204: {"description": "No compatible queued job"}}, tags=["Generation Worker"])

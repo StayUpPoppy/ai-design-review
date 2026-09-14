@@ -255,6 +255,14 @@ def main() -> None:
                 downloaded = client.get(pdf["url"])
                 assert downloaded.status_code == 200
                 assert downloaded.content.startswith(b"%PDF-")
+                assert downloaded.headers["content-disposition"].startswith("attachment;")
+                inline_preview = client.get(f"{pdf['url']}?inline=1")
+                assert inline_preview.status_code == 200
+                assert inline_preview.content == downloaded.content
+                assert inline_preview.headers["content-type"].startswith("application/pdf")
+                assert inline_preview.headers["content-disposition"].startswith("inline;")
+                non_pdf_preview = client.get(f"{preview_png['url']}?inline=1")
+                assert non_pdf_preview.headers["content-disposition"].startswith("attachment;")
 
                 duplicate_pdf = client.post("/api/solidworks/status", json=completed)
                 assert duplicate_pdf.status_code == 200, duplicate_pdf.text

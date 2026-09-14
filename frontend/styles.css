@@ -3268,7 +3268,7 @@ textarea {
   box-shadow: inset 3px 0 #22c55e;
 }
 
-.generation-version-card.stale {
+.generation-version-card.stale:not(.final) {
   background: #f8fafc;
 }
 
@@ -3544,6 +3544,35 @@ textarea {
   border-left: 1px solid #dbe3ec;
 }
 
+.generation-pane-target,
+.generation-compare-link {
+  color: #334155;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.generation-pane-target select {
+  min-height: 34px;
+  padding: 5px 9px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+}
+
+.generation-compare-link input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #0284c7;
+}
+
+.generation-pane-target select:focus-visible,
+.generation-compare-link input:focus-visible {
+  outline: 2px solid #0284c7;
+  outline-offset: 2px;
+}
+
 .generation-zoom-controls button {
   min-width: 34px;
 }
@@ -3599,6 +3628,11 @@ textarea {
   border-bottom: 1px solid #e2e8f0;
   background: rgb(255 255 255 / 92%);
   font-size: 12px;
+}
+
+.generation-compare-canvas figure.active figcaption {
+  color: #0369a1;
+  box-shadow: inset 0 -2px #0284c7;
 }
 
 .generation-compare-viewport {

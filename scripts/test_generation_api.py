@@ -338,6 +338,10 @@ def main() -> None:
                         event_type="generation_preview_failed",
                     ).all()
                     assert len(preview_events) == 1
+                newer_selected = client.post(f"/api/generation-jobs/{preview_failure_id}/approve")
+                assert newer_selected.status_code == 200, newer_selected.text
+                assert newer_selected.json()["generation_job"]["is_final"] is True
+                assert client.get(f"/api/generation-jobs/{generation_id}").json()["generation_job"]["is_final"] is False
 
                 updated_review = ready_review(wire=2.5, free_length=65.0)
                 saved = repository.save_review(
@@ -349,7 +353,23 @@ def main() -> None:
                 assert saved["revision"] == 2
                 stale = client.get(f"/api/generation-jobs/{generation_id}")
                 assert stale.status_code == 200 and stale.json()["generation_job"]["is_stale"] is True
-                assert client.post(f"/api/generation-jobs/{generation_id}/approve").status_code == 409
+                selected_history = client.post(f"/api/generation-jobs/{generation_id}/approve")
+                assert selected_history.status_code == 200, selected_history.text
+                assert selected_history.json()["generation_job"]["is_final"] is True
+                assert selected_history.json()["generation_job"]["is_stale"] is True
+                assert client.get(f"/api/generation-jobs/{preview_failure_id}").json()["generation_job"]["is_final"] is False
+                unchanged_review = repository.get_review("review-generation", owner_user_id=OWNER_A["user_id"])
+                assert unchanged_review["revision"] == 2
+                assert unchanged_review["review"]["spring_parameters"]["wire_diameter"]["value"] == 2.5
+                assert client.post(f"/api/generation-jobs/{generation_id}/approve").status_code == 200
+                with repository._session() as session:
+                    history_events = session.query(GenerationEventRecord).filter_by(
+                        generation_id=generation_id,
+                        event_type="generation_approved",
+                    ).all()
+                    assert len(history_events) == 2
+                    assert history_events[-1].payload["review_revision"] == 1
+                    assert history_events[-1].payload["current_review_revision"] == 2
                 stale_revision = client.post(
                     "/api/reviews/review-generation/generation-jobs",
                     json={**request_body, "idempotency_key": "stale-revision", "expected_review_revision": 1},

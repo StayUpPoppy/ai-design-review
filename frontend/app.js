@@ -2751,7 +2751,7 @@ function renderGenerationJobsHtml(review) {
     <section class="generation-version-section">
       <div class="generation-version-head">
         <strong>生图版本 · ${jobs.length}</strong>
-        <span>旧版本保留，可随参数修订重新生成</span>
+        <span>保留各次生图版本，可从已完成的图纸中选定最终版本</span>
       </div>
       <div class="generation-version-list">
         ${jobs.map((job, index) => renderGenerationJobHtml(job, jobs.length - index)).join("")}
@@ -2833,7 +2833,7 @@ function renderGenerationJobHtml(job, versionNumber) {
         <span>TaskId ${escapeHtml(job.generation_id || "-")}</span>
         <span>${escapeHtml(formatRecentReviewTime(job.completed_at || job.updated_at || job.created_at))}</span>
         ${isMock ? "<span>模拟产物</span>" : ""}
-        ${job.is_stale ? "<span class=\"generation-stale-label\">参数已过期</span>" : ""}
+        ${job.is_stale ? "<span class=\"generation-stale-label\">历史审图修订</span>" : ""}
       </div>
       ${statusMessage && job.status !== "failed" ? `<p class="generation-status-message">${escapeHtml(statusMessage)}</p>` : ""}
       ${job.status === "failed" ? `<p class="generation-error"><strong>${escapeHtml(failureLabel || "生图失败")}</strong>${failureMessage ? `：${escapeHtml(failureMessage)}` : ""}</p>` : ""}
@@ -2847,13 +2847,13 @@ function renderGenerationJobHtml(job, versionNumber) {
       ` : ""}
       <div class="generation-version-actions">
         ${png ? `<button type="button" data-action="compare-generation" data-generation-id="${escapeHtml(job.generation_id)}">对比图纸</button>` : ""}
-        ${pdf ? `<button type="button" data-action="preview-generation-pdf" data-generation-id="${escapeHtml(job.generation_id)}">预览 PDF</button><a class="button-link" href="${escapeHtml(toBackendAssetUrl(pdf.url))}" download="${escapeHtml(pdf.filename || "drawing.pdf")}">下载 PDF</a>` : ""}
+        ${pdf ? `<button type="button" data-action="preview-generation-pdf" data-generation-id="${escapeHtml(job.generation_id)}">预览 PDF</button>` : ""}
         ${previewFailed ? `<button type="button" class="secondary-action" data-action="retry-generation-preview" data-generation-id="${escapeHtml(job.generation_id)}" ${previewRetrying ? "disabled" : ""}>${previewRetrying ? "正在生成对比预览…" : "重新生成预览"}</button>` : ""}
         ${job.status === "failed" ? (isMock
           ? `<button type="button" data-action="retry-generation" data-generation-id="${escapeHtml(job.generation_id)}">原参数重试</button>`
           : '<button type="button" data-action="recreate-generation">重新生图</button>') : ""}
         ${!terminal ? `<button type="button" class="secondary-action" data-action="cancel-generation" data-generation-id="${escapeHtml(job.generation_id)}">取消</button>` : ""}
-        ${job.status === "completed" && !job.is_stale && !job.is_final ? `<button type="button" class="primary-action" data-action="approve-generation" data-generation-id="${escapeHtml(job.generation_id)}">设为最终版本</button>` : ""}
+        ${job.status === "completed" && !job.is_final ? `<button type="button" class="primary-action" data-action="approve-generation" data-generation-id="${escapeHtml(job.generation_id)}">设为最终版本</button>` : ""}
       </div>
     </article>
   `;
@@ -7550,7 +7550,16 @@ async function cancelGenerationJob(generationId) {
 }
 
 async function approveGenerationJob(generationId) {
-  await generationJobAction(generationId, "approve", "当前版本已设为模拟最终版本；ERP 传送将在真实接口接入后开放。", false);
+  const job = state.generationJobs.find((item) => item.generation_id === generationId);
+  if (!job || job.status !== "completed" || job.is_final) return;
+  if (job.is_stale) {
+    const currentRevision = Number(state.lastJob?.review_revision);
+    const currentLabel = Number.isInteger(currentRevision) && currentRevision > 0 ? `当前审图修订为 r${currentRevision}` : "当前审图修订已变化";
+    const confirmed = window.confirm(`这张图纸基于审图修订 r${job.review_revision}，${currentLabel}。两次修订的生图参数可能不同。\n\n设为最终版本后，选定的是这张图纸及其生成时的参数快照；当前正在编辑的参数不会自动恢复。是否继续？`);
+    if (!confirmed) return;
+  }
+  const isMock = (job.artifacts || []).some((item) => item.is_mock) || String(job.template_code || "").startsWith("mock");
+  await generationJobAction(generationId, "approve", `已将所选图纸设为${isMock ? "模拟最终版本" : "最终版本"}；当前编辑参数不变。`, false);
 }
 
 async function generationJobAction(generationId, action, successMessage, shouldTrack) {
@@ -7561,7 +7570,19 @@ async function generationJobAction(generationId, action, successMessage, shouldT
     const payload = await response.json();
     if (!response.ok) throw new Error(generationApiError(payload, `生图任务${action}失败`));
     const job = payload.generation_job;
-    state.generationJobs = [job, ...state.generationJobs.filter((item) => item.generation_id !== job.generation_id)];
+    if (action === "approve") {
+      let selectedFound = false;
+      state.generationJobs = state.generationJobs.map((item) => {
+        if (item.generation_id === job.generation_id) {
+          selectedFound = true;
+          return job;
+        }
+        return item.is_final ? { ...item, is_final: false, approved_by: null, approved_at: null } : item;
+      });
+      if (!selectedFound) state.generationJobs.unshift(job);
+    } else {
+      state.generationJobs = [job, ...state.generationJobs.filter((item) => item.generation_id !== job.generation_id)];
+    }
     if (shouldTrack) trackGenerationJob(job.generation_id);
     await loadGenerationState(job.review_id || state.lastJob?.job_id, { silent: true });
     appendAssistantText(successMessage, false, { scroll: false });
@@ -7615,6 +7636,8 @@ function openGenerationPdf(generationId) {
   if (!job || !artifact?.url) return;
   document.querySelector(".generation-pdf-dialog")?.remove();
   const pdfUrl = toBackendAssetUrl(artifact.url);
+  const previewUrl = new URL(pdfUrl, window.location.href);
+  previewUrl.searchParams.set("inline", "1");
   const dialog = document.createElement("dialog");
   dialog.className = "generation-pdf-dialog";
   dialog.innerHTML = `
@@ -7622,11 +7645,11 @@ function openGenerationPdf(generationId) {
       <header>
         <div><strong>二维 PDF 图纸</strong><small>TaskId ${escapeHtml(job.generation_id)} · ${escapeHtml(artifact.filename || "SolidWorks drawing.pdf")}</small></div>
         <div>
-          <a class="button-link" href="${escapeHtml(pdfUrl)}" download="${escapeHtml(artifact.filename || "drawing.pdf")}">下载</a>
+          <a class="button-link" href="${escapeHtml(pdfUrl)}" download="${escapeHtml(artifact.filename || "drawing.pdf")}">下载 PDF</a>
           <button type="button" data-role="close-generation-pdf" aria-label="关闭 PDF 预览">×</button>
         </div>
       </header>
-      <iframe src="${escapeHtml(pdfUrl)}" title="SolidWorks 二维 PDF 图纸预览"></iframe>
+      <iframe src="${escapeHtml(previewUrl.toString())}" title="SolidWorks 二维 PDF 图纸预览"></iframe>
     </div>
   `;
   document.body.appendChild(dialog);
@@ -7658,27 +7681,34 @@ function openGenerationCompare(generationId) {
       <div class="generation-compare-toolbar">
         <div role="group" aria-label="对比模式">
           <button type="button" class="active" data-compare-mode="side-by-side">左右对比</button>
-          <button type="button" data-compare-mode="original">仅原图</button>
+          <button type="button" data-compare-mode="original" ${originalUrl ? "" : "disabled"}>仅原图</button>
           <button type="button" data-compare-mode="generated">仅生成图</button>
         </div>
-        <div class="generation-zoom-controls" role="group" aria-label="图纸缩放">
+        <label class="generation-pane-target">操作图纸
+          <select data-role="generation-active-pane">
+            <option value="original" ${originalUrl ? "" : "disabled"}>用户原图</option>
+            <option value="generated">生成图</option>
+          </select>
+        </label>
+        <div class="generation-zoom-controls" role="group" aria-label="当前图纸缩放">
           <button type="button" data-role="generation-zoom-out" aria-label="缩小图纸">−</button>
           <output data-role="generation-zoom-label" aria-live="polite">100%</output>
           <button type="button" data-role="generation-zoom-in" aria-label="放大图纸">+</button>
-          <button type="button" data-role="generation-reset-view">重置（100%）</button>
+          <button type="button" data-role="generation-reset-view">重置当前</button>
         </div>
-        <span class="generation-compare-hint">滚轮缩放 · 按住左键拖拽平移</span>
+        <label class="generation-compare-link"><input type="checkbox" data-role="generation-link-views">联动两侧</label>
+        <span class="generation-compare-hint">滚轮/拖拽只操作所在图纸 · 联动可同步两侧</span>
       </div>
       <div class="generation-compare-canvas side-by-side" data-role="generation-compare-canvas">
         <figure class="generation-original">
           <figcaption>用户原图</figcaption>
           ${originalUrl
-            ? `<div class="generation-compare-viewport" data-role="generation-compare-viewport"><img src="${escapeHtml(originalUrl)}" alt="用户上传的原始图纸" draggable="false"></div>`
+            ? `<div class="generation-compare-viewport" data-role="generation-compare-viewport" data-pane="original"><img src="${escapeHtml(originalUrl)}" alt="用户上传的原始图纸" draggable="false"></div>`
             : '<p class="generation-compare-empty">原图预览不可用</p>'}
         </figure>
         <figure class="generation-output">
           <figcaption>${isMock ? "生成二维图（模拟）" : "SolidWorks 生成二维图"}</figcaption>
-          <div class="generation-compare-viewport" data-role="generation-compare-viewport"><img src="${escapeHtml(generatedUrl)}" alt="${escapeHtml(isMock ? "模拟 SolidWorks 生成图" : "SolidWorks 生成二维图")}" draggable="false"></div>
+          <div class="generation-compare-viewport" data-role="generation-compare-viewport" data-pane="generated"><img src="${escapeHtml(generatedUrl)}" alt="${escapeHtml(isMock ? "模拟 SolidWorks 生成图" : "SolidWorks 生成二维图")}" draggable="false"></div>
         </figure>
       </div>
     </div>
@@ -7689,31 +7719,57 @@ function openGenerationCompare(generationId) {
   const zoomOutButton = dialog.querySelector('[data-role="generation-zoom-out"]');
   const zoomInButton = dialog.querySelector('[data-role="generation-zoom-in"]');
   const resetViewButton = dialog.querySelector('[data-role="generation-reset-view"]');
+  const paneSelect = dialog.querySelector('[data-role="generation-active-pane"]');
+  const linkToggle = dialog.querySelector('[data-role="generation-link-views"]');
   const minZoom = 0.25;
   const maxZoom = 5;
   const viewPadding = 18;
-  const viewState = {
-    zoom: 1,
-    centerX: 0.5,
-    centerY: 0.5,
-    drag: null,
+  const paneViews = {
+    original: { zoom: 1, centerX: 0.5, centerY: 0.5 },
+    generated: { zoom: 1, centerX: 0.5, centerY: 0.5 },
   };
+  let activePaneKey = originalUrl ? "original" : "generated";
+  let drag = null;
   const panes = [...dialog.querySelectorAll('[data-role="generation-compare-viewport"]')].map((viewport) => ({
+    key: viewport.dataset.pane,
     viewport,
     image: viewport.querySelector("img"),
     ready: false,
     renderState: null,
   }));
+  paneSelect.disabled = panes.length < 2;
+  linkToggle.disabled = panes.length < 2;
   let resizeObserver = null;
   let renderFrame = null;
 
   const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 
   function updateZoomControls() {
-    const percentage = Math.round(viewState.zoom * 100);
+    const view = paneViews[activePaneKey];
+    const selectedPaneReady = panes.some((pane) => pane.key === activePaneKey && pane.ready);
+    const percentage = Math.round(view.zoom * 100);
     zoomLabel.textContent = `${percentage}%`;
-    zoomOutButton.disabled = viewState.zoom <= minZoom + 0.001;
-    zoomInButton.disabled = viewState.zoom >= maxZoom - 0.001;
+    zoomOutButton.disabled = !selectedPaneReady || view.zoom <= minZoom + 0.001;
+    zoomInButton.disabled = !selectedPaneReady || view.zoom >= maxZoom - 0.001;
+    resetViewButton.disabled = !selectedPaneReady;
+    resetViewButton.textContent = linkToggle.checked ? "重置两侧" : "重置当前";
+  }
+
+  function setActivePane(key) {
+    if (!panes.some((pane) => pane.key === key)) return;
+    activePaneKey = key;
+    paneSelect.value = key;
+    panes.forEach((pane) => {
+      pane.viewport.closest("figure")?.classList.toggle("active", pane.key === key);
+    });
+    updateZoomControls();
+  }
+
+  function syncLinkedView(sourceKey) {
+    if (!linkToggle.checked) return;
+    panes.forEach((pane) => {
+      if (pane.key !== sourceKey) Object.assign(paneViews[pane.key], paneViews[sourceKey]);
+    });
   }
 
   function paneTransform(pane) {
@@ -7726,7 +7782,8 @@ function openGenerationCompare(generationId) {
       availableWidth / pane.image.naturalWidth,
       availableHeight / pane.image.naturalHeight,
     );
-    const scale = baseScale * viewState.zoom;
+    const view = paneViews[pane.key];
+    const scale = baseScale * view.zoom;
     const scaledWidth = pane.image.naturalWidth * scale;
     const scaledHeight = pane.image.naturalHeight * scale;
 
@@ -7742,8 +7799,8 @@ function openGenerationCompare(generationId) {
       scale,
       scaledWidth,
       scaledHeight,
-      x: position(bounds.width, scaledWidth, viewState.centerX),
-      y: position(bounds.height, scaledHeight, viewState.centerY),
+      x: position(bounds.width, scaledWidth, view.centerX),
+      y: position(bounds.height, scaledHeight, view.centerY),
     };
   }
 
@@ -7765,54 +7822,56 @@ function openGenerationCompare(generationId) {
   }
 
   function resetView() {
-    viewState.zoom = 1;
-    viewState.centerX = 0.5;
-    viewState.centerY = 0.5;
+    Object.assign(paneViews[activePaneKey], { zoom: 1, centerX: 0.5, centerY: 0.5 });
+    syncLinkedView(activePaneKey);
     scheduleRender();
   }
 
   function setZoom(nextZoom, anchor = null) {
-    const previousZoom = viewState.zoom;
+    const pane = anchor?.pane || panes.find((item) => item.key === activePaneKey);
+    if (!pane?.ready) return;
+    const view = paneViews[pane.key];
+    const previousZoom = view.zoom;
     const zoom = clamp(nextZoom, minZoom, maxZoom);
     if (Math.abs(zoom - previousZoom) < 0.0001) return;
 
-    const pane = anchor?.pane;
-    const previous = pane?.renderState;
-    if (pane && previous) {
+    const previous = anchor?.pane?.renderState;
+    if (previous) {
       const localX = anchor.clientX - previous.bounds.left;
       const localY = anchor.clientY - previous.bounds.top;
       const imageX = (localX - previous.x) / previous.scale;
       const imageY = (localY - previous.y) / previous.scale;
       const anchorX = imageX >= 0 && imageX <= pane.image.naturalWidth
         ? imageX / pane.image.naturalWidth
-        : viewState.centerX;
+        : view.centerX;
       const anchorY = imageY >= 0 && imageY <= pane.image.naturalHeight
         ? imageY / pane.image.naturalHeight
-        : viewState.centerY;
+        : view.centerY;
       const nextScale = previous.baseScale * zoom;
-      viewState.centerX = clamp(
+      view.centerX = clamp(
         anchorX - (localX - previous.bounds.width / 2) / (pane.image.naturalWidth * nextScale),
         0,
         1,
       );
-      viewState.centerY = clamp(
+      view.centerY = clamp(
         anchorY - (localY - previous.bounds.height / 2) / (pane.image.naturalHeight * nextScale),
         0,
         1,
       );
     }
 
-    viewState.zoom = zoom;
+    view.zoom = zoom;
+    syncLinkedView(pane.key);
     scheduleRender();
   }
 
   function endDrag(pointerId) {
-    const drag = viewState.drag;
-    if (!drag || (pointerId !== undefined && drag.pointerId !== pointerId)) return;
-    viewState.drag = null;
-    drag.pane.viewport.classList.remove("dragging");
-    if (drag.pane.viewport.hasPointerCapture?.(drag.pointerId)) {
-      drag.pane.viewport.releasePointerCapture(drag.pointerId);
+    const currentDrag = drag;
+    if (!currentDrag || (pointerId !== undefined && currentDrag.pointerId !== pointerId)) return;
+    drag = null;
+    currentDrag.pane.viewport.classList.remove("dragging");
+    if (currentDrag.pane.viewport.hasPointerCapture?.(currentDrag.pointerId)) {
+      currentDrag.pane.viewport.releasePointerCapture(currentDrag.pointerId);
     }
   }
 
@@ -7827,13 +7886,15 @@ function openGenerationCompare(generationId) {
       pane.ready = false;
       pane.viewport.classList.add("image-unavailable");
       pane.viewport.textContent = "图片预览加载失败";
+      scheduleRender();
     }, { once: true });
 
     pane.viewport.addEventListener("wheel", (event) => {
       if (!pane.ready || !event.deltaY) return;
       event.preventDefault();
+      setActivePane(pane.key);
       const factor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
-      setZoom(viewState.zoom * factor, {
+      setZoom(paneViews[pane.key].zoom * factor, {
         pane,
         clientX: event.clientX,
         clientY: event.clientY,
@@ -7844,25 +7905,27 @@ function openGenerationCompare(generationId) {
       if (!pane.ready || (event.pointerType === "mouse" && event.button !== 0)) return;
       event.preventDefault();
       endDrag();
-      viewState.drag = {
+      setActivePane(pane.key);
+      drag = {
         pane,
         pointerId: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
-        centerX: viewState.centerX,
-        centerY: viewState.centerY,
+        centerX: paneViews[pane.key].centerX,
+        centerY: paneViews[pane.key].centerY,
       };
       pane.viewport.classList.add("dragging");
       pane.viewport.setPointerCapture?.(event.pointerId);
     });
 
     pane.viewport.addEventListener("pointermove", (event) => {
-      const drag = viewState.drag;
       if (!drag || drag.pointerId !== event.pointerId || drag.pane !== pane || !pane.renderState) return;
       const deltaX = event.clientX - drag.startX;
       const deltaY = event.clientY - drag.startY;
-      viewState.centerX = clamp(drag.centerX - deltaX / pane.renderState.scaledWidth, 0, 1);
-      viewState.centerY = clamp(drag.centerY - deltaY / pane.renderState.scaledHeight, 0, 1);
+      const view = paneViews[pane.key];
+      view.centerX = clamp(drag.centerX - deltaX / pane.renderState.scaledWidth, 0, 1);
+      view.centerY = clamp(drag.centerY - deltaY / pane.renderState.scaledHeight, 0, 1);
+      syncLinkedView(pane.key);
       scheduleRender();
     });
     pane.viewport.addEventListener("pointerup", (event) => endDrag(event.pointerId));
@@ -7871,15 +7934,25 @@ function openGenerationCompare(generationId) {
   });
 
   dialog.querySelector('[data-role="close-generation-compare"]').addEventListener("click", () => dialog.close());
+  paneSelect.addEventListener("change", () => setActivePane(paneSelect.value));
+  linkToggle.addEventListener("change", () => {
+    endDrag();
+    syncLinkedView(activePaneKey);
+    scheduleRender();
+  });
   dialog.querySelectorAll("[data-compare-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       dialog.querySelectorAll("[data-compare-mode]").forEach((item) => item.classList.toggle("active", item === button));
-      canvas.className = `generation-compare-canvas ${button.dataset.compareMode}`;
-      requestAnimationFrame(resetView);
+      const mode = button.dataset.compareMode;
+      canvas.className = `generation-compare-canvas ${mode}`;
+      paneSelect.querySelector('option[value="original"]').disabled = !originalUrl || mode === "generated";
+      paneSelect.querySelector('option[value="generated"]').disabled = mode === "original";
+      if (mode === "original" || mode === "generated") setActivePane(mode);
+      scheduleRender();
     });
   });
-  zoomOutButton.addEventListener("click", () => setZoom(viewState.zoom / 1.25));
-  zoomInButton.addEventListener("click", () => setZoom(viewState.zoom * 1.25));
+  zoomOutButton.addEventListener("click", () => setZoom(paneViews[activePaneKey].zoom / 1.25));
+  zoomInButton.addEventListener("click", () => setZoom(paneViews[activePaneKey].zoom * 1.25));
   resetViewButton.addEventListener("click", resetView);
 
   if (typeof ResizeObserver !== "undefined") {
@@ -7893,6 +7966,7 @@ function openGenerationCompare(generationId) {
     dialog.remove();
   }, { once: true });
   dialog.showModal();
+  setActivePane(activePaneKey);
   requestAnimationFrame(resetView);
 }
 

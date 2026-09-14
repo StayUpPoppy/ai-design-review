@@ -319,7 +319,7 @@ class GenerationJobView(BaseModel):
     worker_id: str | None = Field(default=None, description="当前持有任务租约的 Worker ID。")
     lease_expires_at: str | None = Field(default=None, description="当前 Worker 租约过期时间。")
     is_final: bool = Field(description="是否为该审图单选定的最终版本。")
-    is_stale: bool = Field(default=False, description="任务参数是否已落后于当前审图修订。")
+    is_stale: bool = Field(default=False, description="任务生成时的审图修订是否与当前修订不同；历史版本仍可选为最终版本。")
     approved_by: dict[str, Any] | None = Field(default=None, description="确认最终版本的 ERP 用户信息。")
     approved_at: str | None = Field(default=None, description="确认最终版本的时间。")
     created_at: str | None = Field(default=None, description="任务创建时间。")

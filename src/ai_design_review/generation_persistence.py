@@ -1104,8 +1104,10 @@ class GenerationStore:
                 record = session.execute(select(GenerationJobRecord).where(GenerationJobRecord.generation_id == generation_id).with_for_update()).scalar_one_or_none()
                 if record is None or record.owner_erp_user_id != owner["user_id"]:
                     return None
-                if record.status != "completed" or record.review_revision != current_revision:
-                    raise PersistenceError("Only a completed generation for the current review revision can be approved.")
+                if record.status != "completed":
+                    raise PersistenceError("Only a completed generation can be approved.")
+                if record.is_final:
+                    return self._job(session, record)
                 siblings = session.execute(select(GenerationJobRecord).where(GenerationJobRecord.review_job_id == record.review_job_id, GenerationJobRecord.is_final.is_(True)).with_for_update()).scalars()
                 for sibling in siblings:
                     sibling.is_final = False
@@ -1116,7 +1118,10 @@ class GenerationStore:
                 record.approved_by = copy.deepcopy(owner)
                 record.approved_at = now
                 record.updated_at = now
-                self._event(session, record, "generation_approved", "user", {"review_revision": current_revision})
+                self._event(session, record, "generation_approved", "user", {
+                    "review_revision": record.review_revision,
+                    "current_review_revision": current_revision,
+                })
                 session.commit()
                 return self._job(session, record)
             except PersistenceError:
