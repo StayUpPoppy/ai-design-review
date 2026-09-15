@@ -177,6 +177,9 @@ def _append_standardization_warnings(
     review: dict[str, Any],
     warnings: list[dict[str, Any]],
 ) -> None:
+    for field, item in (review.get("spring_parameters") or {}).items():
+        if isinstance(item, dict) and item.get("formula_recommendation_stale"):
+            warnings.append(_field_issue(field, "公式输入已变化；当前人工确认值保持不变，建议复核公式参考值。"))
     selection = review.get("standard_selection") or {}
     if not selection.get("selected_standard"):
         warnings.append(_field_issue("standard_no", "未执行或未完成标准化检查；本次可按当前人工确认参数直接生图。"))

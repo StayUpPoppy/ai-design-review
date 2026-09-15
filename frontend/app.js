@@ -40,7 +40,12 @@ const state = {
   reviewPersistenceTimer: null,
   reviewPersistenceSaving: false,
   reviewPersistencePromise: null,
+  reviewPersistenceInFlightEvents: [],
+  reviewPersistenceFailedFields: {},
   pendingReviewAuditEvents: [],
+  reviewDraftFields: new Set(),
+  reviewEditSerial: 0,
+  standardizationInFlight: false,
   recentReviews: [],
   recentReviewsLoading: false,
   recognitionPollers: {},
@@ -557,9 +562,16 @@ drawingInput.addEventListener("change", (event) => {
 reviewJsonInput.addEventListener("change", async (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
+  if (!await flushReviewPersistence()) {
+    appendAssistantText("当前参数尚未保存，请先重试保存后再导入审查文件。", true);
+    reviewJsonInput.value = "";
+    return;
+  }
   advancedOptions.open = false;
   const review = normalizeReview(JSON.parse(await file.text()));
   state.lastJob = null;
+  state.reviewPersistenceFailedFields = {};
+  state.reviewDraftFields.clear();
   resetGenerationState();
   state.compareTab = "workbench";
   setReview(review, null);
@@ -620,6 +632,10 @@ function selectDrawingFile(file) {
 
 async function submitSelectedFile() {
   if (!state.selectedFile || state.busy || !state.identityReady) return;
+  if (!await flushReviewPersistence()) {
+    appendAssistantText("当前参数尚未保存，请先重试保存后再上传新图纸。", true);
+    return;
+  }
   if (useWerk24Input?.checked && !confirmWerk24Input?.checked) {
     appendAssistantText("调用 Werk24 前必须勾选“确认上传到 Werk24”。");
     return;
@@ -653,6 +669,8 @@ async function submitSelectedFile() {
     if (!response.ok) throw new Error(payload.detail || "后端审查失败");
 
     state.lastJob = payload;
+    state.reviewPersistenceFailedFields = {};
+    state.reviewDraftFields.clear();
     state.selectedFile = null;
     drawingInput.value = "";
     selectedFileName.textContent = "图纸已加入识别队列";
@@ -673,7 +691,7 @@ async function submitSelectedFile() {
 }
 
 async function runStandardization(messageId = state.activeReviewMessageId, options = {}) {
-  if (!state.review || state.busy) return false;
+  if (!state.review || state.busy || state.standardizationInFlight || state.standardizationChatBusy) return false;
   clearTimeout(state.automaticStandardizationTimer);
   state.automaticStandardizationTimer = null;
   const accuracyGradeUpdate = options.accuracy_grade_update;
@@ -688,13 +706,28 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
   if (feedbackOperation) {
     setAccuracyGradeUpdate("loading", feedbackGrade, feedbackOperation);
   }
-  await flushReviewPersistence();
+  setBusy(true);
+  let savedBeforeStandardization = false;
+  try {
+    savedBeforeStandardization = await flushReviewPersistence();
+  } catch {
+    savedBeforeStandardization = false;
+  }
+  if (!savedBeforeStandardization) {
+    setBusy(false);
+    if (feedbackOperation) {
+      setAccuracyGradeUpdate("error", feedbackGrade, feedbackOperation);
+    }
+    appendAssistantText("当前参数尚未成功保存；请先点击参数行的“重试保存”，再更新标准化建议。", true, { scroll: false });
+    return false;
+  }
   const requestReview = normalizeReview(structuredClone(state.review));
+  const requestEditSerial = state.reviewEditSerial;
   const accuracyGradeCommit = requestedAccuracyGrade
     ? prepareAccuracyGradeCommit(requestReview, requestedAccuracyGrade)
     : null;
   const scrollState = captureReviewScrollState();
-  setBusy(true);
+  state.standardizationInFlight = true;
   const endpoint = state.lastJob?.job_id
     ? `/api/reviews/${encodeURIComponent(state.lastJob.job_id)}/standardize`
     : "/api/reviews/standardize";
@@ -718,11 +751,17 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
       }),
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || "标准化失败");
+    if (!response.ok) throw new Error(payload?.detail?.message || payload.detail || "标准化失败");
 
     if (thinkingId) removeMessage(thinkingId);
     if (payload.job_id) {
       state.lastJob = { ...(state.lastJob || {}), ...payload };
+    }
+    if (requestEditSerial !== state.reviewEditSerial) {
+      state.review.derived_parameters_stale = true;
+      updateLatestReviewMessage("标准化计算期间参数又发生修改；旧结果已忽略，当前人工输入保持不变。需要时请重新更新建议。");
+      refreshReviewSurfaces();
+      return false;
     }
     setReview(normalizeReview(payload.review), state.imageUrl, {
       preserveAccuracyGradeUpdate: true,
@@ -769,20 +808,36 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
     else appendAssistantText(`自动更新标准化方案失败：${error.message || String(error)}`, true, { scroll: false });
     return false;
   } finally {
+    state.standardizationInFlight = false;
     setBusy(false);
+    if (state.pendingReviewAuditEvents.length) scheduleReviewPersistence();
     restoreReviewScrollState(scrollState);
   }
 }
 
 async function runStandardizationChat(message, messageId = state.activeReviewMessageId, useLlm = true, options = {}) {
   const text = String(message || "").trim();
-  if (!state.review || !text || state.standardizationChatBusy) return;
+  if (!state.review || !text || state.standardizationChatBusy || state.standardizationInFlight || state.busy) return;
   activateReviewContext(messageId);
-  await flushReviewPersistence();
+  state.standardizationChatBusy = true;
+  setBusy(true);
+  let savedBeforeChat = false;
+  try {
+    savedBeforeChat = await flushReviewPersistence();
+  } catch {
+    savedBeforeChat = false;
+  }
+  if (!savedBeforeChat) {
+    state.standardizationChatBusy = false;
+    setBusy(false);
+    appendAssistantText("当前参数尚未成功保存；请先重试保存，再开始标准化对话。", true, { scroll: false });
+    return;
+  }
   const requestReview = normalizeReview(structuredClone(state.review));
+  const requestEditSerial = state.reviewEditSerial;
   markSubmittedMissingChatActions(requestReview, options.submittedMissingActions);
   const pendingTurnId = appendPendingStandardizationChatTurn(text, messageId);
-  state.standardizationChatBusy = true;
+  state.standardizationInFlight = true;
   refreshReviewSurfaces({ scrollChat: true });
   const endpoint = state.lastJob?.job_id
     ? `/api/reviews/${encodeURIComponent(state.lastJob.job_id)}/standardization-chat`
@@ -804,7 +859,7 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
       }),
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || "标准化对话失败");
+    if (!response.ok) throw new Error(payload?.detail?.message || payload.detail || "标准化对话失败");
 
     if (payload.job_id) {
       state.lastJob = {
@@ -812,6 +867,12 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
         job_id: payload.job_id,
         review_revision: payload.review_revision ?? state.lastJob?.review_revision ?? null,
       };
+    }
+    if (requestEditSerial !== state.reviewEditSerial) {
+      replacePendingStandardizationChatTurn(pendingTurnId, "计算期间参数已修改；旧对话结果未覆盖当前人工输入。请按最新参数重新发送。", true);
+      state.review.derived_parameters_stale = true;
+      refreshReviewSurfaces({ scrollChat: true });
+      return;
     }
     const normalized = normalizeReview(payload.review);
     const finalTurnIndex = Math.max((normalized.standardization_chat || []).length - 1, 0);
@@ -847,6 +908,9 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
     replacePendingStandardizationChatTurn(pendingTurnId, `标准化对话失败：${error.message || String(error)}`, true);
     refreshReviewSurfaces({ scrollChat: true });
   } finally {
+    state.standardizationInFlight = false;
+    setBusy(false);
+    if (state.pendingReviewAuditEvents.length) scheduleReviewPersistence();
     if (!isTypingFinalReply) {
       state.standardizationChatBusy = false;
       refreshReviewSurfaces({ scrollChat: true });
@@ -1018,6 +1082,7 @@ function parameterAuditState(param) {
     unit: param?.unit ?? null,
     tolerance_upper: param?.tolerance_upper ?? null,
     tolerance_lower: param?.tolerance_lower ?? null,
+    tolerance_input_draft: param?.tolerance_input_draft ?? null,
     need_human_review: Boolean(param?.need_human_review),
     source: sourceValues(param?.source),
     default_source: param?.default_source ?? null,
@@ -1027,6 +1092,7 @@ function parameterAuditState(param) {
 
 function queueReviewAuditEvent(event) {
   if (!state.review || !event) return null;
+  state.reviewEditSerial += 1;
   state.generationReadiness = null;
   const entry = {
     client_event_id: createAuditEventId(),
@@ -1044,10 +1110,24 @@ function queueReviewAuditEvent(event) {
   state.review.change_history.unshift(entry);
   if (state.lastJob?.job_id) {
     state.pendingReviewAuditEvents.push(entry);
+    if (entry.target_field) delete state.reviewPersistenceFailedFields[entry.target_field];
     scheduleReviewPersistence();
   }
+  if (entry.target_field) state.reviewDraftFields.delete(entry.target_field);
   refreshReviewChangeHistory();
+  refreshParameterPersistenceControls(entry.target_field ? [entry.target_field] : null);
   return entry;
+}
+
+function refreshParameterPersistenceControls(fields = null) {
+  if (!state.review) return;
+  const targetFields = fields ? new Set(fields) : null;
+  document.querySelectorAll('[data-kind="param"][data-field]').forEach((row) => {
+    const field = row.dataset.field;
+    if (targetFields && !targetFields.has(field)) return;
+    const param = state.review.spring_parameters?.[field];
+    if (param) syncConfirmationControl(row, param, { kind: "parameter", field, review: state.review });
+  });
 }
 
 function createAuditEventId() {
@@ -1064,49 +1144,80 @@ function scheduleReviewPersistence() {
 
 async function flushReviewPersistence(options = {}) {
   clearTimeout(state.reviewPersistenceTimer);
+  if (state.standardizationInFlight) {
+    if (options.throwOnError) throw new Error("标准化计算尚未结束，当前修改仍在等待保存。");
+    return false;
+  }
   if (state.reviewPersistenceSaving && state.reviewPersistencePromise) {
-    await state.reviewPersistencePromise;
+    try {
+      await state.reviewPersistencePromise;
+    } catch (error) {
+      if (options.throwOnError) throw error;
+      return false;
+    }
   }
   if (state.pendingReviewAuditEvents.length) {
     await persistReviewChanges(options);
   }
+  const saved = !state.pendingReviewAuditEvents.length && !state.reviewPersistenceSaving;
+  if (!saved && options.throwOnError) throw new Error("当前审图修改尚未成功保存，请点击参数行的“重试保存”。");
+  return saved;
 }
 
 async function persistReviewChanges(options = {}) {
   if (state.reviewPersistenceSaving && state.reviewPersistencePromise) return state.reviewPersistencePromise;
+  if (state.standardizationInFlight) return false;
   if (!state.lastJob?.job_id || !state.pendingReviewAuditEvents.length || !state.review) return false;
-  const events = state.pendingReviewAuditEvents.splice(0);
-  const reviewSnapshot = normalizeReview(structuredClone(state.review));
+  let events = state.pendingReviewAuditEvents.splice(0);
+  let reviewSnapshot = normalizeReview(structuredClone(state.review));
+  let expectedRevision = state.lastJob?.review_revision ?? undefined;
+  const jobId = state.lastJob.job_id;
   state.reviewPersistenceSaving = true;
+  state.reviewPersistenceInFlightEvents = events;
+  events.forEach((event) => { if (event.target_field) delete state.reviewPersistenceFailedFields[event.target_field]; });
+  refreshParameterPersistenceControls();
   state.reviewPersistencePromise = (async () => {
+    let savedSuccessfully = false;
     try {
-      const response = await apiFetch(`/api/reviews/${encodeURIComponent(state.lastJob.job_id)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          review: reviewSnapshot,
-          expected_revision: state.lastJob?.review_revision ?? undefined,
-          events,
-        }),
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        if (response.status === 409 && Number.isFinite(Number(payload?.detail?.current_revision))) {
-          state.lastJob.review_revision = Number(payload.detail.current_revision);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const response = await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ review: reviewSnapshot, expected_revision: expectedRevision, events }),
+        });
+        const payload = await response.json();
+        if (response.status === 409 && attempt === 0) {
+          const reconciled = await reconcileParameterRevisionConflict(jobId, events);
+          if (!reconciled) throw new Error("服务器版本已变化；本地参数仍保留，请处理保存冲突后重试。");
+          ({ events, review: reviewSnapshot, revision: expectedRevision } = reconciled);
+          state.reviewPersistenceInFlightEvents = events;
+          if (!events.length) {
+            savedSuccessfully = true;
+            return true;
+          }
+          continue;
         }
-        throw new Error(typeof payload.detail === "string" ? payload.detail : "审查数据保存失败");
+        if (!response.ok) {
+          throw new Error(payload?.detail?.message || (typeof payload.detail === "string" ? payload.detail : "审查数据保存失败"));
+        }
+        if (payload.review_revision != null) state.lastJob.review_revision = payload.review_revision;
+        const persistedIds = new Set((payload.events || []).map((item) => item.client_event_id).filter(Boolean));
+        (state.review.change_history || []).forEach((entry) => {
+          if (events.some((item) => item.client_event_id === entry.client_event_id)) {
+            entry.sync_status = persistedIds.has(entry.client_event_id) ? "saved" : "saved_local";
+          }
+        });
+        refreshReviewChangeHistory();
+        if (state.generationJobs.length) void loadGenerationState(jobId, { silent: true });
+        savedSuccessfully = true;
+        return true;
       }
-      if (payload.review_revision != null) state.lastJob.review_revision = payload.review_revision;
-      const persistedIds = new Set((payload.events || []).map((item) => item.client_event_id).filter(Boolean));
-      (state.review.change_history || []).forEach((entry) => {
-        if (events.some((item) => item.client_event_id === entry.client_event_id)) {
-          entry.sync_status = persistedIds.has(entry.client_event_id) ? "saved" : "saved_local";
-        }
-      });
-      refreshReviewChangeHistory();
-      if (state.generationJobs.length) void loadGenerationState(state.lastJob.job_id, { silent: true });
+      throw new Error("服务器版本再次变化；本地参数仍保留，请重试保存。");
     } catch (error) {
       state.pendingReviewAuditEvents.unshift(...events);
+      events.forEach((event) => {
+        if (event.target_field) state.reviewPersistenceFailedFields[event.target_field] = error.message || "保存失败";
+      });
       (state.review.change_history || []).forEach((entry) => {
         if (events.some((item) => item.client_event_id === entry.client_event_id)) entry.sync_status = "pending";
       });
@@ -1116,9 +1227,131 @@ async function persistReviewChanges(options = {}) {
     } finally {
       state.reviewPersistenceSaving = false;
       state.reviewPersistencePromise = null;
+      state.reviewPersistenceInFlightEvents = [];
+      refreshParameterPersistenceControls();
+      if (savedSuccessfully && state.pendingReviewAuditEvents.length) {
+        scheduleReviewPersistence();
+      }
     }
   })();
   return state.reviewPersistencePromise;
+}
+
+function parameterConflictFingerprint(item) {
+  return JSON.stringify({
+    value: item?.value ?? null,
+    tolerance_upper: item?.tolerance_upper ?? null,
+    tolerance_lower: item?.tolerance_lower ?? null,
+    need_human_review: Boolean(item?.need_human_review),
+  });
+}
+
+function parameterConflictValue(item) {
+  if (!item) return "未填写";
+  const value = item.value == null || item.value === "" ? "未填写" : String(item.value);
+  const tolerance = formatTolerance(item);
+  return tolerance ? `${value} ${tolerance}` : value;
+}
+
+function chooseParameterConflict(field, serverItem, localItem) {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "parameter-conflict-dialog";
+    dialog.setAttribute("aria-label", `参数保存冲突：${targetFieldLabel(field)}`);
+    dialog.innerHTML = `
+      <h2>参数保存冲突：${escapeHtml(targetFieldLabel(field))}</h2>
+      <p>另一处操作已修改这个参数。请选择本次采用的值；未选择前，本地输入不会丢失。</p>
+      <div class="parameter-conflict-values">
+        <div><small>服务器上的值</small><strong>${escapeHtml(parameterConflictValue(serverItem))}</strong></div>
+        <div><small>我当前输入的值</small><strong>${escapeHtml(parameterConflictValue(localItem))}</strong></div>
+      </div>
+      <div class="parameter-conflict-actions">
+        <button type="button" class="secondary-action" data-choice="server">采用服务器值</button>
+        <button type="button" data-choice="local">保留我的值并保存</button>
+      </div>
+    `;
+    document.body.appendChild(dialog);
+    let settled = false;
+    const finish = (choice) => {
+      if (settled) return;
+      settled = true;
+      dialog.close();
+      dialog.remove();
+      resolve(choice);
+    };
+    dialog.querySelector('[data-choice="server"]').addEventListener("click", () => finish("server"));
+    dialog.querySelector('[data-choice="local"]').addEventListener("click", () => finish("local"));
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); finish(null); });
+    dialog.showModal();
+  });
+}
+
+async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
+  const response = await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}`);
+  const payload = await response.json();
+  if (!response.ok || state.lastJob?.job_id !== jobId) return null;
+  const revision = Number(payload.review_revision);
+  if (!Number.isInteger(revision) || revision < 1) return null;
+  const local = state.review;
+  const queued = state.pendingReviewAuditEvents;
+  const allEvents = [...inFlightEvents, ...queued];
+  const fields = Array.from(new Set([
+    ...allEvents.map((event) => event.target_field),
+    ...state.reviewDraftFields,
+  ]));
+  if (!fields.length || fields.some((field) => !field || field.includes(".") || !local?.spring_parameters?.[field])) {
+    return null;
+  }
+  const server = normalizeReview(payload);
+  const chosenServer = new Set();
+  for (const field of fields) {
+    const firstEvent = allEvents.find((event) => event.target_field === field);
+    const serverItem = server.spring_parameters?.[field];
+    const localItem = local.spring_parameters?.[field];
+    const beforeState = firstEvent?.before_state || localItem?.confirmation_snapshot;
+    if ((!beforeState || parameterConflictFingerprint(serverItem) !== parameterConflictFingerprint(beforeState))
+      && parameterConflictFingerprint(serverItem) !== parameterConflictFingerprint(localItem)) {
+      const choice = await chooseParameterConflict(field, serverItem, localItem);
+      if (!choice) return null;
+      if (choice === "server") chosenServer.add(field);
+    }
+  }
+  const merged = normalizeReview(server);
+  for (const field of fields) {
+    if (chosenServer.has(field)) continue;
+    merged.spring_parameters[field] = structuredClone(local.spring_parameters[field]);
+    if (local.manual_confirmations?.[field]) {
+      merged.manual_confirmations[field] = structuredClone(local.manual_confirmations[field]);
+    } else {
+      delete merged.manual_confirmations[field];
+    }
+  }
+  const keepEvent = (event) => !chosenServer.has(event.target_field);
+  chosenServer.forEach((field) => state.reviewDraftFields.delete(field));
+  const remainingInFlight = inFlightEvents.filter(keepEvent);
+  state.pendingReviewAuditEvents = queued.filter(keepEvent);
+  const unsaved = [...remainingInFlight, ...state.pendingReviewAuditEvents];
+  const unsavedIds = new Set(unsaved.map((event) => event.client_event_id));
+  const serverHistoryIds = new Set((merged.change_history || []).map((entry) => entry.client_event_id));
+  merged.change_history = [
+    ...(local.change_history || []).filter((entry) => unsavedIds.has(entry.client_event_id) && !serverHistoryIds.has(entry.client_event_id)),
+    ...(merged.change_history || []),
+  ];
+  if (unsaved.length) {
+    merged.parameter_reasonableness_stale = true;
+    merged.derived_parameters_stale = true;
+    (merged.standardization_results || []).forEach((item) => {
+      if (["suggested", "llm_suggested", "human_confirmed"].includes(item?.status)) item.status = "stale";
+    });
+  }
+  state.lastJob.review_revision = revision;
+  state.generationReadiness = null;
+  setReview(merged, state.imageUrl, {
+    preserveAccuracyGradeUpdate: true,
+    preservePendingAccuracyGrade: true,
+  });
+  refreshReviewSurfaces();
+  return { events: remainingInFlight, review: normalizeReview(structuredClone(merged)), revision };
 }
 
 function refreshReviewChangeHistory() {
@@ -1224,6 +1457,8 @@ function scheduleAutomaticStandardization(messageId = state.activeReviewMessageI
 async function refreshParameterReasonableness(messageId = state.activeReviewMessageId) {
   if (!state.review) return;
   const requestId = ++state.reasonablenessRequestSerial;
+  const requestEditSerial = state.reviewEditSerial;
+  const requestSourceReview = state.review;
   const requestReview = normalizeReview(structuredClone(state.review));
   try {
     const response = await apiFetch("/api/reviews/reasonableness", {
@@ -1233,7 +1468,7 @@ async function refreshParameterReasonableness(messageId = state.activeReviewMess
     });
     const payload = await response.json();
     if (!response.ok || !payload.parameter_reasonableness) return;
-    if (requestId !== state.reasonablenessRequestSerial || !state.review) return;
+    if (requestId !== state.reasonablenessRequestSerial || requestEditSerial !== state.reviewEditSerial || state.review !== requestSourceReview) return;
     state.review.parameter_reasonableness = payload.parameter_reasonableness;
     state.review.parameter_reasonableness_stale = false;
     const context = getReviewContext(messageId);
@@ -1336,6 +1571,10 @@ function scrollStandardizationChatToBottom() {
 
 async function loadDemoReview() {
   if (!state.identityReady) return;
+  if (!await flushReviewPersistence()) {
+    appendAssistantText("当前参数尚未保存，请先重试保存后再加载样例。", true);
+    return;
+  }
   setBusy(true);
   appendUserMessage("加载样例审查结果");
   const thinkingId = appendAssistantText("正在加载样例...");
@@ -1344,10 +1583,11 @@ async function loadDemoReview() {
     if (!response.ok) throw new Error("样例审查 JSON 加载失败");
     const review = normalizeReview(await response.json());
     // A demo must never retain the ID of a previously opened real order.
-    await flushReviewPersistence();
     state.lastJob = null;
     resetGenerationState();
     state.pendingReviewAuditEvents = [];
+    state.reviewPersistenceFailedFields = {};
+    state.reviewDraftFields.clear();
     removeMessage(thinkingId);
     state.compareTab = "workbench";
     setReview(review, apiUrl("/api/samples/spring-preview"));
@@ -1547,6 +1787,10 @@ function renderRecentReviews() {
 
 async function openPersistedReview(jobId, options = {}) {
   if (!jobId || state.busy) return;
+  if (!await flushReviewPersistence()) {
+    appendAssistantText("当前参数尚未保存，请先重试保存后再切换订单。", true);
+    return;
+  }
   const item = state.recentReviews.find((review) => review.job_id === jobId);
   if (["queued", "processing", "cancel_requested"].includes(item?.recognition_status)) {
     const messageId = appendAssistantText(recognitionProgressText(item), false);
@@ -1574,6 +1818,8 @@ async function openPersistedReview(jobId, options = {}) {
       persistence: { mode: item?.revision ? "postgresql" : "json_fallback" },
     };
     state.compareTab = "workbench";
+    state.reviewPersistenceFailedFields = {};
+    state.reviewDraftFields.clear();
     setReview(normalizeReview(payload), toBackendAssetUrl(item?.image_url));
     await loadGenerationState(jobId, { render: false, silent: true });
     renderRecentReviews();
@@ -1673,6 +1919,8 @@ function resetDeletedReviewState() {
   resetAccuracyGradeUpdate();
   resetPendingAccuracyGrade();
   state.pendingReviewAuditEvents = [];
+  state.reviewPersistenceFailedFields = {};
+  state.reviewDraftFields.clear();
   if (state.compareOpen) closeCompareOverlay();
   const deletedReview = state.review;
   Object.entries(state.reviewContexts).forEach(([messageId, context]) => {
@@ -1694,7 +1942,7 @@ async function startNewReview() {
   if (state.busy || !state.identityReady) return;
   setBusy(true);
   try {
-    await flushReviewPersistence();
+    await flushReviewPersistence({ throwOnError: true });
     clearTimeout(state.reviewPersistenceTimer);
     clearTimeout(state.reasonablenessRefreshTimer);
     clearTimeout(state.standardizationChatTypingTimer);
@@ -1704,6 +1952,8 @@ async function startNewReview() {
     resetPendingAccuracyGrade();
     state.reasonablenessRequestSerial += 1;
     state.pendingReviewAuditEvents = [];
+    state.reviewPersistenceFailedFields = {};
+    state.reviewDraftFields.clear();
     state.reviewContexts = {};
     state.compareTab = "workbench";
     state.review = null;
@@ -2371,9 +2621,11 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
     }
   }
   if (field === "solid_height") {
-    if (sources.includes("formula_calculation")) {
+    if (sources.includes("formula_calculation") && !sources.includes("human_edited")) {
       label = `${label}（参考）`;
-      badges.push("公式参考 / 待确认");
+      badges.push(param.formula_recommendation_stale
+        ? "公式参考待更新"
+        : (param.need_human_review ? "公式参考 / 待确认" : "公式参考已确认"));
     } else if (sources.some((source) => source.startsWith("human") || source === "manual")) {
       badges.push("人工值");
     } else if (param.value != null && param.value !== "") {
@@ -2585,6 +2837,13 @@ function confirmationControlState(item, options = {}) {
   const review = options.review || state.review;
   const isConfirmed = kind === "technical" ? item?.need_human_review === false : !item?.need_human_review;
   if (isConfirmed) {
+    const persistence = kind === "parameter" ? parameterPersistenceState(field) : null;
+    if (persistence === "failed") {
+      return { state: "save_failed", label: "保存失败·重试保存", disabled: false, reason: "确认已保留在页面，但尚未保存到服务器；点击重试保存。" };
+    }
+    if (persistence === "saving") {
+      return { state: "saving", label: "保存中", disabled: true, reason: "正在将已确认的参数保存到服务器。" };
+    }
     return { state: "confirmed", label: "已确认", disabled: true, reason: "该项已经确认；修改内容后可重新确认。" };
   }
 
@@ -2600,17 +2859,10 @@ function confirmationControlState(item, options = {}) {
       invalidReason = "请先明确表面处理标准术语";
     }
   } else {
-    invalidReason = bulkParameterInvalidReason(field, item);
-    if (!invalidReason && item?.derived_value_stale) invalidReason = "关联参数已变化，等待重新计算";
+    invalidReason = parameterConfirmationInvalidReason(field, item);
   }
 
   const severity = kind === "technical" ? "" : reasonablenessSeverityForField(review, field);
-  if (!invalidReason && ["blocked", "needs_input"].includes(severity)) {
-    invalidReason = severity === "blocked" ? "存在阻断问题，请先修改参数" : "所需信息尚未填写完整";
-  }
-  if (!invalidReason && confirmationItemWasEdited(item) && review?.parameter_reasonableness_stale && kind !== "technical") {
-    return { state: "validating", label: "校验中", disabled: true, reason: "正在重新检查参数合理性。" };
-  }
   if (invalidReason) {
     return { state: "invalid", label: "无法确认", disabled: true, reason: invalidReason };
   }
@@ -2620,8 +2872,18 @@ function confirmationControlState(item, options = {}) {
     state: modified ? "modified" : (severity === "warning" ? "warning" : "pending"),
     label: modified ? "确认修改" : "确认",
     disabled: false,
-    reason: severity === "warning" ? "当前值存在风险提示，确认后将记录人工接受。" : "",
+    reason: severity ? "当前值存在合理性提示；人工确认后仍需通过生图前的服务器校验。" : "",
   };
+}
+
+function parameterPersistenceState(field) {
+  if (!field || !state.lastJob?.job_id) return null;
+  const events = [
+    ...(state.pendingReviewAuditEvents || []),
+    ...(state.reviewPersistenceInFlightEvents || []),
+  ];
+  if (!events.some((event) => event.target_field === field)) return null;
+  return state.reviewPersistenceFailedFields?.[field] ? "failed" : "saving";
 }
 
 function confirmationButtonHtml(item, options = {}) {
@@ -2634,7 +2896,7 @@ function syncConfirmationControl(row, item, options = {}) {
   const button = row?.querySelector?.('[data-role="confirm"]');
   if (!button) return confirmationControlState(item, options);
   const control = confirmationControlState(item, options);
-  button.classList.remove("confirmed", "pending", "modified", "warning", "validating", "invalid");
+  button.classList.remove("confirmed", "pending", "modified", "warning", "validating", "invalid", "saving", "save_failed");
   button.classList.add(control.state);
   button.disabled = control.disabled;
   button.textContent = control.label;
@@ -4755,6 +5017,10 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
       const control = confirmationControlState(param, { kind: "parameter", field, review });
+      if (control.state === "save_failed") {
+        void persistReviewChanges();
+        return;
+      }
       if (control.disabled) return;
       const beforeState = parameterAuditState(param);
       const eventType = confirmationAuditEventType(param, field, review);
@@ -6497,6 +6763,27 @@ function bulkParameterInvalidReason(field, param) {
   return "";
 }
 
+function parameterConfirmationInvalidReason(field, param) {
+  const value = param?.value;
+  if (value == null || String(value).trim() === "") return "请先填写参数值";
+  if (param?.tolerance_input_draft) return "公差格式应为 ±0.05 或 +0.1/-0.1";
+  if (supplementInputMode(field) === "decimal") {
+    if (!isFiniteReviewNumber(value)) return "请输入有效数字";
+    if (["total_coils", "active_coils"].includes(field) && !Number.isInteger(Number(value))) {
+      return "圈数需要填写整数";
+    }
+  }
+  const contractField = field === "end_type" ? "end_coils_closed" : field;
+  if (["handedness", "end_grinding", "end_coils_closed"].includes(contractField)) {
+    try {
+      generationContractValue(contractField, value);
+    } catch (error) {
+      return error.message || "参数格式无效";
+    }
+  }
+  return "";
+}
+
 function isFiniteReviewNumber(value) {
   return value != null && value !== "" && Number.isFinite(Number(value));
 }
@@ -8222,7 +8509,9 @@ function restoreSnapshotConfirmation(item, confirmationField) {
 
 function applyEditedConfirmationState(item, field, options = {}) {
   const confirmationField = options.confirmationField || field;
-  if (confirmationSnapshotMatches(item)) {
+  if (!item.tolerance_input_draft && confirmationSnapshotMatches(item)) {
+    state.reviewEditSerial += 1;
+    state.reviewDraftFields.delete(field);
     restoreSnapshotConfirmation(item, confirmationField);
     return "restored";
   }
@@ -8242,6 +8531,11 @@ function markDependentFormulaParametersPending(field) {
     const sourceFields = Array.isArray(target.source_fields) ? target.source_fields : [];
     const isCalculated = sourceValues(target.source).some((source) => source === "formula_calculation" || source === "derived");
     if (!isCalculated || !sourceFields.includes(field)) return;
+    if (target.need_human_review === false || sourceValues(target.source).some((source) => source.startsWith("human"))) {
+      target.formula_recommendation_stale = true;
+      state.review.derived_parameters_stale = true;
+      return;
+    }
     rememberConfirmedSnapshot(target);
     const recalculated = recalculateKnownDependentParameter(targetField, target, parameters);
     if (recalculated && confirmationSnapshotMatches(target)) {
@@ -8275,11 +8569,12 @@ function recalculateKnownDependentParameter(field, target, parameters) {
 }
 
 function markParamEdited(param, field = "", options = {}) {
+  state.reviewEditSerial += 1;
+  if (field) state.reviewDraftFields.add(field);
   param.need_human_review = true;
   param.source = Array.from(new Set(["human_edited", ...sourceValues(param.source)]));
   if (!options.skipParameterReasonableness) state.review.parameter_reasonableness_stale = true;
   if (!field) {
-    scheduleAutomaticStandardization();
     return;
   }
   if (options.confirmationField) {
@@ -8290,9 +8585,8 @@ function markParamEdited(param, field = "", options = {}) {
   if (!options.skipDependentInvalidation && !field.startsWith("load_points.") && !field.startsWith("technical_requirements.")) {
     markDependentFormulaParametersPending(field);
   }
-  scheduleAutomaticStandardization(undefined, {
-    force: ["total_coils", "end_type", "support_coils"].includes(field),
-  });
+  // Manual edits refresh diagnostics only.  Standardization suggestions are
+  // recalculated explicitly so an asynchronous request cannot rewrite inputs.
 }
 
 function sourceValues(source) {
@@ -8551,6 +8845,7 @@ function formatFieldInput(param) {
 }
 
 function formatTolerance(param) {
+  if (param.tolerance_input_draft) return String(param.tolerance_input_draft);
   const upper = param.tolerance_upper;
   const lower = param.tolerance_lower;
   if (upper == null && lower == null) return "";
@@ -8559,25 +8854,39 @@ function formatTolerance(param) {
 }
 
 function applyTolerance(param, value) {
-  const text = value.trim();
+  const text = String(value || "").trim();
   if (!text) {
+    delete param.tolerance_input_draft;
     param.tolerance_upper = null;
     param.tolerance_lower = null;
-    return;
+    return true;
   }
-  if (text.startsWith("±")) {
-    const number = Number(text.slice(1));
-    if (!Number.isNaN(number)) {
+  const numeric = "[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)";
+  const symmetric = text.match(new RegExp(`^±\\s*(${numeric})$`));
+  if (symmetric) {
+    const number = Number(symmetric[1]);
+    if (Number.isFinite(number) && number >= 0) {
+      delete param.tolerance_input_draft;
       param.tolerance_upper = number;
       param.tolerance_lower = -number;
+      return true;
     }
-    return;
   }
-  if (text.includes("/")) {
-    const [upper, lower] = text.split("/").map((part) => Number(part.trim()));
-    param.tolerance_upper = Number.isNaN(upper) ? null : upper;
-    param.tolerance_lower = Number.isNaN(lower) ? null : lower;
+  const pair = text.match(new RegExp(`^(${numeric})\\s*\\/\\s*(${numeric})$`));
+  if (pair) {
+    const upper = Number(pair[1]);
+    const lower = Number(pair[2]);
+    if (Number.isFinite(upper) && Number.isFinite(lower)) {
+      delete param.tolerance_input_draft;
+      param.tolerance_upper = upper;
+      param.tolerance_lower = lower;
+      return true;
+    }
   }
+  param.tolerance_input_draft = text;
+  param.tolerance_upper = null;
+  param.tolerance_lower = null;
+  return false;
 }
 
 function applyLoadPointTolerance(point, value) {

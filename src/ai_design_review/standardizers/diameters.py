@@ -99,11 +99,13 @@ def _formula_parameter(field: str, calculation: dict[str, Any]) -> dict[str, Any
 def _can_replace(item: Any) -> bool:
     if not isinstance(item, dict):
         return item in (None, "")
-    if item.get("value") in (None, ""):
-        return True
+    if item.get("need_human_review") is False:
+        return False
     sources = _source_values(item.get("source"))
     if any(source.startswith("human") or source in {"manual", "manual_input"} for source in sources):
         return False
+    if item.get("value") in (None, ""):
+        return True
     if FORMULA_CALCULATION_SOURCE in sources:
         return item.get("formula_calculation_kind") in (None, DIAMETER_COMPLETION_KIND)
     return _is_recognizer_inference(item) and not _has_direct_drawing_evidence(item)

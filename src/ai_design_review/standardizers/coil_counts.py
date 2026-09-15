@@ -127,6 +127,8 @@ def apply_company_simple_active_coils(spring_type: str, spring_parameters: dict[
 def _can_refresh_company_derived(item: Any) -> bool:
     if not isinstance(item, dict):
         return False
+    if item.get("need_human_review") is False:
+        return False
     if item.get("derived_rule_id") not in {COMPANY_ACTIVE_COIL_RULE, LEGACY_COMPANY_SIMPLE_ACTIVE_COIL_RULE}:
         return False
     source = item.get("source", [])

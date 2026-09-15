@@ -128,6 +128,23 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
     assert model["extraProperties"]["F2"] is None
     assert model["customProperties"] == {"旋向": "右旋"}
 
+    confirmed = build_solidworks_command(
+        "1000000001",
+        {
+            "source": {"drawing_name": "压缩弹簧"},
+            "generation_parameters": {
+                "spring_parameters": {
+                    "wire_diameter": {"value": 3}, "mean_diameter": {"value": 29},
+                    "free_length": {"value": 50}, "total_coils": {"value": 9},
+                    "handedness": {"value": "right"},
+                },
+                "load_points": [], "technical_requirements_text": "",
+            },
+        },
+        {"spring_parameters": {"solid_height": {"value": 35, "need_human_review": False}}},
+    )
+    assert confirmed["models"][0]["modelParameters"]["压并高度Hb"] == 35
+
 
 def main() -> None:
     assert_optional_solidworks_fields_are_explicit_null()

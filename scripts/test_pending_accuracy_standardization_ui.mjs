@@ -37,6 +37,8 @@ function createContext({ responseOk = true } = {}) {
       busy: false,
       imageUrl: "/drawing.png",
       reviewContexts: {},
+      reviewEditSerial: 0,
+      pendingReviewAuditEvents: [],
     },
     structuredClone,
     clearTimeout: () => {},
@@ -46,7 +48,7 @@ function createContext({ responseOk = true } = {}) {
       context.state.accuracyGradeUpdate = { ...context.state.accuracyGradeUpdate, phase, grade, operation };
       statuses.push({ phase, grade, operation });
     },
-    flushReviewPersistence: async () => {},
+    flushReviewPersistence: async () => true,
     normalizeReview: (review) => structuredClone(review),
     prepareAccuracyGradeCommit: (review, grade) => {
       const param = review.spring_parameters.accuracy_grade;

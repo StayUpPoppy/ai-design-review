@@ -9,7 +9,11 @@ from ai_design_review.standardizers.coil_counts import (  # noqa: E402
     apply_company_simple_active_coils,
     derive_active_coils,
 )
-from ai_design_review.end_conditions import normalize_end_grinding, normalize_end_type  # noqa: E402
+from ai_design_review.end_conditions import (  # noqa: E402
+    normalize_compression_end_conditions,
+    normalize_end_grinding,
+    normalize_end_type,
+)
 from ai_design_review.standardizers import standardize_spring  # noqa: E402
 
 
@@ -29,6 +33,8 @@ def main() -> None:
     assert derive_active_coils("compression_spring", _parameters(10)) == {}
     assert derive_active_coils("compression_spring", _parameters(2, end_type="两端并紧")) == {}
     _assert_company_default_refreshes_with_total_coils()
+    _assert_confirmed_company_value_is_preserved()
+    _assert_confirmed_end_wording_is_preserved()
     print("active coil derivation tests passed")
 
 
@@ -71,6 +77,31 @@ def _assert_company_default_refreshes_with_total_coils() -> None:
     parameters["active_coils"]["source"] = ["company_active_coil_rule", "human_edited"]
     assert apply_company_simple_active_coils("compression_spring", parameters) is False
     assert parameters["active_coils"]["value"] == 9
+
+
+def _assert_confirmed_company_value_is_preserved() -> None:
+    parameters = _parameters(12, end_type="两端并紧")
+    parameters["active_coils"] = {
+        "value": 9,
+        "source": ["company_active_coil_rule"],
+        "derived_rule_id": "COMPANY-ACTIVE-COILS-END-CONDITION-V2",
+        "need_human_review": False,
+    }
+    assert apply_company_simple_active_coils("compression_spring", parameters) is False
+    assert parameters["active_coils"]["value"] == 9
+
+
+def _assert_confirmed_end_wording_is_preserved() -> None:
+    parameters = {
+        "end_grinding": {
+            "value": "工程师指定的特殊端面处理",
+            "source": ["human_confirmed"],
+            "need_human_review": False,
+        },
+    }
+    normalize_compression_end_conditions(parameters)
+    assert parameters["end_grinding"]["value"] == "工程师指定的特殊端面处理"
+    assert parameters["end_grinding"]["need_human_review"] is False
 
 
 if __name__ == "__main__":

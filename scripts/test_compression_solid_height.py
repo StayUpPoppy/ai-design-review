@@ -10,6 +10,7 @@ from ai_design_review.standardizers.compression import (  # noqa: E402
     calculate_compression_solid_height,
     standardize_compression_spring,
 )
+from ai_design_review.workflow import apply_standardization_to_review  # noqa: E402
 
 
 def main() -> None:
@@ -18,6 +19,7 @@ def main() -> None:
     _assert_drawing_and_manual_values_are_preserved()
     _assert_missing_inputs_do_not_invent_a_value()
     _assert_standardization_populates_the_parameter()
+    _assert_standardization_preserves_confirmed_manual_values()
     print("compression solid height test passed")
 
 
@@ -65,6 +67,19 @@ def _assert_drawing_and_manual_values_are_preserved() -> None:
     assert manual_result["applied"] is False
     assert manual_parameters["solid_height"]["value"] == 13
 
+    confirmed_formula = _parameters()
+    apply_formula_compression_solid_height(confirmed_formula)
+    confirmed_formula["solid_height"].update({
+        "value": 35,
+        "source": ["formula_calculation", "human_edited", "human_confirmed"],
+        "need_human_review": False,
+    })
+    confirmed_formula["wire_diameter"]["value"] = 1
+    preserved = apply_formula_compression_solid_height(confirmed_formula)
+    assert preserved["applied"] is False
+    assert confirmed_formula["solid_height"]["value"] == 35
+    assert confirmed_formula["solid_height"]["need_human_review"] is False
+
 
 def _assert_missing_inputs_do_not_invent_a_value() -> None:
     parameters = _parameters()
@@ -82,6 +97,28 @@ def _assert_standardization_populates_the_parameter() -> None:
     assert parameters["solid_height"]["value"] == 9.5
     solid_result = next(item for item in payload["standardization_results"] if item["rule_id"] == "GBT1239.2-SOLID")
     assert solid_result["suggested_value"] == 9.5
+
+
+def _assert_standardization_preserves_confirmed_manual_values() -> None:
+    parameters = _parameters()
+    parameters["free_length"] = {
+        "value": 50, "unit": "mm", "source": ["human_edited", "human_confirmed"],
+        "need_human_review": False,
+    }
+    parameters["solid_height"] = {
+        "value": 35, "unit": "mm", "source": ["formula_calculation", "human_edited", "human_confirmed"],
+        "formula_calculation_kind": "solid_height", "need_human_review": False,
+    }
+    review = {
+        "drawing_summary": {"spring_type": "compression_spring"},
+        "spring_parameters": parameters,
+        "spring_features": {},
+    }
+    apply_standardization_to_review(review)
+    assert parameters["free_length"]["value"] == 50
+    assert parameters["free_length"]["need_human_review"] is False
+    assert parameters["solid_height"]["value"] == 35
+    assert parameters["solid_height"]["need_human_review"] is False
 
 
 if __name__ == "__main__":

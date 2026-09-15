@@ -394,6 +394,19 @@ def _assert_optional_standardization_is_warning() -> None:
         "standardization", "free_length", "total_coils", "surface",
     }
 
+    stale_formula = _ready_review()
+    stale_formula["spring_parameters"]["solid_height"] = {
+        "value": 24,
+        "unit": "mm",
+        "source": ["formula_calculation", "human_edited", "human_confirmed"],
+        "need_human_review": False,
+        "formula_recommendation_stale": True,
+    }
+    readiness = assess_generation_readiness(stale_formula)
+    assert readiness["status"] == "ready_with_warnings"
+    assert not readiness["pending_fields"]
+    assert any(item["field"] == "solid_height" for item in readiness["warnings"])
+
     technical_pending = _ready_review()
     technical_pending["technical_requirements"][0]["need_human_review"] = True
     readiness = assess_generation_readiness(technical_pending)

@@ -92,7 +92,8 @@ def _assert_source_precedence_and_refresh() -> None:
     formula["spring_rate"]["source"] = ["formula_calculation", "human_confirmed"]
     formula["outer_diameter"]["value"] = 13
     confirmed_refresh = apply_formula_compression_spring_rate(formula)
-    assert confirmed_refresh["applied"] is True
+    assert confirmed_refresh["applied"] is False
+    assert formula["spring_rate"]["value"] == refreshed["value"]
 
     formula["spring_rate"]["value"] = 22
     formula["spring_rate"]["source"] = ["formula_calculation", "human_edited"]

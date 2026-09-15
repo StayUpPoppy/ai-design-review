@@ -13,10 +13,9 @@ const context = {
   sourceValues(source) {
     return (Array.isArray(source) ? source : [source]).filter(Boolean).map(String);
   },
-  bulkParameterInvalidReason(field, item) {
-    if (item?.value == null || item.value === "") return "参数值缺失";
-    if (["wire_diameter", "mean_diameter", "free_length"].includes(field) && Number(item.value) <= 0) return "参数必须大于0";
-    return "";
+  parameterConfirmationInvalidReason(_field, item) {
+    if (item?.value == null || item.value === "") return "请先填写参数值";
+    return Number.isFinite(Number(item.value)) ? "" : "请输入有效数字";
   },
   isFiniteReviewNumber(value) {
     return value != null && value !== "" && Number.isFinite(Number(value));
@@ -52,8 +51,8 @@ control = context.confirmationControlState(edited, {
   field: "wire_diameter",
   review: { parameter_reasonableness_stale: true },
 });
-assert.equal(control.label, "校验中");
-assert.equal(control.disabled, true);
+assert.equal(control.label, "确认修改");
+assert.equal(control.disabled, false);
 
 control = context.confirmationControlState(edited, {
   field: "wire_diameter",
@@ -66,8 +65,8 @@ control = context.confirmationControlState(
   { value: -1, need_human_review: true, source: ["human_edited"] },
   { field: "wire_diameter", review: {} },
 );
-assert.equal(control.label, "无法确认");
-assert.equal(control.disabled, true);
+assert.equal(control.label, "确认修改", "几何风险在生图边界校验，不阻止人工确认");
+assert.equal(control.disabled, false);
 
 control = context.confirmationControlState(
   { value: 3, need_human_review: true, source: ["drawing"] },
@@ -80,8 +79,21 @@ control = context.confirmationControlState(
   { value: 3, need_human_review: true, source: ["drawing"] },
   { field: "wire_diameter", review: { severities: { wire_diameter: "blocked" } } },
 );
-assert.equal(control.label, "无法确认");
-assert.equal(control.disabled, true);
+assert.equal(control.label, "确认");
+assert.equal(control.disabled, false);
+
+context.state.lastJob = { job_id: "job-1" };
+context.state.pendingReviewAuditEvents = [{ target_field: "wire_diameter" }];
+context.state.reviewPersistenceInFlightEvents = [];
+context.state.reviewPersistenceFailedFields = {};
+control = context.confirmationControlState(confirmed, { field: "wire_diameter", review: {} });
+assert.equal(control.label, "保存中");
+context.state.reviewPersistenceFailedFields.wire_diameter = "网络断开";
+control = context.confirmationControlState(confirmed, { field: "wire_diameter", review: {} });
+assert.equal(control.label, "保存失败·重试保存");
+context.state.pendingReviewAuditEvents = [];
+control = context.confirmationControlState(confirmed, { field: "wire_diameter", review: {} });
+assert.equal(control.label, "已确认");
 
 control = context.confirmationControlState(
   { value: 3, need_human_review: true, source: ["protocol_default"], default_source: "protocol" },
@@ -95,7 +107,11 @@ const lifecycleEnd = appSource.indexOf("function sourceValues", lifecycleStart);
 assert.notEqual(lifecycleStart, -1, "confirmation lifecycle helpers must exist");
 assert.notEqual(lifecycleEnd, -1, "confirmation lifecycle helper block must be complete");
 const lifecycle = {
-  state: { review: { manual_confirmations: {}, spring_parameters: {}, standardization_results: [] } },
+  state: {
+    review: { manual_confirmations: {}, spring_parameters: {}, standardization_results: [] },
+    reviewEditSerial: 0,
+    reviewDraftFields: new Set(),
+  },
   sourceValues: context.sourceValues,
   confirmationItemWasEdited(item) {
     return Boolean(item?.need_human_review) && context.sourceValues(item?.source).includes("human_edited");
@@ -126,6 +142,19 @@ lifecycle.confirmParam(editable, "wire_diameter");
 assert.equal(editable.need_human_review, false);
 assert.equal(editable.confirmation_snapshot.value, 3.4);
 assert.equal(lifecycle.state.review.manual_confirmations.wire_diameter.confirmed, true);
+
+const solid = {
+  value: 32.025,
+  need_human_review: false,
+  source: ["formula_calculation", "human_confirmed"],
+  source_fields: ["wire_diameter", "total_coils", "end_grinding"],
+};
+lifecycle.state.review.spring_parameters.solid_height = solid;
+lifecycle.state.review.spring_parameters.wire_diameter = { value: 3.05, need_human_review: false };
+lifecycle.markDependentFormulaParametersPending("wire_diameter");
+assert.equal(solid.value, 32.025);
+assert.equal(solid.need_human_review, false);
+assert.equal(solid.formula_recommendation_stale, true);
 
 assert.match(appSource, /window\.addEventListener\("beforeunload"/);
 assert.match(appSource, /event_type: eventType/);

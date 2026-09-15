@@ -133,14 +133,16 @@ def load_material_stiffness_properties(path: str | Path | None = None) -> dict[s
 def _can_replace(existing: Any) -> bool:
     if not isinstance(existing, dict):
         return existing in (None, "")
-    if existing.get("value") in (None, ""):
-        return True
+    if existing.get("need_human_review") is False:
+        return False
     sources = _source_values(existing.get("source"))
     if any(
-        source in {"human_edited", "human_reopened", "manual", "manual_input", "standardization_chat"}
+        source.startswith("human") or source in {"manual", "manual_input", "standardization_chat"}
         for source in sources
     ):
         return False
+    if existing.get("value") in (None, ""):
+        return True
     return FORMULA_CALCULATION_SOURCE in sources
 
 

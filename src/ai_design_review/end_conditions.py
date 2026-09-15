@@ -53,6 +53,13 @@ def normalize_compression_end_conditions(parameters: dict[str, Any]) -> None:
         item = parameters.get(field)
         if not isinstance(item, dict):
             continue
+        sources = item.get("source") or []
+        if not isinstance(sources, list):
+            sources = [sources]
+        if item.get("need_human_review") is False or any(
+            str(source).startswith("human") for source in sources
+        ):
+            continue
         raw_value = item.get("value")
         if raw_value in (None, ""):
             continue

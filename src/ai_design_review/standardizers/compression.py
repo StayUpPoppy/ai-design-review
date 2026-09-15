@@ -733,9 +733,16 @@ def _param_value(mapping: dict[str, Any], field: str) -> Any:
 def _can_replace_formula_solid_height(existing: Any) -> bool:
     if not isinstance(existing, dict):
         return existing in (None, "")
+    sources = _source_values(existing.get("source"))
+    # A reviewer may confirm a formula candidate or replace it with a manual
+    # value.  Neither decision may be undone by a later standardization pass.
+    if existing.get("need_human_review") is False or any(
+        source.startswith("human") or source in {"manual", "manual_input"}
+        for source in sources
+    ):
+        return False
     if existing.get("value") in (None, ""):
         return True
-    sources = _source_values(existing.get("source"))
     return (
         FORMULA_CALCULATION_SOURCE in sources
         and existing.get("formula_calculation_kind") in (None, "solid_height")

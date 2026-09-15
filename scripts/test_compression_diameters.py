@@ -13,6 +13,7 @@ def main() -> None:
     _assert_missing_diameters_are_completed()
     _assert_direct_drawing_dimensions_are_preserved()
     _assert_human_value_is_preserved()
+    _assert_confirmed_formula_value_is_preserved()
     print("compression diameter completion tests passed")
 
 
@@ -70,6 +71,22 @@ def _assert_human_value_is_preserved() -> None:
     apply_formula_compression_diameter_completion(parameters)
     assert parameters["outer_diameter"]["value"] == 21
     assert parameters["outer_diameter"]["source"] == ["human_edited"]
+
+
+def _assert_confirmed_formula_value_is_preserved() -> None:
+    parameters = {
+        "wire_diameter": {"value": 3, "source": ["qwen_vision"]},
+        "inner_diameter": {"value": 26, "source": ["qwen_vision"]},
+        "outer_diameter": {
+            "value": 35,
+            "source": ["formula_calculation", "human_confirmed"],
+            "formula_calculation_kind": "diameter_completion",
+            "need_human_review": False,
+        },
+    }
+    apply_formula_compression_diameter_completion(parameters)
+    assert parameters["outer_diameter"]["value"] == 35
+    assert parameters["outer_diameter"]["need_human_review"] is False
 
 
 if __name__ == "__main__":

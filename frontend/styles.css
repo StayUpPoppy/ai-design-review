@@ -466,6 +466,74 @@ button:disabled {
   color: #fff;
 }
 
+.parameter-conflict-dialog {
+  width: min(480px, calc(100vw - 32px));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 24px 64px rgb(29 47 74 / 24%);
+  color: var(--ink);
+  padding: 22px;
+}
+
+.parameter-conflict-dialog::backdrop {
+  background: rgb(23 32 51 / 38%);
+}
+
+.parameter-conflict-dialog h2,
+.parameter-conflict-dialog p {
+  margin: 0;
+}
+
+.parameter-conflict-dialog h2 {
+  font-size: 17px;
+}
+
+.parameter-conflict-dialog p {
+  margin-top: 10px;
+  line-height: 1.55;
+}
+
+.parameter-conflict-values {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.parameter-conflict-values > div {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.parameter-conflict-values small,
+.parameter-conflict-values strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.parameter-conflict-values small {
+  color: var(--muted);
+}
+
+.parameter-conflict-values strong {
+  margin-top: 6px;
+}
+
+.parameter-conflict-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.parameter-conflict-actions button {
+  min-height: 36px;
+}
+
 .review-actions button:first-child {
   background: var(--primary);
   border-color: var(--primary);
@@ -2106,6 +2174,30 @@ button:disabled {
   color: #8791a3;
   cursor: default;
   opacity: 1;
+}
+
+.confirm-button.saving {
+  border-color: #c7d6f5;
+  background: #eef3ff;
+  color: #2857d4;
+  cursor: progress;
+  opacity: 1;
+}
+
+.confirm-button.save_failed {
+  border-color: #c6533b;
+  background: #fff4ef;
+  color: #9e3724;
+  min-height: 38px;
+  padding: 3px 2px;
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: normal;
+}
+
+.confirm-button.save_failed:focus-visible {
+  outline: 2px solid #9e3724;
+  outline-offset: 2px;
 }
 
 .confirm-button.modified {
