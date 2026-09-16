@@ -37,6 +37,8 @@ const state = {
   pendingAccuracyGrade: "",
   reasonablenessRefreshTimer: null,
   reasonablenessRequestSerial: 0,
+  bulkConfirmationReportCounts: {},
+  bulkConfirmationCompletionNotified: new Set(),
   reviewPersistenceTimer: null,
   reviewPersistenceSaving: false,
   reviewPersistencePromise: null,
@@ -1531,7 +1533,9 @@ function syncParameterReasonablenessSurfaces(messageId = state.activeReviewMessa
     ["blocked", "warning", "needs_input"].forEach((value) => row.classList.toggle(`parameter-risk-${value}`, severity === value));
     if (point) syncConfirmationControl(row, point, { kind: "load_point", field, review: state.review });
   });
+  syncBulkConfirmationActions(document, state.review);
   bindReasonablenessIssueFocus(document, messageId);
+  bindBulkConfirmationFollowupControls(document, messageId);
   bindReasonablenessSuggestionControls(document, messageId);
 }
 
@@ -1541,6 +1545,38 @@ function bindReasonablenessIssueFocus(root, messageId = state.activeReviewMessag
     button.dataset.boundReasonablenessFocus = "true";
     button.addEventListener("click", () => {
       focusMissingStandardizationField(button.dataset.field || "", messageId);
+    });
+  });
+}
+
+function bindBulkConfirmationFollowupControls(root, messageId = state.activeReviewMessageId) {
+  root.querySelectorAll('[data-role="focus-bulk-confirmation-target"]').forEach((button) => {
+    if (button.dataset.boundBulkConfirmationFocus) return;
+    button.dataset.boundBulkConfirmationFocus = "true";
+    button.addEventListener("click", () => {
+      focusMissingStandardizationField(button.dataset.field || "", messageId, {
+        kind: button.dataset.kind || "parameter",
+        load_point_id: button.dataset.loadPointId || "",
+        requirement_id: button.dataset.requirementId || "",
+        highlight: true,
+      });
+    });
+  });
+
+  root.querySelectorAll('[data-action="retry-bulk-confirmation-save"]').forEach((button) => {
+    if (button.dataset.boundBulkConfirmationRetry) return;
+    button.dataset.boundBulkConfirmationRetry = "true";
+    button.addEventListener("click", async () => {
+      activateReviewContext(messageId);
+      const event = latestSafeConfirmationEvent(state.review);
+      if (!event || !state.pendingReviewAuditEvents.some((item) => item.client_event_id === event.client_event_id)) return;
+      event.sync_status = "saving";
+      button.disabled = true;
+      button.textContent = "正在重试保存";
+      const saved = await flushReviewPersistence();
+      updateLatestReviewMessage(saved
+        ? "批量确认结果已保存。"
+        : "批量确认结果仍未保存，请检查网络后重试。");
     });
   });
 }
@@ -2506,6 +2542,7 @@ function renderDrawingCanvasHtml(className, imageUrl = state.imageUrl) {
 function renderParameterReasonablenessHtml(review) {
   const assessment = review?.parameter_reasonableness || {};
   const status = assessment.status || "not_applicable";
+  const bulkConfirmationReport = bulkConfirmationFollowupReport(review);
   const issues = Array.isArray(assessment.issues) ? assessment.issues : [];
   const suggestions = Array.isArray(assessment.suggestions) ? assessment.suggestions : [];
   const actionableSuggestions = suggestions.filter((item) => {
@@ -2527,7 +2564,7 @@ function renderParameterReasonablenessHtml(review) {
     needs_input: "需要补充信息",
     not_applicable: "暂不适用",
   };
-  if (status === "not_applicable") return "";
+  if (status === "not_applicable" && !bulkConfirmationReport) return "";
   return `
     <section class="review-block parameter-reasonableness-block" data-kind="parameter-reasonableness">
       <div class="block-head">
@@ -2535,6 +2572,7 @@ function renderParameterReasonablenessHtml(review) {
         <span class="parameter-reasonableness-status ${escapeHtml(status)}">${escapeHtml(labels[status] || "待核对")}</span>
       </div>
       <p class="parameter-reasonableness-summary">${escapeHtml(assessment.summary || "正在核对参数关系。")}</p>
+      ${bulkConfirmationReport ? renderBulkConfirmationFollowupHtml(bulkConfirmationReport) : ""}
       ${issues.length ? `
         <div class="reasonableness-section-head"><strong>需要处理</strong><span>${issues.length} 项</span></div>
         <div class="parameter-reasonableness-list">
@@ -2576,6 +2614,68 @@ function renderParameterReasonablenessHtml(review) {
           </div>
         </div>
       ` : ""}
+    </section>
+  `;
+}
+
+function renderBulkConfirmationFollowupHtml(report) {
+  const groupMeta = {
+    parameter: { label: "参数", action: "定位参数" },
+    load_point: { label: "载荷点", action: "定位载荷点" },
+    technical: { label: "技术要求", action: "定位要求" },
+  };
+  const saveStatus = report.persistence_state === "saving"
+    ? '<span class="bulk-confirmation-save-status saving" role="status">正在保存批量确认结果</span>'
+    : report.persistence_state === "failed"
+      ? '<span class="bulk-confirmation-save-status failed" role="alert">结果尚未保存</span><button type="button" class="secondary-action" data-action="retry-bulk-confirmation-save">重试保存</button>'
+      : report.persistence_state === "local_only"
+        ? '<span class="bulk-confirmation-save-status">当前结果仅保留在本次页面</span>'
+        : "";
+  const groups = ["parameter", "load_point", "technical"].map((kind) => {
+    const items = report.items.filter((item) => item.kind === kind);
+    if (!items.length) return "";
+    const meta = groupMeta[kind];
+    return `
+      <div class="bulk-confirmation-followup-group" data-followup-kind="${escapeHtml(kind)}">
+        <div class="bulk-confirmation-followup-group-head">
+          <strong>${escapeHtml(meta.label)}</strong>
+          <span>${items.length} 项</span>
+        </div>
+        <div class="bulk-confirmation-followup-list">
+          ${items.map((item) => `
+            <article class="bulk-confirmation-followup-item ${escapeHtml(item.state)}">
+              <div class="bulk-confirmation-followup-copy">
+                <div>
+                  <strong title="${escapeHtml(item.label)}">${escapeHtml(item.label)}</strong>
+                  <span>${escapeHtml(item.status_label)}</span>
+                </div>
+                <p>${escapeHtml(item.reason)}</p>
+              </div>
+              <button
+                type="button"
+                class="secondary-action"
+                data-role="focus-bulk-confirmation-target"
+                data-kind="${escapeHtml(item.kind)}"
+                data-field="${escapeHtml(item.field)}"
+                data-load-point-id="${escapeHtml(item.load_point_id || "")}"
+                data-requirement-id="${escapeHtml(item.requirement_id || "")}"
+              >${escapeHtml(meta.action)}</button>
+            </article>
+          `).join("")}
+        </div>
+      </div>
+    `;
+  }).join("");
+  return `
+    <section class="bulk-confirmation-followups" aria-label="批量确认待处理">
+      <div class="bulk-confirmation-followup-head">
+        <div>
+          <strong>批量确认待处理</strong>
+          <span>已批量确认 ${escapeHtml(String(report.confirmed_count))} 项，还有 ${escapeHtml(String(report.items.length))} 项待处理内容</span>
+        </div>
+        ${saveStatus ? `<div class="bulk-confirmation-save-actions">${saveStatus}</div>` : ""}
+      </div>
+      <div class="bulk-confirmation-followup-groups">${groups}</div>
     </section>
   `;
 }
@@ -3495,6 +3595,15 @@ function syncReviewConfirmationControls(root, review = state.review) {
     const index = (review.technical_requirements || []).findIndex((item) => String(item?.requirement_id || "") === String(row.dataset.requirementId || ""));
     const item = review.technical_requirements?.[index];
     if (item) syncConfirmationControl(row, item, { kind: "technical", field: technicalRequirementField(item, index), review });
+  });
+}
+
+function syncBulkConfirmationActions(root = document, review = state.review) {
+  if (!root || !review) return;
+  const plan = buildSafeConfirmationPlan(review);
+  root.querySelectorAll('[data-action="confirm-all-review-items"]').forEach((button) => {
+    button.disabled = !plan.items.length;
+    button.textContent = `全部确认可确认项${plan.items.length ? ` · ${plan.items.length}` : ""}`;
   });
 }
 
@@ -5512,6 +5621,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   const review = context?.review || state.review;
   if (!review) return;
   bindReasonablenessIssueFocus(root, messageId);
+  bindBulkConfirmationFollowupControls(root, messageId);
   bindReasonablenessSuggestionControls(root, messageId);
 
   root.querySelectorAll('[data-action="spring-type"]').forEach((select) => {
@@ -5559,6 +5669,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         scheduleParameterReasonablenessRefresh(messageId);
       }
       valueBeforeState = null;
+      refreshBulkConfirmationFollowupAfterLocalChange(messageId);
     });
     const toleranceInput = row.querySelector('[data-role="tolerance"]');
     let toleranceBeforeState = null;
@@ -5585,6 +5696,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         scheduleParameterReasonablenessRefresh(messageId);
       }
       toleranceBeforeState = null;
+      refreshBulkConfirmationFollowupAfterLocalChange(messageId);
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
@@ -5607,6 +5719,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
       if (field === "accuracy_grade") syncAccuracyGradeControls(root, param);
       scheduleParameterReasonablenessRefresh(messageId);
+      refreshBulkConfirmationFollowupAfterLocalChange(messageId);
     });
   });
 
@@ -5714,6 +5827,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
           scheduleParameterReasonablenessRefresh(messageId);
         }
         beforeState = null;
+        refreshBulkConfirmationFollowupAfterLocalChange(messageId);
       });
     };
     bindLoadPointDraft(row.querySelector('[data-role="height"]'), (event) => {
@@ -5741,6 +5855,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       });
       syncConfirmationControl(row, point, { kind: "load_point", field: pointField, review });
       scheduleParameterReasonablenessRefresh(messageId);
+      refreshBulkConfirmationFollowupAfterLocalChange(messageId);
     });
     row.querySelector('[data-role="delete-load-point"]')?.addEventListener("click", () => {
       activateReviewContext(messageId);
@@ -5782,9 +5897,10 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       bulkButton.disabled = !remainingPlan.items.length;
       bulkButton.textContent = `全部确认可确认项${remainingPlan.items.length ? ` · ${remainingPlan.items.length}` : ""}`;
     }
-    queueReviewAuditEvent({
+    const auditEntry = queueReviewAuditEvent({
       event_type: "safe_fields_confirmed",
       source: "manual_batch_confirmation",
+      reason: "用户批量确认当前可安全确认的审图内容",
       after_state: {
         confirmed_count: confirmed.count,
         group_counts: confirmed.group_counts,
@@ -5794,15 +5910,30 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         labels: confirmed.labels,
         group_counts: confirmed.group_counts,
         skipped: confirmed.skipped.map((item) => ({
+          kind: item.kind,
+          group: item.group,
           field: item.field,
           label: item.label,
           reason: item.reason,
+          load_point_id: item.load_point_id || null,
+          requirement_id: item.requirement_id || null,
         })),
       },
     });
+    if (auditEntry?.client_event_id) {
+      if (state.lastJob?.job_id) auditEntry.sync_status = "saving";
+      state.bulkConfirmationReportCounts[auditEntry.client_event_id] = bulkConfirmationFollowupSnapshot(state.review)?.items.length || 0;
+    }
+    const followupCount = bulkConfirmationFollowupReport(state.review)?.items.length || 0;
+    const bulkResultMessage = followupCount
+      ? `已确认 ${confirmed.count} 项无风险内容，还有 ${followupCount} 项内容可在“参数合理性与建议”中处理。`
+      : `已确认 ${confirmed.count} 项无风险内容，没有其他内容需要继续处理。`;
     scheduleParameterReasonablenessRefresh(messageId);
-    updateLatestReviewMessage(`已确认 ${confirmed.count} 项无风险内容，跳过 ${confirmed.skipped.length} 项默认值、风险项或不完整内容。`);
-    await flushReviewPersistence();
+    updateLatestReviewMessage(bulkResultMessage);
+    const saved = await flushReviewPersistence();
+    updateLatestReviewMessage(saved || !state.lastJob?.job_id
+      ? bulkResultMessage
+      : `已确认 ${confirmed.count} 项，但批量确认结果尚未保存；请在“参数合理性与建议”中重试保存。`);
     if (state.lastJob?.job_id) await loadGenerationState(state.lastJob.job_id, { silent: true });
   });
 
@@ -7002,20 +7133,22 @@ function switchSpringType(type) {
 function updateLatestReviewMessage(title = "已更新结构化尺寸数据，请继续确认。") {
   const reviewScrollState = captureReviewScrollState();
   refreshDerivedStatus(state.review);
+  const completionNotice = consumeBulkConfirmationCompletionNotice(state.review);
+  const resolvedTitle = completionNotice ? `${title} ${completionNotice}` : title;
   exportButton.disabled = false;
   const context = getReviewContext(state.activeReviewMessageId);
   if (context) {
     context.review = state.review;
     context.imageUrl = state.imageUrl;
-    context.title = title;
+    context.title = resolvedTitle;
   }
   const activeMessage = conversation.querySelector(`[data-message-id="${state.activeReviewMessageId}"]`);
   const body = activeMessage?.querySelector(".message-body");
   if (!body) {
-    appendReviewMessage(title);
+    appendReviewMessage(resolvedTitle);
     return;
   }
-  renderReviewBody(body, title, context || activeReviewContext(), state.activeReviewMessageId);
+  renderReviewBody(body, resolvedTitle, context || activeReviewContext(), state.activeReviewMessageId);
   if (state.compareOpen) {
     renderCompareOverlay();
   }
@@ -7038,7 +7171,19 @@ function closeCompareOverlay() {
   compareOverlay.hidden = true;
 }
 
-function focusMissingStandardizationField(field, messageId = state.activeReviewMessageId) {
+function highlightReviewTarget(row) {
+  if (!row) return;
+  row.classList.remove("review-target-highlight");
+  void row.offsetWidth;
+  row.classList.add("review-target-highlight");
+  window.setTimeout(() => row.classList.remove("review-target-highlight"), 1800);
+}
+
+function afterCompareOverlayLayout(callback) {
+  requestAnimationFrame(() => requestAnimationFrame(callback));
+}
+
+function focusMissingStandardizationField(field, messageId = state.activeReviewMessageId, options = {}) {
   const target = String(field || "").trim();
   if (!target || !state.review) return;
   if (messageId) activateReviewContext(messageId);
@@ -7046,6 +7191,14 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
     state.compareTab = "standards";
     if (!state.compareOpen) openCompareOverlay(messageId);
     else renderCompareOverlay();
+    afterCompareOverlayLayout(() => {
+      const standardBlock = compareOverlay.querySelector(".standard-selection-block");
+      const details = standardBlock?.querySelector("details");
+      if (details) details.open = true;
+      if (options.highlight) highlightReviewTarget(standardBlock);
+      standardBlock?.querySelector('[data-action="confirm-standard-selection"]')?.focus({ preventScroll: true });
+      standardBlock?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
     return;
   }
   state.compareTab = "parameters";
@@ -7054,16 +7207,22 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
   } else {
     renderCompareOverlay();
   }
-  requestAnimationFrame(() => {
+  afterCompareOverlayLayout(() => {
     const technicalMatch = target.match(/^technical_requirements\.(.+)$/);
     if (technicalMatch) {
       const token = technicalMatch[1];
-      const technicalIndex = /^\d+$/.test(token)
+      const requestedId = String(options.requirement_id || token);
+      const technicalIndex = (state.review.technical_requirements || []).findIndex((item) => String(item?.requirement_id || "") === requestedId);
+      const fallbackIndex = /^\d+$/.test(token)
         ? Math.max(Number(token) - 1, 0)
-        : (state.review.technical_requirements || []).findIndex((item) => String(item?.requirement_id || "") === token);
-      const technicalRow = compareOverlay.querySelector(`[data-kind="technical"][data-index="${technicalIndex}"]`);
+        : -1;
+      const resolvedIndex = technicalIndex >= 0 ? technicalIndex : fallbackIndex;
+      const technicalRow = Array.from(compareOverlay.querySelectorAll('[data-kind="technical"]'))
+        .find((row) => String(row.dataset.requirementId || "") === requestedId)
+        || compareOverlay.querySelector(`[data-kind="technical"][data-index="${resolvedIndex}"]`);
       if (technicalRow) {
         technicalRow.scrollIntoView({ behavior: "smooth", block: "center" });
+        if (options.highlight) highlightReviewTarget(technicalRow);
         const input = technicalRow.querySelector('[data-role="content"]');
         input?.focus({ preventScroll: true });
         input?.select();
@@ -7071,14 +7230,27 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
       return;
     }
     const loadTarget = parseLoadPointTarget(target);
-    if (loadTarget) {
-      const pointIndex = (state.review.spring_parameters?.load_points || []).findIndex((point) => String(point?.label || "") === loadTarget.label);
-      const loadRow = compareOverlay.querySelector(`[data-kind="load_point"][data-index="${pointIndex}"]`);
+    const wholeLoadPointMatch = target.match(/^load_points\.([^.]+)$/);
+    if (loadTarget || wholeLoadPointMatch || options.kind === "load_point") {
+      const requestedId = String(options.load_point_id || "");
+      const requestedLabel = loadTarget?.label || wholeLoadPointMatch?.[1] || "";
+      const pointIndex = (state.review.spring_parameters?.load_points || []).findIndex((point) => (
+        (requestedId && String(point?.load_point_id || "") === requestedId)
+        || (!requestedId && canonicalLoadPointLabel(point?.label) === canonicalLoadPointLabel(requestedLabel))
+      ));
+      const loadRow = Array.from(compareOverlay.querySelectorAll('[data-kind="load_point"]'))
+        .find((row) => requestedId && String(row.dataset.loadPointId || "") === requestedId)
+        || compareOverlay.querySelector(`[data-kind="load_point"][data-index="${pointIndex}"]`);
       if (loadRow) {
         loadRow.scrollIntoView({ behavior: "smooth", block: "center" });
-        const input = loadRow.querySelector(`[data-role="${loadTarget.field}"]`);
+        if (options.highlight) highlightReviewTarget(loadRow);
+        const requestedControl = loadTarget?.field ? loadRow.querySelector(`[data-role="${loadTarget.field}"]`) : null;
+        const input = requestedControl
+          || Array.from(loadRow.querySelectorAll('[data-role="height"], [data-role="force"]')).find((control) => !isFiniteReviewNumber(control.value))
+          || loadRow.querySelector('[data-role="height"]')
+          || loadRow.querySelector('[data-role="confirm"]');
         input?.focus({ preventScroll: true });
-        input?.select();
+        if (typeof input?.select === "function") input.select();
       }
       return;
     }
@@ -7088,9 +7260,10 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
     const advanced = row.closest("details");
     if (advanced) advanced.open = true;
     row.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (options.highlight) highlightReviewTarget(row);
     const input = row.querySelector('[data-role="value"]');
     input?.focus({ preventScroll: true });
-    input?.select();
+    if (typeof input?.select === "function") input.select();
   });
 }
 
@@ -7193,7 +7366,14 @@ function buildSafeConfirmationPlan(review) {
   const advancedFields = new Set(fieldGroups.advanced);
   const items = [];
   const skipped = [];
-  const skip = (group, field, label, reason) => skipped.push({ group, field, label, reason });
+  const skip = (group, field, label, reason, identity = {}) => skipped.push({
+    kind: group === "load_point" ? "load_point" : (group === "technical" ? "technical" : "parameter"),
+    group,
+    field,
+    label,
+    reason,
+    ...identity,
+  });
 
   getParameterFields(parameters, review).forEach((field) => {
     const param = parameters[field];
@@ -7235,21 +7415,21 @@ function buildSafeConfirmationPlan(review) {
     const field = loadPointField(point, index);
     const label = `载荷测试点 ${pointLabel}`;
     if (!isValidLoadPoint(point)) {
-      skip("load_point", field, label, "编号、高度和力值需要完整填写为有效内容");
+      skip("load_point", field, label, "编号、高度和力值需要完整填写为有效内容", { load_point_id: point.load_point_id || null });
       return;
     }
     if (isDuplicateLoadPointLabel(review, pointLabel, point.load_point_id)) {
-      skip("load_point", field, label, "测试点编号重复，需要先修改或删除重复项");
+      skip("load_point", field, label, "测试点编号重复，需要先修改或删除重复项", { load_point_id: point.load_point_id || null });
       return;
     }
     const sources = sourceValues(point.source);
     if (point.default_source || sources.some((source) => source.includes("default"))) {
-      skip("load_point", field, label, "默认候选值需要单独确认");
+      skip("load_point", field, label, "默认候选值需要单独确认", { load_point_id: point.load_point_id || null });
       return;
     }
     const severity = reasonablenessSeverityForField(review, field);
     if (severity) {
-      skip("load_point", field, label, `存在${reasonablenessSeverityLabel(severity)}，需要单独处理`);
+      skip("load_point", field, label, `存在${reasonablenessSeverityLabel(severity)}，需要单独处理`, { load_point_id: point.load_point_id || null });
       return;
     }
     items.push({ kind: "load_point", group: "load_point", field, index, point, label, load_point_id: point.load_point_id || null });
@@ -7260,15 +7440,15 @@ function buildSafeConfirmationPlan(review) {
     const field = technicalRequirementField(item, index);
     const label = TECH_LABELS[item.type] || item.type || "技术要求";
     if (!String(item.content || "").trim()) {
-      skip("technical", field, label, "技术要求内容为空");
+      skip("technical", field, label, "技术要求内容为空", { requirement_id: item.requirement_id || null });
       return;
     }
     if (isDuplicateTechnicalRequirement(review, item)) {
-      skip("technical", field, label, "已存在相同类型和内容的技术要求");
+      skip("technical", field, label, "已存在相同类型和内容的技术要求", { requirement_id: item.requirement_id || null });
       return;
     }
     if (item.type === "surface" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item.normalization_status)) {
-      skip("technical", field, label, "表面处理术语尚未明确匹配");
+      skip("technical", field, label, "表面处理术语尚未明确匹配", { requirement_id: item.requirement_id || null });
       return;
     }
     items.push({ kind: "technical", group: "technical", field, index, item, label, requirement_id: item.requirement_id || null });
@@ -7369,6 +7549,204 @@ function confirmSafeRecognizedFields(plan = null) {
     group_counts: confirmationPlan.group_counts,
     skipped: confirmationPlan.skipped,
   };
+}
+
+function latestSafeConfirmationEvent(review) {
+  return (review?.change_history || []).find((entry) => (
+    entry?.event_type === "safe_fields_confirmed"
+    && Array.isArray(entry?.metadata?.skipped)
+    && entry.metadata.skipped.length
+  )) || null;
+}
+
+function bulkConfirmationFollowupKind(item) {
+  if (["parameter", "load_point", "technical"].includes(item?.kind)) return item.kind;
+  if (item?.group === "load_point" || String(item?.field || "").startsWith("load_points.")) return "load_point";
+  if (item?.group === "technical" || String(item?.field || "").startsWith("technical_requirements.")) return "technical";
+  return "parameter";
+}
+
+function resolveBulkConfirmationTarget(review, item) {
+  const kind = bulkConfirmationFollowupKind(item);
+  const storedField = String(item?.field || "");
+  if (kind === "parameter") {
+    const target = review?.spring_parameters?.[storedField];
+    if (!target || typeof target !== "object" || Array.isArray(target)) return null;
+    return {
+      kind,
+      field: storedField,
+      label: targetFieldLabel(storedField),
+      target,
+      load_point_id: null,
+      requirement_id: null,
+    };
+  }
+  if (kind === "load_point") {
+    ensureLoadPointIds(review);
+    const points = review?.spring_parameters?.load_points || [];
+    const pointId = String(item?.load_point_id || "");
+    const storedLabel = storedField.startsWith("load_points.") ? storedField.slice("load_points.".length).split(".")[0] : "";
+    const target = points.find((point) => pointId && String(point?.load_point_id || "") === pointId)
+      || points.find((point) => canonicalLoadPointLabel(point?.label) === canonicalLoadPointLabel(storedLabel));
+    if (!target) return null;
+    const index = points.indexOf(target);
+    return {
+      kind,
+      field: loadPointField(target, index),
+      label: `载荷测试点 ${normalizeLoadPointLabel(target.label) || index + 1}`,
+      target,
+      load_point_id: target.load_point_id || pointId || null,
+      requirement_id: null,
+    };
+  }
+  ensureTechnicalRequirementIds(review);
+  const requirements = review?.technical_requirements || [];
+  const requirementId = String(item?.requirement_id || "");
+  const token = storedField.startsWith("technical_requirements.") ? storedField.slice("technical_requirements.".length) : "";
+  const target = requirements.find((candidate) => requirementId && String(candidate?.requirement_id || "") === requirementId)
+    || requirements.find((candidate) => token && String(candidate?.requirement_id || "") === token)
+    || (/^\d+$/.test(token) ? requirements[Math.max(Number(token) - 1, 0)] : null);
+  if (!target) return null;
+  const index = requirements.indexOf(target);
+  return {
+    kind,
+    field: technicalRequirementField(target, index),
+    label: TECH_LABELS[target.type] || target.type || "技术要求",
+    target,
+    load_point_id: null,
+    requirement_id: target.requirement_id || requirementId || null,
+  };
+}
+
+function bulkConfirmationTargetsMatch(left, right) {
+  const leftKind = bulkConfirmationFollowupKind(left);
+  const rightKind = bulkConfirmationFollowupKind(right);
+  if (leftKind !== rightKind) return false;
+  if (leftKind === "load_point" && left?.load_point_id && right?.load_point_id) {
+    return String(left.load_point_id) === String(right.load_point_id);
+  }
+  if (leftKind === "technical" && left?.requirement_id && right?.requirement_id) {
+    return String(left.requirement_id) === String(right.requirement_id);
+  }
+  return String(left?.field || "") === String(right?.field || "");
+}
+
+function bulkConfirmationTargetNeedsReview(resolved) {
+  if (!resolved?.target) return false;
+  return resolved.kind === "technical"
+    ? resolved.target.need_human_review !== false
+    : Boolean(resolved.target.need_human_review);
+}
+
+function bulkConfirmationTargetControl(resolved, review) {
+  return confirmationControlState(resolved.target, {
+    kind: resolved.kind,
+    field: resolved.field,
+    review,
+  });
+}
+
+function bulkConfirmationTargetHasVisibleContent(resolved, visibleParameterFields) {
+  const target = resolved?.target;
+  if (!target) return false;
+  if (resolved.kind === "technical") return Boolean(String(target.content || "").trim());
+  if (resolved.kind === "load_point") {
+    return [target.height, target.force, target.deflection]
+      .some((value) => value != null && String(value).trim() !== "");
+  }
+  if (!visibleParameterFields?.has(resolved.field)) return false;
+  return [target.value, target.tolerance_upper, target.tolerance_lower, target.tolerance_input_draft, target.evidence, target.suggested_region]
+    .some((value) => value != null && String(value).trim() !== "");
+}
+
+function bulkConfirmationEventPersistenceState(event) {
+  if (!event) return "saved";
+  if (["saved", "saved_local"].includes(event.sync_status) || event.id || event.sequence || event.revision_after) return "saved";
+  if (event.sync_status === "local_only") return "local_only";
+  const eventId = String(event.client_event_id || "");
+  if (event.sync_status === "saving" || state.reviewPersistenceInFlightEvents.some((item) => String(item.client_event_id || "") === eventId)) {
+    return "saving";
+  }
+  if (state.pendingReviewAuditEvents.some((item) => String(item.client_event_id || "") === eventId)) return "failed";
+  return event.sync_status === "pending" ? "failed" : "saved";
+}
+
+function bulkConfirmationFollowupSnapshot(review) {
+  const event = latestSafeConfirmationEvent(review);
+  if (!event) return null;
+  const currentPlan = buildSafeConfirmationPlan(review);
+  const parameters = review?.spring_parameters || {};
+  const fieldGroups = getParameterFieldGroups(parameters, review);
+  const visibleParameterFields = new Set([...fieldGroups.core, ...fieldGroups.advanced]);
+  const items = [];
+  for (const stored of event.metadata.skipped) {
+    const resolved = resolveBulkConfirmationTarget(review, stored);
+    if (!resolved || !bulkConfirmationTargetNeedsReview(resolved)
+      || !bulkConfirmationTargetHasVisibleContent(resolved, visibleParameterFields)) continue;
+    const identity = {
+      kind: resolved.kind,
+      field: resolved.field,
+      load_point_id: resolved.load_point_id,
+      requirement_id: resolved.requirement_id,
+    };
+    const currentSkipped = currentPlan.skipped.find((candidate) => bulkConfirmationTargetsMatch(candidate, identity));
+    const currentItem = currentPlan.items.find((candidate) => bulkConfirmationTargetsMatch(candidate, identity));
+    const control = bulkConfirmationTargetControl(resolved, review);
+    let stateName = "manual";
+    let statusLabel = "需单独确认";
+    let reason = currentSkipped?.reason || stored.reason || control.reason || "该项需要单独处理。";
+    if (control.state === "invalid") {
+      stateName = "blocked";
+      statusLabel = "暂不可确认";
+      reason = control.reason || reason;
+    } else if (currentItem) {
+      stateName = "available";
+      statusLabel = "现已可确认";
+      reason = "当前已满足确认条件，可再次批量确认或单独确认。";
+    }
+    items.push({
+      ...identity,
+      label: resolved.label || stored.label || targetFieldLabel(resolved.field),
+      state: stateName,
+      status_label: statusLabel,
+      reason,
+    });
+  }
+  return {
+    event,
+    confirmed_count: Number(event?.after_state?.confirmed_count ?? event?.metadata?.confirmed_count ?? 0) || 0,
+    persistence_state: bulkConfirmationEventPersistenceState(event),
+    items,
+  };
+}
+
+function bulkConfirmationFollowupReport(review) {
+  const snapshot = bulkConfirmationFollowupSnapshot(review);
+  return snapshot?.items.length ? snapshot : null;
+}
+
+function consumeBulkConfirmationCompletionNotice(review) {
+  const snapshot = bulkConfirmationFollowupSnapshot(review);
+  if (!snapshot?.event?.client_event_id) return "";
+  const eventId = String(snapshot.event.client_event_id);
+  const previous = state.bulkConfirmationReportCounts[eventId];
+  const current = snapshot.items.length;
+  state.bulkConfirmationReportCounts[eventId] = current;
+  if (previous > 0 && current === 0 && !state.bulkConfirmationCompletionNotified.has(eventId)) {
+    state.bulkConfirmationCompletionNotified.add(eventId);
+    return "本次批量确认待处理项已全部处理。";
+  }
+  return "";
+}
+
+function refreshBulkConfirmationFollowupAfterLocalChange(messageId = state.activeReviewMessageId) {
+  if (!latestSafeConfirmationEvent(state.review)) return;
+  const completionNotice = consumeBulkConfirmationCompletionNotice(state.review);
+  if (completionNotice) {
+    updateLatestReviewMessage(completionNotice);
+    return;
+  }
+  syncParameterReasonablenessSurfaces(messageId);
 }
 
 function applyAvailableStandardizationSuggestions(messageId = state.activeReviewMessageId) {

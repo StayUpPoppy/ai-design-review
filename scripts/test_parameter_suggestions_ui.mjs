@@ -32,6 +32,7 @@ const context = {
   lastStandardizationApplyHistory: () => null,
   parseLoadPointTarget: () => null,
   parameterPersistenceState: () => null,
+  bulkConfirmationFollowupReport: () => null,
   getFieldMeta: () => ({ unit: "mm" }),
   blankParam: (unit) => ({ value: null, unit, source: [], need_human_review: true }),
   sourceValues: (value) => Array.isArray(value) ? value : value ? [value] : [],

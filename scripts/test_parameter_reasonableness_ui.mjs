@@ -11,12 +11,14 @@ assert.notEqual(start, -1, "reasonableness renderer must exist");
 assert.notEqual(end, -1, "reasonableness renderer block must be complete");
 
 const context = {
+  bulkReport: null,
   escapeHtml: (value) => String(value ?? ""),
   lastStandardizationApplyHistory: () => null,
   targetFieldLabel: (value) => String(value ?? ""),
   formatCompactNumber: (value) => String(value ?? ""),
   parseLoadPointTarget: () => null,
   parameterPersistenceState: () => null,
+  bulkConfirmationFollowupReport: () => context.bulkReport,
   state: { reviewEditSerial: 0 },
 };
 vm.createContext(context);
@@ -46,6 +48,29 @@ assert.match(blocked, /建议向客户确认/);
 assert.match(blocked, /data-role="focus-reasonableness-field"/);
 assert.match(cssSource, /\.parameter-reasonableness-item\.blocked/);
 assert.match(cssSource, /\.data-row\.parameter-risk-warning/);
+
+context.bulkReport = {
+  confirmed_count: 8,
+  persistence_state: "failed",
+  items: [
+    { kind: "parameter", field: "free_length", label: "自由长度", state: "manual", status_label: "需单独确认", reason: "默认候选值需要单独确认" },
+    { kind: "load_point", field: "load_points.F2", load_point_id: "loadpt-2", label: "载荷测试点 F2", state: "blocked", status_label: "暂不可确认", reason: "高度和力值需要完整填写" },
+    { kind: "technical", field: "technical_requirements.req-3", requirement_id: "req-3", label: "表面处理", state: "available", status_label: "现已可确认", reason: "当前已满足确认条件" },
+  ],
+};
+const bulkFollowup = context.renderParameterReasonablenessHtml({
+  parameter_reasonableness: { status: "pass", summary: "通过", issues: [] },
+});
+assert.match(bulkFollowup, /批量确认待处理/);
+assert.match(bulkFollowup, /已批量确认 8 项，还有 3 项待处理内容/);
+assert.match(bulkFollowup, /定位参数/);
+assert.match(bulkFollowup, /定位载荷点/);
+assert.match(bulkFollowup, /定位要求/);
+assert.match(bulkFollowup, /结果尚未保存/);
+assert.match(bulkFollowup, /data-action="retry-bulk-confirmation-save"/);
+assert.match(cssSource, /\.bulk-confirmation-followup-item/);
+assert.match(cssSource, /@container \(max-width: 480px\)/);
+context.bulkReport = null;
 
 const pass = context.renderParameterReasonablenessHtml({
   parameter_reasonableness: { status: "pass", summary: "通过", issues: [] },

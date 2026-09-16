@@ -3143,6 +3143,180 @@ textarea {
   line-height: 1.55;
 }
 
+.bulk-confirmation-followups {
+  display: grid;
+  gap: 10px;
+  container-type: inline-size;
+  border-top: 1px solid #e5ebf3;
+  padding-top: 12px;
+}
+
+.bulk-confirmation-followup-head,
+.bulk-confirmation-followup-group-head,
+.bulk-confirmation-followup-item,
+.bulk-confirmation-followup-copy > div,
+.bulk-confirmation-save-actions {
+  display: flex;
+  align-items: center;
+}
+
+.bulk-confirmation-followup-head {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bulk-confirmation-followup-head > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bulk-confirmation-followup-head strong {
+  color: #2d3f56;
+  font-size: 13px;
+}
+
+.bulk-confirmation-followup-head > div:first-child span,
+.bulk-confirmation-followup-group-head span {
+  color: #718096;
+  font-size: 11px;
+}
+
+.bulk-confirmation-save-actions {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.bulk-confirmation-save-actions button {
+  min-height: 28px;
+  font-size: 11px;
+}
+
+.bulk-confirmation-save-status {
+  color: #5f6f84;
+  font-size: 11px;
+}
+
+.bulk-confirmation-save-status.saving {
+  color: #355f9d;
+}
+
+.bulk-confirmation-save-status.failed {
+  color: #a23b2a;
+}
+
+.bulk-confirmation-followup-groups,
+.bulk-confirmation-followup-group,
+.bulk-confirmation-followup-copy {
+  display: grid;
+}
+
+.bulk-confirmation-followup-groups {
+  gap: 11px;
+}
+
+.bulk-confirmation-followup-group {
+  gap: 6px;
+}
+
+.bulk-confirmation-followup-group-head {
+  justify-content: space-between;
+  color: #41536b;
+  font-size: 11px;
+}
+
+.bulk-confirmation-followup-list {
+  overflow: hidden;
+  border: 1px solid #dde6f1;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.bulk-confirmation-followup-item {
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  border-bottom: 1px solid #e8edf4;
+  padding: 9px 10px;
+}
+
+.bulk-confirmation-followup-item:last-child {
+  border-bottom: 0;
+}
+
+.bulk-confirmation-followup-item.blocked {
+  background: #fff9f9;
+}
+
+.bulk-confirmation-followup-item.manual {
+  background: #fffdf8;
+}
+
+.bulk-confirmation-followup-item.available {
+  background: #f6fbf8;
+}
+
+.bulk-confirmation-followup-copy {
+  gap: 3px;
+  min-width: 0;
+}
+
+.bulk-confirmation-followup-copy > div {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bulk-confirmation-followup-copy strong {
+  color: #26364d;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.bulk-confirmation-followup-copy span {
+  flex: 0 0 auto;
+  border: 1px solid #d5deea;
+  border-radius: 999px;
+  background: #f7f9fc;
+  color: #536178;
+  padding: 1px 6px;
+  font-size: 10px;
+}
+
+.bulk-confirmation-followup-item.blocked .bulk-confirmation-followup-copy span {
+  border-color: #efbbbb;
+  background: #fff3f3;
+  color: #a23b2a;
+}
+
+.bulk-confirmation-followup-item.manual .bulk-confirmation-followup-copy span {
+  border-color: #f0d7a9;
+  background: #fff8e9;
+  color: #8e5d10;
+}
+
+.bulk-confirmation-followup-item.available .bulk-confirmation-followup-copy span {
+  border-color: #b9e2cb;
+  background: #f1fbf5;
+  color: #197b4e;
+}
+
+.bulk-confirmation-followup-copy p {
+  margin: 0;
+  color: #4e5f74;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.bulk-confirmation-followup-item > button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
 .parameter-reasonableness-list {
   display: grid;
   gap: 8px;
@@ -3194,6 +3368,7 @@ textarea {
 .reasonableness-suggestion-section {
   display: grid;
   gap: 9px;
+  container-type: inline-size;
   border-top: 1px solid #e5ebf3;
   padding-top: 12px;
 }
@@ -3241,7 +3416,7 @@ textarea {
 
 .reasonableness-suggestion {
   display: grid;
-  grid-template-columns: minmax(220px, 1.1fr) minmax(180px, 0.9fr) auto;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr) max-content;
   grid-template-areas:
     "head change action"
     "basis basis action";
@@ -3340,7 +3515,10 @@ textarea {
 
 .reasonableness-suggestion > button {
   grid-area: action;
+  justify-self: end;
   min-width: 88px;
+  max-width: 100%;
+  white-space: nowrap;
 }
 
 .reasonableness-suggestion > button:focus-visible {
@@ -3419,6 +3597,87 @@ textarea {
       "change action"
       "basis basis"
       "dependencies dependencies";
+  }
+}
+
+@container (max-width: 640px) {
+  .reasonableness-suggestion-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .reasonableness-suggestion-toolbar > div:last-child {
+    justify-content: flex-start;
+  }
+
+  .reasonableness-suggestion {
+    grid-template-columns: minmax(0, 1fr) max-content;
+    grid-template-areas:
+      "head head"
+      "change action"
+      "basis basis";
+  }
+}
+
+@container (max-width: 420px) {
+  .reasonableness-suggestion-toolbar > div:last-child,
+  .reasonableness-suggestion-toolbar button,
+  .reasonableness-suggestion > button {
+    width: 100%;
+  }
+
+  .reasonableness-suggestion {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "head"
+      "change"
+      "basis"
+      "action";
+  }
+
+  .reasonableness-suggestion > button {
+    justify-self: stretch;
+  }
+}
+
+@container (max-width: 480px) {
+  .bulk-confirmation-followup-head,
+  .bulk-confirmation-followup-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .bulk-confirmation-save-actions {
+    justify-content: flex-start;
+  }
+
+  .bulk-confirmation-followup-item > button {
+    width: 100%;
+  }
+}
+
+.review-target-highlight {
+  animation: review-target-highlight 1.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes review-target-highlight {
+  0%, 28% {
+    outline: 2px solid #d39a18;
+    outline-offset: -2px;
+    background-color: #fff4cf;
+  }
+  100% {
+    outline: 2px solid transparent;
+    outline-offset: -2px;
+    background-color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .review-target-highlight {
+    animation: none;
+    outline: 2px solid #d39a18;
+    outline-offset: -2px;
   }
 }
 
