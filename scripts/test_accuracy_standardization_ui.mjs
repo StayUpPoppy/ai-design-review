@@ -12,6 +12,7 @@ const context = {
   escapeHtml: (value) => String(value ?? ""),
   targetFieldLabel: (field) => ({ free_length: "自由长度" }[field] || field),
   formatStandardValue: (value, unit = "") => `${value}${unit}`,
+  formatParameterDisplayValue: (field, value, unit = "") => value == null ? "-" : `${value}${unit}`,
   formatTolerancePair: (value, unit = "") => {
     if (Number(value?.upper) === Math.abs(Number(value?.lower))) return `±${Math.abs(Number(value.upper))}${unit}`;
     return `${value?.upper ?? ""}/${value?.lower ?? ""}${unit}`;

@@ -12,6 +12,12 @@ assert.notEqual(end, -1, "reasonableness renderer block must be complete");
 
 const context = {
   escapeHtml: (value) => String(value ?? ""),
+  lastStandardizationApplyHistory: () => null,
+  targetFieldLabel: (value) => String(value ?? ""),
+  formatCompactNumber: (value) => String(value ?? ""),
+  parseLoadPointTarget: () => null,
+  parameterPersistenceState: () => null,
+  state: { reviewEditSerial: 0 },
 };
 vm.createContext(context);
 vm.runInContext(appSource.slice(start, end), context);
@@ -45,6 +51,6 @@ const pass = context.renderParameterReasonablenessHtml({
   parameter_reasonableness: { status: "pass", summary: "通过", issues: [] },
 });
 assert.match(pass, /参数关系正常/);
-assert.match(pass, /未发现明显几何矛盾/);
+assert.match(pass, /当前没有需要处理的参数合理性问题/);
 
 console.log("parameter reasonableness UI test passed");

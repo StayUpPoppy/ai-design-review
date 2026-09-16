@@ -127,10 +127,14 @@ vm.runInContext(appSource.slice(lifecycleStart, lifecycleEnd), lifecycle);
 
 const editable = { value: 3, need_human_review: false, source: ["human_confirmed"] };
 lifecycle.rememberConfirmedSnapshot(editable);
+editable.last_applied_suggestion_id = "old-suggestion";
+editable.last_applied_suggestion = { rule_id: "OLD" };
 editable.value = 3.2;
 assert.equal(lifecycle.applyEditedConfirmationState(editable, "wire_diameter"), "modified");
 assert.equal(editable.need_human_review, true);
 assert.equal(editable.source.includes("human_edited"), true);
+assert.equal(editable.last_applied_suggestion_id, undefined);
+assert.equal(editable.last_applied_suggestion, undefined);
 editable.value = 3;
 assert.equal(lifecycle.applyEditedConfirmationState(editable, "wire_diameter"), "restored");
 assert.equal(editable.need_human_review, false);

@@ -25,6 +25,7 @@ const context = {
   },
   targetFieldLabel: (field) => ({ mean_diameter: "中径", outer_diameter: "外径" })[field] || field,
   formatStandardValue: (value, unit = "") => value == null ? "-" : `${value}${unit || ""}`,
+  formatParameterDisplayValue: (field, value, unit = "") => value == null ? "-" : `${value}${unit || ""}`,
   formatTolerancePair: (value, unit = "") => `${value?.upper ?? ""}/${value?.lower ?? ""}${unit}`,
   parseLoadPointTarget: () => null,
 };

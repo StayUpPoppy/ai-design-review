@@ -63,6 +63,10 @@ COMPRESSION_GENERATION_LABELS = {
     "end_grinding": "两端磨削",
     "end_coils_closed": "端圈压并",
 }
+HANDEDNESS_LABELS = {
+    "left": "左旋",
+    "right": "右旋",
+}
 
 
 def apply_generation_defaults(review: dict[str, Any]) -> list[str]:
@@ -149,12 +153,7 @@ def normalize_generation_value(field: str, value: Any) -> float | int | str:
             raise ValueError(f"{field} must be a positive integer")
         return int(number)
     if field == "handedness":
-        normalized = _normalized_text(value)
-        if normalized in {"right", "right_hand", "r", "右旋"}:
-            return "right"
-        if normalized in {"left", "left_hand", "l", "左旋"}:
-            return "left"
-        raise ValueError("handedness must be right or left")
+        return normalize_handedness(value)
     if field == "end_grinding":
         binary = _binary_value(value)
         if binary is not None:
@@ -179,6 +178,27 @@ def normalize_generation_value(field: str, value: Any) -> float | int | str:
             return 0
         raise ValueError("end_coils_closed must be 0 or 1")
     raise ValueError(f"Unsupported generation field: {field}")
+
+
+def normalize_handedness(value: Any) -> str:
+    """Return the stable protocol value for Chinese or legacy handedness input."""
+
+    normalized = _normalized_text(value)
+    if normalized in {"right", "right_hand", "r", "右旋"}:
+        return "right"
+    if normalized in {"left", "left_hand", "l", "左旋"}:
+        return "left"
+    raise ValueError("旋向只能选择左旋或右旋")
+
+
+def handedness_label(value: Any) -> str | None:
+    """Translate a protocol or legacy handedness value for SolidWorks."""
+
+    try:
+        normalized = normalize_handedness(value)
+    except ValueError:
+        return None
+    return HANDEDNESS_LABELS[normalized]
 
 
 def export_generation_parameters(parameters: dict[str, Any]) -> dict[str, dict[str, Any]]:

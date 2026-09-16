@@ -7,11 +7,15 @@ const readinessStart = appSource.indexOf("function generationSourceParameter");
 const readinessEnd = appSource.indexOf("function renderStandardizationHtml", readinessStart);
 const packageStart = appSource.indexOf("function makeGenerationParameterPackage");
 const packageEnd = appSource.indexOf("function downloadJson", packageStart);
+const handednessStart = appSource.indexOf("function normalizeHandednessValue");
+const handednessEnd = appSource.indexOf("function handednessOptionsHtml", handednessStart);
 
 assert.notEqual(readinessStart, -1, "generation readiness UI helpers must exist");
 assert.notEqual(readinessEnd, -1, "generation readiness UI helper block must be complete");
 assert.notEqual(packageStart, -1, "generation package helper must exist");
 assert.notEqual(packageEnd, -1, "generation package helper block must be complete");
+assert.notEqual(handednessStart, -1, "handedness normalizer must exist");
+assert.notEqual(handednessEnd, -1, "handedness normalizer block must be complete");
 
 const context = {
   structuredClone,
@@ -32,6 +36,7 @@ const context = {
   COMPRESSION_GENERATION_DEFAULTS: { wire_diameter: 3, mean_diameter: 23, free_length: 45, total_coils: 10, active_coils: 8, end_grinding: 1, end_coils_closed: 1 },
   COMPRESSION_GENERATION_UNITS: { material: null, wire_diameter: "mm", mean_diameter: "mm", free_length: "mm", total_coils: null, active_coils: null, handedness: null, end_grinding: null, end_coils_closed: null },
   COMPRESSION_GENERATION_LABELS: { material: "材料", wire_diameter: "线径", mean_diameter: "中径", free_length: "自由长度", total_coils: "总圈数", active_coils: "有效圈数", handedness: "旋向", end_grinding: "两端磨削", end_coils_closed: "端圈压并" },
+  HANDEDNESS_OPTIONS: [{ value: "left", label: "左旋" }, { value: "right", label: "右旋" }],
   currentSpringType: (review) => review.drawing_summary?.spring_type || "unknown_spring",
   normalizeTechnicalRequirementType: (value) => String(value || "other").trim() || "other",
   normalizeLoadPointLabel: (value) => String(value || "").trim().replace(/\s+/g, " "),
@@ -46,6 +51,7 @@ const context = {
   targetFieldLabel: (field) => ({ material: "材料", mean_diameter: "中径", active_coils: "有效圈数" }[field] || field),
 };
 vm.createContext(context);
+vm.runInContext(appSource.slice(handednessStart, handednessEnd), context);
 vm.runInContext(appSource.slice(readinessStart, readinessEnd), context);
 vm.runInContext(appSource.slice(packageStart, packageEnd), context);
 

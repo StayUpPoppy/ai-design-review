@@ -38,6 +38,15 @@ def apply_formula_compression_diameter_completion(spring_parameters: dict[str, A
     return {"applied_fields": applied_fields, "calculations": calculations}
 
 
+def calculate_compression_diameter_completion(spring_parameters: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return unambiguous missing/inferred diameter calculations without mutating the input."""
+    working = {
+        field: dict(item) if isinstance(item, dict) else item
+        for field, item in spring_parameters.items()
+    }
+    return apply_formula_compression_diameter_completion(working)["calculations"]
+
+
 def _calculation_for(target: str, values: dict[str, float | None]) -> dict[str, Any] | None:
     outer = values["outer_diameter"]
     inner = values["inner_diameter"]

@@ -3152,7 +3152,6 @@ textarea {
   display: grid;
   gap: 5px;
   border: 1px solid #e5ebf3;
-  border-left: 3px solid #8aa0bd;
   border-radius: 7px;
   padding: 10px;
   background: #fbfdff;
@@ -3160,20 +3159,204 @@ textarea {
 
 .parameter-reasonableness-item.blocked {
   border-color: #f1caca;
-  border-left-color: #dc4c4c;
   background: #fff9f9;
 }
 
 .parameter-reasonableness-item.warning {
   border-color: #f1dfb9;
-  border-left-color: #d69324;
   background: #fffdf8;
 }
 
 .parameter-reasonableness-item.needs_input {
   border-color: #d6e2f4;
-  border-left-color: #4e81c9;
   background: #f8fbff;
+}
+
+.reasonableness-section-head,
+.reasonableness-suggestion-toolbar,
+.reasonableness-suggestion-head,
+.reasonableness-suggestion-head > div {
+  display: flex;
+  align-items: center;
+}
+
+.reasonableness-section-head {
+  justify-content: space-between;
+  margin-top: 2px;
+  color: #2d3f56;
+  font-size: 12px;
+}
+
+.reasonableness-section-head span {
+  color: #718096;
+}
+
+.reasonableness-suggestion-section {
+  display: grid;
+  gap: 9px;
+  border-top: 1px solid #e5ebf3;
+  padding-top: 12px;
+}
+
+.reasonableness-suggestion-toolbar {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reasonableness-suggestion-toolbar > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.reasonableness-suggestion-toolbar > div:first-child strong {
+  color: #2d3f56;
+  font-size: 13px;
+}
+
+.reasonableness-suggestion-toolbar > div:first-child span {
+  color: #718096;
+  font-size: 11px;
+}
+
+.reasonableness-suggestion-toolbar > div:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.reasonableness-suggestion-toolbar button,
+.reasonableness-suggestion button {
+  min-height: 30px;
+  font-size: 12px;
+}
+
+.reasonableness-suggestion-list {
+  overflow: hidden;
+  border: 1px solid #dde6f1;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.reasonableness-suggestion {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.1fr) minmax(180px, 0.9fr) auto;
+  grid-template-areas:
+    "head change action"
+    "basis basis action";
+  gap: 6px 14px;
+  align-items: center;
+  min-width: 0;
+  border-bottom: 1px solid #e8edf4;
+  padding: 10px 12px;
+}
+
+.reasonableness-suggestion:last-child {
+  border-bottom: 0;
+}
+
+.reasonableness-suggestion.available,
+.reasonableness-suggestion.conflict {
+  background: #fbfdff;
+}
+
+.reasonableness-suggestion.save_failed {
+  background: #fff7f3;
+}
+
+.reasonableness-suggestion.stale,
+.reasonableness-suggestion.applied {
+  background: #fafbfc;
+}
+
+.reasonableness-suggestion-head {
+  grid-area: head;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 8px;
+}
+
+.reasonableness-suggestion-head > div {
+  min-width: 0;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.reasonableness-suggestion-head strong {
+  color: #26364d;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.reasonableness-suggestion-head span {
+  flex: 0 0 auto;
+  border: 1px solid #cbdaf0;
+  border-radius: 999px;
+  background: #f2f6fc;
+  color: #45648f;
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
+.reasonableness-suggestion-change {
+  grid-area: change;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.reasonableness-suggestion-change span,
+.reasonableness-suggestion-change strong {
+  overflow-wrap: anywhere;
+}
+
+.reasonableness-suggestion-change span {
+  color: #738196;
+  font-size: 12px;
+}
+
+.reasonableness-suggestion-change b {
+  color: #8aa0bd;
+  font-weight: 500;
+}
+
+.reasonableness-suggestion-change strong {
+  color: #2358c7;
+  font-size: 13px;
+}
+
+.reasonableness-suggestion > p {
+  grid-area: basis;
+  margin: 0;
+  color: #4e5f74;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.reasonableness-suggestion > button {
+  grid-area: action;
+  min-width: 88px;
+}
+
+.reasonableness-suggestion > button:focus-visible {
+  outline: 2px solid #2857d4;
+  outline-offset: 2px;
+}
+
+.reasonableness-suggestion.save_failed > button {
+  border-color: #c6533b;
+  background: #fff4ef;
+  color: #9e3724;
+  white-space: normal;
+}
+
+.reasonableness-suggestion.saving > button {
+  cursor: progress;
 }
 
 .parameter-reasonableness-item-head {
@@ -3217,6 +3400,26 @@ textarea {
   color: #4e6a5d;
   font-size: 12px;
   line-height: 1.55;
+}
+
+@media (max-width: 760px) {
+  .reasonableness-suggestion-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .reasonableness-suggestion-toolbar > div:last-child {
+    justify-content: flex-start;
+  }
+
+  .reasonableness-suggestion {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "head head"
+      "change action"
+      "basis basis"
+      "dependencies dependencies";
+  }
 }
 
 .generation-readiness-summary {

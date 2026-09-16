@@ -44,6 +44,9 @@ const context = {
   generationSourceParameter: (parameters, field) => parameters?.[field] || null,
   targetFieldLabel: (field) => context.FIELD_LABELS[field] || field,
   formatStandardValue: (value, unit = "") => value == null || value === "" ? "-" : `${value}${unit}`,
+  formatParameterDisplayValue: (field, value, unit = "") => field === "handedness"
+    ? ({ left: "左旋", right: "右旋" }[value] || value || "-")
+    : (value == null || value === "" ? "-" : `${value}${unit}`),
   escapeHtml: (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -76,6 +79,8 @@ const html = context.renderGenerationPackageExportHtml(serverAction, 0);
 assert.match(html, /参数包可以导出/);
 assert.match(html, /线径/);
 assert.match(html, /中径/);
+assert.match(html, /右旋/);
+assert.doesNotMatch(html, />right</);
 assert.match(html, /未执行标准化检查/);
 assert.match(html, /去处理/);
 assert.doesNotMatch(html, />mean_diameter</);
@@ -138,6 +143,7 @@ function makeAction(overrides = {}) {
     parameter_fields: [
       { field: "wire_diameter", label: "线径", value: 3, unit: "mm" },
       { field: "mean_diameter", label: "mean_diameter", value: 23, unit: "mm" },
+      { field: "handedness", label: "旋向", value: "right", unit: null },
     ],
     missing_fields: [],
     pending_fields: [],

@@ -157,6 +157,7 @@ async function testRevisionConflictKeepsUnrelatedServerChanges() {
     setReview(review) { context.state.review = review; },
     refreshReviewSurfaces() {},
     formatTolerance() { return ""; },
+    formatParameterDisplayValue(_field, value) { return value == null || value === "" ? "-" : String(value); },
     escapeHtml: String,
     targetFieldLabel: String,
   };

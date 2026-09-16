@@ -4,13 +4,18 @@ from copy import deepcopy
 from typing import Any
 
 from .end_conditions import normalize_end_type
+from .parameter_suggestions import build_parameter_suggestions
 from .standardizers.compression import derive_compression_parameters, solid_height_mode
 
 
 COLD_COILED_STANDARD = "GB/T 1239.2-2009"
 
 
-def assess_parameter_reasonableness(review: dict[str, Any]) -> dict[str, Any]:
+def assess_parameter_reasonableness(
+    review: dict[str, Any],
+    *,
+    based_on_revision: int | None = None,
+) -> dict[str, Any]:
     """Assess the recognized compression-spring data itself, not only a proposed edit."""
     spring_type = str((review.get("drawing_summary") or {}).get("spring_type") or "")
     if spring_type != "compression_spring":
@@ -18,6 +23,7 @@ def assess_parameter_reasonableness(review: dict[str, Any]) -> dict[str, Any]:
 
     parameters = review.get("spring_parameters") or {}
     issues = _compression_issues(parameters, review, include_missing_context=True)
+    issues.extend(_standardization_diagnostic_issues(review.get("standardization_results") or []))
     derived = derive_compression_parameters(parameters)
     status = _assessment_status(issues)
     return {
@@ -25,6 +31,7 @@ def assess_parameter_reasonableness(review: dict[str, Any]) -> dict[str, Any]:
         "summary": _assessment_summary(status, issues),
         "issues": issues,
         "derived_preview": _derived_preview(derived),
+        "suggestions": build_parameter_suggestions(review, based_on_revision=based_on_revision),
         "scope": "cylindrical_helical_compression_spring",
     }
 
@@ -72,6 +79,38 @@ def assess_parameter_change_set(review: dict[str, Any], actions: list[dict[str, 
         "changed_fields": list(dict.fromkeys(changed_fields)),
         "derived_preview": _derived_preview(derived),
     }
+
+
+def _standardization_diagnostic_issues(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Expose non-actionable standardization results as diagnostics, not fake suggestions."""
+    issues: list[dict[str, Any]] = []
+    for index, result in enumerate(results):
+        if not isinstance(result, dict):
+            continue
+        status = str(result.get("status") or "")
+        has_value = result.get("suggested_value") is not None
+        has_tolerance = result.get("suggested_tolerance_upper") is not None or result.get("suggested_tolerance_lower") is not None
+        if status in {"suggested", "llm_suggested", "human_confirmed", "stale"} or has_value or has_tolerance:
+            continue
+        target = str(result.get("target_field") or "")
+        metadata = result.get("metadata") or {}
+        missing_fields = [str(field) for field in metadata.get("missing_fields") or [] if field]
+        fields = missing_fields or ([target] if target else [])
+        basis = str(result.get("basis") or "缺少生成唯一建议值所需的条件。")
+        severity = "needs_input" if status in {"need_context", "rules_pending", "unmapped"} else "warning"
+        _issue(
+            issues,
+            severity,
+            "standardization",
+            str(result.get("rule_id") or f"STANDARDIZATION-DIAGNOSTIC-{index + 1}"),
+            fields,
+            basis,
+            calculation="当前规则未形成唯一可应用值。",
+            basis=basis,
+            explanation="该结果只用于提示缺失条件或规则适用范围，不会猜测并写入参数。",
+            customer_question="请补充相关参数或标准条件后重新生成标准化建议。",
+        )
+    return issues
 
 
 def _apply_parameter_patch(parameters: dict[str, Any], target: str, value: Any) -> bool:
@@ -463,7 +502,7 @@ def _change_summary(status: str, issues: list[dict[str, Any]]) -> str:
 
 
 def _assessment(status: str, summary: str) -> dict[str, Any]:
-    return {"status": status, "summary": summary, "issues": [], "derived_preview": {}, "scope": ""}
+    return {"status": status, "summary": summary, "issues": [], "derived_preview": {}, "suggestions": [], "scope": ""}
 
 
 def _change_result(status: str, summary: str) -> dict[str, Any]:

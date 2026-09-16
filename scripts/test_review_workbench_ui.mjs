@@ -59,6 +59,7 @@ const context = {
   }),
   reasonablenessSeverityForField: (review, field) => review.risks?.[field] || "",
   standardizationBatchPlan: () => ({ items: [], conflicts: [] }),
+  reasonablenessSuggestionBatchPlan: () => ({ items: [], conflicts: [] }),
   revokeManualConfirmations: () => false,
   invalidateStandardizationResults: (field) => {
     invalidatedFields.push(field);

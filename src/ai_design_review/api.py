@@ -1542,10 +1542,11 @@ def assess_review_reasonableness(
     _: IdentityContext = Depends(require_identity),
 ) -> dict[str, Any]:
     """Return a lightweight deterministic diagnostic for the caller's current review state."""
-    review = (payload or {}).get("review")
+    body = payload or {}
+    review = body.get("review")
     if not isinstance(review, dict):
         raise HTTPException(status_code=400, detail="reasonableness requires a review object.")
-    assessment = assess_parameter_reasonableness(review)
+    assessment = assess_parameter_reasonableness(review, based_on_revision=body.get("review_revision"))
     return {"parameter_reasonableness": assessment}
 
 
@@ -2601,6 +2602,8 @@ def _merge_llm_standardization(review: dict[str, Any], payload: dict[str, Any]) 
     review.setdefault("drawing_summary", {})
     review["drawing_summary"]["overall_status"] = "need_review"
     review["drawing_summary"]["summary"] = "已生成 LLM/RAG 标准化建议，需要人工确认后再导出。"
+    review["parameter_reasonableness"] = assess_parameter_reasonableness(review)
+    review["parameter_reasonableness_stale"] = False
 
 
 def _werk24_license_status() -> dict[str, str]:

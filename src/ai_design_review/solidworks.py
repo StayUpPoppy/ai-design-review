@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from .generation_contract import handedness_label
+
 
 def build_solidworks_command(
     generation_id: str,
@@ -36,7 +38,7 @@ def build_solidworks_command(
     }
     load_values = _load_point_values(load_points)
     solid_height = _review_parameter_value(review, "solid_height")
-    handedness = _solidworks_handedness(values["handedness"])
+    handedness = handedness_label(values["handedness"])
     technical_text = str(generation_parameters.get("technical_requirements_text") or "")
 
     model_parameters = {
@@ -112,14 +114,6 @@ def _load_point_values(load_points: Any) -> dict[str, dict[str, float | None]]:
             "force": _finite_number(force.get("value")),
         }
     return result
-
-
-def _solidworks_handedness(value: Any) -> str | None:
-    if value == "left":
-        return "左旋"
-    if value == "right":
-        return "右旋"
-    return None
 
 
 def _finite_or_text(value: Any) -> Any | None:

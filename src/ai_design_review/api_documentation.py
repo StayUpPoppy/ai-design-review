@@ -83,7 +83,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/api/reviews/{job_id}/download"): _operation("审图管理", "下载审图 JSON", "下载指定审图任务当前保存的完整 JSON 文件。"),
     ("GET", "/api/reviews/{job_id}/artifacts/{relative_path}"): _operation("审图管理", "下载审图过程产物", "下载原始图纸、预览图或识别中间文件；路径必须位于该任务安全目录内。"),
     ("POST", "/api/reviews/standardize"): _operation("标准化与合理性", "标准化临时审图数据", "标准化请求体中的 review，但不写入指定审图任务；适用于导入但尚未持久化的本地 JSON。"),
-    ("POST", "/api/reviews/reasonableness"): _operation("标准化与合理性", "核对参数合理性", "对当前 review 执行确定性几何与参数关系检查，返回警告、阻断问题和派生参数预览，不直接保存数据。"),
+    ("POST", "/api/reviews/reasonableness"): _operation("标准化与合理性", "核对参数合理性并生成可选建议", "对当前 review 执行确定性几何与参数关系检查，返回警告、阻断问题、派生参数预览，以及带依赖令牌的公式和标准化建议；接口只计算，不改写或保存人工参数。"),
     ("POST", "/api/reviews/{job_id}/standardize"): _operation("标准化与合理性", "标准化并保存审图参数", "对已保存审图单执行规则或 LLM 标准化，保存结果、增加修订号并记录审计事件；expected_revision 不一致时返回 409。"),
     ("POST", "/api/reviews/standardization-chat"): _operation("标准化与合理性", "对临时审图数据进行标准化对话", "根据 review 和用户消息生成标准化建议、参数修改结果或生图参数包导出动作。明确的“按一级、二级或三级精度标准化”指令会直接选择通用精度并重新计算建议；“导出参数包”只返回本地白名单下载动作，不创建生图任务。"),
     ("POST", "/api/reviews/{job_id}/standardization-chat"): _operation("标准化与合理性", "对已保存审图单进行标准化对话", "结合当前审图参数和标准知识处理用户指令。通用精度标准化会在同一事务中选择精度并重新计算建议；“导出参数包”会重新校验生图就绪状态，前端随后从正式 generation-package 接口下载并核对审图修订号，不创建生图任务。"),
@@ -220,6 +220,40 @@ class TechnicalRequirementDocument(BaseModel):
     need_human_review: bool = Field(default=True, description="是否仍待人工确认；只有false的非空内容进入生图参数包。")
 
 
+class ReasonablenessSuggestion(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    suggestion_id: str = Field(description="由来源、目标、建议内容和依赖令牌生成的稳定建议标识。")
+    source: Literal["formula", "standardization"] = Field(description="建议来源：确定性公式或标准化规则。")
+    target_field: str = Field(description="应用建议时写入的参数字段。")
+    current_value: Any = Field(default=None, description="生成建议时的当前参数值。")
+    current_tolerance_upper: Any = Field(default=None, description="生成建议时的当前上公差。")
+    current_tolerance_lower: Any = Field(default=None, description="生成建议时的当前下公差。")
+    suggested_value: Any = Field(default=None, description="建议参数值；为空时不修改参数值。")
+    suggested_tolerance_upper: Any = Field(default=None, description="建议上公差。")
+    suggested_tolerance_lower: Any = Field(default=None, description="建议下公差。")
+    unit: str | None = Field(default=None, description="建议值单位。")
+    application_mode: Literal["value", "tolerance", "value_and_tolerance", "none"] = Field(description="建议的写入范围。")
+    rule_id: str = Field(description="公式或标准化规则标识。")
+    basis: str = Field(default="", description="计算公式、标准条款或建议依据。")
+    source_fields: list[str] = Field(default_factory=list, description="生成建议所依赖的参数字段。")
+    dependency_snapshot: dict[str, Any] = Field(default_factory=dict, description="用于应用前复核的依赖值快照。")
+    dependency_token: str = Field(description="依赖快照的确定性校验令牌。")
+    based_on_revision: int | None = Field(default=None, description="生成建议时客户端持有的审图修订号。")
+    status: Literal["available", "stale", "applied", "conflict", "informational"] = Field(description="建议当前是否可应用。")
+    supporting_sources: list[Literal["formula", "standardization"]] = Field(default_factory=list, description="公式与标准化结果相同而合并时，保留全部支持来源。")
+
+
+class ParameterReasonablenessAssessment(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    status: str = Field(default="not_applicable", description="合理性诊断总体状态。")
+    summary: str = Field(default="", description="合理性诊断摘要。")
+    issues: list[dict[str, Any]] = Field(default_factory=list, description="几何、载荷、标准范围和信息缺失问题。")
+    derived_preview: dict[str, Any] = Field(default_factory=dict, description="只读派生参数预览。")
+    suggestions: list[ReasonablenessSuggestion] = Field(default_factory=list, description="可选公式和标准化建议；不会自动写入参数。")
+
+
 class ReviewDocument(BaseModel):
     model_config = ConfigDict(
         extra="allow",
@@ -242,7 +276,7 @@ class ReviewDocument(BaseModel):
     )
     derived_parameters: dict[str, Any] = Field(default_factory=dict, description="根据已知参数计算出的派生参数。")
     standard_selection: dict[str, Any] = Field(default_factory=dict, description="标准选择、适用性和人工确认信息。")
-    parameter_reasonableness: dict[str, Any] | None = Field(default=None, description="最近一次参数合理性诊断结果。")
+    parameter_reasonableness: ParameterReasonablenessAssessment | None = Field(default=None, description="最近一次参数合理性诊断和可选建议。")
     parameter_reasonableness_stale: bool = Field(default=False, description="参数变化后合理性结果是否已经过期。")
     conflicts: list[dict[str, Any]] = Field(default_factory=list, description="不同识别来源之间的参数冲突。")
     missing_fields: list[str] = Field(default_factory=list, description="当前缺失的必要字段。")
@@ -269,6 +303,7 @@ class ReasonablenessRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     review: ReviewDocument = Field(description="需要执行参数合理性核对的审图数据。")
+    review_revision: int | None = Field(default=None, ge=1, description="生成建议时客户端持有的审图修订号。")
 
 
 class StandardizationChatRequest(BaseModel):
@@ -344,7 +379,7 @@ class StandardizationResponse(BaseModel):
 
 
 class ReasonablenessResponse(BaseModel):
-    parameter_reasonableness: dict[str, Any] = Field(description="参数合理性状态、问题列表和派生参数预览。")
+    parameter_reasonableness: ParameterReasonablenessAssessment = Field(description="参数合理性状态、问题列表、派生参数和可选建议。")
 
 
 class ParameterImpactRiskDelta(BaseModel):
