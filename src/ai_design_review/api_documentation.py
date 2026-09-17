@@ -182,6 +182,10 @@ class SpringParametersDocument(BaseModel):
     solid_height: ReviewParameterValue | None = Field(default=None, description="压并高度。")
     total_coils: ReviewParameterValue | None = Field(default=None, description="总圈数。")
     active_coils: ReviewParameterValue | None = Field(default=None, description="有效圈数。")
+    surface_roughness_ra: ReviewParameterValue | None = Field(
+        default=None,
+        description="表面粗糙度Ra，内部单位μm；仅人工确认后写入SolidWorks扩展属性和二维图技术要求。",
+    )
     end_coils: ReviewParameterValue | None = Field(default=None, description="端圈数。")
     handedness: ReviewParameterValue | None = Field(default=None, description="旋向。")
     pitch: ReviewParameterValue | None = Field(default=None, description="节距。")
@@ -201,6 +205,7 @@ class TechnicalRequirementDocument(BaseModel):
     )
     type: Literal[
         "surface",
+        "surface_roughness",
         "hardness",
         "heat_treatment",
         "salt_spray",
@@ -210,7 +215,7 @@ class TechnicalRequirementDocument(BaseModel):
         "other",
     ] = Field(
         default="other",
-        description="技术要求类型：surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process或other。",
+        description="技术要求类型：surface、surface_roughness、hardness、heat_treatment、salt_spray、environmental、lifetime、process或other。",
         examples=["surface"],
     )
     content: str = Field(default="", description="需要写入二维图纸固定区域的中文技术要求原文。", examples=["表面镀锌。"])

@@ -13,6 +13,13 @@ from .base import RecognitionEngine
 from ..llm_standardization import LLM_STANDARDIZATION_FIELD
 from ..preprocessing import IMAGE_EXTENSIONS, render_pdf_with_pdftoppm
 from ..spring_templates import FIELD_LABELS, SPRING_TEMPLATES, SPRING_TYPE_UNKNOWN, template_for
+from ..surface_roughness import (
+    SURFACE_ROUGHNESS_FIELD,
+    SURFACE_ROUGHNESS_UNIT,
+    positive_surface_roughness,
+    surface_roughness_location,
+    surface_roughness_mentions,
+)
 
 
 DEFAULT_QWEN_MODEL = "qwen3.7-plus"
@@ -151,15 +158,15 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
 3. 按弹簧类型提取尺寸字段。字段名必须使用英文 key，前端会用中文标签显示；不要自造 key。
    - 通用：material、standard_no、accuracy_grade、wire_diameter、outer_diameter、inner_diameter、mean_diameter、free_length、body_length、total_coils、active_coils、handedness、pitch。
    - standard_no 只能填写弹簧产品适用的通用技术/公差标准，例如 GB/T 1239.2、GB/T 23934；材料或钢丝牌号标准（例如“弹簧钢丝 GB/T 4357-2009”）只能放在 material，绝不能填入 standard_no。
-   - 压缩弹簧：diameter_accuracy_grade、free_length_accuracy_grade、load_accuracy_grade、stiffness_accuracy_grade、controlled_diameter_field、solid_height、end_coils、support_coils、end_type、end_grinding、spring_rate、perpendicularity、straightness、permanent_set_limit，可提取 load_points。
+   - 压缩弹簧：diameter_accuracy_grade、free_length_accuracy_grade、load_accuracy_grade、stiffness_accuracy_grade、controlled_diameter_field、solid_height、surface_roughness_ra、end_coils、support_coils、end_type、end_grinding、spring_rate、perpendicularity、straightness、permanent_set_limit，可提取 load_points。
    - 扭转弹簧：coil_body_length、arm_length、short_arm_length、long_arm_length、leg1_length、leg2_length、free_angle、working_angle、leg1_angle、leg2_angle、bend_radius、leg_end_type、mandrel_diameter、torque。
    - 拉伸弹簧：hook_type、hook_outer_diameter、hook_inner_diameter、hook_gap、hook1_type、hook2_type、hook1_length、hook2_length、hook1_outer_diameter、hook2_outer_diameter、hook1_inner_diameter、hook2_inner_diameter、hook1_opening、hook2_opening、hook_orientation、center_to_center_length、initial_tension，可提取 load_points。
    - 卡簧/挡圈：ring_type、thickness、free_diameter、opening_width、gap_width、notch_depth、groove_diameter、groove_width、lug_hole_diameter、lug_center_distance、opening_angle、section_width、section_height、chamfer、corner_radius。
    - 端面磨削 end_grinding：只有图纸文字明确写“不磨/未磨”时才填“两端不磨削”；只有文字明确写“磨平/磨削”，或两端面有明确关联的表面粗糙度/加工符号且端面画为平整时才填“两端磨削”。不得仅因弹簧示意图看似开口、或没有文字标注，就推断为“不磨”；无法确定时不要输出该字段。
    - 端部形式 end_type：只有图纸文字明确写“并紧/闭口”时才填“两端并紧”；明确写“不并紧/开口”时才填“两端不并紧”。端部形式与端面磨削是独立字段，无法确定时不要输出。
-   - 表面粗糙度符号、加工符号或小三角旁的数值（例如 Ra 12.5、▽ 12.5）属于技术要求，绝不能填入 outer_diameter、inner_diameter、mean_diameter、free_length、body_length、wire_diameter 或 load_points。
+   - 表面粗糙度符号、加工符号或小三角旁的数值（例如 Ra 12.5、▽ 12.5）绝不能填入 outer_diameter、inner_diameter、mean_diameter、free_length、body_length、wire_diameter 或 load_points。识别到明确 Ra 数值时，必须在 parameters.surface_roughness_ra 中输出数值，并在 evidence 中保留符号或文字；明确知道作用位置时增加 surface_location（例如“两端面”），不明确时不要猜。
    - 对圆柱压缩弹簧：outer_diameter 必须来自直径尺寸线、直径符号或紧邻的一侧公差；free_length 必须来自两端之间的轴向总长度尺寸线；H1/H2 只属于 load_points 的试验高度。没有足够定位依据时省略字段并标记 need_human_review=true。
-4. 提取动态工艺要求：surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process、other。表面处理、硬度、热处理、盐雾等不要放进 parameters，放进 technical_requirements。
+4. 提取动态工艺要求：surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process、other。表面处理、硬度、热处理、盐雾等放进 technical_requirements；表面粗糙度只放进 parameters.surface_roughness_ra，不要重复输出为技术要求。
 5. 对压缩弹簧，额外判断是否属于圆柱螺旋压缩弹簧，并输出 spring_features：
    - spring_family 只能为 helical、disc、wave、rubber、gas、unknown。
    - spring_shape 只能为 cylindrical、conical、barrel、hourglass、unknown。
@@ -176,7 +183,8 @@ JSON 结构：
   "drawing_summary": {"drawing_name": "", "drawing_no": "", "version": ""},
   "parameters": {
     "material": {"value": "", "confidence": 0.0, "evidence": "", "need_human_review": true},
-    "wire_diameter": {"value": null, "unit": "mm", "tolerance_upper": null, "tolerance_lower": null, "confidence": 0.0, "evidence": "", "need_human_review": true}
+    "wire_diameter": {"value": null, "unit": "mm", "tolerance_upper": null, "tolerance_lower": null, "confidence": 0.0, "evidence": "", "need_human_review": true},
+    "surface_roughness_ra": {"value": 12.5, "unit": "μm", "surface_location": "两端面", "confidence": 0.0, "evidence": "▽ 12.5", "need_human_review": true}
   },
   "spring_features": {
     "spring_family": {"value": "helical", "confidence": 0.0, "evidence": "", "need_human_review": true},
@@ -241,7 +249,11 @@ def qwen_payload_to_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     parameters = payload.get("parameters") if isinstance(payload.get("parameters"), dict) else {}
     for field, item in parameters.items():
+        if _is_surface_roughness_field(field):
+            continue
         candidates.extend(_parameter_candidate(field, item))
+    if _is_compression_spring_type(spring_type):
+        candidates.extend(_surface_roughness_candidates(payload))
 
     spring_features = payload.get("spring_features") if isinstance(payload.get("spring_features"), dict) else {}
     for field in ("spring_family", "spring_shape", "manufacturing_method", "wire_section", "pitch_type"):
@@ -302,6 +314,8 @@ def qwen_payload_to_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     for item in payload.get("technical_requirements") or []:
         if not isinstance(item, dict):
+            continue
+        if _is_compression_spring_type(spring_type) and _is_surface_roughness_type(item.get("type")):
             continue
         field = _technical_type_to_field(str(item.get("type") or "other"))
         content = item.get("content")
@@ -404,6 +418,85 @@ def _parameter_candidate(field: str, item: Any) -> list[dict[str, Any]]:
     return [_candidate(field, normalized, {"confidence": 0.72, "evidence": str(item)})] if normalized not in (None, "") else []
 
 
+def _surface_roughness_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    seen: set[tuple[float, str, str]] = set()
+
+    def append(value: Any, item: dict[str, Any], evidence: Any, location: Any = None) -> None:
+        number = positive_surface_roughness(value)
+        if number is None:
+            return
+        evidence_text = str(evidence or "").strip()
+        normalized_location = str(location or "").strip() or surface_roughness_location(evidence_text)
+        key = (number, normalized_location, evidence_text)
+        if key in seen:
+            return
+        seen.add(key)
+        candidate = _candidate(
+            SURFACE_ROUGHNESS_FIELD,
+            number,
+            {**item, "evidence": evidence_text or f"Ra {number}"},
+            unit=SURFACE_ROUGHNESS_UNIT,
+            suggested_region="Qwen surface roughness recognition",
+        )
+        candidate["surface_location"] = normalized_location or None
+        results.append(candidate)
+
+    parameters = payload.get("parameters") if isinstance(payload.get("parameters"), dict) else {}
+    for field, raw_item in parameters.items():
+        if not _is_surface_roughness_field(field):
+            continue
+        item = raw_item if isinstance(raw_item, dict) else {"value": raw_item, "evidence": str(raw_item)}
+        value = item.get("value")
+        direct = positive_surface_roughness(value)
+        if direct is not None:
+            append(direct, item, item.get("evidence") or f"Ra {direct}", item.get("surface_location") or item.get("location"))
+        else:
+            for mention in surface_roughness_mentions(value):
+                append(mention["value"], item, item.get("evidence") or mention["evidence"], item.get("surface_location") or mention.get("location"))
+
+    for item in payload.get("technical_requirements") or []:
+        if not isinstance(item, dict) or not _is_surface_roughness_type(item.get("type")):
+            continue
+        direct = positive_surface_roughness(item.get("content"))
+        if direct is not None:
+            append(direct, item, item.get("evidence") or f"Ra {direct}", item.get("surface_location") or item.get("location"))
+        for mention in surface_roughness_mentions(item.get("content")):
+            append(mention["value"], item, item.get("evidence") or mention["evidence"], item.get("surface_location") or mention.get("location"))
+
+    evidence_texts: list[tuple[str, dict[str, Any]]] = []
+    for item in parameters.values():
+        if isinstance(item, dict) and item.get("evidence"):
+            evidence_texts.append((str(item["evidence"]), item))
+    notes = str(payload.get("notes") or "").strip()
+    if notes:
+        evidence_texts.append((notes, {"confidence": 0.68, "need_human_review": True}))
+    for text, item in evidence_texts:
+        for mention in surface_roughness_mentions(text):
+            append(mention["value"], item, mention["evidence"], mention.get("location"))
+    return results
+
+
+def _is_surface_roughness_field(value: Any) -> bool:
+    normalized = str(value or "").strip().casefold()
+    return normalized in {
+        SURFACE_ROUGHNESS_FIELD,
+        "surface_roughness",
+        "roughness_ra",
+        "ra",
+        "表面粗糙度",
+    }
+
+
+def _is_surface_roughness_type(value: Any) -> bool:
+    return str(value or "").strip().casefold() in {
+        "surface_roughness",
+        "roughness",
+        "surface_finish",
+        "表面粗糙度",
+    }
+
+
 def _normalize_parameter_value(field: str, value: Any) -> Any:
     if field == "end_grinding":
         return normalize_end_grinding(value)
@@ -449,6 +542,11 @@ def _spring_type_payload(value: Any) -> dict[str, Any] | None:
     if isinstance(value, str) and value.strip():
         return {"value": value.strip(), "label": _spring_label(value.strip()), "confidence": 0.76, "evidence": value.strip()}
     return None
+
+
+def _is_compression_spring_type(value: dict[str, Any] | None) -> bool:
+    text = str((value or {}).get("value") or "").strip().casefold()
+    return text == "compression_spring" or "compression" in text or "压缩" in text
 
 
 def _spring_label(value: Any) -> str:

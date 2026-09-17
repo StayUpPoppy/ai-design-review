@@ -56,6 +56,7 @@ def main() -> None:
           },
           "technical_requirements": [
             {"type": "surface", "content": "镀锌五彩", "confidence": 0.9, "evidence": "表面处理 镀锌五彩"},
+            {"type": "surface_roughness", "content": "两端面粗糙度 Ra 12.5μm", "confidence": 0.88, "evidence": "▽ 12.5"},
             {"type": "hardness", "content": "HRC30-35", "confidence": 0.86, "evidence": "硬度 HRC30-35"}
           ],
           "notes": "只输出识别到的尺寸"
@@ -67,6 +68,7 @@ def main() -> None:
     fields = {item["field"]: item for item in candidates}
     assert fields["wire_diameter"]["value"] == 2
     assert fields["surface_requirement"]["value"] == "镀锌五彩"
+    assert "surface_roughness_ra" not in fields
     assert fields["hardness"]["value"] == "HRC30-35"
     assert fields["spring_type"]["value"] == "扭转弹簧"
     assert fields["bend_radius"]["value"] == 3.5
@@ -98,7 +100,45 @@ def main() -> None:
     assert surface["raw_content"] == "镀锌五彩"
     assert surface["standard_content"] == "电镀-镀彩锌"
     assert surface["normalization_status"] == "alias_matched"
+    assert not any(item["type"] == "surface_roughness" for item in review["technical_requirements"])
+    _assert_surface_roughness_fallbacks(rules)
     print("qwen vision adapter test passed")
+
+
+def _assert_surface_roughness_fallbacks(rules: dict) -> None:
+    notes_payload = {
+        "spring_type": {"value": "compression_spring", "label": "压缩弹簧", "confidence": 0.95, "evidence": "压缩弹簧"},
+        "notes": "图纸中Ra 12.5为端面粗糙度要求，不作为尺寸参数提取。",
+    }
+    notes_candidates = qwen_payload_to_candidates(notes_payload)
+    roughness = [item for item in notes_candidates if item["field"] == "surface_roughness_ra"]
+    assert len(roughness) == 1
+    assert roughness[0]["value"] == 12.5
+    assert roughness[0]["surface_location"] == "端面"
+    notes_review = DrawingReviewWorkflow(rules).run(None, notes_candidates, run_standardization=False)
+    assert notes_review["spring_parameters"]["surface_roughness_ra"]["value"] == 12.5
+    assert notes_review["spring_parameters"]["surface_roughness_ra"]["need_human_review"] is True
+
+    bare_candidates = qwen_payload_to_candidates({"notes": "普通尺寸为 12.5，未标注粗糙度。"})
+    assert not any(item["field"] == "surface_roughness_ra" for item in bare_candidates)
+
+    duplicate_candidates = qwen_payload_to_candidates({
+        "spring_type": {"value": "compression_spring", "label": "压缩弹簧"},
+        "notes": "左端面 Ra 12.5，右端面 Ra 12.5。",
+    })
+    duplicate_review = DrawingReviewWorkflow(rules).run(None, duplicate_candidates, run_standardization=False)
+    assert duplicate_review["spring_parameters"]["surface_roughness_ra"]["value"] == 12.5
+    assert duplicate_review["spring_parameters"]["surface_roughness_ra"]["surface_location"] == "两端面"
+
+    conflict_candidates = qwen_payload_to_candidates({
+        "spring_type": {"value": "compression_spring", "label": "压缩弹簧"},
+        "notes": "左端面 Ra 6.3，右端面 Ra 12.5。",
+    })
+    conflict_review = DrawingReviewWorkflow(rules).run(None, conflict_candidates, run_standardization=False)
+    conflict = conflict_review["spring_parameters"]["surface_roughness_ra"]
+    assert conflict["value"] is None
+    assert conflict["roughness_conflict"] is True
+    assert {item["value"] for item in conflict["roughness_candidates"]} == {6.3, 12.5}
 
 
 def _assert_thinking_configuration() -> None:

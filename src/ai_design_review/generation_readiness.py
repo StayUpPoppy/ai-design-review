@@ -16,6 +16,7 @@ from .generation_contract import (
 )
 from .spring_templates import FIELD_LABELS
 from .spring_feasibility import assess_parameter_reasonableness
+from .surface_roughness import confirmed_surface_roughness_requirement, ensure_surface_roughness_parameter
 from .load_points import (
     canonical_load_point_label,
     ensure_load_point_ids,
@@ -109,6 +110,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
 def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]:
     """Build a compact drawing package from the fields the reviewer has confirmed."""
 
+    ensure_surface_roughness_parameter(review)
     apply_generation_defaults(review)
     ensure_load_point_ids(review)
     parameters = review.get("spring_parameters") or {}
@@ -118,6 +120,9 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
         for item in review.get("technical_requirements") or []
         if _technical_requirement_is_confirmed(item)
     ]
+    roughness_requirement = confirmed_surface_roughness_requirement(review)
+    if roughness_requirement:
+        technical_requirements = [roughness_requirement, *technical_requirements]
     load_points: list[dict[str, Any]] = []
     exported_load_point_labels: set[str] = set()
     for item in parameters.get("load_points") or []:
@@ -410,6 +415,7 @@ def _technical_label(value: str) -> str:
     labels = {
         "heat_treatment": "热处理",
         "surface": "表面处理",
+        "surface_roughness": "表面粗糙度",
         "salt_spray": "盐雾",
         "lifetime": "寿命",
         "environmental": "环保",

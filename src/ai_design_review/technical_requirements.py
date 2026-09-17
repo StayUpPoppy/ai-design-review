@@ -8,6 +8,7 @@ from typing import Any
 
 TECHNICAL_REQUIREMENT_TYPES = (
     "surface",
+    "surface_roughness",
     "hardness",
     "heat_treatment",
     "salt_spray",
@@ -19,6 +20,7 @@ TECHNICAL_REQUIREMENT_TYPES = (
 
 TECHNICAL_REQUIREMENT_TYPE_LABELS = {
     "surface": "表面处理",
+    "surface_roughness": "表面粗糙度",
     "hardness": "硬度要求",
     "heat_treatment": "热处理",
     "salt_spray": "盐雾试验",
@@ -45,6 +47,9 @@ def build_technical_requirements_text(requirements: list[Any]) -> str:
         if not content:
             continue
         requirement_type = normalize_technical_requirement_type(item.get("type"), default="other") or "other"
+        if requirement_type == "surface_roughness":
+            lines.append(f"{len(lines) + 1}.{content}")
+            continue
         label = TECHNICAL_REQUIREMENT_TYPE_LABELS.get(requirement_type, "其他要求")
         without_duplicate_label = re.sub(
             rf"^{re.escape(label)}\s*[:：]\s*",
@@ -69,6 +74,9 @@ def _single_line_technical_requirement_content(value: Any) -> str:
 _TYPE_ALIASES = {
     "surface_requirement": "surface",
     "surface_treatment": "surface",
+    "roughness": "surface_roughness",
+    "surface_finish": "surface_roughness",
+    "表面粗糙度": "surface_roughness",
     "hardness_requirement": "hardness",
     "heat": "heat_treatment",
     "heat-treatment": "heat_treatment",

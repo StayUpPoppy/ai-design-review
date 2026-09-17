@@ -112,6 +112,7 @@ const FIELD_LABELS = {
   solid_height: "压并高度",
   total_coils: "总圈数",
   active_coils: "有效圈数",
+  surface_roughness_ra: "表面粗糙度 Ra（μm）",
   end_coils: "端圈数",
   support_coils: "支承圈数（单端）",
   handedness: "旋向",
@@ -176,6 +177,7 @@ const FIELD_LABELS = {
 const TECH_LABELS = {
   heat_treatment: "热处理",
   surface: "表面处理",
+  surface_roughness: "表面粗糙度",
   salt_spray: "盐雾",
   lifetime: "寿命",
   environmental: "环保",
@@ -186,6 +188,7 @@ const TECH_LABELS = {
 
 const GENERATION_TECHNICAL_REQUIREMENT_LABELS = {
   surface: "表面处理",
+  surface_roughness: "表面粗糙度",
   hardness: "硬度要求",
   heat_treatment: "热处理",
   salt_spray: "盐雾试验",
@@ -195,7 +198,7 @@ const GENERATION_TECHNICAL_REQUIREMENT_LABELS = {
   other: "其他要求",
 };
 
-const TECH_REQUIREMENT_TYPES = Object.freeze(Object.keys(TECH_LABELS));
+const TECH_REQUIREMENT_TYPES = Object.freeze(Object.keys(TECH_LABELS).filter((type) => type !== "surface_roughness"));
 
 const VLM_AVAILABLE = false;
 
@@ -220,6 +223,7 @@ const COMPRESSION_CORE_PARAMETER_FIELDS = new Set([
   "free_length",
   "total_coils",
   "active_coils",
+  "surface_roughness_ra",
   "solid_height",
   "handedness",
   "end_type",
@@ -318,6 +322,7 @@ const LOCAL_SPRING_TEMPLATES = {
       { key: "solid_height", label: "压并高度", unit: "mm" },
       { key: "total_coils", label: "总圈数", unit: "turns", required: true },
       { key: "active_coils", label: "有效圈数", unit: "turns" },
+      { key: "surface_roughness_ra", label: "表面粗糙度 Ra（μm）", unit: "μm" },
       { key: "end_coils", label: "端圈数", unit: "turns" },
       { key: "support_coils", label: "支承圈数（单端）", unit: "turns" },
       { key: "handedness", label: "旋向", required: true },
@@ -1093,6 +1098,8 @@ function parameterAuditState(param) {
     source: sourceValues(param?.source),
     default_source: param?.default_source ?? null,
     evidence: param?.evidence ?? "",
+    surface_location: param?.surface_location ?? null,
+    roughness_conflict: Boolean(param?.roughness_conflict),
   };
 }
 
@@ -3309,6 +3316,7 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
     badges.push(reasonablenessSeverityLabel(reasonablenessSeverity));
   }
   const accuracyGradeStatus = field === "accuracy_grade" ? accuracyGradeStatusLabel(param) : "";
+  const roughnessCandidates = field === "surface_roughness_ra" ? surfaceRoughnessCandidatesHtml(param) : "";
   return `
     <div class="data-row${reasonablenessSeverity ? ` parameter-risk-${escapeHtml(reasonablenessSeverity)}` : ""}" data-kind="param" data-field="${escapeHtml(field)}">
       <div class="data-label">
@@ -3325,6 +3333,33 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
         <input data-role="tolerance" aria-label="${escapeHtml(label)}公差" value="${escapeHtml(formatTolerance(param))}">
       </label>
       ${confirmationButtonHtml(param, { kind: "parameter", field, review: state.review })}
+      ${roughnessCandidates}
+    </div>
+  `;
+}
+
+function surfaceRoughnessCandidatesHtml(param) {
+  const candidates = Array.isArray(param?.roughness_candidates) ? param.roughness_candidates : [];
+  const distinctValues = new Set(candidates.map((item) => Number(item?.value)).filter(Number.isFinite));
+  if (!param?.roughness_conflict && distinctValues.size < 2) return "";
+  return `
+    <div class="roughness-candidates" role="group" aria-label="表面粗糙度候选值">
+      <small>识别到多个 Ra 值，请选择当前弹簧端面的值，再确认一次。</small>
+      <div>
+        ${candidates.map((item, index) => {
+          const value = Number(item?.value);
+          if (!Number.isFinite(value) || value <= 0) return "";
+          const location = String(item?.location || "").trim();
+          const label = `Ra ${formatCompactNumber(value)}${location ? ` · ${location}` : ""}`;
+          const evidence = String(item?.evidence || "").trim();
+          return `
+            <span class="roughness-candidate-option">
+              <button type="button" class="roughness-candidate" data-role="roughness-candidate" data-candidate-index="${index}" title="${escapeHtml(evidence || label)}">${escapeHtml(label)}</button>
+              ${evidence ? `<small>${escapeHtml(evidence)}</small>` : ""}
+            </span>
+          `;
+        }).join("")}
+      </div>
     </div>
   `;
 }
@@ -5120,7 +5155,7 @@ function supplementInputMode(target) {
   const numericFields = new Set([
     "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length",
     "body_length", "solid_height", "total_coils", "active_coils", "end_coils", "support_coils",
-    "pitch", "spring_rate", "perpendicularity", "straightness", "permanent_set_limit",
+    "pitch", "spring_rate", "perpendicularity", "straightness", "permanent_set_limit", "surface_roughness_ra",
   ]);
   return numericFields.has(target) || target.startsWith("load_points.") ? "decimal" : "text";
 }
@@ -5185,6 +5220,7 @@ function createTechnicalRequirementId(review = state.review) {
 
 function normalizeTechnicalRequirementType(value) {
   const normalized = String(value || "").trim();
+  if (["surface_roughness", "roughness", "surface_finish", "表面粗糙度"].includes(normalized)) return "surface_roughness";
   return TECH_REQUIREMENT_TYPES.includes(normalized) ? normalized : "other";
 }
 
@@ -5671,6 +5707,22 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       valueBeforeState = null;
       refreshBulkConfirmationFollowupAfterLocalChange(messageId);
     });
+    row.querySelectorAll('[data-role="roughness-candidate"]').forEach((button) => {
+      button.addEventListener("click", () => {
+        activateReviewContext(messageId);
+        const candidate = param.roughness_candidates?.[Number(button.dataset.candidateIndex)];
+        const value = Number(candidate?.value);
+        if (!Number.isFinite(value) || value <= 0) return;
+        valueInput.value = formatCompactNumber(value);
+        valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+        param.surface_location = candidate?.location || null;
+        delete param.roughness_conflict;
+        valueInput.dispatchEvent(new Event("change", { bubbles: true }));
+        row.querySelectorAll('[data-role="roughness-candidate"]').forEach((other) => {
+          other.setAttribute("aria-pressed", other === button ? "true" : "false");
+        });
+      });
+    });
     const toleranceInput = row.querySelector('[data-role="tolerance"]');
     let toleranceBeforeState = null;
     const applyToleranceDraft = (event) => {
@@ -5717,6 +5769,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         metadata: eventType === "risk_value_confirmed" ? { accepted_warning: true } : {},
       });
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
+      if (field === "surface_roughness_ra") row.querySelector(".roughness-candidates")?.remove();
       if (field === "accuracy_grade") syncAccuracyGradeControls(root, param);
       scheduleParameterReasonablenessRefresh(messageId);
       refreshBulkConfirmationFollowupAfterLocalChange(messageId);
@@ -7467,6 +7520,7 @@ function bulkParameterInvalidReason(field, param) {
     if (COMPRESSION_GENERATION_CORE_FIELDS.includes(field)) generationContractValue(field, param.value);
     else if (field === "end_type") generationContractValue("end_coils_closed", param.value);
     else if (supplementInputMode(field) === "decimal" && !isFiniteReviewNumber(param.value)) return "参数值不是有效数字";
+    if (field === "surface_roughness_ra" && Number(param.value) <= 0) return "表面粗糙度 Ra 必须大于 0";
   } catch (error) {
     return error.message || String(error);
   }
@@ -7482,6 +7536,7 @@ function parameterConfirmationInvalidReason(field, param) {
     if (["total_coils", "active_coils"].includes(field) && !Number.isInteger(Number(value))) {
       return "圈数需要填写整数";
     }
+    if (field === "surface_roughness_ra" && Number(value) <= 0) return "表面粗糙度 Ra 必须大于 0";
   }
   const contractField = field === "end_type" ? "end_coils_closed" : field;
   if (["handedness", "end_grinding", "end_coils_closed"].includes(contractField)) {
@@ -7968,6 +8023,9 @@ function parameterValueControlHtml(field, param, label) {
         ${endConditionOptionsHtml(endOptions, param)}
       </select>
     `;
+  }
+  if (field === "surface_roughness_ra") {
+    return `<input data-role="value" type="number" min="0" step="any" inputmode="decimal" aria-label="${escapeHtml(label)}数值" value="${escapeHtml(formatFieldInput(param))}">`;
   }
   return `
     <input data-role="value" aria-label="${escapeHtml(label)}数值" value="${escapeHtml(formatFieldInput(param))}">
@@ -9265,6 +9323,7 @@ function normalizeReview(review) {
   cloned.agent_actions ||= [];
   cloned.change_history ||= [];
   cloned.technical_requirements ||= [];
+  ensureSurfaceRoughnessParameter(cloned);
   cloned.review_results ||= [];
   cloned.balloons ||= [];
   cloned.manual_confirmations ||= {};
@@ -9272,6 +9331,90 @@ function normalizeReview(review) {
   ensureLoadPointIds(cloned);
   applyGenerationDefaults(cloned);
   return cloned;
+}
+
+function ensureSurfaceRoughnessParameter(review) {
+  if (!review || currentSpringType(review) !== "compression_spring") return review;
+  review.spring_parameters ||= {};
+  review.spring_parameters.surface_roughness_ra ||= blankParam("μm");
+  review.spring_parameters.surface_roughness_ra.unit ||= "μm";
+
+  const template = review.spring_template ||= getLocalTemplate("compression_spring");
+  template.fields ||= [];
+  if (!template.fields.some((item) => item?.key === "surface_roughness_ra")) {
+    const activeIndex = template.fields.findIndex((item) => item?.key === "active_coils");
+    template.fields.splice(activeIndex >= 0 ? activeIndex + 1 : template.fields.length, 0, {
+      key: "surface_roughness_ra",
+      label: "表面粗糙度 Ra（μm）",
+      unit: "μm",
+    });
+  }
+
+  const legacy = [];
+  const retained = [];
+  (review.technical_requirements || []).forEach((item) => {
+    if (normalizeTechnicalRequirementType(item?.type) !== "surface_roughness") {
+      retained.push(item);
+      return;
+    }
+    const mentions = surfaceRoughnessMentions(item?.content);
+    const direct = Number(String(item?.content || "").trim().replace(",", "."));
+    if (!mentions.length && Number.isFinite(direct) && direct > 0) {
+      mentions.push({ value: direct, location: null, evidence: `Ra ${formatCompactNumber(direct)}` });
+    }
+    if (!mentions.length) {
+      retained.push(item);
+      return;
+    }
+    mentions.forEach((mention) => legacy.push({
+      ...mention,
+      evidence: item?.evidence || mention.evidence,
+      need_human_review: item?.need_human_review !== false,
+    }));
+  });
+  review.technical_requirements = retained;
+  const param = review.spring_parameters.surface_roughness_ra;
+  if (legacy.length && (param.value == null || param.value === "")) {
+    const unique = Array.from(new Map(legacy.map((item) => [Number(item.value), item])).values());
+    param.roughness_candidates = unique;
+    param.evidence = legacy.map((item) => item.evidence).filter(Boolean).join(" | ");
+    param.source = Array.from(new Set(["legacy_technical_requirement", ...sourceValues(param.source)]));
+    param.need_human_review = !(unique.length === 1 && legacy.every((item) => item.need_human_review === false));
+    if (unique.length === 1) {
+      param.value = unique[0].value;
+      param.surface_location = unique[0].location || null;
+      delete param.roughness_conflict;
+      if (!param.need_human_review) param.source = Array.from(new Set(["human_confirmed", ...sourceValues(param.source)]));
+    } else if (unique.length > 1) {
+      param.value = null;
+      param.roughness_conflict = true;
+    }
+  }
+  return review;
+}
+
+function surfaceRoughnessMentions(value) {
+  const text = String(value || "").trim();
+  if (!text) return [];
+  const patterns = [
+    /(?:^|[^A-Za-z])Ra\s*[:：=]?\s*(\d+(?:[.,]\d+)?)/gi,
+    /(?:表面)?粗糙度\s*(?:Ra\s*)?[:：=]?\s*(\d+(?:[.,]\d+)?)/gi,
+    /[▽△▼]\s*(\d+(?:[.,]\d+)?)/g,
+  ];
+  const mentions = [];
+  const seen = new Set();
+  patterns.forEach((pattern) => {
+    for (const match of text.matchAll(pattern)) {
+      const number = Number(String(match[1]).replace(",", "."));
+      if (!Number.isFinite(number) || number <= 0 || seen.has(number)) continue;
+      seen.add(number);
+      const context = text.slice(Math.max(0, match.index - 36), Math.min(text.length, match.index + match[0].length + 36));
+      const locationMatch = context.match(/两端(?:面)?|(?:左|右)端面|端面/);
+      const location = locationMatch?.[0]?.startsWith("两端") ? "两端面" : (locationMatch?.[0] || null);
+      mentions.push({ value: number, location, evidence: context.trim() || match[0] });
+    }
+  });
+  return mentions;
 }
 
 function currentSpringType(review) {
@@ -9377,6 +9520,7 @@ function confirmParam(param, field) {
   param.confidence = Math.max(Number(param.confidence) || 0, 0.99);
   param.source = Array.from(new Set(["human_confirmed", ...sourceValues(param.source)]));
   delete param.derived_value_stale;
+  if (field === "surface_roughness_ra") delete param.roughness_conflict;
   if (acceptsDefaultAccuracy) {
     param.source = ["human_confirmed"];
     param.evidence = `人工确认通用精度等级：${normalizeAccuracyGrade(param.value) || param.value}。`;
@@ -9644,6 +9788,8 @@ function makeGenerationParameterPackage(review = state.review) {
       content: item.content,
       confirmation_source: "human_confirmed",
     }));
+  const roughnessRequirement = confirmedSurfaceRoughnessRequirement(review);
+  if (roughnessRequirement) requirements.unshift(roughnessRequirement);
   const technicalRequirementsText = makeTechnicalRequirementsText(requirements);
   const exportedLoadPointLabels = new Set();
   const loadPoints = (review.spring_parameters?.load_points || [])
@@ -9695,6 +9841,21 @@ function makeGenerationParameterPackage(review = state.review) {
   };
 }
 
+function confirmedSurfaceRoughnessRequirement(review) {
+  if (currentSpringType(review) !== "compression_spring") return null;
+  const param = review?.spring_parameters?.surface_roughness_ra;
+  const value = Number(param?.value);
+  if (!param || param.need_human_review !== false || !Number.isFinite(value) || value <= 0) return null;
+  const location = String(param.surface_location || "").trim();
+  return {
+    type: "surface_roughness",
+    content: location
+      ? `${location}粗糙度 Ra ${formatCompactNumber(value)}μm`
+      : `表面粗糙度 Ra ${formatCompactNumber(value)}μm`,
+    confirmation_source: "human_confirmed",
+  };
+}
+
 function makeTechnicalRequirementsText(requirements) {
   const lines = [];
   (Array.isArray(requirements) ? requirements : []).forEach((item) => {
@@ -9706,6 +9867,10 @@ function makeTechnicalRequirementsText(requirements) {
       .replace(/；{2,}/g, "；")
       .trim();
     const type = normalizeTechnicalRequirementType(item?.type);
+    if (type === "surface_roughness") {
+      lines.push(`${lines.length + 1}.${content}`);
+      return;
+    }
     const label = GENERATION_TECHNICAL_REQUIREMENT_LABELS[type] || "其他要求";
     const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const withoutDuplicateLabel = content.replace(new RegExp(`^${escapedLabel}\\s*[:：]\\s*`), "").trim();

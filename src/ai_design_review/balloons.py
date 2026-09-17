@@ -10,6 +10,7 @@ FIELD_LABELS = {
     "free_length": "自由长度",
     "total_coils": "总圈数",
     "active_coils": "有效圈数",
+    "surface_roughness_ra": "表面粗糙度 Ra（μm）",
     "handedness": "旋向",
     "heat_treatment": "热处理",
     "surface_requirement": "表面/外观",

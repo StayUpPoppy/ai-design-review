@@ -48,6 +48,7 @@ FIELD_SYNONYMS: dict[str, tuple[str, ...]] = {
     "free_length": ("自由长度", "自由高度", "自由长", "H0"),
     "total_coils": ("总圈数", "圈数", "n1"),
     "active_coils": ("有效圈数", "工作圈数"),
+    "surface_roughness_ra": ("表面粗糙度", "粗糙度", "Ra"),
     "support_coils": ("支承圈数", "支撑圈数", "单端支承圈数"),
     "solid_height": ("压并高度", "并紧高度"),
     "end_type": ("端部形式", "端圈压并", "端部", "端型", "不压并", "压并", "并紧", "不并紧", "闭口", "开口"),
@@ -95,6 +96,7 @@ PLAN_TARGET_FIELDS = (
     "free_length",
     "total_coils",
     "active_coils",
+    "surface_roughness_ra",
     "support_coils",
     "end_type",
     "end_grinding",
@@ -113,6 +115,7 @@ NUMERIC_SUPPLEMENT_FIELDS = {
     "solid_height",
     "total_coils",
     "active_coils",
+    "surface_roughness_ra",
     "end_coils",
     "support_coils",
     "pitch",
@@ -400,6 +403,12 @@ def parse_technical_requirement_change_request(
 
     text = str(message or "").strip()
     if not text:
+        return None
+    # Surface roughness is a first-class review parameter.  Even though older
+    # reviews may still contain it as a technical requirement, new chat edits
+    # must use the parameter proposal path so the UI and SolidWorks export keep
+    # a single source of truth.
+    if _detect_target_field(text) == "surface_roughness_ra":
         return None
     has_action = any(
         term in text

@@ -22,6 +22,7 @@ const context = {
   TECH_LABELS: { surface: "表面处理" },
   GENERATION_TECHNICAL_REQUIREMENT_LABELS: {
     surface: "表面处理",
+    surface_roughness: "表面粗糙度",
     hardness: "硬度要求",
     heat_treatment: "热处理",
     salt_spray: "盐雾试验",
@@ -49,6 +50,7 @@ const context = {
     return Boolean(String(point?.label || "").trim()) && Number.isFinite(height) && Number.isFinite(force) && height > 0 && force >= 0;
   },
   targetFieldLabel: (field) => ({ material: "材料", mean_diameter: "中径", active_coils: "有效圈数" }[field] || field),
+  formatCompactNumber: (value) => Number.isInteger(Number(value)) ? String(Number(value)) : String(Number(Number(value).toFixed(4))),
 };
 vm.createContext(context);
 vm.runInContext(appSource.slice(handednessStart, handednessEnd), context);
@@ -109,6 +111,27 @@ assert.equal(
 const noRequirementsReview = structuredClone(review);
 noRequirementsReview.technical_requirements = [];
 assert.equal(context.makeGenerationParameterPackage(noRequirementsReview).generation_parameters.technical_requirements_text, "");
+
+const pendingRoughnessReview = structuredClone(review);
+pendingRoughnessReview.spring_parameters.surface_roughness_ra = {
+  value: 12.5,
+  unit: "μm",
+  surface_location: "两端面",
+  need_human_review: true,
+};
+assert.equal(
+  context.makeGenerationParameterPackage(pendingRoughnessReview).generation_parameters.technical_requirements_text,
+  "1.表面处理：镀锌",
+);
+const confirmedRoughnessReview = structuredClone(pendingRoughnessReview);
+confirmedRoughnessReview.spring_parameters.surface_roughness_ra.need_human_review = false;
+const roughnessPackage = context.makeGenerationParameterPackage(confirmedRoughnessReview);
+assert.equal(roughnessPackage.generation_parameters.technical_requirements_text, "1.两端面粗糙度 Ra 12.5μm\n2.表面处理：镀锌");
+assert.equal(roughnessPackage.generation_parameters.technical_requirements[0].type, "surface_roughness");
+assert.equal(roughnessPackage.generation_parameters.spring_parameters.surface_roughness_ra, undefined);
+
+assert.match(appSource, /active_coils[^]*surface_roughness_ra[^]*end_coils/);
+assert.match(appSource, /data-role="roughness-candidate"/);
 
 const pendingLoadPointReview = structuredClone(review);
 pendingLoadPointReview.spring_parameters.load_points.push({ label: "F2", height: 30, force: 150, need_human_review: true });

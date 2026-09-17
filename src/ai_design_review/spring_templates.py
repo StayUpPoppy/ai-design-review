@@ -31,6 +31,7 @@ SPRING_TEMPLATES: dict[str, dict[str, Any]] = {
             {"key": "solid_height", "label": "压并高度", "unit": "mm"},
             {"key": "total_coils", "label": "总圈数", "unit": "turns", "required": True},
             {"key": "active_coils", "label": "有效圈数", "unit": "turns"},
+            {"key": "surface_roughness_ra", "label": "表面粗糙度 Ra（μm）", "unit": "μm"},
             {"key": "end_coils", "label": "端圈数", "unit": "turns"},
             {"key": "support_coils", "label": "支承圈数（单端）", "unit": "turns"},
             {"key": "handedness", "label": "旋向", "required": True},

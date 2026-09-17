@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from math import isfinite
 from typing import Any
 
 
@@ -33,6 +34,12 @@ NORMALIZATION_KEYS = (
     "normalization_source",
     "normalization_confidence",
     "normalization_reason",
+)
+
+SURFACE_ROUGHNESS_KEYS = (
+    "surface_location",
+    "roughness_candidates",
+    "roughness_conflict",
 )
 
 
@@ -117,7 +124,53 @@ def _merge_field(field: str, ordered: list[dict[str, Any]]) -> dict[str, Any]:
     for key in NORMALIZATION_KEYS:
         if key in best:
             merged[key] = best[key]
+    if field == "surface_roughness_ra":
+        candidates = _surface_roughness_candidates(ordered)
+        merged["roughness_candidates"] = candidates
+        if len({item["value"] for item in candidates}) > 1:
+            merged["value"] = None
+            merged["roughness_conflict"] = True
+            merged["need_human_review"] = True
+        elif candidates:
+            merged["value"] = candidates[0]["value"]
+            merged["surface_location"] = candidates[0].get("location")
+        for key in SURFACE_ROUGHNESS_KEYS:
+            if key in best and key not in merged:
+                merged[key] = best[key]
     return merged
+
+
+def _surface_roughness_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    by_value: dict[float, dict[str, Any]] = {}
+    for item in items:
+        try:
+            value = float(item.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if not isfinite(value) or value <= 0:
+            continue
+        existing = by_value.get(value)
+        if existing is None:
+            existing = {
+                "value": value,
+                "location": item.get("surface_location"),
+                "evidence": item.get("evidence", ""),
+                "source": item.get("source", "unknown"),
+                "_locations": {str(item.get("surface_location") or "")},
+            }
+            by_value[value] = existing
+            candidates.append(existing)
+            continue
+        existing["_locations"].add(str(item.get("surface_location") or ""))
+        evidence = str(item.get("evidence") or "").strip()
+        if evidence and evidence not in str(existing.get("evidence") or ""):
+            existing["evidence"] = " | ".join(filter(None, [str(existing.get("evidence") or "").strip(), evidence]))
+    for candidate in candidates:
+        locations = candidate.pop("_locations", set())
+        if "两端面" in locations or ({"左端面", "右端面"} <= locations):
+            candidate["location"] = "两端面"
+    return candidates
 
 
 def _normalize_load_point(candidate: dict[str, Any]) -> dict[str, Any]:

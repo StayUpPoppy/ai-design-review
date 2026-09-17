@@ -18,6 +18,7 @@ def main() -> None:
     _assert_explains_existing_standardization_result()
     _assert_asks_for_missing_target_value()
     _assert_proposes_patch_without_applying()
+    _assert_proposes_surface_roughness_parameter_patch()
     _assert_detects_full_plan_without_hardcoded_actions()
     _assert_requests_missing_context_before_full_plan()
     _assert_recognizes_natural_standardization_request()
@@ -63,6 +64,18 @@ def _assert_proposes_patch_without_applying() -> None:
     assert action["proposed_value"] == 22
     assert action["unit"] == "mm"
     assert review["spring_parameters"]["outer_diameter"]["value"] == 20
+
+
+def _assert_proposes_surface_roughness_parameter_patch() -> None:
+    review = _review()
+    payload = chat_about_standardization(review, "表面粗糙度改为12.5", use_llm=False)
+    assert payload["intent"]["type"] == "parameter_change_request"
+    assert payload["intent"]["target_field"] == "surface_roughness_ra"
+    action = payload["suggested_actions"][0]
+    assert action["type"] == "propose_parameter_patch"
+    assert action["target_field"] == "surface_roughness_ra"
+    assert action["proposed_value"] == 12.5
+    assert "surface_roughness_ra" not in review["spring_parameters"]
     assert "不会自动写回" in payload["reply"]
     assert action["validation"]["status"] == "ready"
     assert action["impact_preview"]["status"] == "ready"

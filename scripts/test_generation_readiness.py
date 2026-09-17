@@ -11,6 +11,7 @@ from ai_design_review.generation_contract import COMPRESSION_GENERATION_EXPORT_F
 from ai_design_review.generation_readiness import assess_generation_readiness, build_generation_parameter_package
 from ai_design_review.generation_schemas import GenerationParameterPackageV1, GenerationParameterPackageV2
 from ai_design_review.standardization_chat_agent import chat_about_standardization
+from ai_design_review.surface_roughness import ensure_surface_roughness_parameter
 from ai_design_review.technical_requirements import build_technical_requirements_text
 
 
@@ -24,6 +25,8 @@ def main() -> None:
     _assert_pending_field_is_omitted_but_package_exports()
     _assert_technical_requirements_require_explicit_confirmation()
     _assert_technical_requirements_text_formatting()
+    _assert_surface_roughness_is_optional_and_exported_as_note()
+    _assert_legacy_surface_roughness_is_promoted()
     _assert_duplicate_technical_requirements_block_release()
     _assert_load_points_require_explicit_confirmation_and_export_cleanly()
     _assert_contract_validation()
@@ -284,6 +287,60 @@ def _assert_technical_requirements_text_formatting() -> None:
         "8.其他要求：包装时防潮。",
     ))
     assert build_technical_requirements_text([]) == ""
+
+
+def _assert_surface_roughness_is_optional_and_exported_as_note() -> None:
+    pending = _ready_review()
+    pending["spring_parameters"]["surface_roughness_ra"] = {
+        "value": 12.5,
+        "unit": "μm",
+        "surface_location": "两端面",
+        "need_human_review": True,
+    }
+    assert assess_generation_readiness(pending)["status"] == "ready"
+    pending_package = build_generation_parameter_package(pending)
+    assert "surface_roughness_ra" not in pending_package["generation_parameters"]["spring_parameters"]
+    assert all(item["type"] != "surface_roughness" for item in pending_package["generation_parameters"]["technical_requirements"])
+
+    confirmed = deepcopy(pending)
+    confirmed["spring_parameters"]["surface_roughness_ra"]["need_human_review"] = False
+    confirmed_package = build_generation_parameter_package(confirmed)
+    GenerationParameterPackageV2.model_validate(confirmed_package)
+    requirements = confirmed_package["generation_parameters"]["technical_requirements"]
+    assert requirements[0] == {
+        "type": "surface_roughness",
+        "content": "两端面粗糙度 Ra 12.5μm",
+        "confirmation_source": "human_confirmed",
+    }
+    assert confirmed_package["generation_parameters"]["technical_requirements_text"].startswith(
+        "1.两端面粗糙度 Ra 12.5μm\n2.表面处理：镀锌"
+    )
+    assert "surface_roughness_ra" not in confirmed_package["generation_parameters"]["spring_parameters"]
+
+
+def _assert_legacy_surface_roughness_is_promoted() -> None:
+    review = _ready_review()
+    review["spring_template"] = {
+        "spring_type": "compression_spring",
+        "label": "压缩弹簧",
+        "fields": [{"key": "active_coils", "label": "有效圈数", "unit": "turns"}, {"key": "end_coils", "label": "端圈数", "unit": "turns"}],
+    }
+    review["technical_requirements"].insert(0, {
+        "type": "surface_roughness",
+        "content": "两端面粗糙度 Ra 12.5μm",
+        "need_human_review": False,
+        "source": ["qwen_vision"],
+    })
+    assert ensure_surface_roughness_parameter(review) is True
+    roughness = review["spring_parameters"]["surface_roughness_ra"]
+    assert roughness["value"] == 12.5
+    assert roughness["surface_location"] == "两端面"
+    assert roughness["need_human_review"] is False
+    assert not any(item["type"] == "surface_roughness" for item in review["technical_requirements"])
+    keys = [item["key"] for item in review["spring_template"]["fields"]]
+    assert keys == ["active_coils", "surface_roughness_ra", "end_coils"]
+    package = build_generation_parameter_package(review)
+    assert package["generation_parameters"]["technical_requirements"][0]["content"] == "两端面粗糙度 Ra 12.5μm"
 
 
 def _assert_duplicate_technical_requirements_block_release() -> None:

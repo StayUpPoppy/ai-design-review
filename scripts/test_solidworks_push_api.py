@@ -59,6 +59,10 @@ def ready_review() -> dict[str, object]:
             "free_length": parameter(50, "mm"),
             "total_coils": parameter(9, "圈"),
             "active_coils": parameter(7, "圈"),
+            "surface_roughness_ra": {
+                **parameter(12.5, "μm"),
+                "surface_location": "两端面",
+            },
             "handedness": parameter("left"),
             "end_type": parameter("closed_and_ground"),
             "end_grinding": parameter("ground"),
@@ -210,6 +214,10 @@ def main() -> None:
                 assert model["extraProperties"]["Fb"] == 2300
                 assert model["extraProperties"]["F1"] == 2000
                 assert model["extraProperties"]["F2"] == 2100
+                assert model["extraProperties"]["表面粗糙度Ra"] == 12.5
+                assert isinstance(model["extraProperties"]["表面粗糙度Ra"], float)
+                assert model["extraProperties"]["技术要求"].startswith("1.两端面粗糙度 Ra 12.5μm\n")
+                assert "surface_roughness_ra" not in model["modelParameters"]
                 assert job["execution_options"]["solidworks_payload"] == payload
 
                 duplicate_create = client.post(

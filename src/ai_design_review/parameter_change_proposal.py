@@ -383,6 +383,19 @@ def _resolve_proposal(
             continue
         target = str(action.get("target_field") or "")
         root = target.split(".")[0]
+        if root == "surface_roughness_ra" and action.get("type") == "propose_parameter_patch":
+            roughness = _number(action.get("proposed_value"))
+            if roughness is None or roughness <= 0:
+                blocking.append(
+                    {
+                        "code": "surface_roughness_invalid",
+                        "field": target,
+                        "message": "表面粗糙度 Ra 必须是大于 0 的数值。",
+                    }
+                )
+                continue
+            action["proposed_value"] = float(roughness)
+            action.setdefault("unit", "μm")
         if root in DESIGN_GOAL_FIELDS and action.get("type") == "propose_parameter_patch":
             recommendations.append(
                 {

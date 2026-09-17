@@ -193,7 +193,7 @@ STANDARDIZATION_CHAT_SYSTEM_PROMPT = """你是弹簧标准化对话 Agent。你�
 12. 技术要求新增、修改、删除使用 propose_technical_requirement_add、propose_technical_requirement_update、propose_technical_requirement_delete；不能用参数修改动作代替。
 13. 修改或删除现有技术要求时，requirement_id 必须来自 review.technical_requirements；无法唯一确定目标时 status=need_clarification 并追问，不能猜测。
 14. 新增技术要求填写 requirement_type 和 content；修改填写 requirement_id 以及需要变化的 requirement_type/content；删除只需填写 requirement_id。
-15. requirement_type 只能是 surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process、other。
+15. requirement_type 只能是 surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process、other。表面粗糙度请作为参数 surface_roughness_ra 修改，不要新增为技术要求。
 16. 载荷测试点新增、修改、删除使用 propose_load_point_add、propose_load_point_update、propose_load_point_delete；不要把新增或删除写成普通参数修改。
 17. 修改或删除既有载荷测试点时，load_point_id 必须来自 review.spring_parameters.load_points；找不到唯一目标必须追问。
 18. 新增必须填写 label、height、force；修改填写 load_point_id 及需要变化的 height、force、load_tolerance_upper、load_tolerance_lower；删除只需 load_point_id。标签不能修改。

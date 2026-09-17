@@ -96,6 +96,7 @@ from .standardization_chat_llm import standardization_chat_llm_runtime_status
 from .spring_feasibility import assess_parameter_reasonableness
 from .solidworks import build_solidworks_command
 from .load_points import ensure_load_point_ids
+from .surface_roughness import ensure_surface_roughness_parameter
 from .technical_requirements import ensure_technical_requirement_ids
 from .workflow import DrawingReviewWorkflow, apply_standardization_to_review
 
@@ -2063,6 +2064,7 @@ def _create_review_persistence(
     artifact_dir: str,
     identity: IdentityContext,
 ) -> dict[str, Any]:
+    ensure_surface_roughness_parameter(review)
     apply_generation_defaults(review)
     ensure_load_point_ids(review)
     ensure_technical_requirement_ids(review)
@@ -2092,6 +2094,7 @@ def _load_persisted_review(
         if stored is None:
             raise HTTPException(status_code=404, detail="Review not found.")
         review = stored["review"]
+        ensure_surface_roughness_parameter(review)
         apply_generation_defaults(review)
         ensure_load_point_ids(review)
         ensure_technical_requirement_ids(review)
@@ -2099,6 +2102,7 @@ def _load_persisted_review(
     if not _local_job_owned(review_path.parent, identity.user_id) or not review_path.exists():
         raise HTTPException(status_code=404, detail="Review not found.")
     review = read_json(review_path)
+    ensure_surface_roughness_parameter(review)
     apply_generation_defaults(review)
     ensure_load_point_ids(review)
     ensure_technical_requirement_ids(review)
@@ -2118,6 +2122,7 @@ def _save_review_persistence(
     events: list[dict[str, Any]] | None = None,
     identity: IdentityContext,
 ) -> dict[str, Any]:
+    ensure_surface_roughness_parameter(review)
     apply_generation_defaults(review)
     ensure_load_point_ids(review)
     ensure_technical_requirement_ids(review)

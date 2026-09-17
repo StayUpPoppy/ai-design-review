@@ -4,6 +4,7 @@ import math
 from typing import Any
 
 from .generation_contract import handedness_label
+from .surface_roughness import positive_surface_roughness, surface_roughness_mentions
 
 
 def build_solidworks_command(
@@ -61,6 +62,11 @@ def build_solidworks_command(
         "F1": load_values["F1"]["force"],
         "F2": load_values["F2"]["force"],
     }
+    surface_roughness_ra = _surface_roughness_ra(generation_parameters)
+    if surface_roughness_ra is not None:
+        # SolidWorks expects a unitless JSON number here. Keep it as float even
+        # when the drawing contains an integral Ra value such as ``Ra 12``.
+        extra_properties["表面粗糙度Ra"] = surface_roughness_ra
     spring_label = str(source.get("spring_type_label") or "压缩弹簧")
     return {
         "TaskId": task_id,
@@ -136,3 +142,31 @@ def _finite_number(value: Any) -> float | int | None:
     if not math.isfinite(number):
         return None
     return int(number) if number.is_integer() else round(number, 3)
+
+
+def _surface_roughness_ra(generation_parameters: dict[str, Any]) -> float | None:
+    """Return confirmed Ra roughness as a unitless float for SolidWorks."""
+
+    texts: list[str] = []
+    for item in generation_parameters.get("technical_requirements") or []:
+        if not isinstance(item, dict):
+            continue
+        requirement_type = str(item.get("type") or "").strip().casefold()
+        content = str(item.get("content") or "").strip()
+        if requirement_type in {"surface_roughness", "roughness"}:
+            direct = positive_surface_roughness(item.get("surface_roughness_ra"))
+            if direct is not None:
+                return float(direct)
+        if requirement_type in {"surface_roughness", "roughness"} and content:
+            texts.insert(0, content)
+        elif content:
+            texts.append(content)
+    technical_text = str(generation_parameters.get("technical_requirements_text") or "").strip()
+    if technical_text:
+        texts.append(technical_text)
+
+    for text in texts:
+        mentions = surface_roughness_mentions(text)
+        if mentions:
+            return float(mentions[0]["value"])
+    return None

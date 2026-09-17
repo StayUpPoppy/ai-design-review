@@ -181,6 +181,22 @@ def _assert_non_geometry_change_and_invalid_coils() -> None:
     assert invalid["status"] == "blocked"
     assert any("有效圈数不能大于总圈数" in item.get("message", "") for item in invalid["blocking_issues"])
 
+    roughness = build_parameter_change_proposal(
+        _review(),
+        [_patch("surface_roughness_ra", "12.5")],
+        user_goal="表面粗糙度改为 Ra 12.5",
+    )
+    assert roughness["status"] in {"ready", "warning"}
+    assert roughness["direct_changes"][0]["after"] == 12.5
+
+    invalid_roughness = build_parameter_change_proposal(
+        _review(),
+        [_patch("surface_roughness_ra", 0)],
+        user_goal="表面粗糙度改为 0",
+    )
+    assert invalid_roughness["status"] == "blocked"
+    assert any(item.get("code") == "surface_roughness_invalid" for item in invalid_roughness["blocking_issues"])
+
 
 def _assert_end_condition_keeps_protocol_field_in_sync() -> None:
     review = _review()

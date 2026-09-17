@@ -270,7 +270,7 @@ class DrawingReviewWorkflow:
                 "normalization_confidence": normalized["normalization_confidence"],
                 "normalization_reason": normalized["normalization_reason"],
             }
-        return {
+        result = {
             "value": value,
             "unit": item.get("unit") or default_unit,
             "tolerance_upper": item.get("tolerance_upper"),
@@ -284,6 +284,15 @@ class DrawingReviewWorkflow:
             "suggested_region": item.get("suggested_region", ""),
             **extra,
         }
+        if field == "surface_roughness_ra":
+            result.update(
+                {
+                    key: item[key]
+                    for key in ("surface_location", "roughness_candidates", "roughness_conflict")
+                    if key in item
+                }
+            )
+        return result
 
     def _load_point(self, item: dict[str, Any]) -> dict[str, Any]:
         value = item.get("value", {})
