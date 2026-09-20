@@ -149,7 +149,7 @@ def main() -> None:
                 assert frozen_parameters["end_grinding"]["value"] == 1
                 assert frozen_parameters["end_coils_closed"]["value"] == 1
                 package_technical_text = package.json()["parameter_package"]["generation_parameters"]["technical_requirements_text"]
-                assert package_technical_text == "1.表面处理：表面镀锌。\n2.工艺要求：去除毛刺。；不得有锐边。"
+                assert package_technical_text == "技术要求\n1.表面处理：表面镀锌。\n2.工艺要求：去除毛刺。；不得有锐边。"
 
                 assert client.patch(
                     "/api/admin/generation-templates/mock/compression-spring/versions/v4/status",

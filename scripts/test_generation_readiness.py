@@ -13,7 +13,7 @@ from ai_design_review.generation_schemas import GenerationParameterPackageV1, Ge
 from ai_design_review.solidworks import build_solidworks_command
 from ai_design_review.standardization_chat_agent import chat_about_standardization
 from ai_design_review.surface_roughness import ensure_surface_roughness_parameter
-from ai_design_review.technical_requirements import build_technical_requirements_text
+from ai_design_review.technical_requirements import build_technical_requirements_text, ensure_technical_requirements_title
 
 
 def main() -> None:
@@ -84,7 +84,7 @@ def _assert_ready_review_builds_frozen_package() -> None:
     ]
     assert "torque_points" not in package["generation_parameters"]
     assert package["generation_parameters"]["technical_requirements"][0]["content"] == "镀锌"
-    assert package["generation_parameters"]["technical_requirements_text"] == "1.表面处理：镀锌"
+    assert package["generation_parameters"]["technical_requirements_text"] == "技术要求\n1.表面处理：镀锌"
     assert package["derived_parameters"]["mean_diameter"]["value"] == 18
     assert package["derived_parameters"]["spring_index"]["value"] == 9
     assert package["derived_parameters"]["slenderness_ratio"]["value"] == round(40 / 18, 4)
@@ -296,7 +296,7 @@ def _assert_technical_requirements_require_explicit_confirmation() -> None:
     assert "requirement_id" not in requirements[0]
     assert "source" not in requirements[0]
     assert build_generation_parameter_package(review)["generation_parameters"]["technical_requirements_text"] == (
-        "1.表面处理：表面镀锌。"
+        "技术要求\n1.表面处理：表面镀锌。"
     )
 
 
@@ -313,6 +313,7 @@ def _assert_technical_requirements_text_formatting() -> None:
         {"type": "other", "content": "  "},
     ]
     assert build_technical_requirements_text(requirements) == "\n".join((
+        "技术要求",
         "1.表面处理：表面镀锌。",
         "2.硬度要求：硬度 HRC 45～50。",
         "3.热处理：淬火并回火。",
@@ -323,6 +324,10 @@ def _assert_technical_requirements_text_formatting() -> None:
         "8.其他要求：包装时防潮。",
     ))
     assert build_technical_requirements_text([]) == ""
+    assert ensure_technical_requirements_title("") == ""
+    assert ensure_technical_requirements_title("技术要求\n") == ""
+    assert ensure_technical_requirements_title("1.其他要求：端圈并紧磨平。") == "技术要求\n1.其他要求：端圈并紧磨平。"
+    assert ensure_technical_requirements_title("技术要求\n1.其他要求：端圈并紧磨平。") == "技术要求\n1.其他要求：端圈并紧磨平。"
 
 
 def _assert_surface_roughness_is_optional_and_exported_as_note() -> None:
@@ -349,7 +354,7 @@ def _assert_surface_roughness_is_optional_and_exported_as_note() -> None:
         "confirmation_source": "human_confirmed",
     }
     assert confirmed_package["generation_parameters"]["technical_requirements_text"].startswith(
-        "1.两端面粗糙度 Ra 12.5μm\n2.表面处理：镀锌"
+        "技术要求\n1.两端面粗糙度 Ra 12.5μm\n2.表面处理：镀锌"
     )
     assert "surface_roughness_ra" not in confirmed_package["generation_parameters"]["spring_parameters"]
 

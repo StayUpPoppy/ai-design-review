@@ -84,7 +84,7 @@ assert.equal(JSON.stringify(packageData.generation_parameters.load_points), JSON
 }]));
 assert.equal(packageData.generation_parameters.technical_requirements[0].content, "镀锌");
 assert.equal(packageData.generation_parameters.technical_requirements[0].requirement_id, undefined);
-assert.equal(packageData.generation_parameters.technical_requirements_text, "1.表面处理：镀锌");
+assert.equal(packageData.generation_parameters.technical_requirements_text, "技术要求\n1.表面处理：镀锌");
 
 const pendingRequirementReview = structuredClone(review);
 pendingRequirementReview.technical_requirements[0].requirement_id = "techreq-confirmed";
@@ -100,7 +100,7 @@ assert.deepEqual(
   Object.keys(filteredPackage.generation_parameters.technical_requirements[0]),
   ["type", "content", "confirmation_source"],
 );
-assert.equal(filteredPackage.generation_parameters.technical_requirements_text, "1.表面处理：镀锌");
+assert.equal(filteredPackage.generation_parameters.technical_requirements_text, "技术要求\n1.表面处理：镀锌");
 
 const formattedRequirementsReview = structuredClone(review);
 formattedRequirementsReview.technical_requirements = [
@@ -110,7 +110,7 @@ formattedRequirementsReview.technical_requirements = [
 ];
 assert.equal(
   context.makeGenerationParameterPackage(formattedRequirementsReview).generation_parameters.technical_requirements_text,
-  "1.表面处理：表面镀锌。\n2.盐雾试验：96小时。\n3.工艺要求：去除毛刺。；不得有锐边。",
+  "技术要求\n1.表面处理：表面镀锌。\n2.盐雾试验：96小时。\n3.工艺要求：去除毛刺。；不得有锐边。",
 );
 
 const noRequirementsReview = structuredClone(review);
@@ -126,12 +126,12 @@ pendingRoughnessReview.spring_parameters.surface_roughness_ra = {
 };
 assert.equal(
   context.makeGenerationParameterPackage(pendingRoughnessReview).generation_parameters.technical_requirements_text,
-  "1.表面处理：镀锌",
+  "技术要求\n1.表面处理：镀锌",
 );
 const confirmedRoughnessReview = structuredClone(pendingRoughnessReview);
 confirmedRoughnessReview.spring_parameters.surface_roughness_ra.need_human_review = false;
 const roughnessPackage = context.makeGenerationParameterPackage(confirmedRoughnessReview);
-assert.equal(roughnessPackage.generation_parameters.technical_requirements_text, "1.两端面粗糙度 Ra 12.5μm\n2.表面处理：镀锌");
+assert.equal(roughnessPackage.generation_parameters.technical_requirements_text, "技术要求\n1.两端面粗糙度 Ra 12.5μm\n2.表面处理：镀锌");
 assert.equal(roughnessPackage.generation_parameters.technical_requirements[0].type, "surface_roughness");
 assert.equal(roughnessPackage.generation_parameters.spring_parameters.surface_roughness_ra, undefined);
 

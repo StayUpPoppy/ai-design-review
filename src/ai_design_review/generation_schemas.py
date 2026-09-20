@@ -193,6 +193,11 @@ class GenerationParametersV2(GenerationParametersV1):
     spring_parameters: CompressionSpringGenerationInputsV2 = Field(
         description="SolidWorks 的八个必填建模字段，以及可选的材料字段。"
     )
+    technical_requirements_text: str = Field(
+        default="",
+        description="非空时以“技术要求\\n”开头，后接按页面顺序编号的已确认要求；没有已确认要求时为空字符串。",
+        examples=["技术要求\n1.表面处理：表面镀锌。\n2.盐雾试验：96小时。"],
+    )
 
 
 class GenerationExportPolicyV2(BaseModel):
@@ -237,7 +242,7 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
                 },
                 "load_points": [{"label": "F1", "height": {"value": 25.0, "unit": "mm"}, "force": {"value": 100.0, "unit": "N", "tolerance_upper": 6.0, "tolerance_lower": -6.0}, "confirmation_source": "human_confirmed"}],
                 "technical_requirements": [{"type": "other", "content": "两端磨平，表面镀锌。", "confirmation_source": "human_confirmed"}],
-                "technical_requirements_text": "1.其他要求：两端磨平，表面镀锌。",
+                "technical_requirements_text": "技术要求\n1.其他要求：两端磨平，表面镀锌。",
             },
             "derived_parameters": {},
             "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10, "有效圈数n": 8, "是否磨平": 1, "压并高度Hb": None, "工作高度H1": 25, "工作高度H2": None}},

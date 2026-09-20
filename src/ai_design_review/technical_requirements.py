@@ -30,6 +30,21 @@ TECHNICAL_REQUIREMENT_TYPE_LABELS = {
     "other": "其他要求",
 }
 
+TECHNICAL_REQUIREMENTS_TITLE = "技术要求"
+
+
+def ensure_technical_requirements_title(text: Any) -> str:
+    """Prefix non-empty note text exactly once, including legacy package text."""
+
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return ""
+    first_line, separator, rest = normalized.partition("\n")
+    if first_line.strip().rstrip("：:") == TECHNICAL_REQUIREMENTS_TITLE:
+        body = rest.strip() if separator else ""
+        return f"{TECHNICAL_REQUIREMENTS_TITLE}\n{body}" if body else ""
+    return f"{TECHNICAL_REQUIREMENTS_TITLE}\n{normalized}"
+
 
 def build_technical_requirements_text(requirements: list[Any]) -> str:
     """Format ordered generation notes as one SolidWorks-ready text block.
@@ -59,7 +74,7 @@ def build_technical_requirements_text(requirements: list[Any]) -> str:
         ).strip()
         body = without_duplicate_label or content
         lines.append(f"{len(lines) + 1}.{label}：{body}")
-    return "\n".join(lines)
+    return ensure_technical_requirements_title("\n".join(lines))
 
 
 def _single_line_technical_requirement_content(value: Any) -> str:

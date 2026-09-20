@@ -241,6 +241,8 @@ def main() -> None:
     assert technical_text["default"] == ""
     assert technical_text["description"]
     assert technical_text["examples"] == ["1.表面处理：表面镀锌。\n2.盐雾试验：96小时。"]
+    technical_text_v2 = schema["components"]["schemas"]["GenerationParametersV2"]["properties"]["technical_requirements_text"]
+    assert technical_text_v2["examples"] == ["技术要求\n1.表面处理：表面镀锌。\n2.盐雾试验：96小时。"]
     chat_response = schema["components"]["schemas"]["StandardizationChatResponse"]
     assert chat_response["properties"]["generation_package_export"]["anyOf"][0]["$ref"].endswith(
         "GenerationPackageExportAction"

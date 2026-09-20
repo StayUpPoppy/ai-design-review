@@ -9909,7 +9909,7 @@ function makeTechnicalRequirementsText(requirements) {
     const withoutDuplicateLabel = content.replace(new RegExp(`^${escapedLabel}\\s*[:：]\\s*`), "").trim();
     lines.push(`${lines.length + 1}.${label}：${withoutDuplicateLabel || content}`);
   });
-  return lines.join("\n");
+  return lines.length ? `技术要求\n${lines.join("\n")}` : "";
 }
 
 function generationDerivedParameters(review) {

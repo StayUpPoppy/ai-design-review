@@ -5,6 +5,7 @@ from typing import Any
 
 from .generation_contract import handedness_label
 from .surface_roughness import positive_surface_roughness, surface_roughness_mentions
+from .technical_requirements import ensure_technical_requirements_title
 
 
 def build_solidworks_command(
@@ -29,7 +30,7 @@ def build_solidworks_command(
     load_values = _load_point_values(load_points)
     solid_height = _review_parameter_value(review, "solid_height")
     handedness = handedness_label(_parameter_value(spring_parameters.get("handedness")))
-    technical_text = str(generation_parameters.get("technical_requirements_text") or "")
+    technical_text = ensure_technical_requirements_title(generation_parameters.get("technical_requirements_text"))
     model_parameters = build_solidworks_model_parameters(parameter_package, review)
     extra_properties = {
         "技术要求": technical_text,

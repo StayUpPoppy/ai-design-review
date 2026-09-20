@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 from PIL import Image, ImageDraw, ImageFont
 
-from .technical_requirements import build_technical_requirements_text
+from .technical_requirements import TECHNICAL_REQUIREMENTS_TITLE, build_technical_requirements_text
 
 
 STOP_EVENT = Event()
@@ -359,9 +359,14 @@ def _technical_requirement_lines(
         if isinstance(technical_requirements_text, str)
         else build_technical_requirements_text(technical_requirements)
     )
+    first_content_line = True
     for paragraph in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         if not paragraph.strip():
             continue
+        if first_content_line:
+            first_content_line = False
+            if paragraph.strip().rstrip("：:") == TECHNICAL_REQUIREMENTS_TITLE:
+                continue
         lines.extend(
             _wrap_text_line(
                 measure,

@@ -33,14 +33,15 @@ def main() -> None:
     assert "唯一结尾-7" in rendered_text
     assert "第二行内容也必须保留。" in rendered_text
     assert len(lines) > len(requirements)
-    supplied_text = "1.表面处理：以汇总文本为准。\n2.工艺要求：不得截断。"
+    supplied_text = "技术要求\n1.表面处理：以汇总文本为准。\n2.工艺要求：不得截断。"
     supplied_lines = _technical_requirement_lines(
         requirements,
         _load_font(20),
         max_width=1440,
         technical_requirements_text=supplied_text,
     )
-    assert "\n".join(supplied_lines) == supplied_text
+    assert "\n".join(supplied_lines) == supplied_text.removeprefix("技术要求\n")
+    assert supplied_lines.count("技术要求") == 0
     assert "唯一结尾" not in "\n".join(supplied_lines)
     load_points = [
         {
@@ -80,14 +81,14 @@ def main() -> None:
         if kind == "model_manifest"
     )
     legacy_manifest = json.loads(legacy_manifest_bytes.decode("utf-8"))
-    assert legacy_manifest["technical_requirements_text"].startswith("1.其他要求：")
+    assert legacy_manifest["technical_requirements_text"].startswith("技术要求\n1.其他要求：")
     assert "第二行内容也必须保留。" in legacy_manifest["technical_requirements_text"]
     legacy_defaulted_manifest_bytes = next(
         content for kind, _, _, content in render_mock_artifacts(_mock_job(requirements, load_points, ""))
         if kind == "model_manifest"
     )
     legacy_defaulted_manifest = json.loads(legacy_defaulted_manifest_bytes.decode("utf-8"))
-    assert legacy_defaulted_manifest["technical_requirements_text"].startswith("1.其他要求：")
+    assert legacy_defaulted_manifest["technical_requirements_text"].startswith("技术要求\n1.其他要求：")
     no_material_job = _mock_job(requirements, load_points)
     no_material_job["parameter_package"]["generation_parameters"]["spring_parameters"].pop("material")
     no_material_manifest_bytes = next(

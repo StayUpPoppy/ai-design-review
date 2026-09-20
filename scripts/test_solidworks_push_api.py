@@ -132,6 +132,7 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
     assert model["extraProperties"]["Fb"] is None
     assert model["extraProperties"]["F1"] is None
     assert model["extraProperties"]["F2"] is None
+    assert model["extraProperties"]["技术要求"] == ""
     assert model["customProperties"] == {"旋向": "右旋"}
 
     confirmed = build_solidworks_command(
@@ -150,6 +151,20 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
         {"spring_parameters": {"solid_height": {"value": 35, "need_human_review": False}}},
     )
     assert confirmed["models"][0]["modelParameters"]["压并高度Hb"] == 35
+
+    legacy_package = {
+        "source": {"drawing_name": "压缩弹簧"},
+        "generation_parameters": {
+            "spring_parameters": {},
+            "load_points": [],
+            "technical_requirements_text": "1.其他要求：端圈并紧磨平。",
+        },
+    }
+    review = {"spring_parameters": {}}
+    legacy_text = build_solidworks_command("1000000002", legacy_package, review)["models"][0]["extraProperties"]["技术要求"]
+    assert legacy_text == "技术要求\n1.其他要求：端圈并紧磨平。"
+    legacy_package["generation_parameters"]["technical_requirements_text"] = legacy_text
+    assert build_solidworks_command("1000000003", legacy_package, review)["models"][0]["extraProperties"]["技术要求"] == legacy_text
 
 
 def main() -> None:
@@ -216,6 +231,10 @@ def main() -> None:
                 exported = client.get("/api/reviews/review-solidworks-push/generation-package")
                 assert exported.status_code == 200, exported.text
                 assert exported.json()["parameter_package"]["solidworks_preview"]["modelParameters"] == model["modelParameters"]
+                assert (
+                    exported.json()["parameter_package"]["generation_parameters"]["technical_requirements_text"]
+                    == model["extraProperties"]["技术要求"]
+                )
                 assert model["customProperties"] == {"旋向": "左旋"}
                 assert model["extraProperties"]["材料"] == "60Si2Mn"
                 assert model["extraProperties"]["Fb"] == 2300
@@ -223,7 +242,7 @@ def main() -> None:
                 assert model["extraProperties"]["F2"] == 2100
                 assert model["extraProperties"]["表面粗糙度Ra"] == 12.5
                 assert isinstance(model["extraProperties"]["表面粗糙度Ra"], float)
-                assert model["extraProperties"]["技术要求"].startswith("1.两端面粗糙度 Ra 12.5μm\n")
+                assert model["extraProperties"]["技术要求"].startswith("技术要求\n1.两端面粗糙度 Ra 12.5μm\n")
                 assert "surface_roughness_ra" not in model["modelParameters"]
                 assert job["execution_options"]["solidworks_payload"] == payload
 
