@@ -10,6 +10,7 @@ from copy import deepcopy
 from ai_design_review.generation_contract import COMPRESSION_GENERATION_EXPORT_FIELDS, COMPRESSION_GENERATION_INPUT_FIELDS
 from ai_design_review.generation_readiness import assess_generation_readiness, build_generation_parameter_package
 from ai_design_review.generation_schemas import GenerationParameterPackageV1, GenerationParameterPackageV2
+from ai_design_review.solidworks import build_solidworks_command
 from ai_design_review.standardization_chat_agent import chat_about_standardization
 from ai_design_review.surface_roughness import ensure_surface_roughness_parameter
 from ai_design_review.technical_requirements import build_technical_requirements_text
@@ -18,6 +19,7 @@ from ai_design_review.technical_requirements import build_technical_requirements
 def main() -> None:
     _assert_ready_review_builds_frozen_package()
     _assert_protocol_conversions()
+    _assert_new_confirmed_values_do_not_change_old_snapshot()
     _assert_mean_diameter_source_precedence()
     _assert_missing_values_receive_pending_defaults()
     _assert_handedness_has_no_default()
@@ -48,6 +50,9 @@ def _assert_ready_review_builds_frozen_package() -> None:
     assert readiness["core_field_count"] == 8
     package = build_generation_parameter_package(review)
     GenerationParameterPackageV2.model_validate(package)
+    older_v2_package = deepcopy(package)
+    older_v2_package.pop("solidworks_preview")
+    GenerationParameterPackageV2.model_validate(older_v2_package)
     assert package["schema_version"] == "spring_generation_parameters/v2"
     assert package["package_type"] == "confirmed_compression_spring_generation_input"
     spring_parameters = package["generation_parameters"]["spring_parameters"]
@@ -63,6 +68,10 @@ def _assert_ready_review_builds_frozen_package() -> None:
     assert spring_parameters["handedness"]["value"] == "right"
     assert spring_parameters["end_grinding"]["value"] == 1
     assert spring_parameters["end_coils_closed"]["value"] == 1
+    preview = package["solidworks_preview"]["modelParameters"]
+    assert preview["有效圈数n"] == 10
+    assert preview["是否磨平"] == 1
+    assert preview == build_solidworks_command("1000000001", package, review)["models"][0]["modelParameters"]
     for excluded in ("outer_diameter", "inner_diameter", "solid_height", "spring_rate", "end_type"):
         assert excluded not in spring_parameters
     assert package["generation_parameters"]["load_points"] == [
@@ -86,10 +95,13 @@ def _assert_protocol_conversions() -> None:
     review["spring_parameters"]["handedness"]["value"] = "左旋"
     review["spring_parameters"]["end_grinding"]["value"] = "两端不磨削"
     review["spring_parameters"]["end_type"]["value"] = "两端不并紧"
-    parameters = build_generation_parameter_package(review)["generation_parameters"]["spring_parameters"]
+    package = build_generation_parameter_package(review)
+    parameters = package["generation_parameters"]["spring_parameters"]
     assert parameters["handedness"]["value"] == "left"
     assert parameters["end_grinding"]["value"] == 0
     assert parameters["end_coils_closed"]["value"] == 0
+    assert package["solidworks_preview"]["modelParameters"]["是否磨平"] == 0
+    assert build_solidworks_command("1000000002", package, review)["models"][0]["modelParameters"]["是否磨平"] == 0
 
     review["spring_parameters"]["handedness"]["value"] = "right"
     review["spring_parameters"]["end_grinding"]["value"] = 1
@@ -99,6 +111,22 @@ def _assert_protocol_conversions() -> None:
     assert parameters["handedness"]["value"] == "right"
     assert parameters["end_grinding"]["value"] == 1
     assert parameters["end_coils_closed"]["value"] == 1
+
+
+def _assert_new_confirmed_values_do_not_change_old_snapshot() -> None:
+    review = _ready_review()
+    old_package = build_generation_parameter_package(review)
+    old_model = old_package["solidworks_preview"]["modelParameters"]
+
+    review["spring_parameters"]["active_coils"]["value"] = 9
+    review["spring_parameters"]["end_grinding"]["value"] = "两端不磨削"
+    new_package = build_generation_parameter_package(review)
+    new_model = new_package["solidworks_preview"]["modelParameters"]
+
+    assert (old_model["有效圈数n"], old_model["是否磨平"]) == (10, 1)
+    assert (new_model["有效圈数n"], new_model["是否磨平"]) == (9, 0)
+    assert build_solidworks_command("1000000003", old_package, _ready_review())["models"][0]["modelParameters"] == old_model
+    assert build_solidworks_command("1000000004", new_package, review)["models"][0]["modelParameters"] == new_model
 
 
 def _assert_mean_diameter_source_precedence() -> None:
@@ -194,6 +222,7 @@ def _assert_optional_material_export_and_warning() -> None:
     legacy["schema_version"] = "spring_generation_parameters/v1"
     legacy["export_policy"]["parameter_filter"] = "frozen_compression_inputs_v1_human_confirmed_only"
     legacy["generation_parameters"]["spring_parameters"].pop("material")
+    legacy.pop("solidworks_preview")
     GenerationParameterPackageV1.model_validate(legacy)
 
 
@@ -206,7 +235,14 @@ def _assert_pending_field_is_omitted_but_package_exports() -> None:
     package = build_generation_parameter_package(review)
     assert "mean_diameter" not in package["generation_parameters"]["spring_parameters"]
     assert package["generation_parameters"]["spring_parameters"]["wire_diameter"]["value"] == 2
+    assert package["solidworks_preview"]["modelParameters"]["中径"] is None
     assert package["derived_parameters"]["mean_diameter"]["value"] == 18
+
+    pending_grinding = _ready_review()
+    pending_grinding["spring_parameters"]["end_grinding"]["need_human_review"] = True
+    pending_package = build_generation_parameter_package(pending_grinding)
+    assert "end_grinding" not in pending_package["generation_parameters"]["spring_parameters"]
+    assert pending_package["solidworks_preview"]["modelParameters"]["是否磨平"] is None
 
 
 def _assert_technical_requirements_require_explicit_confirmation() -> None:

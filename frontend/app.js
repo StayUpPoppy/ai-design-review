@@ -9812,7 +9812,7 @@ function makeGenerationParameterPackage(review = state.review) {
     }));
   const summary = review.drawing_summary || {};
   const selection = review.standard_selection || {};
-  return {
+  const parameterPackage = {
     schema_version: "spring_generation_parameters/v2",
     package_type: "confirmed_compression_spring_generation_input",
     generated_at: new Date().toISOString(),
@@ -9838,6 +9838,39 @@ function makeGenerationParameterPackage(review = state.review) {
       technical_requirements_text: technicalRequirementsText,
     },
     derived_parameters: generationDerivedParameters(review),
+  };
+  parameterPackage.solidworks_preview = {
+    modelParameters: makeSolidworksModelParametersPreview(parameterPackage, review),
+  };
+  return parameterPackage;
+}
+
+function makeSolidworksModelParametersPreview(parameterPackage, review) {
+  const generationParameters = parameterPackage.generation_parameters || {};
+  const springParameters = generationParameters.spring_parameters || {};
+  const loadPoints = generationParameters.load_points || [];
+  const modelValue = (value) => {
+    if (value === null || value === undefined || value === "" || typeof value === "boolean") return null;
+    const number = Number(value);
+    if (Number.isFinite(number)) return Number(number.toFixed(3));
+    return typeof value === "string" ? value.trim() || null : null;
+  };
+  const parameterValue = (field) => modelValue(springParameters[field]?.value);
+  const loadHeight = (label) => {
+    const point = loadPoints.find((item) => String(item?.label || "").trim().toUpperCase() === label);
+    return modelValue(point?.height?.value);
+  };
+  const solidHeight = review?.spring_parameters?.solid_height;
+  return {
+    "线径": parameterValue("wire_diameter"),
+    "中径": parameterValue("mean_diameter"),
+    "自由高度": parameterValue("free_length"),
+    "圈数": parameterValue("total_coils"),
+    "有效圈数n": parameterValue("active_coils"),
+    "是否磨平": parameterValue("end_grinding"),
+    "压并高度Hb": solidHeight && !solidHeight.need_human_review ? modelValue(solidHeight.value) : null,
+    "工作高度H1": loadHeight("F1"),
+    "工作高度H2": loadHeight("F2"),
   };
 }
 

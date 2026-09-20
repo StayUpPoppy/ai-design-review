@@ -124,6 +124,8 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
         {"spring_parameters": {"solid_height": {"value": 25, "need_human_review": True}}},
     )
     model = payload["models"][0]
+    assert model["modelParameters"]["有效圈数n"] is None
+    assert model["modelParameters"]["是否磨平"] is None
     assert model["modelParameters"]["压并高度Hb"] is None
     assert model["modelParameters"]["工作高度H1"] is None
     assert model["modelParameters"]["工作高度H2"] is None
@@ -205,10 +207,15 @@ def main() -> None:
                     "中径": 29,
                     "自由高度": 50,
                     "圈数": 9,
+                    "有效圈数n": 7,
+                    "是否磨平": 1,
                     "压并高度Hb": 25,
                     "工作高度H1": 38,
                     "工作高度H2": 43,
                 }
+                exported = client.get("/api/reviews/review-solidworks-push/generation-package")
+                assert exported.status_code == 200, exported.text
+                assert exported.json()["parameter_package"]["solidworks_preview"]["modelParameters"] == model["modelParameters"]
                 assert model["customProperties"] == {"旋向": "左旋"}
                 assert model["extraProperties"]["材料"] == "60Si2Mn"
                 assert model["extraProperties"]["Fb"] == 2300

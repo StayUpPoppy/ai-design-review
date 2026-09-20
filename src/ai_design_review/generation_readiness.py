@@ -17,6 +17,7 @@ from .generation_contract import (
 from .spring_templates import FIELD_LABELS
 from .spring_feasibility import assess_parameter_reasonableness
 from .surface_roughness import confirmed_surface_roughness_requirement, ensure_surface_roughness_parameter
+from .solidworks import build_solidworks_model_parameters
 from .load_points import (
     canonical_load_point_label,
     ensure_load_point_ids,
@@ -135,7 +136,7 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
         load_points.append(_generation_load_point(item))
     selection = review.get("standard_selection") or {}
     summary = review.get("drawing_summary") or {}
-    return {
+    package = {
         "schema_version": GENERATION_SCHEMA_VERSION,
         "package_type": "confirmed_compression_spring_generation_input",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -162,6 +163,10 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
         },
         "derived_parameters": _export_derived_parameters(review, parameters),
     }
+    package["solidworks_preview"] = {
+        "modelParameters": build_solidworks_model_parameters(package, review),
+    }
+    return package
 
 
 def _append_material_warning(parameters: dict[str, Any], warnings: list[dict[str, Any]]) -> None:

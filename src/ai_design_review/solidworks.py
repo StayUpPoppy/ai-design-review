@@ -26,34 +26,14 @@ def build_solidworks_command(
     load_points = generation_parameters.get("load_points") or []
     source = parameter_package.get("source") or {}
 
-    values = {
-        field: _parameter_value(spring_parameters.get(field))
-        for field in (
-            "wire_diameter",
-            "mean_diameter",
-            "free_length",
-            "total_coils",
-            "handedness",
-            "material",
-        )
-    }
     load_values = _load_point_values(load_points)
     solid_height = _review_parameter_value(review, "solid_height")
-    handedness = handedness_label(values["handedness"])
+    handedness = handedness_label(_parameter_value(spring_parameters.get("handedness")))
     technical_text = str(generation_parameters.get("technical_requirements_text") or "")
-
-    model_parameters = {
-        "线径": values["wire_diameter"],
-        "中径": values["mean_diameter"],
-        "自由高度": values["free_length"],
-        "圈数": values["total_coils"],
-        "压并高度Hb": solid_height,
-        "工作高度H1": load_values["F1"]["height"],
-        "工作高度H2": load_values["F2"]["height"],
-    }
+    model_parameters = build_solidworks_model_parameters(parameter_package, review)
     extra_properties = {
         "技术要求": technical_text,
-        "材料": values["material"],
+        "材料": _parameter_value(spring_parameters.get("material")),
         "旋向": handedness,
         "压并高度Hb": solid_height,
         "工作高度H1": load_values["F1"]["height"],
@@ -81,6 +61,28 @@ def build_solidworks_command(
                 "extraProperties": extra_properties,
             }
         ],
+    }
+
+
+def build_solidworks_model_parameters(
+    parameter_package: dict[str, Any],
+    review: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the same modelling fields for the export preview and SW request."""
+
+    generation_parameters = parameter_package.get("generation_parameters") or {}
+    spring_parameters = generation_parameters.get("spring_parameters") or {}
+    load_values = _load_point_values(generation_parameters.get("load_points") or [])
+    return {
+        "线径": _parameter_value(spring_parameters.get("wire_diameter")),
+        "中径": _parameter_value(spring_parameters.get("mean_diameter")),
+        "自由高度": _parameter_value(spring_parameters.get("free_length")),
+        "圈数": _parameter_value(spring_parameters.get("total_coils")),
+        "有效圈数n": _parameter_value(spring_parameters.get("active_coils")),
+        "是否磨平": _parameter_value(spring_parameters.get("end_grinding")),
+        "压并高度Hb": _review_parameter_value(review, "solid_height"),
+        "工作高度H1": load_values["F1"]["height"],
+        "工作高度H2": load_values["F2"]["height"],
     }
 
 

@@ -202,6 +202,14 @@ class GenerationExportPolicyV2(BaseModel):
     readiness_is_advisory: bool = Field(description="参数包可导出但创建任务仍必须通过服务端就绪检查。")
 
 
+class SolidWorksPreviewV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    modelParameters: dict[str, int | float | str | None] = Field(
+        description="按当前已确认参数推算的 SolidWorks 建模字段；不含尚未创建的 TaskId。"
+    )
+
+
 class GenerationParameterPackageV2(GenerationParameterPackageV1):
     model_config = ConfigDict(
         extra="forbid",
@@ -232,6 +240,7 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
                 "technical_requirements_text": "1.其他要求：两端磨平，表面镀锌。",
             },
             "derived_parameters": {},
+            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10, "有效圈数n": 8, "是否磨平": 1, "压并高度Hb": None, "工作高度H1": 25, "工作高度H2": None}},
         }]},
     )
 
@@ -240,6 +249,11 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
     standard_context: GenerationStandardContextV1 = Field(description="可选标准化上下文；SolidWorks V2 不需要解析，空标准上下文不阻止生图。")
     generation_parameters: GenerationParametersV2
     derived_parameters: dict[str, Any] = Field(default_factory=dict, description="审图端保存的派生计算结果，SolidWorks V2 不解析。")
+    solidworks_preview: SolidWorksPreviewV2 | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="可选的只读 SolidWorks modelParameters 预览；旧 V2 参数包可不包含。",
+    )
 
 
 class GenerationTemplateView(BaseModel):

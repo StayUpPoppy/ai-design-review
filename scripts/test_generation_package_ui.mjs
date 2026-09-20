@@ -70,6 +70,11 @@ assert.equal(packageData.generation_parameters.spring_parameters.outer_diameter,
 assert.equal(packageData.generation_parameters.spring_parameters.handedness.value, "right");
 assert.equal(packageData.generation_parameters.spring_parameters.end_grinding.value, 1);
 assert.equal(packageData.generation_parameters.spring_parameters.end_coils_closed.value, 1);
+assert.equal(packageData.solidworks_preview.modelParameters["有效圈数n"], 10);
+assert.equal(packageData.solidworks_preview.modelParameters["是否磨平"], 1);
+assert.equal(packageData.solidworks_preview.modelParameters["工作高度H1"], 25);
+assert.equal(packageData.solidworks_preview.modelParameters["工作高度H2"], null);
+assert.equal(packageData.solidworks_preview.TaskId, undefined);
 assert.equal(packageData.generation_parameters.spring_parameters.material.value, "SUS304 raw");
 assert.equal(JSON.stringify(packageData.generation_parameters.load_points), JSON.stringify([{
   label: "F1",
@@ -161,6 +166,12 @@ assert.deepEqual(
 assert.equal(directPackage.standard_context.selected_standard, null);
 assert.equal(directPackage.standard_context.human_confirmed, false);
 
+const ungroundReview = structuredClone(review);
+ungroundReview.spring_parameters.end_grinding.value = "两端不磨削";
+const ungroundPackage = context.makeGenerationParameterPackage(ungroundReview);
+assert.equal(ungroundPackage.generation_parameters.spring_parameters.end_grinding.value, 0);
+assert.equal(ungroundPackage.solidworks_preview.modelParameters["是否磨平"], 0);
+
 const staleStandardization = structuredClone(review);
 staleStandardization.derived_parameters_stale = true;
 staleStandardization.standardization_results = [
@@ -180,6 +191,7 @@ assert.equal(review.spring_parameters.active_coils.need_human_review, true);
 const incompletePackage = context.makeGenerationParameterPackage(review);
 assert.ok(incompletePackage);
 assert.equal(incompletePackage.generation_parameters.spring_parameters.active_coils, undefined);
+assert.equal(incompletePackage.solidworks_preview.modelParameters["有效圈数n"], null);
 assert.equal(incompletePackage.standardization_trace, undefined);
 
 console.log("generation package UI test passed");
