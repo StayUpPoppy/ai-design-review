@@ -16,6 +16,33 @@ FORMULA_CALCULATION_SOURCE = "formula_calculation"
 SOLID_HEIGHT_FORMULA_GROUND = "Hb = n1 * dmax"
 SOLID_HEIGHT_FORMULA_NOT_GROUND = "Hb = (n1 + 1.5) * dmax"
 
+# Only inputs that can change a deterministic result belong in its dependency
+# snapshot.  Unknown/LLM rules still use the conservative all-parameter fallback.
+STANDARD_RULE_SOURCE_FIELDS: dict[str, list[str]] = {
+    "GBT1239.2-CTX": ["standard_no", "wire_diameter"],
+    "GBT1239.2-DIA": [
+        "outer_diameter", "inner_diameter", "mean_diameter", "wire_diameter",
+        "controlled_diameter_field", "diameter_accuracy_grade", "accuracy_grade",
+    ],
+    "GBT1239.2-FREE": [
+        "free_length", "outer_diameter", "inner_diameter", "mean_diameter",
+        "wire_diameter", "free_length_accuracy_grade", "accuracy_grade",
+    ],
+    "GBT1239.2-COILS": ["total_coils"],
+    "GBT1239.2-PERP": ["free_length", "outer_diameter", "inner_diameter", "mean_diameter", "wire_diameter", "accuracy_grade"],
+    "GBT1239.2-STRAIGHT": ["free_length", "outer_diameter", "inner_diameter", "mean_diameter", "wire_diameter", "accuracy_grade"],
+    "GBT1239.2-SOLID": ["total_coils", "wire_diameter", "end_grinding"],
+    "GBT1239.2-LOAD": [
+        "load_points", "active_coils", "total_coils", "end_type", "support_coils", "end_grinding",
+        "load_accuracy_grade", "accuracy_grade",
+    ],
+    "GBT1239.2-STIFF": [
+        "spring_rate", "active_coils", "total_coils", "end_type", "support_coils", "end_grinding",
+        "stiffness_accuracy_grade", "accuracy_grade",
+    ],
+    "GBT1239.2-PSET": ["free_length"],
+}
+
 
 def apply_formula_compression_solid_height(spring_parameters: dict[str, Any]) -> dict[str, Any]:
     """Populate a reference solid height only when the drawing has no manual value."""
@@ -708,6 +735,9 @@ def _result(
     need_human_review: bool | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    result_metadata = dict(metadata or {})
+    if rule_id in STANDARD_RULE_SOURCE_FIELDS:
+        result_metadata.setdefault("source_fields", STANDARD_RULE_SOURCE_FIELDS[rule_id])
     return {
         "target_field": target_field,
         "suggested_value": suggested_value,
@@ -719,7 +749,7 @@ def _result(
         "basis": basis,
         "status": status,
         "need_human_review": bool(status != "suggested") if need_human_review is None else need_human_review,
-        "metadata": metadata or {},
+        "metadata": result_metadata,
     }
 
 

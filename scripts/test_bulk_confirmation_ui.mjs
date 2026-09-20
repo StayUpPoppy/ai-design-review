@@ -136,6 +136,14 @@ const context = {
   },
 };
 vm.createContext(context);
+const standardHelperStart = appSource.indexOf("function standardNumberSuggestionEligible");
+const standardHelperEnd = appSource.indexOf("function reasonablenessSuggestionIsFresh", standardHelperStart);
+assert.ok(standardHelperStart >= 0 && standardHelperEnd > standardHelperStart);
+vm.runInContext(appSource.slice(standardHelperStart, standardHelperEnd), context);
+const confirmSelectionStart = appSource.indexOf("function confirmStandardSelection");
+const confirmSelectionEnd = appSource.indexOf("function switchSpringType", confirmSelectionStart);
+assert.ok(confirmSelectionStart >= 0 && confirmSelectionEnd > confirmSelectionStart);
+vm.runInContext(appSource.slice(confirmSelectionStart, confirmSelectionEnd), context);
 vm.runInContext(appSource.slice(helperStart, helperEnd), context);
 
 const confirmed = (value, extra = {}) => ({ value, need_human_review: false, source: ["qwen_vision"], ...extra });
@@ -193,7 +201,7 @@ assert.deepEqual(
   ],
 );
 assert.equal(plan.skipped.some((item) => item.field === "free_length" && item.reason.includes("默认候选值")), true);
-assert.equal(plan.skipped.some((item) => item.field === "standard_no" && item.reason.includes("不在批量确认范围")), true);
+assert.equal(plan.skipped.some((item) => item.field === "standard_no" && item.reason.includes("标准号与当前适用标准不一致")), true);
 assert.equal(plan.skipped.some((item) => item.field === "solid_height" && item.reason.includes("公式来源字段")), true);
 assert.equal(plan.skipped.some((item) => item.field === "straightness" && item.reason.includes("风险提示")), true);
 assert.equal(plan.skipped.some((item) => item.field === "pitch" && item.reason.includes("有效数字")), true);
@@ -215,6 +223,26 @@ assert.equal(review.spring_parameters.load_points[1].need_human_review, true);
 assert.equal(review.technical_requirements[2].need_human_review, true);
 assert.deepEqual(review.standard_selection, standardSelectionBefore);
 assert.deepEqual(review.standardization_results, standardizationBefore);
+
+const supportedStandardReview = structuredClone(review);
+supportedStandardReview.standard_selection.rules_available = true;
+supportedStandardReview.standard_selection.metadata = { conflicts: [] };
+supportedStandardReview.standardization_results.push({
+  target_field: "standard_no", suggested_value: "GB/T 1239.2-2009", status: "need_context",
+});
+context.state.review = supportedStandardReview;
+const standardPlan = context.buildSafeConfirmationPlan(supportedStandardReview);
+assert.equal(standardPlan.items.some((item) => item.field === "standard_no"), true);
+supportedStandardReview.standardization_results.push({
+  target_field: "standard_no", suggested_value: "OTHER-STANDARD", status: "need_context",
+});
+assert.equal(context.buildSafeConfirmationPlan(supportedStandardReview).items.some((item) => item.field === "standard_no"), false);
+supportedStandardReview.standardization_results.pop();
+context.confirmSafeRecognizedFields(standardPlan);
+assert.equal(supportedStandardReview.spring_parameters.standard_no.need_human_review, false);
+assert.equal(supportedStandardReview.standard_selection.human_confirmed, true);
+assert.equal(supportedStandardReview.manual_confirmations.standard_selection.confirmed, true);
+context.state.review = review;
 
 review.change_history = [{
   client_event_id: "bulk-event-1",

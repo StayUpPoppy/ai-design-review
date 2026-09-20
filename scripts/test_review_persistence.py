@@ -54,6 +54,10 @@ def main() -> None:
                 expected_revision=1,
                 actor={"erp_user_id": "1001", "username": "engineer-a"},
                 owner=owner_a,
+                prepare_review=lambda snapshot, revision: snapshot.update({
+                    "review_revision": revision,
+                    "parameter_reasonableness": {"suggestions": [{"based_on_revision": revision}]},
+                }),
                 events=[
                     {
                         "event_type": "parameter_value_updated",
@@ -72,6 +76,8 @@ def main() -> None:
             stored = repository.get_review("job001", owner_user_id="1001")
             assert stored is not None
             assert stored["revision"] == 2
+            assert stored["review"]["review_revision"] == 2
+            assert stored["review"]["parameter_reasonableness"]["suggestions"][0]["based_on_revision"] == 2
             assert stored["review"]["spring_parameters"]["wire_diameter"]["value"] == 1.6
             assert repository.get_review("job001", owner_user_id="1002") is None
             assert repository.list_reviews(owner_user_id="1002") == []

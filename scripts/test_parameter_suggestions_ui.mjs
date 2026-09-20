@@ -40,6 +40,11 @@ const context = {
     param.need_human_review = false;
     param.source = Array.from(new Set(["human_confirmed", ...context.sourceValues(param.source)]));
   },
+  confirmStandardSelection() {
+    context.state.review.standard_selection.human_confirmed = true;
+    context.state.review.standard_selection.need_human_review = false;
+    context.state.review.manual_confirmations.standard_selection = { confirmed: true, value: "GB/T 1239.2-2009" };
+  },
   syncBubbleValue() {},
   parameterAuditState: (param) => ({ value: param?.value ?? null, need_human_review: Boolean(param?.need_human_review) }),
   loadPointAuditState: (point) => structuredClone(point),
@@ -63,6 +68,7 @@ const context = {
 vm.createContext(context);
 vm.runInContext(extract("function renderParameterReasonablenessHtml", "function reasonablenessSeverityLabel"), context);
 vm.runInContext(extract("function findReasonablenessSuggestion", "function animateStandardizationChatReply"), context);
+vm.runInContext(extract("function undoLastStandardizationApplication", "function standardizationChatConstraints"), context);
 
 function formulaSuggestion(overrides = {}) {
   const item = {
@@ -221,7 +227,11 @@ context.state.review.spring_parameters.total_coils.value = 9;
 solid.status = "available";
 solid._client_edit_serial = context.state.reviewEditSerial;
 solid.based_on_revision = 6;
-assert.equal(context.reasonablenessSuggestionControlState(solid, context.state.review).label, "已过期");
+assert.equal(
+  context.reasonablenessSuggestionControlState(solid, context.state.review).label,
+  "应用建议",
+  "an unrelated revision change must not invalidate identical target/dependency values",
+);
 solid.based_on_revision = 7;
 solid.current_value = 34;
 assert.equal(context.reasonablenessSuggestionControlState(solid, context.state.review).label, "已过期");
@@ -241,5 +251,63 @@ assert.equal(
   "选择此建议",
   "an old application marker must not lock competing options when its value is no longer current",
 );
+
+context.state.review = {
+  spring_parameters: {
+    standard_no: { value: null, unit: "", source: [], need_human_review: true },
+    wire_diameter: { value: 2, unit: "mm", need_human_review: false },
+  },
+  standard_selection: {
+    selected_standard: "GB/T 1239.2-2009",
+    rules_available: true,
+    metadata: { conflicts: [] },
+    need_human_review: true,
+    human_confirmed: false,
+  },
+  standardization_results: [{ target_field: "standard_no", suggested_value: "GB/T 1239.2-2009", status: "need_context", need_human_review: true }],
+  standardization_apply_history: [],
+  manual_confirmations: {},
+  parameter_reasonableness: { status: "pass", summary: "通过", issues: [], suggestions: [] },
+};
+const standardSuggestion = {
+  suggestion_id: "suggestion-standard",
+  source: "standardization",
+  target_field: "standard_no",
+  current_value: null,
+  current_tolerance_upper: null,
+  current_tolerance_lower: null,
+  suggested_value: "GB/T 1239.2-2009",
+  suggested_tolerance_upper: null,
+  suggested_tolerance_lower: null,
+  application_mode: "value",
+  rule_id: "GBT1239.2-CTX",
+  source_fields: ["standard_no", "wire_diameter"],
+  based_on_revision: 6,
+  status: "available",
+  standardization_result_index: 0,
+};
+standardSuggestion.dependency_snapshot = context.reasonablenessDependencySnapshot(context.state.review.spring_parameters, standardSuggestion.source_fields);
+standardSuggestion.dependency_token = context.reasonablenessDependencyToken(standardSuggestion.dependency_snapshot);
+context.state.review.parameter_reasonableness.suggestions = [standardSuggestion];
+assert.equal(context.reasonablenessSuggestionBatchPlan(context.state.review).items.length, 1);
+assert.match(context.renderParameterReasonablenessHtml(context.state.review), /系统推荐 · 图纸未标注/);
+const appliedStandard = context.applyReasonablenessSuggestions(context.reasonablenessSuggestionBatchPlan(context.state.review).items, { mode: "reasonableness_batch" });
+assert.equal(appliedStandard.count, 1);
+assert.equal(context.state.review.spring_parameters.standard_no.value, "GB/T 1239.2-2009");
+assert.equal(context.state.review.spring_parameters.standard_no.need_human_review, false);
+assert.equal(context.state.review.standard_selection.human_confirmed, true);
+assert.equal(context.state.review.manual_confirmations.standard_selection.confirmed, true);
+assert.equal(context.state.review.standardization_results[0].status, "human_confirmed");
+
+const revertedStandard = context.undoLastStandardizationApplication();
+assert.equal(revertedStandard.applied_count, 1);
+assert.equal(context.state.review.spring_parameters.standard_no.value, null);
+assert.equal(context.state.review.standard_selection.human_confirmed, false);
+assert.equal(context.state.review.manual_confirmations.standard_selection, undefined);
+
+context.state.review.spring_parameters.standard_no.value = "GB/T 23934-2015";
+context.state.review.spring_parameters.standard_no.source = ["human_confirmed"];
+assert.equal(context.reasonablenessSuggestionBatchPlan(context.state.review).items.length, 0);
+assert.equal(context.reasonablenessSuggestionControlState(standardSuggestion, context.state.review).label, "需单独核对");
 
 console.log("parameter suggestion unified UI tests passed");

@@ -3437,6 +3437,26 @@ textarea {
   padding-top: 12px;
 }
 
+.reasonableness-refresh-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid #e8c69c;
+  border-radius: 8px;
+  color: #704517;
+  background: #fff9f1;
+  font-size: 12px;
+}
+
+.reasonableness-refresh-error span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .reasonableness-suggestion-toolbar {
   justify-content: space-between;
   gap: 12px;
@@ -3575,6 +3595,11 @@ textarea {
   font-size: 11px;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+.reasonableness-suggestion > p strong {
+  color: #704517;
+  font-weight: 600;
 }
 
 .reasonableness-suggestion > button {

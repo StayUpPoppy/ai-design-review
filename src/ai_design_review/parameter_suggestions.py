@@ -33,7 +33,12 @@ def build_parameter_suggestions(
     revision = based_on_revision if based_on_revision is not None else _integer(review.get("review_revision"))
     suggestions = [
         *_formula_suggestions(parameters, review.get("spring_features") or {}, revision),
-        *_standardization_suggestions(parameters, review.get("standardization_results") or [], revision),
+        *_standardization_suggestions(
+            parameters,
+            review.get("standardization_results") or [],
+            review.get("standard_selection") or {},
+            revision,
+        ),
         *_informational_suggestions(parameters, revision),
     ]
     suggestions = _deduplicate_suggestions(suggestions)
@@ -125,10 +130,18 @@ def _formula_suggestions(
 def _standardization_suggestions(
     parameters: dict[str, Any],
     results: list[dict[str, Any]],
+    standard_selection: dict[str, Any],
     revision: int | None,
 ) -> list[dict[str, Any]]:
     suggestions: list[dict[str, Any]] = []
     fallback_fields = sorted(str(field) for field in parameters.keys())
+    standard_candidates = {
+        str(item.get("suggested_value")).strip()
+        for item in results
+        if isinstance(item, dict)
+        and item.get("target_field") == "standard_no"
+        and item.get("suggested_value") not in (None, "")
+    }
     for index, result in enumerate(results):
         if not isinstance(result, dict) or not result.get("target_field"):
             continue
@@ -141,6 +154,20 @@ def _standardization_suggestions(
         raw_status = str(result.get("status") or "")
         if raw_status == "stale":
             status = "stale"
+        elif (
+            raw_status == "need_context"
+            and result.get("target_field") == "standard_no"
+            and _target_state(parameters, "standard_no").get("value") in (None, "")
+            and len(standard_candidates) == 1
+            and str(result.get("suggested_value") or "").strip() == str(standard_selection.get("selected_standard") or "").strip()
+            and standard_selection.get("rules_available") is True
+            and not (standard_selection.get("metadata") or {}).get("conflicts")
+            and metadata.get("target_field_valid") is not False
+            and not metadata.get("target_field_error")
+        ):
+            # An explicit application is the user's acceptance of the one
+            # supported recommendation; it is not a drawing-recognized value.
+            status = "available"
         elif raw_status in {"suggested", "llm_suggested", "human_confirmed"} and metadata.get("target_field_valid") is not False and not metadata.get("target_field_error"):
             # ``human_confirmed`` records that this recommendation was applied
             # once.  It is provenance, not the current recommendation state:

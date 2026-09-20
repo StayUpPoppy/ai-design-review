@@ -23,6 +23,7 @@ def main() -> None:
     _assert_applied_standardization_reappears_after_manual_change()
     _assert_identical_formula_and_standardization_suggestions_share_application()
     _assert_non_actionable_standardization_result_is_diagnostic_only()
+    _assert_unique_system_standard_can_be_applied_with_other_suggestions()
     _assert_dependency_token_changes_with_formula_input()
     print("parameter suggestion tests passed")
 
@@ -220,6 +221,39 @@ def _assert_non_actionable_standardization_result_is_diagnostic_only() -> None:
     diagnostic = next(item for item in assessment["issues"] if item.get("rule_id") == "PERP-CONTEXT")
     assert diagnostic["severity"] == "needs_input"
     assert diagnostic["fields"] == ["accuracy_grade"]
+
+
+def _assert_unique_system_standard_can_be_applied_with_other_suggestions() -> None:
+    review = _review()
+    review["spring_parameters"]["standard_no"] = {"value": None, "need_human_review": True, "source": []}
+    review["standard_selection"] = {
+        "selected_standard": "GB/T 1239.2-2009",
+        "rules_available": True,
+        "metadata": {"conflicts": []},
+    }
+    review["standardization_results"] = [{
+        "target_field": "standard_no",
+        "suggested_value": "GB/T 1239.2-2009",
+        "rule_id": "GBT1239.2-CTX",
+        "status": "need_context",
+        "metadata": {"source_fields": ["standard_no", "wire_diameter"]},
+    }]
+    suggestion = _by_rule(build_parameter_suggestions(review), "GBT1239.2-CTX")
+    assert suggestion["status"] == "available"
+    assert suggestion["based_on_revision"] == 7
+    assert suggestion["current_value"] is None
+    assert suggestion["suggested_value"] == "GB/T 1239.2-2009"
+
+    review["standard_selection"]["metadata"]["conflicts"] = ["制造方式存在冲突"]
+    assert _by_rule(build_parameter_suggestions(review), "GBT1239.2-CTX")["status"] == "informational"
+    review["standard_selection"]["metadata"]["conflicts"] = []
+    review["standardization_results"].append({
+        "target_field": "standard_no",
+        "suggested_value": "GB/T 23934-2015",
+        "rule_id": "OTHER-STANDARD",
+        "status": "need_context",
+    })
+    assert _by_rule(build_parameter_suggestions(review), "GBT1239.2-CTX")["status"] == "informational"
 
 
 def _assert_identical_formula_and_standardization_suggestions_share_application() -> None:

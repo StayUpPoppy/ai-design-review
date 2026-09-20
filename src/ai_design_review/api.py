@@ -2098,6 +2098,7 @@ def _load_persisted_review(
         apply_generation_defaults(review)
         ensure_load_point_ids(review)
         ensure_technical_requirement_ids(review)
+        _prepare_review_reasonableness(review, stored["revision"])
         return review, stored["revision"]
     if not _local_job_owned(review_path.parent, identity.user_id) or not review_path.exists():
         raise HTTPException(status_code=404, detail="Review not found.")
@@ -2106,11 +2107,21 @@ def _load_persisted_review(
     apply_generation_defaults(review)
     ensure_load_point_ids(review)
     ensure_technical_requirement_ids(review)
+    _prepare_review_reasonableness(review, None)
     return review, None
 
 
 def _ensure_review_owned(job_id: str, review_path: Path, identity: IdentityContext) -> None:
     _load_persisted_review(job_id, review_path, identity)
+
+
+def _prepare_review_reasonableness(review: dict[str, Any], revision: int | None) -> None:
+    if revision is not None:
+        review["review_revision"] = revision
+    else:
+        review.pop("review_revision", None)
+    review["parameter_reasonableness"] = assess_parameter_reasonableness(review, based_on_revision=revision)
+    review["parameter_reasonableness_stale"] = False
 
 
 def _save_review_persistence(
@@ -2143,6 +2154,7 @@ def _save_review_persistence(
             actor=identity.as_audit_actor(),
             artifact_dir=str(review_path.parent),
             owner=identity.as_owner_dict(),
+            prepare_review=_prepare_review_reasonableness,
         )
     except RevisionConflictError as exc:
         raise HTTPException(

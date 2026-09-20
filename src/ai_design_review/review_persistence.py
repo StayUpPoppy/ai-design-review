@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import os
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -230,13 +230,18 @@ class ReviewPersistence:
         artifact_dir: str | None = None,
         actor: dict[str, Any] | None = None,
         owner: dict[str, Any] | None = None,
+        prepare_review: Callable[[dict[str, Any], int | None], None] | None = None,
     ) -> dict[str, Any]:
         if not self.configured:
+            if prepare_review is not None:
+                prepare_review(review, None)
             return {"mode": "json_fallback", "revision": None, "events": []}
         with self._session() as session:
             try:
                 record = session.execute(select(ReviewRecord).where(ReviewRecord.job_id == job_id).with_for_update()).scalar_one_or_none()
                 if record is None:
+                    if prepare_review is not None:
+                        prepare_review(review, 1)
                     record = self._new_record(job_id, review, file_info=file_info, artifact_dir=artifact_dir, owner=owner)
                     session.add(record)
                     revision_before = 0
@@ -246,6 +251,8 @@ class ReviewPersistence:
                     if expected_revision is not None and expected_revision != record.revision:
                         raise RevisionConflictError(record.revision)
                     revision_before = record.revision
+                    if prepare_review is not None:
+                        prepare_review(review, record.revision + 1)
                     record.review_snapshot = copy.deepcopy(review)
                     if file_info is not None:
                         record.file_info = copy.deepcopy(file_info)

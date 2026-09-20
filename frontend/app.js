@@ -37,6 +37,7 @@ const state = {
   pendingAccuracyGrade: "",
   reasonablenessRefreshTimer: null,
   reasonablenessRequestSerial: 0,
+  reasonablenessRefreshError: "",
   bulkConfirmationReportCounts: {},
   bulkConfirmationCompletionNotified: new Set(),
   reviewPersistenceTimer: null,
@@ -785,6 +786,19 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
     state.review.standardization_apply_history = [];
     state.review.derived_parameters_stale = false;
     state.review.parameter_reasonableness_stale = false;
+    const returnedRevision = state.lastJob?.review_revision;
+    const suggestionsNeedRefresh = (state.review.parameter_reasonableness?.suggestions || []).some((item) => {
+      return item.based_on_revision != null && returnedRevision != null
+        && Number(item.based_on_revision) !== Number(returnedRevision);
+    });
+    if (suggestionsNeedRefresh) {
+      const standardizedReview = state.review;
+      await refreshParameterReasonableness(messageId);
+      if (requestEditSerial !== state.reviewEditSerial || state.review !== standardizedReview) {
+        updateLatestReviewMessage("建议更新期间参数又发生修改；当前人工输入已保留，请按需重新生成建议。");
+        return false;
+      }
+    }
     if (accuracyGradeCommit) {
       state.pendingAccuracyGrade = "";
       syncBubbleValue("accuracy_grade", accuracyGradeCommit.grade);
@@ -1491,7 +1505,7 @@ async function refreshParameterReasonableness(messageId = state.activeReviewMess
       }),
     });
     const payload = await response.json();
-    if (!response.ok || !payload.parameter_reasonableness) return;
+    if (!response.ok || !payload.parameter_reasonableness) throw new Error("建议更新失败");
     if (requestId !== state.reasonablenessRequestSerial || requestEditSerial !== state.reviewEditSerial || state.review !== requestSourceReview) return;
     if (String(requestReviewRevision ?? "") !== String(state.lastJob?.review_revision ?? "")) {
       scheduleParameterReasonablenessRefresh(messageId);
@@ -1506,11 +1520,17 @@ async function refreshParameterReasonableness(messageId = state.activeReviewMess
     });
     state.review.parameter_reasonableness = payload.parameter_reasonableness;
     state.review.parameter_reasonableness_stale = false;
+    state.reasonablenessRefreshError = "";
     const context = getReviewContext(messageId);
     if (context) context.review = state.review;
     syncParameterReasonablenessSurfaces(messageId);
   } catch {
-    // Keep the last diagnostic visible while the local API is unavailable.
+    // Keep the last diagnostic and all edits visible while the API is unavailable.
+    if (requestId !== state.reasonablenessRequestSerial
+      || requestEditSerial !== state.reviewEditSerial
+      || state.review !== requestSourceReview) return;
+    state.reasonablenessRefreshError = "建议更新失败，请检查网络后重试。";
+    syncParameterReasonablenessSurfaces(messageId);
   }
 }
 
@@ -1589,6 +1609,16 @@ function bindBulkConfirmationFollowupControls(root, messageId = state.activeRevi
 }
 
 function bindReasonablenessSuggestionControls(root, messageId = state.activeReviewMessageId) {
+  root.querySelectorAll('[data-action="retry-reasonableness-refresh"]').forEach((button) => {
+    if (button.dataset.boundReasonablenessRetry) return;
+    button.dataset.boundReasonablenessRetry = "true";
+    button.addEventListener("click", async () => {
+      activateReviewContext(messageId);
+      button.disabled = true;
+      button.textContent = "正在更新建议";
+      await refreshParameterReasonableness(messageId);
+    });
+  });
   root.querySelectorAll('[data-suggestion-id]').forEach((row) => {
     const button = row.querySelector('[data-role="apply-reasonableness-suggestion"]');
     if (!button || button.dataset.boundReasonablenessSuggestion) return;
@@ -1707,6 +1737,7 @@ function applyReasonablenessSuggestions(items, options = {}) {
     spring_parameters: structuredClone(state.review.spring_parameters || {}),
     standardization_results: structuredClone(state.review.standardization_results || []),
     manual_confirmations: structuredClone(state.review.manual_confirmations || {}),
+    standard_selection: structuredClone(state.review.standard_selection || {}),
   };
   const records = [];
   const appliedItems = [];
@@ -1730,7 +1761,8 @@ function applyReasonablenessSuggestions(items, options = {}) {
     if (selectedResultIndexes.has(index)) {
       result.status = "human_confirmed";
       result.need_human_review = false;
-    } else if (["suggested", "llm_suggested", "human_confirmed"].includes(result?.status)) {
+    } else if (["suggested", "llm_suggested", "human_confirmed"].includes(result?.status)
+      && appliedItems.some((item) => standardizationResultDependsOnField(result, item.target_field))) {
       result.status = "stale";
       result.need_human_review = true;
       result.metadata ||= {};
@@ -1743,7 +1775,8 @@ function applyReasonablenessSuggestions(items, options = {}) {
   (state.review.parameter_reasonableness?.suggestions || []).forEach((item) => {
     if (appliedIds.has(item.suggestion_id)) item.status = "applied";
     else if (appliedTargets.has(item.target_field) && ["available", "conflict"].includes(item.status)) item.status = "conflict";
-    else if (item.source === "standardization" && ["available", "conflict"].includes(item.status)) item.status = "stale";
+    else if (item.source === "standardization" && ["available", "conflict"].includes(item.status)
+      && appliedItems.some((appliedItem) => dependencyFieldsIncludeField(item.source_fields, appliedItem.target_field))) item.status = "stale";
   });
 
   state.review.standardization_apply_history ||= [];
@@ -1805,6 +1838,9 @@ function applyReasonablenessSuggestionValue(item) {
   };
   state.review.spring_parameters[target] = param;
   confirmParam(param, target);
+  if (target === "standard_no" && standardNumberSuggestionEligible(item, state.review)) {
+    confirmStandardSelection();
+  }
   syncBubbleValue(target, param.value);
   return true;
 }
@@ -1838,6 +1874,8 @@ async function recordReasonablenessSuggestionApplications(applied, messageId = s
         supporting_sources: record.item.supporting_sources || [record.item.source],
         application_mode: record.item.application_mode,
         history_id: applied.history_id,
+        standard_selection_confirmed: record.item.target_field === "standard_no"
+          && Boolean(state.review.standard_selection?.human_confirmed),
       },
     });
   });
@@ -2579,6 +2617,7 @@ function renderParameterReasonablenessHtml(review) {
         <span class="parameter-reasonableness-status ${escapeHtml(status)}">${escapeHtml(labels[status] || "待核对")}</span>
       </div>
       <p class="parameter-reasonableness-summary">${escapeHtml(assessment.summary || "正在核对参数关系。")}</p>
+      ${state.reasonablenessRefreshError ? `<div class="reasonableness-refresh-error" role="alert"><span>${escapeHtml(state.reasonablenessRefreshError)}</span><button type="button" class="secondary-action" data-action="retry-reasonableness-refresh">重试更新</button></div>` : ""}
       ${bulkConfirmationReport ? renderBulkConfirmationFollowupHtml(bulkConfirmationReport) : ""}
       ${issues.length ? `
         <div class="reasonableness-section-head"><strong>需要处理</strong><span>${issues.length} 项</span></div>
@@ -2711,7 +2750,9 @@ function renderReasonablenessSuggestionHtml(item, review = state.review) {
     item.unit,
   );
   const supportingSources = new Set([item.source, ...(item.supporting_sources || [])]);
-  const sourceLabel = supportingSources.has("formula") && supportingSources.has("standardization")
+  const sourceLabel = item.target_field === "standard_no" && (item.current_value == null || item.current_value === "")
+    ? "系统推荐 · 图纸未标注"
+    : supportingSources.has("formula") && supportingSources.has("standardization")
     ? "公式与标准一致"
     : item.source === "standardization" ? "标准化建议" : "公式参考";
   return `
@@ -2725,7 +2766,9 @@ function renderReasonablenessSuggestionHtml(item, review = state.review) {
       <div class="reasonableness-suggestion-change">
         <span>${escapeHtml(current)}</span><b aria-hidden="true">→</b><strong>${escapeHtml(proposed)}</strong>
       </div>
-      ${item.basis ? `<p>${escapeHtml(item.basis)}</p>` : ""}
+      ${item.basis || (item.target_field === "standard_no" && control.label === "需单独核对")
+    ? `<p>${escapeHtml(item.basis || "")}${item.target_field === "standard_no" && control.label === "需单独核对"
+      ? `<br><strong>${escapeHtml(control.reason)}</strong>` : ""}</p>` : ""}
       <button type="button" data-role="apply-reasonableness-suggestion" ${control.disabled ? "disabled" : ""} title="${escapeHtml(control.reason || "")}">${escapeHtml(control.label)}</button>
     </article>
   `;
@@ -2764,6 +2807,9 @@ function reasonablenessSuggestionControlState(item, review = state.review) {
   if (applied) return { state: "applied", label: "已应用", disabled: true, reason: "该建议已经应用并确认。" };
   if (!reasonablenessSuggestionHasEffectiveChange(item) && matchesCurrentTarget) {
     return { state: "informational", label: "无需修改", disabled: true, reason: "公式结果与当前值一致。" };
+  }
+  if (target === "standard_no" && !standardNumberSuggestionEligible(item, review)) {
+    return { state: "informational", label: "需单独核对", disabled: true, reason: "适用标准存在冲突、不可用，或当前已有不同的标准号。" };
   }
   if (!reasonablenessSuggestionIsFresh(item, review)) {
     return { state: "stale", label: "已过期", disabled: true, reason: "依赖参数已经变化，请更新建议。" };
@@ -2839,7 +2885,8 @@ function reasonablenessSuggestionBatchPlan(review) {
     if (!["available", "conflict"].includes(item?.status)
       || item?.application_mode === "none"
       || !reasonablenessSuggestionHasEffectiveChange(item)
-      || !reasonablenessSuggestionIsFresh(item, review)) continue;
+      || !reasonablenessSuggestionIsFresh(item, review)
+      || !standardNumberSuggestionEligible(item, review)) continue;
     const target = String(item.target_field || "");
     if (!target) continue;
     const group = groups.get(target) || [];
@@ -2855,14 +2902,29 @@ function reasonablenessSuggestionBatchPlan(review) {
   return { items, conflicts };
 }
 
+function standardNumberSuggestionEligible(item, review = state.review) {
+  if (item?.target_field !== "standard_no") return true;
+  const selection = review?.standard_selection || {};
+  const proposed = String(item?.suggested_value || "").trim();
+  const current = String(review?.spring_parameters?.standard_no?.value || "").trim();
+  const recommendations = (review?.standardization_results || [])
+    .filter((result) => result?.target_field === "standard_no"
+      && result?.metadata?.target_field_valid !== false
+      && !result?.metadata?.target_field_error)
+    .map((result) => String(result?.suggested_value || "").trim())
+    .filter(Boolean);
+  const uniqueRecommendations = new Set(recommendations);
+  return Boolean(proposed)
+    && uniqueRecommendations.size === 1
+    && uniqueRecommendations.has(proposed)
+    && proposed === String(selection.selected_standard || "").trim()
+    && selection.rules_available === true
+    && !(selection.metadata?.conflicts || []).length
+    && (!current || current === proposed);
+}
+
 function reasonablenessSuggestionIsFresh(item, review = state.review) {
   if (!item || !item.dependency_token) return false;
-  if (Number.isInteger(item._client_edit_serial) && item._client_edit_serial !== state.reviewEditSerial) return false;
-  const hasBasedOnRevision = item.based_on_revision !== null && item.based_on_revision !== undefined && item.based_on_revision !== "";
-  const hasCurrentRevision = state.lastJob?.review_revision !== null && state.lastJob?.review_revision !== undefined && state.lastJob?.review_revision !== "";
-  const basedOnRevision = Number(item.based_on_revision);
-  const currentRevision = Number(state.lastJob?.review_revision);
-  if (hasBasedOnRevision && hasCurrentRevision && Number.isInteger(basedOnRevision) && Number.isInteger(currentRevision) && basedOnRevision !== currentRevision) return false;
   if (!["applied", "informational"].includes(item.status)) {
     const target = String(item.target_field || "");
     const targetItem = reasonablenessSuggestionTargetItem(review, target);
@@ -6487,6 +6549,9 @@ function undoLastStandardizationApplication() {
   state.review.spring_parameters = structuredClone(last.before.spring_parameters || {});
   state.review.standardization_results = structuredClone(last.before.standardization_results || []);
   state.review.manual_confirmations = structuredClone(last.before.manual_confirmations || {});
+  if (Object.prototype.hasOwnProperty.call(last.before, "standard_selection")) {
+    state.review.standard_selection = structuredClone(last.before.standard_selection || {});
+  }
   state.review.parameter_reasonableness_stale = true;
   state.review.confirmation_history ||= [];
   state.review.confirmation_history.push({
@@ -7438,7 +7503,13 @@ function buildSafeConfirmationPlan(review) {
     const isFormulaValue = sources.includes("formula_calculation");
 
     if (field === "standard_no") {
-      skip(group, field, label, "适用标准不在批量确认范围内");
+      if (bulkParameterInvalidReason(field, param)) {
+        skip(group, field, label, "标准号为空或格式无效");
+      } else if (!standardNumberSuggestionEligible({ target_field: "standard_no", suggested_value: param.value }, review)) {
+        skip(group, field, label, "标准号与当前适用标准不一致，或存在标准选择冲突");
+      } else {
+        items.push({ kind: "parameter", group, field, param, label });
+      }
       return;
     }
     const invalidReason = bulkParameterInvalidReason(field, param);
@@ -7575,7 +7646,10 @@ function confirmSafeRecognizedFields(plan = null) {
   if (!state.review) return { count: 0, labels: [], fields: [], group_counts: safeConfirmationGroupCounts([]), skipped: [] };
   const confirmationPlan = plan || buildSafeConfirmationPlan(state.review);
   confirmationPlan.items.forEach((item) => {
-    if (item.kind === "parameter") confirmParam(item.param, item.field);
+    if (item.kind === "parameter") {
+      confirmParam(item.param, item.field);
+      if (item.field === "standard_no") confirmStandardSelection();
+    }
     else if (item.kind === "load_point") {
       const confirmationKey = loadPointConfirmationKey(item.point, item.index);
       confirmParam(item.point, confirmationKey);
@@ -8589,6 +8663,7 @@ function setReview(review, imageUrl, options = {}) {
   if (!options.preservePendingAccuracyGrade) resetPendingAccuracyGrade();
   ensureTechnicalRequirementIds(review);
   applyGenerationDefaults(review);
+  if (state.review !== review) state.reasonablenessRefreshError = "";
   state.review = review;
   state.imageUrl = imageUrl;
   exportButton.disabled = false;
@@ -9677,12 +9752,7 @@ function invalidateReasonablenessSuggestions(field) {
   if (!editedField) return 0;
   let invalidated = 0;
   (state.review?.parameter_reasonableness?.suggestions || []).forEach((item) => {
-    const dependsOnEdit = (item.source_fields || []).some((sourceField) => {
-      const dependency = String(sourceField || "");
-      return dependency === editedField
-        || editedField.startsWith(`${dependency}.`)
-        || dependency.startsWith(`${editedField}.`);
-    });
+    const dependsOnEdit = dependencyFieldsIncludeField(item.source_fields, editedField);
     if (!dependsOnEdit || item.status === "stale") return;
     item.status = "stale";
     item.stale_by_field = editedField;
@@ -9690,6 +9760,23 @@ function invalidateReasonablenessSuggestions(field) {
     invalidated += 1;
   });
   return invalidated;
+}
+
+function dependencyFieldsIncludeField(sourceFields, field) {
+  const editedField = String(field || "");
+  return (sourceFields || []).some((sourceField) => {
+    const dependency = String(sourceField || "");
+    return Boolean(dependency) && (dependency === editedField
+      || editedField.startsWith(`${dependency}.`)
+      || dependency.startsWith(`${editedField}.`));
+  });
+}
+
+function standardizationResultDependsOnField(result, field) {
+  const sourceFields = result?.metadata?.source_fields || result?.source_fields;
+  // Older and LLM results have no declared dependencies: keep them conservative.
+  return !Array.isArray(sourceFields) || !sourceFields.length
+    || dependencyFieldsIncludeField(sourceFields, field);
 }
 
 function sourceValues(source) {
@@ -9734,7 +9821,7 @@ function invalidateStandardizationResults(field) {
   const activeStatuses = new Set(["suggested", "llm_suggested", "human_confirmed"]);
   let invalidated = 0;
   (state.review.standardization_results || []).forEach((item) => {
-    if (!activeStatuses.has(item.status)) return;
+    if (!activeStatuses.has(item.status) || !standardizationResultDependsOnField(item, field)) return;
     item.metadata ||= {};
     item.metadata.stale_by_field = field;
     item.metadata.stale_at = new Date().toISOString();

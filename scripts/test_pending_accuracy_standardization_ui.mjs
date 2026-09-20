@@ -22,10 +22,11 @@ function reviewWithGrade(grade = "2级") {
   };
 }
 
-function createContext({ responseOk = true } = {}) {
+function createContext({ responseOk = true, outdatedSuggestion = false, editDuringRefresh = false } = {}) {
   const requests = [];
   const audits = [];
   const statuses = [];
+  const refreshes = [];
   const initialReview = reviewWithGrade();
   const context = {
     state: {
@@ -78,9 +79,18 @@ function createContext({ responseOk = true } = {}) {
           review_revision: 6,
           warnings: [],
           llm_standardization: null,
-          review: payload.review,
+          review: outdatedSuggestion
+            ? { ...payload.review, parameter_reasonableness: { suggestions: [{ based_on_revision: 5 }] } }
+            : payload.review,
         }),
       };
+    },
+    refreshParameterReasonableness: async () => {
+      refreshes.push("refreshed");
+      if (editDuringRefresh) {
+        context.state.review.spring_parameters.accuracy_grade.value = "3级";
+        context.state.reviewEditSerial += 1;
+      }
     },
     setReview: (review) => { context.state.review = review; },
     syncBubbleValue: () => {},
@@ -93,7 +103,21 @@ function createContext({ responseOk = true } = {}) {
   };
   vm.createContext(context);
   vm.runInContext(appSource.slice(start, end), context);
-  return { context, requests, audits, statuses, initialReview };
+  return { context, requests, audits, statuses, initialReview, refreshes };
+}
+
+{
+  const { context, refreshes } = createContext({ outdatedSuggestion: true });
+  assert.equal(await context.runStandardization(undefined, { pending_accuracy_grade: "1级" }), true);
+  assert.equal(refreshes.length, 1, "an older server response must refresh suggestions after the new revision is known");
+}
+
+{
+  const { context, refreshes, audits } = createContext({ outdatedSuggestion: true, editDuringRefresh: true });
+  assert.equal(await context.runStandardization(undefined, { pending_accuracy_grade: "1级" }), false);
+  assert.equal(refreshes.length, 1);
+  assert.equal(context.state.review.spring_parameters.accuracy_grade.value, "3级");
+  assert.equal(audits.length, 0, "a slow suggestion response must not confirm an older edit");
 }
 
 {
