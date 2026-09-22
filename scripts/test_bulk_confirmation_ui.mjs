@@ -55,6 +55,12 @@ const context = {
   sourceValues(source) {
     return (Array.isArray(source) ? source : [source]).filter(Boolean).map(String);
   },
+  DEFAULT_CANDIDATE_NOTICE: "未在图中识别，请单独确认。",
+  usesSystemDefaultCandidate(item) {
+    const sources = context.sourceValues(item?.source).map((source) => source.toLowerCase());
+    return Boolean(item?.default_source)
+      || sources.some((source) => source.includes("company_default") || source.includes("system_default") || source.includes("protocol_default"));
+  },
   targetFieldLabel(field) {
     return {
       wire_diameter: "线径",
@@ -159,6 +165,8 @@ const review = {
     perpendicularity: pending(0.5),
     spring_rate: pending(1.2, { source: ["formula_calculation"], source_fields: ["active_coils", "mean_diameter"] }),
     solid_height: pending(20, { source: ["formula_calculation"], source_fields: ["total_coils"] }),
+    formula_chain: pending(22, { source: ["formula_calculation"], source_fields: ["solid_height"] }),
+    stale_formula: pending(23, { source: ["formula_calculation"], source_fields: ["total_coils"], derived_value_stale: true }),
     straightness: pending(0.4),
     pitch: pending("bad-number"),
     body_length: pending("bad-number", { source: ["human_added"] }),
@@ -200,9 +208,11 @@ assert.deepEqual(
     "load_points.F1", "technical_requirements.1", "technical_requirements.2",
   ],
 );
-assert.equal(plan.skipped.some((item) => item.field === "free_length" && item.reason.includes("默认候选值")), true);
+assert.equal(plan.skipped.some((item) => item.field === "free_length" && item.reason.includes("未在图中识别，请单独确认")), true);
 assert.equal(plan.skipped.some((item) => item.field === "standard_no" && item.reason.includes("标准号与当前适用标准不一致")), true);
 assert.equal(plan.skipped.some((item) => item.field === "solid_height" && item.reason.includes("公式来源字段")), true);
+assert.equal(plan.skipped.some((item) => item.field === "formula_chain" && item.reason.includes("公式来源字段")), true);
+assert.equal(plan.skipped.some((item) => item.field === "stale_formula" && item.reason.includes("公式结果已过期")), true);
 assert.equal(plan.skipped.some((item) => item.field === "straightness" && item.reason.includes("风险提示")), true);
 assert.equal(plan.skipped.some((item) => item.field === "pitch" && item.reason.includes("有效数字")), true);
 assert.equal(plan.skipped.some((item) => item.field === "load_points.F2" && item.reason.includes("完整填写")), true);
@@ -212,13 +222,16 @@ assert.equal(plan.skipped.some((item) => item.field === "load_points.F3" && item
 assert.equal(plan.skipped.some((item) => item.field === "technical_requirements.3" && item.reason.includes("尚未明确匹配")), true);
 context.state.review = review;
 const result = context.confirmSafeRecognizedFields(plan);
-assert.equal(result.count, 7);
+assert.equal(result.count, 9);
+assert.deepEqual(JSON.parse(JSON.stringify(result.auto_formula_fields)), ["spring_rate", "solid_height", "formula_chain"]);
 assert.equal(review.spring_parameters.wire_diameter.need_human_review, false);
 assert.equal(review.spring_parameters.spring_rate.need_human_review, false);
 assert.equal(review.spring_parameters.load_points[0].need_human_review, false);
 assert.equal(review.technical_requirements[0].need_human_review, false);
 assert.equal(review.spring_parameters.free_length.need_human_review, true);
-assert.equal(review.spring_parameters.solid_height.need_human_review, true);
+assert.equal(review.spring_parameters.solid_height.need_human_review, false);
+assert.equal(review.spring_parameters.formula_chain.need_human_review, false);
+assert.equal(review.spring_parameters.stale_formula.need_human_review, true);
 assert.equal(review.spring_parameters.load_points[1].need_human_review, true);
 assert.equal(review.technical_requirements[2].need_human_review, true);
 assert.deepEqual(review.standard_selection, standardSelectionBefore);
@@ -252,13 +265,13 @@ review.change_history = [{
   metadata: { skipped: plan.skipped.map((item) => ({ ...item })) },
 }];
 let followup = context.bulkConfirmationFollowupReport(review);
-assert.equal(followup.confirmed_count, 7);
+assert.equal(followup.confirmed_count, 9);
 assert.equal(followup.items.some((item) => item.field === "pitch" && item.state === "blocked"), true);
 assert.equal(followup.items.some((item) => item.field === "straightness" && item.state === "manual"), true);
 assert.equal(followup.items.some((item) => item.field === "standard_no" && item.state === "manual"), true);
 assert.equal(followup.items.some((item) => item.kind === "technical" && item.state === "blocked"), true);
 assert.equal(followup.items.some((item) => item.field === "free_length" && item.state === "manual"), true, "visible defaults must be listed");
-assert.equal(followup.items.some((item) => item.field === "solid_height" && item.state === "available"), true, "visible formula values must be listed");
+assert.equal(followup.items.some((item) => item.field === "solid_height"), false, "formula values unlocked in the same batch must not remain in follow-up");
 assert.equal(followup.items.some((item) => item.field === "body_length" && item.state === "blocked"), true, "visible manual values must be listed");
 assert.equal(followup.items.some((item) => item.field === "coil_index" && item.state === "blocked"), true, "partial recognized content must be listed");
 assert.equal(followup.items.some((item) => item.field === "blank_parameter"), false, "blank parameter rows must be hidden");
@@ -284,6 +297,7 @@ review.spring_parameters.standard_no.need_human_review = false;
 review.spring_parameters.solid_height.need_human_review = false;
 review.spring_parameters.body_length.need_human_review = false;
 review.spring_parameters.coil_index.need_human_review = false;
+review.spring_parameters.stale_formula.need_human_review = false;
 review.spring_parameters.load_points[1].need_human_review = false;
 review.spring_parameters.load_points[2].need_human_review = false;
 review.technical_requirements[2].need_human_review = false;
@@ -356,6 +370,7 @@ const handlerEnd = appSource.indexOf("root.querySelectorAll('[data-action=\"focu
 const handlerSource = appSource.slice(handlerStart, handlerEnd);
 assert.equal((handlerSource.match(/queueReviewAuditEvent/g) || []).length, 1);
 assert.match(handlerSource, /group_counts/);
+assert.match(handlerSource, /auto_formula_fields/);
 assert.match(handlerSource, /skipped/);
 assert.match(handlerSource, /load_point_id/);
 assert.match(handlerSource, /requirement_id/);
@@ -366,5 +381,21 @@ assert.doesNotMatch(appSource, /function confirmAllFields/);
 assert.match(appSource, /data-action="confirm-all-review-items"/);
 assert.match(appSource, /data-role="focus-bulk-confirmation-target"/);
 assert.match(appSource, /review-target-highlight/);
+
+const defaultNoticeStart = appSource.indexOf("const DEFAULT_CANDIDATE_NOTICE");
+const defaultNoticeEnd = appSource.indexOf("function hasStandardizationForField", defaultNoticeStart);
+const defaultNoticeContext = {
+  sourceValues(source) { return (Array.isArray(source) ? source : [source]).filter(Boolean); },
+};
+vm.createContext(defaultNoticeContext);
+vm.runInContext(appSource.slice(defaultNoticeStart, defaultNoticeEnd), defaultNoticeContext);
+assert.equal(
+  defaultNoticeContext.pendingDefaultCandidateNotice({ need_human_review: true, default_source: "company_default", source: ["company_default"] }),
+  "未在图中识别，请单独确认。",
+);
+assert.equal(defaultNoticeContext.pendingDefaultCandidateNotice({ need_human_review: false, default_source: "company_default" }), "");
+assert.equal(defaultNoticeContext.pendingDefaultCandidateNotice({ need_human_review: true, default_source: "company_default", source: ["formula_calculation"] }), "");
+assert.equal(defaultNoticeContext.pendingDefaultCandidateNotice({ need_human_review: true, default_source: "company_default", source: ["human_edited"] }), "");
+assert.match(appSource, /parameter-default-candidate-note/);
 
 console.log("bulk confirmation UI test passed");

@@ -26,11 +26,31 @@ const context = {
     reviewPersistenceFailedFields: {},
   },
   escapeHtml: (value) => String(value ?? ""),
-  targetFieldLabel: (field) => ({ solid_height: "压并高度", free_length: "自由长度" }[field] || field),
+  targetFieldLabel: (field) => ({
+    solid_height: "压并高度",
+    free_length: "自由长度",
+    active_coils: "有效圈数",
+    total_coils: "总圈数",
+    spring_rate: "刚度",
+    outer_diameter: "外径",
+    perpendicularity: "垂直度",
+  }[field] || field),
   formatCompactNumber: (value) => String(value ?? ""),
   formatParameterDisplayValue: (field, value, unit = "") => value == null ? "未填写" : `${value}${unit || ""}`,
   lastStandardizationApplyHistory: () => null,
-  parseLoadPointTarget: () => null,
+  parseLoadPointTarget(target) {
+    const match = String(target || "").match(/^load_points\.([^.]+)\.(force|height)$/);
+    return match ? { label: match[1], field: match[2] } : null;
+  },
+  normalizeReview: (review) => structuredClone(review),
+  dependencyFieldsIncludeField(sourceFields, field) {
+    return (sourceFields || []).some((sourceField) => String(sourceField) === String(field));
+  },
+  standardizationResultDependsOnField(result, field) {
+    const sourceFields = result?.metadata?.source_fields || result?.source_fields;
+    return !Array.isArray(sourceFields) || !sourceFields.length
+      || context.dependencyFieldsIncludeField(sourceFields, field);
+  },
   parameterPersistenceState: () => null,
   bulkConfirmationFollowupReport: () => null,
   getFieldMeta: () => ({ unit: "mm" }),
@@ -211,10 +231,41 @@ const staleStandardization = formulaSuggestion({
   source: "standardization",
   supporting_sources: ["standardization"],
   status: "stale",
+  standardization_result_index: 0,
+  standardization_result_indexes: [0],
 });
+context.state.review.standardization_results = [{
+  target_field: "solid_height",
+  rule_id: "GBT1239.2-SOLID",
+  basis: "表3-12：压并高度参考值。",
+  status: "stale",
+  metadata: {
+    stale_by_fields: ["active_coils"],
+    stale_by_field: "active_coils",
+    stale_reason: "dependency_value_changed",
+    stale_dependency_changes: [{ field: "active_coils", before_value: 12, after_value: 8, unit: "turns" }],
+  },
+}];
 context.state.review.parameter_reasonableness.suggestions = [staleStandardization];
-assert.match(context.renderParameterReasonablenessHtml(context.state.review), /更新标准化建议 · 1/);
+const staleHtml = context.renderParameterReasonablenessHtml(context.state.review);
+assert.match(staleHtml, /1 条标准化建议因相关参数变化已过期/);
+assert.match(staleHtml, /按当前参数重新计算（1项）/);
+assert.match(staleHtml, /<details class="stale-standardization-details">/);
+assert.match(staleHtml, /查看过期详情/);
+assert.match(staleHtml, /有效圈数由 12turns 修改为 8turns/);
+assert.match(staleHtml, /旧建议/);
+assert.match(staleHtml, /仅供对照，不可应用/);
+assert.match(staleHtml, /GBT1239\.2-SOLID · 表3-12：压并高度参考值/);
+assert.match(staleHtml, /data-role="focus-reasonableness-field" data-field="solid_height"/);
+assert.doesNotMatch(staleHtml, /data-suggestion-id="stale-standardization"/);
 assert.equal(context.reasonablenessSuggestionControlState(staleStandardization, context.state.review).label, "已过期");
+
+context.state.review.standardization_results[0].metadata = { stale_by_field: "active_coils" };
+const historicalStaleHtml = context.renderParameterReasonablenessHtml(context.state.review);
+assert.match(historicalStaleHtml, /有效圈数发生变化，需要按当前参数重新计算/);
+context.state.review.standardization_results[0].metadata = {};
+const unknownStaleHtml = context.renderParameterReasonablenessHtml(context.state.review);
+assert.match(unknownStaleHtml, /相关依赖参数已变化，需要按当前参数重新计算/);
 
 context.state.review.spring_parameters.solid_height.value = 35;
 context.state.review.spring_parameters.solid_height.last_applied_suggestion_id = null;
@@ -251,6 +302,252 @@ assert.equal(
   "选择此建议",
   "an old application marker must not lock competing options when its value is no longer current",
 );
+
+context.state.review = {
+  spring_parameters: {
+    outer_diameter: { value: 8.25, tolerance_upper: 0.2, tolerance_lower: -0.2, unit: "mm", need_human_review: false },
+    free_length: { value: 30.25, tolerance_upper: 0.5, tolerance_lower: -0.5, unit: "mm", need_human_review: false },
+    perpendicularity: { value: 0.605, tolerance_upper: 0.605, tolerance_lower: 0, unit: "mm", need_human_review: false },
+    spring_rate: { value: 1.8331, tolerance_upper: 0.0917, tolerance_lower: -0.0917, unit: "N/mm", need_human_review: false },
+    active_coils: { value: 8, unit: "turns", need_human_review: false },
+    accuracy_grade: { value: "2级", need_human_review: false },
+    load_points: [
+      { label: "F1", height: 20, force: 16, load_tolerance_upper: 0.8, load_tolerance_lower: -0.8 },
+      { label: "F2", height: 15, force: 35, load_tolerance_upper: 1.75, load_tolerance_lower: -1.75 },
+    ],
+  },
+  standardization_results: [],
+  standardization_apply_history: [],
+  manual_confirmations: {},
+  parameter_reasonableness: { status: "pass", summary: "通过", issues: [], suggestions: [] },
+};
+function toleranceSuggestion(overrides) {
+  const item = {
+    source: "standardization",
+    status: "available",
+    application_mode: "tolerance",
+    current_tolerance_upper: null,
+    current_tolerance_lower: null,
+    suggested_tolerance_upper: null,
+    suggested_tolerance_lower: null,
+    ...overrides,
+  };
+  item.dependency_snapshot = context.reasonablenessDependencySnapshot(context.state.review.spring_parameters, item.source_fields);
+  item.dependency_token = context.reasonablenessDependencyToken(item.dependency_snapshot);
+  return item;
+}
+const toleranceSuggestions = [
+  toleranceSuggestion({ suggestion_id: "tol-outer", target_field: "outer_diameter", current_value: 8.25, suggested_value: 8.25, current_tolerance_upper: 0.2, current_tolerance_lower: -0.2, suggested_tolerance_upper: 0.3, suggested_tolerance_lower: -0.3, source_fields: ["outer_diameter"], rule_id: "DIA" }),
+  toleranceSuggestion({ suggestion_id: "tol-free", target_field: "free_length", current_value: 30.25, suggested_value: 30.25, current_tolerance_upper: 0.5, current_tolerance_lower: -0.5, suggested_tolerance_upper: 0.9075, suggested_tolerance_lower: -0.9075, source_fields: ["free_length", "outer_diameter"], rule_id: "FREE" }),
+  toleranceSuggestion({ suggestion_id: "tol-perp", target_field: "perpendicularity", current_value: 0.605, suggested_value: 1.5125, current_tolerance_upper: 0.605, current_tolerance_lower: 0, suggested_tolerance_upper: 1.5125, suggested_tolerance_lower: 0, source_fields: ["free_length", "outer_diameter"], rule_id: "PERP" }),
+  toleranceSuggestion({ suggestion_id: "tol-f1", target_field: "load_points.F1.force", current_value: 16, suggested_value: 16, current_tolerance_upper: 0.8, current_tolerance_lower: -0.8, suggested_tolerance_upper: 1.6, suggested_tolerance_lower: -1.6, source_fields: ["active_coils", "accuracy_grade", "load_points"], rule_id: "LOAD-F1" }),
+  toleranceSuggestion({ suggestion_id: "tol-f2", target_field: "load_points.F2.force", current_value: 35, suggested_value: 35, current_tolerance_upper: 1.75, current_tolerance_lower: -1.75, suggested_tolerance_upper: 3.5, suggested_tolerance_lower: -3.5, source_fields: ["active_coils", "accuracy_grade", "load_points"], rule_id: "LOAD-F2" }),
+  toleranceSuggestion({ suggestion_id: "tol-rate", target_field: "spring_rate", current_value: 1.8331, suggested_value: 1.8331, current_tolerance_upper: 0.0917, current_tolerance_lower: -0.0917, suggested_tolerance_upper: 0.1833, suggested_tolerance_lower: -0.1833, source_fields: ["active_coils", "spring_rate"], rule_id: "RATE" }),
+];
+toleranceSuggestions.forEach((item, index) => {
+  item.standardization_result_index = index;
+  item.standardization_result_indexes = [index];
+  context.state.review.standardization_results.push({
+    target_field: item.target_field,
+    rule_id: item.rule_id,
+    status: "suggested",
+    need_human_review: true,
+    metadata: { source_fields: item.source_fields },
+  });
+});
+context.state.review.parameter_reasonableness.suggestions = toleranceSuggestions;
+const tolerancePlan = context.reasonablenessSuggestionBatchPlan(context.state.review);
+assert.equal(tolerancePlan.items.length, 6, "all six tolerance-only suggestions must be counted as batch-applicable");
+assert.equal(tolerancePlan.dependency_blocks.length, 0);
+const toleranceLayers = context.reasonablenessSuggestionBatchLayers(tolerancePlan.items);
+assert.equal(toleranceLayers.layers.length, 1, "tolerance-only changes must not create upstream value dependencies");
+assert.equal(toleranceLayers.layers[0].length, 6);
+assert.equal(toleranceLayers.cycles.length, 0, "F1 and F2 must not form a cycle through aggregate load_points");
+const toleranceInvalidationReview = {
+  standardization_results: [{
+    target_field: "free_length",
+    status: "suggested",
+    need_human_review: true,
+    metadata: { source_fields: ["outer_diameter"] },
+  }],
+};
+context.markStandardizationResultsAfterSuggestion(toleranceInvalidationReview, [{
+  ...toleranceSuggestions[0],
+  standardization_result_index: null,
+  standardization_result_indexes: [],
+}]);
+assert.equal(
+  toleranceInvalidationReview.standardization_results[0].status,
+  "suggested",
+  "changing only outer-diameter tolerance must not stale a downstream value-dependent standard result",
+);
+context.apiFetch = async () => ({
+  ok: true,
+  async json() {
+    return { parameter_reasonableness: { status: "pass", summary: "通过", issues: [], suggestions: [] } };
+  },
+});
+const tolerancePreflight = await context.preflightReasonablenessSuggestionBatch(tolerancePlan);
+assert.equal(tolerancePreflight.ok, true);
+assert.equal(tolerancePreflight.items.length, 6);
+const toleranceApplied = context.applyReasonablenessSuggestions(tolerancePreflight.items, { mode: "reasonableness_batch", prevalidated: true });
+assert.equal(toleranceApplied.count, 6);
+assert.equal(context.state.review.standardization_results.every((item) => item.status === "human_confirmed"), true);
+assert.equal(context.state.review.standardization_results.some((item) => item.status === "stale"), false);
+
+context.state.review = {
+  spring_parameters: {
+    alpha: { value: 1, need_human_review: false },
+    beta: { value: 2, need_human_review: false },
+  },
+  standardization_results: [],
+  standardization_apply_history: [],
+  manual_confirmations: {},
+  parameter_reasonableness: { status: "pass", summary: "通过", issues: [], suggestions: [] },
+};
+const cycleA = chainSuggestion({ suggestion_id: "cycle-a", target_field: "alpha", current_value: 1, suggested_value: 3, source_fields: ["beta"] });
+const cycleB = chainSuggestion({ suggestion_id: "cycle-b", target_field: "beta", current_value: 2, suggested_value: 4, source_fields: ["alpha"] });
+context.state.review.parameter_reasonableness.suggestions = [cycleA, cycleB];
+const cyclePlan = context.reasonablenessSuggestionBatchPlan(context.state.review);
+assert.equal(cyclePlan.items.length, 0, "true value cycles must not be included in the one-click count");
+assert.equal(cyclePlan.dependency_blocks.length, 2);
+
+context.state.review = {
+  spring_parameters: {
+    active_coils: { value: 12, unit: "turns", need_human_review: false },
+    total_coils: { value: 10, unit: "turns", need_human_review: false },
+    end_type: { value: "两端并紧", need_human_review: false },
+    support_coils: { value: 1, unit: "turns", need_human_review: false },
+    wire_diameter: { value: 0.9, unit: "mm", need_human_review: false },
+    mean_diameter: { value: 7.35, unit: "mm", need_human_review: false },
+    spring_rate: { value: 1.8331, unit: "N/mm", need_human_review: false },
+  },
+  standardization_results: [],
+  standardization_apply_history: [],
+  manual_confirmations: {},
+  parameter_reasonableness: { status: "pass", summary: "通过", issues: [], suggestions: [] },
+};
+function chainSuggestion(overrides) {
+  const item = {
+    current_tolerance_upper: null,
+    current_tolerance_lower: null,
+    suggested_tolerance_upper: null,
+    suggested_tolerance_lower: null,
+    application_mode: "value",
+    source: "formula",
+    status: "available",
+    ...overrides,
+  };
+  item.dependency_snapshot = context.reasonablenessDependencySnapshot(context.state.review.spring_parameters, item.source_fields);
+  item.dependency_token = context.reasonablenessDependencyToken(item.dependency_snapshot);
+  return item;
+}
+const activeCoilsSuggestion = chainSuggestion({
+  suggestion_id: "active-12-to-8",
+  target_field: "active_coils",
+  current_value: 12,
+  suggested_value: 8,
+  rule_id: "COMPANY-ACTIVE-COILS",
+  source_fields: ["total_coils", "end_type", "support_coils"],
+});
+const staleRateSuggestion = chainSuggestion({
+  suggestion_id: "rate-based-on-12",
+  target_field: "spring_rate",
+  current_value: 1.8331,
+  suggested_value: 1.2221,
+  rule_id: "FORMULA-SPRING-RATE",
+  source_fields: ["wire_diameter", "mean_diameter", "active_coils"],
+});
+const metadataReview = structuredClone(context.state.review);
+metadataReview.standardization_results = [{
+  target_field: "spring_rate",
+  rule_id: "RATE-TOLERANCE",
+  status: "suggested",
+  need_human_review: true,
+  metadata: { source_fields: ["active_coils", "spring_rate"] },
+}];
+context.markStandardizationResultsAfterSuggestion(metadataReview, [activeCoilsSuggestion]);
+assert.equal(metadataReview.standardization_results[0].status, "stale");
+assert.deepEqual(JSON.parse(JSON.stringify(metadataReview.standardization_results[0].metadata.stale_by_fields)), ["active_coils"]);
+assert.equal(metadataReview.standardization_results[0].metadata.stale_reason, "dependency_value_changed");
+assert.deepEqual(
+  JSON.parse(JSON.stringify(metadataReview.standardization_results[0].metadata.stale_dependency_changes[0])),
+  { field: "active_coils", before_value: 12, after_value: 8, unit: "" },
+);
+context.state.review.parameter_reasonableness.suggestions = [activeCoilsSuggestion, staleRateSuggestion];
+context.apiFetch = async (_url, options) => {
+  const workingReview = JSON.parse(options.body).review;
+  assert.equal(workingReview.spring_parameters.active_coils.value, 8);
+  const suggestions = [
+    {
+      ...activeCoilsSuggestion,
+      suggestion_id: "active-now-correct",
+      current_value: 8,
+      suggested_value: 8,
+      status: "informational",
+    },
+    {
+      ...staleRateSuggestion,
+      suggestion_id: "rate-now-correct",
+      current_value: 1.8331,
+      suggested_value: 1.8331,
+      status: "informational",
+      dependency_snapshot: context.reasonablenessDependencySnapshot(workingReview.spring_parameters, staleRateSuggestion.source_fields),
+      dependency_token: context.reasonablenessDependencyToken(context.reasonablenessDependencySnapshot(workingReview.spring_parameters, staleRateSuggestion.source_fields)),
+    },
+  ];
+  return { ok: true, async json() { return { parameter_reasonableness: { status: "pass", summary: "通过", issues: [], suggestions } }; } };
+};
+const dependencyPlan = context.reasonablenessSuggestionBatchPlan(context.state.review);
+assert.deepEqual(JSON.parse(JSON.stringify(dependencyPlan.items.map((item) => item.target_field))), ["active_coils", "spring_rate"]);
+const dependencyPreflight = await context.preflightReasonablenessSuggestionBatch(dependencyPlan);
+assert.equal(dependencyPreflight.ok, true);
+assert.deepEqual(JSON.parse(JSON.stringify(dependencyPreflight.items.map((item) => item.target_field))), ["active_coils"]);
+assert.deepEqual(JSON.parse(JSON.stringify(dependencyPreflight.resolved.map((item) => item.target_field))), ["spring_rate"]);
+assert.equal(context.state.review.spring_parameters.active_coils.value, 12, "preflight must not mutate live parameters");
+assert.equal(context.state.review.spring_parameters.spring_rate.value, 1.8331);
+const dependencyApplied = context.applyReasonablenessSuggestions(dependencyPreflight.items, { mode: "reasonableness_batch", prevalidated: true });
+assert.equal(dependencyApplied.count, 1);
+assert.equal(context.state.review.spring_parameters.active_coils.value, 8);
+assert.equal(context.state.review.spring_parameters.spring_rate.value, 1.8331, "old downstream stiffness must never be written");
+
+context.state.review.spring_parameters.active_coils.value = 12;
+delete context.state.review.spring_parameters.active_coils.last_applied_suggestion_id;
+context.state.review.parameter_reasonableness.suggestions = [activeCoilsSuggestion, staleRateSuggestion];
+context.state.reviewEditSerial = 20;
+let releaseSlowAssessment;
+context.apiFetch = async (_url, options) => {
+  const workingReview = JSON.parse(options.body).review;
+  return new Promise((resolve) => {
+    releaseSlowAssessment = () => resolve({
+      ok: true,
+      async json() {
+        return {
+          parameter_reasonableness: {
+            status: "pass",
+            summary: "通过",
+            issues: [],
+            suggestions: [{
+              ...activeCoilsSuggestion,
+              current_value: workingReview.spring_parameters.active_coils.value,
+              suggested_value: workingReview.spring_parameters.active_coils.value,
+              status: "informational",
+            }],
+          },
+        };
+      },
+    });
+  });
+};
+const guardedPreflightPromise = context.preflightReasonablenessSuggestionBatch(
+  context.reasonablenessSuggestionBatchPlan(context.state.review),
+);
+context.state.reviewEditSerial += 1;
+releaseSlowAssessment();
+const guardedPreflight = await guardedPreflightPromise;
+assert.equal(guardedPreflight.ok, false);
+assert.equal(context.state.review.spring_parameters.active_coils.value, 12, "a slow response must not overwrite a newer edit");
+context.state.reviewEditSerial = 4;
 
 context.state.review = {
   spring_parameters: {
