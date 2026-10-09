@@ -197,8 +197,15 @@ class ReviewPersistence:
                     },
                 )
                 session.add(event)
+                initial_events = [event]
+                for payload in review.get("change_history") or []:
+                    if payload.get("event_type") not in {"technical_requirement_translated", "technical_requirement_translation_failed"}:
+                        continue
+                    translated_event = self._make_event(record, revision_before=0, revision_after=record.revision, payload={**payload, "actor": actor})
+                    session.add(translated_event)
+                    initial_events.append(translated_event)
                 session.commit()
-                return {"mode": "postgresql", "revision": record.revision, "events": [self._serialize_event(event)]}
+                return {"mode": "postgresql", "revision": record.revision, "events": [self._serialize_event(item) for item in initial_events]}
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise PersistenceError(f"Unable to create review: {_safe_error(exc)}") from exc
@@ -251,6 +258,11 @@ class ReviewPersistence:
                     if expected_revision is not None and expected_revision != record.revision:
                         raise RevisionConflictError(record.revision)
                     revision_before = record.revision
+                    # Location edits have an independent revision and must survive
+                    # a stale full engineering-review snapshot.
+                    review.pop("drawing_annotations", None)
+                    if "drawing_annotations" in record.review_snapshot:
+                        review["drawing_annotations"] = copy.deepcopy(record.review_snapshot["drawing_annotations"])
                     if prepare_review is not None:
                         prepare_review(review, record.revision + 1)
                     record.review_snapshot = copy.deepcopy(review)
@@ -285,6 +297,33 @@ class ReviewPersistence:
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise PersistenceError(f"Unable to save review: {_safe_error(exc)}") from exc
+
+    def save_drawing_annotations(
+        self, job_id: str, *, owner_user_id: str, initial: dict[str, Any] | None = None,
+        patch: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Row-locked metadata merge; never run calculations or bump review revision."""
+        from .drawing_annotations import apply_annotation_patch
+
+        with self._session() as session:
+            try:
+                record = session.execute(select(ReviewRecord).where(ReviewRecord.job_id == job_id).with_for_update()).scalar_one_or_none()
+                if record is None or not _record_matches_owner(record, owner_user_id):
+                    raise ReviewAccessError("Review not found.")
+                current = record.review_snapshot.get("drawing_annotations")
+                if current is None:
+                    if initial is None:
+                        raise ValueError("原图标注尚未初始化。")
+                    current = copy.deepcopy(initial)
+                result = apply_annotation_patch(current, patch) if patch is not None else current
+                snapshot = copy.deepcopy(record.review_snapshot)
+                snapshot["drawing_annotations"] = copy.deepcopy(result)
+                record.review_snapshot = snapshot
+                session.commit()
+                return copy.deepcopy(result)
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise PersistenceError(f"Unable to save annotations: {_safe_error(exc)}") from exc
 
     def list_change_events(self, job_id: str, *, limit: int = 100, owner_user_id: str | None = None) -> list[dict[str, Any]]:
         if not self.configured:

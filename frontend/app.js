@@ -72,7 +72,8 @@ const state = {
 window.addEventListener("beforeunload", (event) => {
   const hasUnsavedReviewWork = hasPendingEditedReviewItems(state.review)
     || state.pendingReviewAuditEvents.length > 0
-    || state.reviewPersistenceSaving;
+    || state.reviewPersistenceSaving
+    || (typeof DrawingAnnotations !== "undefined" && DrawingAnnotations.hasUnsaved());
   if (!hasUnsavedReviewWork) return;
   event.preventDefault();
   event.returnValue = "";
@@ -1156,6 +1157,7 @@ function refreshParameterPersistenceControls(fields = null) {
     if (param) syncConfirmationControl(row, param, { kind: "parameter", field, review: state.review });
   });
   refreshReasonablenessSuggestionControls(fields);
+  refreshTechnicalTranslationControls();
 }
 
 function createAuditEventId() {
@@ -1264,12 +1266,14 @@ async function persistReviewChanges(options = {}) {
       if (savedSuccessfully && state.pendingReviewAuditEvents.length) {
         scheduleReviewPersistence();
       }
+      if (savedSuccessfully) scheduleTechnicalRequirementTranslation();
     }
   })();
   return state.reviewPersistencePromise;
 }
 
 function parameterConflictFingerprint(item) {
+  if (item && Object.hasOwn(item, "content")) return JSON.stringify({ content: item.content, type: item.type, need_human_review: item.need_human_review });
   return JSON.stringify({
     value: item?.value ?? null,
     tolerance_upper: item?.tolerance_upper ?? null,
@@ -1280,6 +1284,7 @@ function parameterConflictFingerprint(item) {
 
 function parameterConflictValue(item, field = "") {
   if (!item) return "未填写";
+  if (field.startsWith("technical_requirements.")) return String(item.content || "未填写");
   const value = item.value == null || item.value === ""
     ? "未填写"
     : formatParameterDisplayValue(field, item.value);
@@ -1333,15 +1338,18 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
     ...allEvents.map((event) => event.target_field),
     ...state.reviewDraftFields,
   ]));
-  if (!fields.length || fields.some((field) => !field || field.includes(".") || !local?.spring_parameters?.[field])) {
+  const technicalId = (field) => field?.startsWith("technical_requirements.") ? field.slice("technical_requirements.".length) : null;
+  const fieldItem = (review, field) => technicalId(field)
+    ? review.technical_requirements?.find((item) => item.requirement_id === technicalId(field)) : review.spring_parameters?.[field];
+  if (!fields.length || fields.some((field) => !field || (!technicalId(field) && (field.includes(".") || !local?.spring_parameters?.[field])))) {
     return null;
   }
   const server = normalizeReview(payload);
   const chosenServer = new Set();
   for (const field of fields) {
     const firstEvent = allEvents.find((event) => event.target_field === field);
-    const serverItem = server.spring_parameters?.[field];
-    const localItem = local.spring_parameters?.[field];
+    const serverItem = fieldItem(server, field);
+    const localItem = fieldItem(local, field);
     const beforeState = firstEvent?.before_state || localItem?.confirmation_snapshot;
     if ((!beforeState || parameterConflictFingerprint(serverItem) !== parameterConflictFingerprint(beforeState))
       && parameterConflictFingerprint(serverItem) !== parameterConflictFingerprint(localItem)) {
@@ -1353,6 +1361,16 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
   const merged = normalizeReview(server);
   for (const field of fields) {
     if (chosenServer.has(field)) continue;
+    if (technicalId(field)) {
+      const item = fieldItem(local, field);
+      const index = merged.technical_requirements.findIndex((row) => row.requirement_id === technicalId(field));
+      if (index >= 0) merged.technical_requirements.splice(index, 1);
+      if (item) merged.technical_requirements.splice(index < 0 ? merged.technical_requirements.length : index, 0, structuredClone(item));
+      const key = `technical_requirement_${technicalId(field)}`;
+      delete merged.manual_confirmations[key];
+      if (local.manual_confirmations?.[key]) merged.manual_confirmations[key] = structuredClone(local.manual_confirmations[key]);
+      continue;
+    }
     merged.spring_parameters[field] = structuredClone(local.spring_parameters[field]);
     if (local.manual_confirmations?.[field]) {
       merged.manual_confirmations[field] = structuredClone(local.manual_confirmations[field]);
@@ -2040,6 +2058,7 @@ function recognitionProgressText(recognition = {}) {
     werk24: "Werk24 识别",
     building_review: "生成审图结果",
     saving_result: "保存审图结果",
+    locating_parameters: "定位原图关键参数",
     completed: "识别完成",
     failed: "识别失败",
     cancel_requested: "正在取消",
@@ -3523,7 +3542,11 @@ function auditEventLabel(eventType) {
     technical_requirement_updated: "修改技术要求",
     technical_requirement_deleted: "删除技术要求",
     technical_requirement_restored: "恢复技术要求",
+    technical_requirement_recovered: "补回遗漏技术要求",
     technical_requirement_confirmed: "确认技术要求",
+    technical_requirement_translated: "翻译技术要求",
+    technical_requirement_translation_failed: "技术要求翻译失败",
+    technical_requirement_translation_recovered: "翻译校验误判已恢复",
   };
   return labels[eventType] || "更新审查数据";
 }
@@ -3800,6 +3823,7 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
   return `
     <div class="data-row${reasonablenessSeverity ? ` parameter-risk-${escapeHtml(reasonablenessSeverity)}` : ""}" data-kind="param" data-field="${escapeHtml(field)}">
       <div class="data-label">
+        ${typeof DrawingAnnotations !== "undefined" ? DrawingAnnotations.badgeHtml(field, param) : ""}
         <strong title="${escapeHtml(label)}">${escapeHtml(label + requiredMark)}</strong>
         ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
         ${defaultCandidateNotice ? `<small class="parameter-default-candidate-note">${escapeHtml(defaultCandidateNotice)}</small>` : ""}
@@ -4023,6 +4047,13 @@ function confirmationControlState(item, options = {}) {
   const kind = options.kind || "parameter";
   const field = options.field || "";
   const review = options.review || state.review;
+  if (kind === "technical") {
+    const persistence = parameterPersistenceState(field);
+    if (persistence === "failed") return { state: "save_failed", label: "保存失败·重试保存", disabled: false, reason: "当前文本和译文仍保留，请重试保存。" };
+    if (technicalTranslationService()?.isPending(review, item)) return { state: "validating", label: "正在翻译", disabled: true, reason: "翻译完成后请核对中文并确认。" };
+    if (technicalRequirementBlocksExport(item)) return { state: "invalid", label: "待中文化", disabled: true, reason: "外文说明需翻译或人工填写中文后确认；当前不会写入本次图纸。" };
+    if (persistence === "saving") return { state: "saving", label: "保存中", disabled: true, reason: "正在保存技术要求。" };
+  }
   const isConfirmed = kind === "technical" ? item?.need_human_review === false : !item?.need_human_review;
   if (isConfirmed) {
     const persistence = kind === "parameter" ? parameterPersistenceState(field) : null;
@@ -4043,7 +4074,7 @@ function confirmationControlState(item, options = {}) {
   } else if (kind === "technical") {
     if (!String(item?.content || "").trim()) invalidReason = "技术要求内容不能为空";
     else if (isDuplicateTechnicalRequirement(review, item)) invalidReason = "已存在相同类型和内容的技术要求";
-    else if (item?.type === "surface" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item?.normalization_status)) {
+    else if (item?.type === "surface" && item.translation_status !== "translated" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item?.normalization_status)) {
       invalidReason = "请先明确表面处理标准术语";
     }
   } else {
@@ -4188,7 +4219,8 @@ function renderGenerationReadinessHtml(review) {
       ${renderGenerationReadinessIssues("需要补充", readiness.missing_fields, "missing")}
       ${renderGenerationReadinessIssues("需要确认", readiness.pending_fields, "pending")}
       ${renderGenerationReadinessIssues("参数不合理", readiness.blocking_reasonableness, "blocked")}
-      ${renderGenerationReadinessIssues("风险提示", readiness.warnings, "warning")}
+      ${renderGenerationReadinessIssues("风险提示", (readiness.warnings || []).filter((item) => !item.requirement_id), "warning")}
+      ${renderGenerationReadinessIssues("以下技术要求未写入本次图纸", (readiness.warnings || []).filter((item) => item.requirement_id), "warning")}
       <div class="generation-package-actions">
         <button type="button" data-action="export-generation-package">导出参数包</button>
         <button type="button" class="primary-action" data-action="create-generation-job" ${canGenerate && !state.generationBusy ? "" : "disabled"}>${state.generationBusy ? "正在创建…" : "生成图纸"}</button>
@@ -4329,7 +4361,7 @@ function renderGenerationReadinessIssues(title, issues, kind) {
         ${items.map((item) => `
           <div>
             <span><b>${escapeHtml(item.label || targetFieldLabel(item.field))}</b>${escapeHtml(item.reason || "")}</span>
-            ${canFocusGenerationIssue(item.field) ? `<button type="button" class="secondary-action" data-role="focus-generation-field" data-field="${escapeHtml(item.field)}">去处理</button>` : ""}
+            ${canFocusGenerationIssue(item.field) ? `<button type="button" class="secondary-action" data-role="focus-generation-field" data-field="${escapeHtml(item.requirement_id ? `technical_requirements.${item.requirement_id}` : item.field)}">${item.requirement_id ? "定位要求" : "去处理"}</button>` : ""}
           </div>
         `).join("")}
       </div>
@@ -4339,7 +4371,7 @@ function renderGenerationReadinessIssues(title, issues, kind) {
 
 function canFocusGenerationIssue(field) {
   const target = String(field || "");
-  return Boolean(target) && !target.startsWith("technical_requirements.");
+  return Boolean(target);
 }
 
 function generationSourceParameter(parameters, field) {
@@ -4535,13 +4567,16 @@ function assessGenerationReadiness(review) {
   if (reasonablenessStale) {
     warnings.push(generationIssue("reasonableness", "参数合理性结果待服务端重新计算；创建任务前服务端会使用当前参数重新核对。", "参数合理性"));
   }
-  const seenTechnicalRequirements = new Set();
+  const seenTechnicalRequirements = [];
   (review.technical_requirements || []).forEach((item, index) => {
     const label = TECH_LABELS[item.type] || item.type || "技术要求";
     const content = String(item?.content || "").trim();
-    const canonical = `${normalizeTechnicalRequirementType(item?.type)}:${content.replace(/\s+/g, " ").toLocaleLowerCase()}`;
-    const duplicate = Boolean(content) && seenTechnicalRequirements.has(canonical);
-    if (content) seenTechnicalRequirements.add(canonical);
+    if (technicalRequirementBlocksExport(item)) {
+      warnings.push({ ...generationIssue(technicalRequirementField(item, index), "外文说明尚未完成中文化，未写入本次图纸；请重试或人工填写中文。", label), requirement_id: item.requirement_id });
+      return;
+    }
+    const duplicate = Boolean(content) && seenTechnicalRequirements.some((previous) => technicalRequirementsAreDuplicates(item, previous));
+    if (content) seenTechnicalRequirements.push(item);
     if (content && item.need_human_review === false && !duplicate) return;
     const reason = duplicate
       ? `技术要求“${label}”与已有内容重复，请修改或删除重复项。`
@@ -5848,24 +5883,32 @@ function technicalRequirementAuditState(item, extra = {}) {
     content: String(item.content || "").trim(),
     need_human_review: item.need_human_review !== false,
     normalization_status: item.normalization_status || null,
+    recognition_key: item.recognition_key || null,
+    recognized_content: item.recognized_content || null,
+    original_content: item.original_content || null,
+    original_number: item.original_number ?? null,
+    source_order: item.source_order ?? null,
     ...extra,
   };
 }
 
 function technicalRequirementCounts(review) {
   const requirements = review?.technical_requirements || [];
-  const confirmed = requirements.filter((item) => String(item?.content || "").trim() && item?.need_human_review === false).length;
+  const confirmed = requirements.filter((item) => String(item?.content || "").trim() && item?.need_human_review === false && !technicalRequirementBlocksExport(item)).length;
   return { total: requirements.length, confirmed, pending: requirements.length - confirmed };
 }
 
+function technicalRequirementsAreDuplicates(left, right) {
+  if (left?.recognition_key && right?.recognition_key) return left.recognition_key === right.recognition_key;
+  return normalizeTechnicalRequirementType(left?.type) === normalizeTechnicalRequirementType(right?.type)
+    && String(left?.content || "").trim().replace(/\s+/g, " ").toLocaleLowerCase() === String(right?.content || "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
 function isDuplicateTechnicalRequirement(review, target) {
-  const type = normalizeTechnicalRequirementType(target?.type);
   const content = String(target?.content || "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
   if (!content) return false;
   return (review?.technical_requirements || []).some((item) => {
-    return item !== target
-      && normalizeTechnicalRequirementType(item?.type) === type
-      && String(item?.content || "").trim().replace(/\s+/g, " ").toLocaleLowerCase() === content;
+    return item !== target && technicalRequirementsAreDuplicates(item, target);
   });
 }
 
@@ -5905,6 +5948,16 @@ function clearSurfaceNormalization(item) {
 
 function markTechnicalRequirementEdited(item, technicalField, confirmationField) {
   if (!item) return;
+  technicalTranslationService()?.changed(item);
+  item.translation_warnings = [];
+  item.translation_warning_snapshot = null;
+  state.reviewDraftFields.add(technicalField);
+  if (!technicalTranslationService()?.needsTranslation(item.content)) {
+    item.translation_status = "not_required";
+    item.translation_error = "";
+    item.translation_error_code = "";
+    item.translation_error_details = {};
+  }
   rememberConfirmedSnapshot(item);
   item.need_human_review = true;
   item.source = Array.from(new Set(["human_edited", ...sourceValues(item.source)]));
@@ -5922,6 +5975,7 @@ function syncTechnicalRequirementSummary(root, review) {
 }
 
 function renderRequirementsHtml(review) {
+  configureTechnicalRequirementRecovery();
   ensureTechnicalRequirementIds(review);
   const requirements = review.technical_requirements || [];
   const counts = technicalRequirementCounts(review);
@@ -5933,8 +5987,10 @@ function renderRequirementsHtml(review) {
         <div>
           <span data-role="technical-requirement-summary">已确认 ${counts.confirmed} 项 · 待确认 ${counts.pending} 项 · 将写入二维图纸 ${counts.confirmed} 项</span>
           <button type="button" class="secondary-action" data-action="show-technical-requirement-create">+新增技术要求</button>
+          <button type="button" class="secondary-action" data-recovery-action="preview"${state.lastJob?.job_id ? "" : " disabled"}>补回遗漏技术要求</button>
         </div>
       </div>
+      ${globalThis.window?.TechnicalRequirementRecovery?.render(review) || ""}
       ${undo ? `
         <div class="technical-requirement-undo" role="status">
           <span>已删除“${escapeHtml(String(undo.item?.content || "技术要求"))}”</span>
@@ -5959,12 +6015,15 @@ function renderRequirementsHtml(review) {
           ${requirements.map((item, index) => `
             <div class="requirement-row" data-kind="technical" data-index="${index}" data-requirement-id="${escapeHtml(item.requirement_id)}">
               <div class="requirement-editor">
+                ${item.original_number != null && item.original_number !== "" ? `<small class="technical-original-number">原图第 ${escapeHtml(String(item.original_number))} 条</small>` : ""}
                 <label>类型
                   <select data-role="type">${technicalRequirementTypeOptionsHtml(item.type)}</select>
                 </label>
                 <label>中文技术要求
                   <textarea data-role="content">${escapeHtml(item.content || "")}</textarea>
                 </label>
+                <div data-role="technical-translation-feedback">${technicalTranslationFeedbackHtml(review, item, index)}</div>
+                ${item.original_content ? `<details class="technical-original"><summary>查看原文${item.source_language && item.source_language !== "unknown" ? `（${escapeHtml(item.source_language)}）` : ""}</summary><p>${escapeHtml(item.original_content)}</p></details>` : ""}
               </div>
               <div class="requirement-actions">
                 ${confirmationButtonHtml(item, { kind: "technical", field: technicalRequirementField(item, index), review })}
@@ -6135,9 +6194,11 @@ function formatCompactNumber(value) {
 }
 
 function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
+  bindTechnicalTranslationControls(root, messageId);
   const context = getReviewContext(messageId) || activeReviewContext();
   const review = context?.review || state.review;
   if (!review) return;
+  if (typeof DrawingAnnotations !== "undefined") DrawingAnnotations.bindFields(root, () => activateReviewContext(messageId));
   bindReasonablenessIssueFocus(root, messageId);
   bindBulkConfirmationFollowupControls(root, messageId);
   bindReasonablenessSuggestionControls(root, messageId);
@@ -6445,6 +6506,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         labels: confirmed.labels,
         ordinary_fields: confirmed.ordinary_fields,
         auto_formula_fields: confirmed.auto_formula_fields,
+        translation_warning_acknowledgements: confirmed.translation_warning_acknowledgements || [],
         group_counts: confirmed.group_counts,
         skipped: confirmed.skipped.map((item) => ({
           kind: item.kind,
@@ -6707,6 +6769,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     });
   });
 
+  globalThis.window?.TechnicalRequirementRecovery?.bind(root, () => activateReviewContext(messageId));
   const createRequirementForm = root.querySelector('[data-kind="technical_requirement_create"]');
   root.querySelector('[data-action="show-technical-requirement-create"]')?.addEventListener("click", () => {
     if (!createRequirementForm) return;
@@ -6782,7 +6845,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     updateLatestReviewMessage("已撤销删除，技术要求已恢复到原位置。");
   });
 
-  root.querySelectorAll('[data-kind="technical"]').forEach((row) => {
+  root.querySelectorAll('.requirement-row[data-kind="technical"]').forEach((row) => {
     const requirementId = String(row.dataset.requirementId || "");
     const index = review.technical_requirements.findIndex((candidate) => String(candidate?.requirement_id || "") === requirementId);
     const item = review.technical_requirements[index];
@@ -6836,6 +6899,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     row.querySelector('[data-role="confirm"]')?.addEventListener("click", () => {
       activateReviewContext(messageId);
       const control = confirmationControlState(item, { kind: "technical", field: technicalField, review });
+      if (control.state === "save_failed") { void flushReviewPersistence(); return; }
       if (control.disabled) return;
       const beforeState = technicalRequirementAuditState(item);
       if (item.type === "surface") applyManualSurfaceNormalization(item, "人工确认当前表面处理术语");
@@ -6852,7 +6916,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         target_field: technicalField,
         before_state: beforeState,
         after_state: technicalRequirementAuditState(item),
-        metadata: { requirement_id: item.requirement_id, index },
+        metadata: { requirement_id: item.requirement_id, index, translation_warning_acknowledgement: technicalTranslationWarningAudit(item) },
       });
       syncConfirmationControl(row, item, { kind: "technical", field: technicalField, review });
       syncTechnicalRequirementSummary(root, review);
@@ -7728,7 +7792,7 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
   const target = String(field || "").trim();
   if (!target || !state.review) return;
   if (messageId) activateReviewContext(messageId);
-  if (target === "standardization" || target === "standard_no") {
+  if (target === "standardization" || (target === "standard_no" && !options.parameterRow)) {
     state.compareTab = "standards";
     if (!state.compareOpen) openCompareOverlay(messageId);
     else renderCompareOverlay();
@@ -7758,9 +7822,9 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
         ? Math.max(Number(token) - 1, 0)
         : -1;
       const resolvedIndex = technicalIndex >= 0 ? technicalIndex : fallbackIndex;
-      const technicalRow = Array.from(compareOverlay.querySelectorAll('[data-kind="technical"]'))
+      const technicalRow = Array.from(compareOverlay.querySelectorAll('.requirement-row[data-kind="technical"]'))
         .find((row) => String(row.dataset.requirementId || "") === requestedId)
-        || compareOverlay.querySelector(`[data-kind="technical"][data-index="${resolvedIndex}"]`);
+        || compareOverlay.querySelector(`.requirement-row[data-kind="technical"][data-index="${resolvedIndex}"]`);
       if (technicalRow) {
         technicalRow.scrollIntoView({ behavior: "smooth", block: "center" });
         if (options.highlight) highlightReviewTarget(technicalRow);
@@ -7988,6 +8052,10 @@ function buildSafeConfirmationPlan(review) {
   });
 
   (review?.technical_requirements || []).forEach((item, index) => {
+    if (technicalRequirementBlocksExport(item) || technicalTranslationService()?.isPending(review, item)) {
+      skip("technical", technicalRequirementField(item, index), TECH_LABELS[item.type] || "技术要求", "外文说明需完成中文化后再确认", { requirement_id: item.requirement_id || null });
+      return;
+    }
     if (item?.need_human_review === false) return;
     const field = technicalRequirementField(item, index);
     const label = TECH_LABELS[item.type] || item.type || "技术要求";
@@ -7999,7 +8067,7 @@ function buildSafeConfirmationPlan(review) {
       skip("technical", field, label, "已存在相同类型和内容的技术要求", { requirement_id: item.requirement_id || null });
       return;
     }
-    if (item.type === "surface" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item.normalization_status)) {
+    if (item.type === "surface" && item.translation_status !== "translated" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item.normalization_status)) {
       skip("technical", field, label, "表面处理术语尚未明确匹配", { requirement_id: item.requirement_id || null });
       return;
     }
@@ -8109,6 +8177,7 @@ function confirmSafeConfirmationItem(item) {
   }
   else if (item.kind === "technical") {
     const confirmationKey = technicalRequirementConfirmationKey(item.item, item.index);
+    if (item.item.type === "surface") applyManualSurfaceNormalization(item.item, "人工批量确认当前表面处理术语");
     confirmParam(item.item, confirmationKey);
     state.review.manual_confirmations[confirmationKey] = {
       ...(state.review.manual_confirmations[confirmationKey] || {}),
@@ -8162,6 +8231,8 @@ function confirmSafeRecognizedFields(plan = null) {
     fields: confirmedItems.map((item) => item.field),
     ordinary_fields: ordinaryItems.map((item) => item.field),
     auto_formula_fields: autoFormulaItems.map((item) => item.field),
+    translation_warning_acknowledgements: confirmedItems.filter((item) => item.kind === "technical")
+      .map((item) => technicalTranslationWarningAudit(item.item)).filter(Boolean),
     group_counts: safeConfirmationGroupCounts(confirmedItems),
     skipped: finalPlan.skipped,
   };
@@ -8984,7 +9055,7 @@ function renderCompareViewerHtml() {
     return `<div class="compare-viewer empty-line">未加载图纸预览</div>`;
   }
   return `
-    <div class="compare-viewer">
+    <div class="compare-viewer${typeof DrawingAnnotations !== "undefined" && state.lastJob?.job_id && isCompressionSpringReview(state.review) ? " with-annotations" : ""}">
       <div class="compare-tools">
         <button type="button" data-view-action="fit">适应窗口</button>
         <button type="button" data-view-action="zoom-out">缩小</button>
@@ -8992,9 +9063,12 @@ function renderCompareViewerHtml() {
         <button type="button" data-view-action="zoom-in">放大</button>
         <button type="button" data-view-action="actual">100%</button>
       </div>
+      ${typeof DrawingAnnotations !== "undefined" ? DrawingAnnotations.toolsHtml() : ""}
       <div id="compareViewport" class="compare-viewport">
-        <img id="compareImage" class="compare-image" src="${escapeHtml(state.imageUrl)}" alt="drawing">
+        <img id="compareImage" class="compare-image" src="${escapeHtml((typeof DrawingAnnotations !== "undefined" && DrawingAnnotations.imageUrl()) || state.imageUrl)}" alt="用户上传的原始图纸" draggable="false">
+        <svg class="drawing-annotation-layer" xmlns="http://www.w3.org/2000/svg" aria-label="原图参数标注"></svg>
       </div>
+      ${typeof DrawingAnnotations !== "undefined" ? DrawingAnnotations.infoHtml() : ""}
     </div>
   `;
 }
@@ -9037,6 +9111,7 @@ function initializeCompareViewer() {
 
   viewport.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
+    if (typeof DrawingAnnotations !== "undefined" && DrawingAnnotations.capturesPointer(event)) return;
     state.compareView.dragging = true;
     state.compareView.startClientX = event.clientX;
     state.compareView.startClientY = event.clientY;
@@ -9057,6 +9132,7 @@ function initializeCompareViewer() {
       viewport.classList.remove("dragging");
     });
   });
+  if (typeof DrawingAnnotations !== "undefined") DrawingAnnotations.bindViewer(compareOverlay);
 }
 
 function fitCompareImage() {
@@ -9109,6 +9185,60 @@ function applyCompareTransform() {
   if (label) {
     label.textContent = `${Math.round(state.compareView.scale * 100)}%`;
   }
+  if (typeof DrawingAnnotations !== "undefined") DrawingAnnotations.renderLayer();
+}
+
+if (typeof DrawingAnnotations !== "undefined") {
+  DrawingAnnotations.configure({
+    getJobId: () => state.lastJob?.job_id,
+    isCompression: () => isCompressionSpringReview(state.review),
+    getParameter: (field) => state.review?.spring_parameters?.[field],
+    fieldLabel: (field) => FIELD_LABELS[field] || field,
+    fetch: (...args) => apiFetch(...args),
+    assetUrl: toBackendAssetUrl,
+    getView: () => state.compareView,
+    getImage: () => compareOverlay.querySelector("#compareImage"),
+    getViewport: () => compareOverlay.querySelector("#compareViewport"),
+    openViewer: () => { if (!state.compareOpen) openCompareOverlay(); },
+    focusParameter: (field) => focusMissingStandardizationField(field, state.activeReviewMessageId, { highlight: true, parameterRow: true }),
+    updateViewer: () => {
+      if (!state.compareOpen) return;
+      const old = compareOverlay.querySelector(".compare-viewer");
+      if (!old) return;
+      const oldSource = old.querySelector("#compareImage")?.getAttribute("src");
+      const nextSource = DrawingAnnotations.imageUrl() || state.imageUrl;
+      if (oldSource !== nextSource) state.compareView.initialized = false;
+      old.outerHTML = renderCompareViewerHtml();
+      initializeCompareViewer();
+    },
+    changePage: () => {
+      state.compareView.initialized = false;
+      DrawingAnnotations.entry().selected = "";
+      const old = compareOverlay.querySelector(".compare-viewer");
+      if (old) { old.outerHTML = renderCompareViewerHtml(); initializeCompareViewer(); }
+    },
+    center: (anchor) => {
+      const image = compareOverlay.querySelector("#compareImage");
+      const center = () => {
+        const viewport = compareOverlay.querySelector("#compareViewport");
+        if (!viewport || !image?.naturalWidth || image !== compareOverlay.querySelector("#compareImage")) return;
+        state.compareView.scale = Math.max(.35, state.compareView.scale);
+        state.compareView.x = viewport.clientWidth / 2 - anchor.x * image.naturalWidth * state.compareView.scale;
+        state.compareView.y = viewport.clientHeight / 2 - anchor.y * image.naturalHeight * state.compareView.scale;
+        state.compareView.initialized = true;
+        applyCompareTransform();
+      };
+      if (image?.complete) requestAnimationFrame(center);
+      else image?.addEventListener("load", center, { once: true });
+    },
+    onResize: () => {
+      const viewport = compareOverlay.querySelector("#compareViewport");
+      if (!viewport) return;
+      const size = `${viewport.clientWidth}:${viewport.clientHeight}`;
+      if (viewport.dataset.lastSize && viewport.dataset.lastSize !== size) fitCompareImage();
+      viewport.dataset.lastSize = size;
+    },
+  });
 }
 
 function registerReviewContext(messageId, review, imageUrl, title = "") {
@@ -9154,6 +9284,112 @@ function setReview(review, imageUrl, options = {}) {
   state.review = review;
   state.imageUrl = imageUrl;
   exportButton.disabled = false;
+  scheduleTechnicalRequirementTranslation();
+}
+
+function technicalTranslationService() { return globalThis.window?.TechnicalRequirementTranslation; }
+
+function configureTechnicalRequirementRecovery() {
+  globalThis.window?.TechnicalRequirementRecovery?.configure({
+    getReview: () => state.review, getJobId: () => state.lastJob?.job_id,
+    getRevision: () => state.lastJob?.review_revision ?? null,
+    getEditSerial: () => state.reviewEditSerial,
+    canOperate: () => !state.reviewDraftFields.size && !state.standardizationInFlight && !state.busy,
+    save: () => flushReviewPersistence(), fetch: apiFetch, audit: queueReviewAuditEvent,
+    update: () => updateLatestReviewMessage(), escape: escapeHtml,
+    typeLabel: (type) => TECH_LABELS[normalizeTechnicalRequirementType(type)] || "其他要求",
+    changed: () => { markParameterChangeProposalsStale("技术要求已补回"); state.generationReadiness = null; },
+  });
+}
+
+function technicalRequirementBlocksExport(item) { return technicalTranslationService()?.blocksExport(item) || false; }
+
+function scheduleTechnicalRequirementTranslation() {
+  const service = technicalTranslationService();
+  if (!service) return;
+  service.configure({ getReview: () => state.review, getJobId: () => state.lastJob?.job_id,
+    canTranslate: () => !state.reviewDraftFields.size && !state.standardizationInFlight && !state.pendingReviewAuditEvents.length,
+    save: () => state.reviewDraftFields.size ? Promise.resolve(false) : flushReviewPersistence(), fetch: apiFetch,
+    audit: queueReviewAuditEvent, update: (rerender) => {
+      state.generationReadiness = null;
+      if (rerender) updateLatestReviewMessage();
+      refreshTechnicalTranslationControls();
+    } });
+  service.schedule();
+}
+
+function technicalTranslationFeedbackHtml(review, item, index) {
+  const field = technicalRequirementField(item, index);
+  const persistence = parameterPersistenceState(field);
+  if (persistence === "failed") return '<p class="technical-translation-status failed" role="status">保存失败，当前文本仍保留。<button type="button" class="secondary-action" data-translation-action="save">重试保存</button></p>';
+  if (technicalTranslationService()?.isPending(review, item)) return `<p class="technical-translation-status" role="status">${technicalTranslationService()?.pendingMode(review, item) === "revalidate" ? "正在核对已有译文" : "正在翻译"}，其他参数可继续编辑。</p>`;
+  if (persistence === "saving") return '<p class="technical-translation-status" role="status">保存中…</p>';
+  if (technicalRequirementBlocksExport(item)) {
+    const checked = technicalTranslationService()?.preview(review, item);
+    const error = technicalTranslationService()?.recoveryError(review, item) || item.translation_error || "外文说明尚未完成中文化。";
+    const labels = { request_failed: "翻译请求失败", model_uncertain: "模型无法确定", invalid_response: "翻译返回不完整", foreign_prose_remaining: "尚有外文说明", engineering_mismatch: "工程信息不一致" };
+    const label = labels[checked?.translation_error_code || item.translation_error_code];
+    const detail = checked?.translation_error_details || item.translation_error_details || {};
+    const details = Object.keys(detail).length ? `<details class="technical-original technical-translation-details"><summary>查看失败详情</summary>${detail.category ? `<p>需核对：${escapeHtml(detail.category)}</p>` : ""}${detail.original != null ? `<p>原文工程信息：${escapeHtml(JSON.stringify(detail.original))}</p><p>译文工程信息：${escapeHtml(JSON.stringify(detail.translated))}</p>` : ""}${detail.remaining_text ? `<p>待中文化内容：${escapeHtml(detail.remaining_text)}</p>` : ""}${detail.model_reason ? `<p>${escapeHtml(detail.model_reason)}</p>` : ""}</details>` : "";
+    const candidates = checked?.translation_candidates || [];
+    const preview = candidates.length ? `<details class="technical-original technical-translation-candidates"><summary>查看已有译文（${candidates.length}条）</summary><p>${escapeHtml(checked.recovery_reason || "请对照后选择，采用后仍需确认。")}</p><p>当前内容：${escapeHtml(item.content)}</p>${candidates.map((candidate, index) => `<div class="technical-translation-candidate"><p>原文：${escapeHtml(candidate.original_content)}</p><p>候选译文：${escapeHtml(candidate.content)}</p><button type="button" class="secondary-action" data-translation-action="adopt" data-candidate-index="${index}">采用候选译文</button></div>`).join("")}</details>` : "";
+    return `<p class="technical-translation-status failed" role="status">${escapeHtml(label ? `${label}：${error}` : error)}此项未写入本次图纸。<button type="button" class="secondary-action" data-translation-action="translate">${technicalTranslationService()?.needsTranslation(item.content) ? "重新翻译" : "重新检查"}</button></p>${details}${preview}`;
+  }
+  const warnings = technicalTranslationService()?.warnings(item) || [];
+  if (warnings.length) {
+    const status = item.need_human_review === false ? "已确认，工程信息差异记录仍保留。" : "译文与原文存在工程信息差异，请核对后确认。";
+    return `<p class="technical-translation-status warning" role="status">${escapeHtml(status)}</p><details class="technical-original technical-translation-details"><summary>查看差异（${warnings.length}项）</summary>${warnings.map((warning) => `<div class="technical-translation-difference"><p>${escapeHtml(warning.category || "工程信息")}：${escapeHtml(warning.message || "请对照原文核对。")}</p><p>原文：${escapeHtml(technicalTranslationDifferenceValue(warning.original))}</p><p>译文：${escapeHtml(technicalTranslationDifferenceValue(warning.translated))}</p></div>`).join("")}</details>`;
+  }
+  if (item.translation_status === "translated" && item.need_human_review !== false) return '<p class="technical-translation-status" role="status">已翻译，请核对后确认。</p>';
+  return "";
+}
+
+function technicalTranslationDifferenceValue(value) {
+  if (value == null) return "无";
+  if (Array.isArray(value)) {
+    if (value.length === 2 && typeof value[1] === "boolean") return `${value[1] ? "+" : ""}${value[0]}`;
+    return value.length ? value.map(technicalTranslationDifferenceValue).join("、") : "无";
+  }
+  if (typeof value === "object") return Object.entries(value).map(([label, count]) => `${label}${Number(count) > 1 ? `（${count}次）` : ""}`).join("、") || "无";
+  return String(value);
+}
+
+function technicalTranslationWarningAudit(item) {
+  const warnings = technicalTranslationService()?.warnings(item) || [];
+  if (!warnings.length) return null;
+  return { requirement_id: item.requirement_id, content: item.content, type: item.type,
+    original_content: item.original_content || "", translation_warnings: structuredClone(warnings),
+    translation_warning_snapshot: structuredClone(item.translation_warning_snapshot) };
+}
+
+function refreshTechnicalTranslationControls() {
+  if (!state.review) return;
+  document.querySelectorAll('.requirement-row[data-kind="technical"][data-requirement-id]').forEach((row) => {
+    const index = state.review.technical_requirements.findIndex((item) => item.requirement_id === row.dataset.requirementId);
+    const item = state.review.technical_requirements[index];
+    if (!item) return;
+    const feedback = row.querySelector('[data-role="technical-translation-feedback"]');
+    if (feedback) feedback.innerHTML = technicalTranslationFeedbackHtml(state.review, item, index);
+    syncConfirmationControl(row, item, { kind: "technical", field: technicalRequirementField(item, index), review: state.review });
+  });
+  bindTechnicalTranslationControls(document);
+  syncBulkConfirmationActions(document, state.review);
+  syncTechnicalRequirementSummary(document, state.review);
+}
+
+function bindTechnicalTranslationControls(root, messageId = state.activeReviewMessageId) {
+  root.querySelectorAll('[data-translation-action]').forEach((button) => {
+    if (button.dataset.boundTranslation) return;
+    button.dataset.boundTranslation = "true";
+    button.addEventListener("click", async () => {
+      activateReviewContext(messageId);
+      const id = button.closest('[data-requirement-id]')?.dataset.requirementId;
+      button.disabled = true;
+      if (button.dataset.translationAction === "save") { await flushReviewPersistence(); refreshTechnicalTranslationControls(); }
+      else if (button.dataset.translationAction === "adopt") await technicalTranslationService()?.adoptCandidate(id, Number(button.dataset.candidateIndex));
+      else await technicalTranslationService()?.run(id);
+    });
+  });
 }
 
 function makeCompletionText(payload) {
@@ -9296,7 +9532,8 @@ async function createGenerationJob(options = {}) {
     }
     if (readiness.status === "ready_with_warnings") {
       const warningText = (readiness.warnings || []).map((item) => item.reason).filter(Boolean).join("\n");
-      if (!window.confirm(`当前参数可以生图。标准化为可选功能，未应用的标准化建议不会进入参数包；任务将按当前已确认参数生成。\n\n风险提示：\n${warningText || readiness.summary}\n\n是否继续生成？`)) return;
+      const omitted = (readiness.warnings || []).filter((item) => item.requirement_id).map((item) => `${item.label || "技术要求"}：${item.reason}`).join("\n");
+      if (!window.confirm(`当前参数可以生图。标准化为可选功能，未应用的标准化建议不会进入参数包；任务将按当前已确认参数生成。${omitted ? `\n\n以下技术要求未写入本次图纸：\n${omitted}` : ""}\n\n风险提示：\n${warningText || readiness.summary}\n\n是否继续生成？`)) return;
     }
     const response = await apiFetch(`/api/reviews/${encodeURIComponent(reviewId)}/generation-jobs`, {
       method: "POST",
@@ -10357,10 +10594,10 @@ function makeGenerationParameterPackage(review = state.review) {
     };
   });
   const requirements = (review.technical_requirements || [])
-    .filter((item) => item?.content && item.need_human_review === false)
+    .filter((item) => item?.content && item.need_human_review === false && !technicalRequirementBlocksExport(item))
     .map((item) => ({
       type: item.type,
-      content: item.content,
+      content: technicalRequirementOutputContent(item),
       confirmation_source: "human_confirmed",
     }));
   const roughnessRequirement = confirmedSurfaceRoughnessRequirement(review);
@@ -10464,10 +10701,17 @@ function confirmedSurfaceRoughnessRequirement(review) {
   };
 }
 
+function technicalRequirementOutputContent(item) {
+  const content = String(item?.content || "").trim();
+  const number = String(item?.original_number ?? "").trim()
+    || content.match(/^\s*(\d+)\s*[.．、)]\s*(?=[^\d\s])/)?.[1] || "";
+  return /^\d+$/.test(number) ? content.replace(new RegExp(`^\\s*${number}\\s*[.．、)]\\s*(?=[^\\d\\s])`), "") : content;
+}
+
 function makeTechnicalRequirementsText(requirements) {
   const lines = [];
   (Array.isArray(requirements) ? requirements : []).forEach((item) => {
-    let content = String(item?.content || "").trim();
+    let content = technicalRequirementOutputContent(item);
     if (!content) return;
     content = content
       .replace(/(?:\s*(?:\r\n?|\n)\s*)+/g, "；")
@@ -10484,7 +10728,7 @@ function makeTechnicalRequirementsText(requirements) {
     const withoutDuplicateLabel = content.replace(new RegExp(`^${escapedLabel}\\s*[:：]\\s*`), "").trim();
     lines.push(`${lines.length + 1}.${label}：${withoutDuplicateLabel || content}`);
   });
-  return lines.length ? `技术要求\n${lines.join("\n")}` : "";
+  return lines.join("\n");
 }
 
 function generationDerivedParameters(review) {

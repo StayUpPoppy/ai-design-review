@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import { translationTestHelpers } from "./translation_ui_test_support.mjs";
 
 const appSource = fs.readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 const stylesSource = fs.readFileSync(new URL("../frontend/styles.css", import.meta.url), "utf8");
@@ -32,6 +33,7 @@ const context = {
   escapeHtml: (value) => String(value ?? ""),
 };
 vm.createContext(context);
+translationTestHelpers(context);
 vm.runInContext(appSource.slice(helperStart, helperEnd), context);
 
 const review = {

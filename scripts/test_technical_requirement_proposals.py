@@ -22,6 +22,7 @@ def main() -> None:
     _assert_legacy_ids_are_stable_and_migrate_confirmation()
     _assert_add_update_delete_apply_as_confirmed()
     _assert_duplicate_and_conflicting_operations_are_blocked()
+    _assert_distinct_recognized_occurrences_can_be_confirmed()
     _assert_mixed_parameter_and_requirement_scheme_is_atomic()
     _assert_chat_builds_mixed_parameter_and_requirement_scheme()
     _assert_local_rule_precedes_llm_and_ambiguity_needs_input()
@@ -144,6 +145,20 @@ def _assert_mixed_parameter_and_requirement_scheme_is_atomic() -> None:
     assert applied["spring_parameters"]["free_length"]["value"] == 65
     assert applied["technical_requirements"][0]["content"] == "盐雾试验120小时。"
     assert applied["agent_actions"][-1]["restandardized"] is True
+
+
+def _assert_distinct_recognized_occurrences_can_be_confirmed() -> None:
+    review = _review()
+    first = review["technical_requirements"][0]
+    first.update(recognition_key="original-note-one", original_number="1", source_order=1, need_human_review=True)
+    review["technical_requirements"].append({**deepcopy(first), "requirement_id": "techreq_salt_second", "recognition_key": "original-note-two", "original_number": "2", "source_order": 2})
+    proposal = build_parameter_change_proposal(review, [{"type": "propose_technical_requirement_update", "requirement_id": first["requirement_id"], "content": first["content"]}], user_goal="确认原图第一条要求")
+    assert proposal["status"] in {"ready", "warning"}, proposal
+    applied, _ = apply_parameter_change_proposal(review, proposal["proposal_id"], version=proposal["version"])
+    assert len(applied["technical_requirements"]) == 2
+    assert applied["technical_requirements"][0]["recognition_key"] == "original-note-one"
+    assert applied["technical_requirements"][0]["need_human_review"] is False
+    assert applied["technical_requirements"][1]["need_human_review"] is True
 
 
 def _assert_chat_builds_mixed_parameter_and_requirement_scheme() -> None:

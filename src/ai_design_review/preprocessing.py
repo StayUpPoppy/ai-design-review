@@ -110,7 +110,7 @@ def render_pdf_with_pdftoppm(
         rendered = (
             [str(single_page)]
             if first_page_only and single_page.exists()
-            else [str(p) for p in sorted(output.glob(f"{prefix}-*.png"))]
+            else [str(p) for p in sorted(output.glob(f"{prefix}-*.png"), key=lambda p: int(p.stem.rsplit("-", 1)[-1]))]
         )
         if completed.returncode == 0 and rendered:
             return rendered

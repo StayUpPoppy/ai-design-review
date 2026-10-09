@@ -26,6 +26,7 @@ from .spring_templates import (
 )
 from .surface_terms import normalize_surface_requirement
 from .technical_requirements import new_technical_requirement_id
+from .technical_translation import TRANSLATION_KEYS
 
 
 TECHNICAL_FIELD_TYPES = {
@@ -89,7 +90,7 @@ class DrawingReviewWorkflow:
         if spring_type == "compression_spring":
             apply_formula_compression_solid_height(spring_parameters)
             apply_formula_compression_spring_rate(spring_parameters, spring_features)
-        technical_requirements = self._build_technical_requirements(fused["fields"])
+        technical_requirements = self._build_technical_requirements(fused["fields"], fused["technical_requirements"])
         if run_standardization:
             standardization = standardize_spring(
                 spring_type,
@@ -216,19 +217,21 @@ class DrawingReviewWorkflow:
             "suggested_region": item.get("suggested_region", "") if item else "",
         }
 
-    def _build_technical_requirements(self, fields: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    def _build_technical_requirements(self, fields: dict[str, dict[str, Any]], recognized: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        if recognized is not None:
+            return recognized
         requirements = []
         for field, requirement_type in TECHNICAL_FIELD_TYPES.items():
             item = fields.get(field)
             if not item:
                 continue
             content = item.get("value", "")
-            extra: dict[str, Any] = {}
+            extra: dict[str, Any] = {key: item[key] for key in TRANSLATION_KEYS if key in item}
             need_human_review = item.get("need_human_review", True)
             if requirement_type == "surface":
                 normalized = normalize_surface_requirement(content)
                 content = normalized["content"]
-                extra = {
+                extra.update({
                     "raw_content": normalized["raw_content"],
                     "standard_content": normalized["standard_content"],
                     "normalization_status": normalized["normalization_status"],
@@ -236,7 +239,7 @@ class DrawingReviewWorkflow:
                     "normalization_confidence": normalized["normalization_confidence"],
                     "normalization_reason": normalized["normalization_reason"],
                     "standard_candidates": normalized["standard_candidates"],
-                }
+                })
                 need_human_review = bool(normalized["need_human_review"])
             requirements.append(
                 {

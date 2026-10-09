@@ -73,7 +73,7 @@ def main() -> None:
     assert pdf.startswith(b"%PDF")
     manifest = json.loads(manifest_bytes.decode("utf-8"))
     assert manifest["technical_requirements"] == requirements
-    assert manifest["technical_requirements_text"] == supplied_text
+    assert manifest["technical_requirements_text"] == supplied_text.removeprefix("技术要求\n")
     assert manifest["load_points"] == load_points
     assert manifest["material"] == "65Mn"
     legacy_manifest_bytes = next(
@@ -81,14 +81,14 @@ def main() -> None:
         if kind == "model_manifest"
     )
     legacy_manifest = json.loads(legacy_manifest_bytes.decode("utf-8"))
-    assert legacy_manifest["technical_requirements_text"].startswith("技术要求\n1.其他要求：")
+    assert legacy_manifest["technical_requirements_text"].startswith("1.其他要求：")
     assert "第二行内容也必须保留。" in legacy_manifest["technical_requirements_text"]
     legacy_defaulted_manifest_bytes = next(
         content for kind, _, _, content in render_mock_artifacts(_mock_job(requirements, load_points, ""))
         if kind == "model_manifest"
     )
     legacy_defaulted_manifest = json.loads(legacy_defaulted_manifest_bytes.decode("utf-8"))
-    assert legacy_defaulted_manifest["technical_requirements_text"].startswith("技术要求\n1.其他要求：")
+    assert legacy_defaulted_manifest["technical_requirements_text"].startswith("1.其他要求：")
     no_material_job = _mock_job(requirements, load_points)
     no_material_job["parameter_package"]["generation_parameters"]["spring_parameters"].pop("material")
     no_material_manifest_bytes = next(

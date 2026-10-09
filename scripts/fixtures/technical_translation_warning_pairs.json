@@ -1,0 +1,16 @@
+[
+  {
+    "original_number": "11",
+    "type": "other",
+    "original_content": "11. Остальные Т.Т. по СТ ЦКБА 030-2006 – 2 группа точности",
+    "content": "其余技术要求按 STsKBA 030-2006 – 2 组精度执行",
+    "expected_category": "标准编号"
+  },
+  {
+    "original_number": "13",
+    "type": "process",
+    "original_content": "13. Изготовление и технические характеристики выполнить по ГОСТ 9389-75 (Проволока Б-1-1,5 ГОСТ 9389-75)",
+    "content": "制造和技术特性按 GOST 9389-75 执行 (钢丝 B-1-1.5 GOST 9389-75)",
+    "expected_category": "材料或工艺代号"
+  }
+]

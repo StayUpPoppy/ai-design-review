@@ -26,6 +26,10 @@ from ai_design_review.api_documentation import (  # noqa: E402
 
 
 EXPECTED_OPERATION_KEYS = {
+    ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"),
+    ("POST", "/api/reviews/{job_id}/technical-requirements/translate"),
+    ("GET", "/api/reviews/{job_id}/annotations"),
+    ("PATCH", "/api/reviews/{job_id}/annotations"),
     ("GET", "/"),
     ("GET", "/api/health"),
     ("GET", "/api/session"),
@@ -77,6 +81,10 @@ EXPECTED_OPERATION_KEYS = {
 }
 
 EXPECTED_OPERATION_IDS = {
+    "preview_technical_requirement_recovery_api_reviews__job_id__technical_requirements_recover_preview_post",
+    "translate_technical_requirements_api_reviews__job_id__technical_requirements_translate_post",
+    "get_drawing_annotations_api_reviews__job_id__annotations_get",
+    "save_drawing_annotations_api_reviews__job_id__annotations_patch",
     "approve_generation_job_api_generation_jobs__generation_id__approve_post",
     "apply_review_parameter_change_proposal_api_reviews__job_id__parameter_change_proposals__proposal_id__apply_post",
     "assess_review_reasonableness_api_reviews_reasonableness_post",
@@ -176,7 +184,7 @@ def main() -> None:
                 operations[key] = operation
 
     assert set(operations) == EXPECTED_OPERATION_KEYS
-    assert len(operations) == 48
+    assert len(operations) == 52
     assert {operation["operationId"] for operation in operations.values()} == EXPECTED_OPERATION_IDS
 
     for key, operation in operations.items():
@@ -214,6 +222,11 @@ def main() -> None:
         "$ref": "#/components/schemas/ReviewDocument"
     }
     assert schema["components"]["schemas"]["ReviewDocument"].get("examples")
+    for model_name in ("TechnicalRequirementDocument", "TechnicalTranslationResult"):
+        properties = schema["components"]["schemas"][model_name]["properties"]
+        assert properties["translation_warnings"]["type"] == "array"
+        assert "translation_warning_snapshot" in properties
+        assert set(properties["translation_status"].get("enum") or properties["translation_status"]["anyOf"][0]["enum"]) == {"not_required", "translated", "failed"}
     assert schema["components"]["schemas"]["GenerationJobCreate"].get("examples")
     frozen_inputs = schema["components"]["schemas"]["CompressionSpringGenerationInputsV1"]
     frozen_fields = {
@@ -242,7 +255,7 @@ def main() -> None:
     assert technical_text["description"]
     assert technical_text["examples"] == ["1.表面处理：表面镀锌。\n2.盐雾试验：96小时。"]
     technical_text_v2 = schema["components"]["schemas"]["GenerationParametersV2"]["properties"]["technical_requirements_text"]
-    assert technical_text_v2["examples"] == ["技术要求\n1.表面处理：表面镀锌。\n2.盐雾试验：96小时。"]
+    assert technical_text_v2["examples"] == ["1.表面处理：表面镀锌。\n2.盐雾试验：96小时。"]
     chat_response = schema["components"]["schemas"]["StandardizationChatResponse"]
     assert chat_response["properties"]["generation_package_export"]["anyOf"][0]["$ref"].endswith(
         "GenerationPackageExportAction"

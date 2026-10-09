@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import { translationTestHelpers } from "./translation_ui_test_support.mjs";
 
 const appSource = fs.readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 const start = appSource.indexOf("function generationPackageExportBaseline");
@@ -69,6 +70,7 @@ const context = {
   updateLatestReviewMessage: () => {},
 };
 vm.createContext(context);
+translationTestHelpers(context);
 vm.runInContext(appSource.slice(start, end), context);
 
 const baseline = context.generationPackageExportBaseline(review);

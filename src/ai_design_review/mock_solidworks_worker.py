@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 from PIL import Image, ImageDraw, ImageFont
 
-from .technical_requirements import TECHNICAL_REQUIREMENTS_TITLE, build_technical_requirements_text
+from .technical_requirements import TECHNICAL_REQUIREMENTS_TITLE, build_technical_requirements_text, strip_technical_requirements_title
 
 
 STOP_EVENT = Event()
@@ -189,7 +189,7 @@ def render_mock_artifacts(job: dict[str, Any]) -> list[tuple[str, str, str, byte
     technical_requirements = generation_parameters.get("technical_requirements") or []
     supplied_technical_text = generation_parameters.get("technical_requirements_text")
     if isinstance(supplied_technical_text, str) and (supplied_technical_text or not technical_requirements):
-        technical_requirements_text = supplied_technical_text
+        technical_requirements_text = strip_technical_requirements_title(supplied_technical_text)
     else:
         technical_requirements_text = build_technical_requirements_text(technical_requirements)
     values = {

@@ -775,6 +775,16 @@ button:disabled {
 .technical-requirements-head > div {
   flex-wrap: wrap;
   justify-content: flex-end;
+  min-width: 0;
+}
+
+.technical-requirements-head {
+  flex-wrap: wrap;
+}
+
+.technical-requirements-head h2 {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .load-point-section-head {
@@ -2462,6 +2472,140 @@ textarea {
   min-width: 0;
 }
 
+.technical-original {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.technical-original-number {
+  color: var(--muted);
+}
+
+.technical-recovery {
+  min-width: 0;
+  margin-block: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7faff;
+  overflow-wrap: anywhere;
+}
+
+.technical-recovery p {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+}
+
+.technical-recovery-item {
+  min-width: 0;
+  padding-block: 12px;
+  border-block-end: 1px solid var(--line);
+}
+
+.technical-recovery-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-block-end: 8px;
+  cursor: pointer;
+}
+
+.technical-recovery-choice input {
+  flex: 0 0 16px;
+  width: 16px;
+  min-height: 16px;
+  margin-block-start: 3px;
+}
+
+.technical-recovery details {
+  margin-block-start: 8px;
+}
+
+.technical-recovery summary {
+  cursor: pointer;
+  padding-block: 6px;
+}
+
+.technical-recovery summary:focus-visible {
+  outline: 2px solid var(--primary, #2452d6);
+  outline-offset: 2px;
+}
+
+.technical-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block-start: 12px;
+}
+
+.technical-recovery button {
+  max-width: 100%;
+  white-space: normal;
+}
+
+.technical-original summary {
+  cursor: pointer;
+  padding-block: 6px;
+}
+
+.technical-original summary:focus-visible {
+  outline: 2px solid var(--primary, #2452d6);
+  outline-offset: 2px;
+}
+
+.technical-original p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.technical-translation-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.technical-translation-status.failed,
+.technical-translation-status.warning {
+  color: #95520b;
+}
+
+.technical-translation-status button {
+  max-width: 100%;
+  white-space: normal;
+}
+
+.technical-translation-candidate {
+  padding-block: 8px;
+  border-block-start: 1px solid var(--border, #d8e3ee);
+  min-width: 0;
+}
+
+.technical-translation-candidate button {
+  margin-block-start: 8px;
+  max-width: 100%;
+  white-space: normal;
+}
+
+.technical-translation-details,
+.technical-translation-candidates {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.technical-translation-difference + .technical-translation-difference {
+  margin-block-start: 10px;
+  padding-block-start: 8px;
+  border-block-start: 1px solid var(--border, #d8e3ee);
+}
+
 .requirement-editor label {
   display: grid;
   gap: 5px;
@@ -2645,6 +2789,169 @@ textarea {
   min-height: 0;
 }
 
+.compare-viewer.with-annotations {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.annotation-tools,
+.annotation-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.annotation-tools label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.annotation-tools button,
+.annotation-info button,
+.annotation-status button {
+  min-height: 32px;
+  max-width: 100%;
+  padding: 4px 9px;
+  font-size: 12px;
+  white-space: normal;
+}
+
+.annotation-tools button[aria-pressed="true"] {
+  color: #2146b5;
+  border-color: #86a0ec;
+  background: #edf2ff;
+}
+
+.annotation-info {
+  max-height: 160px;
+  overflow: auto;
+  padding: 6px 12px;
+  background: #fff;
+  color: #42546e;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.annotation-info:empty {
+  padding: 0;
+}
+
+.annotation-info p {
+  margin: 4px 0;
+}
+
+.annotation-info small {
+  display: block;
+}
+
+.annotation-error {
+  color: #9b3b19;
+}
+
+.annotation-unlocated summary {
+  padding: 5px 0;
+  cursor: pointer;
+}
+
+.annotation-unlocated ul {
+  margin: 4px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.annotation-unlocated li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.annotation-unlocated li span {
+  min-width: 0;
+}
+
+.annotation-unlocated button {
+  flex-shrink: 0;
+}
+
+.drawing-annotation-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.drawing-annotation-layer line,
+.annotation-anchor {
+  stroke: #2452cb;
+  stroke-width: 1.5;
+}
+
+.annotation-anchor {
+  fill: #fff;
+}
+
+.annotation-bubble {
+  cursor: pointer;
+  pointer-events: auto;
+  outline: none;
+}
+
+.annotation-bubble circle {
+  fill: #2452cb;
+  stroke: #fff;
+  stroke-width: 2;
+}
+
+.annotation-bubble text {
+  fill: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.annotation-bubble:hover circle,
+.annotation-bubble:focus-visible circle,
+.annotation-bubble.selected circle {
+  fill: #14388f;
+  stroke: #e9a800;
+  stroke-width: 3;
+}
+
+.compare-viewport.annotation-placing {
+  cursor: crosshair;
+}
+
+.data-label .parameter-annotation-number {
+  float: left;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0 4px;
+  margin: 0 6px 2px 0;
+  border: 1px solid #86a0ec;
+  border-radius: 50%;
+  background: #edf2ff;
+  color: #2146b5;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.parameter-annotation-number:focus-visible,
+.annotation-unlocated summary:focus-visible {
+  outline: 2px solid #2452cb;
+  outline-offset: 2px;
+}
+
 .compare-tools {
   display: flex;
   align-items: center;
@@ -2704,7 +3011,7 @@ textarea {
 }
 
 .compare-data-panel {
-  min-width: 460px;
+  min-width: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
@@ -4738,7 +5045,7 @@ textarea {
 }
 
 .compare-data-panel .data-table {
-  --data-columns: minmax(110px, 1fr) 92px 92px 66px;
+  --data-columns: minmax(90px, 1fr) 92px 92px 66px;
 }
 
 .compare-data-panel .requirement-list {

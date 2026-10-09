@@ -33,8 +33,8 @@ TECHNICAL_REQUIREMENT_TYPE_LABELS = {
 TECHNICAL_REQUIREMENTS_TITLE = "技术要求"
 
 
-def ensure_technical_requirements_title(text: Any) -> str:
-    """Prefix non-empty note text exactly once, including legacy package text."""
+def strip_technical_requirements_title(text: Any) -> str:
+    """Remove only a standalone leading legacy title, never note numbering."""
 
     normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not normalized:
@@ -42,8 +42,14 @@ def ensure_technical_requirements_title(text: Any) -> str:
     first_line, separator, rest = normalized.partition("\n")
     if first_line.strip().rstrip("：:") == TECHNICAL_REQUIREMENTS_TITLE:
         body = rest.strip() if separator else ""
-        return f"{TECHNICAL_REQUIREMENTS_TITLE}\n{body}" if body else ""
-    return f"{TECHNICAL_REQUIREMENTS_TITLE}\n{normalized}"
+        return body
+    return normalized
+
+
+def ensure_technical_requirements_title(text: Any) -> str:
+    """Legacy helper retained for callers outside the generation path."""
+    body = strip_technical_requirements_title(text)
+    return f"{TECHNICAL_REQUIREMENTS_TITLE}\n{body}" if body else ""
 
 
 def build_technical_requirements_text(requirements: list[Any]) -> str:
@@ -58,7 +64,7 @@ def build_technical_requirements_text(requirements: list[Any]) -> str:
     for item in requirements:
         if not isinstance(item, dict):
             continue
-        content = _single_line_technical_requirement_content(item.get("content"))
+        content = _single_line_technical_requirement_content(technical_requirement_output_content(item))
         if not content:
             continue
         requirement_type = normalize_technical_requirement_type(item.get("type"), default="other") or "other"
@@ -74,7 +80,21 @@ def build_technical_requirements_text(requirements: list[Any]) -> str:
         ).strip()
         body = without_duplicate_label or content
         lines.append(f"{len(lines) + 1}.{label}：{body}")
-    return ensure_technical_requirements_title("\n".join(lines))
+    return "\n".join(lines)
+
+
+def technical_requirement_output_content(item: dict[str, Any]) -> str:
+    """Keep original numbering in metadata, not inside a second output number."""
+    content = str(item.get("content") or "").strip()
+    number = str(item.get("original_number") or "").strip()
+    if not number:
+        # Older snapshots may retain a clear source list number in the body
+        # without separate metadata. Strip it only in the output projection.
+        match = re.match(r"^\s*(\d+)\s*[.．、)]\s*(?=[^\d\s])", content)
+        number = match[1] if match else ""
+    if number and re.fullmatch(r"\d+", number):
+        content = re.sub(rf"^\s*{re.escape(number)}\s*[.．、)]\s*(?=[^\d\s])", "", content, count=1)
+    return content
 
 
 def _single_line_technical_requirement_content(value: Any) -> str:
@@ -175,6 +195,14 @@ def canonical_technical_requirement_key(requirement_type: Any, content: Any) -> 
     normalized_type = normalize_technical_requirement_type(requirement_type, default="other") or "other"
     normalized_content = re.sub(r"\s+", " ", str(content or "").strip()).casefold()
     return normalized_type, normalized_content
+
+
+def technical_requirements_are_duplicates(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Distinct proven drawing occurrences may have the same wording."""
+    left_key, right_key = left.get("recognition_key"), right.get("recognition_key")
+    if left_key and right_key:
+        return left_key == right_key
+    return canonical_technical_requirement_key(left.get("type"), left.get("content")) == canonical_technical_requirement_key(right.get("type"), right.get("content"))
 
 
 def _valid_requirement_id(value: Any) -> str | None:

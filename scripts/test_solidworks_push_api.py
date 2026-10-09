@@ -162,8 +162,8 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
     }
     review = {"spring_parameters": {}}
     legacy_text = build_solidworks_command("1000000002", legacy_package, review)["models"][0]["extraProperties"]["技术要求"]
-    assert legacy_text == "技术要求\n1.其他要求：端圈并紧磨平。"
-    legacy_package["generation_parameters"]["technical_requirements_text"] = legacy_text
+    assert legacy_text == "1.其他要求：端圈并紧磨平。"
+    legacy_package["generation_parameters"]["technical_requirements_text"] = "技术要求\n" + legacy_text
     assert build_solidworks_command("1000000003", legacy_package, review)["models"][0]["extraProperties"]["技术要求"] == legacy_text
 
 
@@ -242,7 +242,7 @@ def main() -> None:
                 assert model["extraProperties"]["F2"] == 2100
                 assert model["extraProperties"]["表面粗糙度Ra"] == 12.5
                 assert isinstance(model["extraProperties"]["表面粗糙度Ra"], float)
-                assert model["extraProperties"]["技术要求"].startswith("技术要求\n1.两端面粗糙度 Ra 12.5μm\n")
+                assert model["extraProperties"]["技术要求"].startswith("1.两端面粗糙度 Ra 12.5μm\n")
                 assert "surface_roughness_ra" not in model["modelParameters"]
                 assert job["execution_options"]["solidworks_payload"] == payload
 

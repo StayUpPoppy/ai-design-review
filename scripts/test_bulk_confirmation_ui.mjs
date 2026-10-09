@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import { translationTestHelpers } from "./translation_ui_test_support.mjs";
 
 const appSource = fs.readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 const helperStart = appSource.indexOf("function buildSafeConfirmationPlan");
@@ -9,6 +10,7 @@ assert.notEqual(helperStart, -1, "bulk confirmation helper must exist");
 assert.notEqual(helperEnd, -1, "bulk confirmation helper block must be complete");
 
 const context = {
+  structuredClone,
   COMPRESSION_GENERATION_CORE_FIELDS: [
     "wire_diameter", "mean_diameter", "free_length", "total_coils", "active_coils",
     "handedness", "end_grinding", "end_coils_closed",
@@ -142,6 +144,11 @@ const context = {
   },
 };
 vm.createContext(context);
+translationTestHelpers(context);
+for (const [startName, endName] of [["function applyManualSurfaceNormalization", "function clearSurfaceNormalization"],
+  ["function technicalTranslationWarningAudit", "function refreshTechnicalTranslationControls"]]) {
+  vm.runInContext(appSource.slice(appSource.indexOf(startName), appSource.indexOf(endName, appSource.indexOf(startName))), context);
+}
 const standardHelperStart = appSource.indexOf("function standardNumberSuggestionEligible");
 const standardHelperEnd = appSource.indexOf("function reasonablenessSuggestionIsFresh", standardHelperStart);
 assert.ok(standardHelperStart >= 0 && standardHelperEnd > standardHelperStart);
@@ -397,5 +404,26 @@ assert.equal(defaultNoticeContext.pendingDefaultCandidateNotice({ need_human_rev
 assert.equal(defaultNoticeContext.pendingDefaultCandidateNotice({ need_human_review: true, default_source: "company_default", source: ["formula_calculation"] }), "");
 assert.equal(defaultNoticeContext.pendingDefaultCandidateNotice({ need_human_review: true, default_source: "company_default", source: ["human_edited"] }), "");
 assert.match(appSource, /parameter-default-candidate-note/);
+
+const warningFixtures = JSON.parse(fs.readFileSync(new URL("./fixtures/technical_translation_warning_pairs.json", import.meta.url), "utf8"));
+const warningReview = { spring_parameters: {}, manual_confirmations: {}, technical_requirements: warningFixtures.map((fixture, index) => ({
+  ...fixture, requirement_id: `warning-${index}`, need_human_review: true, translation_status: "translated",
+  translation_warnings: [{ category: fixture.expected_category, original: fixture.original_content, translated: fixture.content }],
+  translation_warning_snapshot: { content: fixture.content, type: fixture.type },
+})) };
+warningReview.technical_requirements.push({ requirement_id: "warning-surface", type: "surface", content: "镀层 Ц15.hr 按 GOST 9306-85 执行",
+  original_content: "Покрытие Ц15.hr ГОСТ 9306-85", normalization_status: "needs_confirmation", need_human_review: true, translation_status: "translated",
+  translation_warnings: [{ category: "单位", original: "μm", translated: "mm" }],
+  translation_warning_snapshot: { content: "镀层 Ц15.hr 按 GOST 9306-85 执行", type: "surface" } });
+context.state.review = warningReview;
+const warningPlan = context.buildSafeConfirmationPlan(warningReview);
+assert.equal(warningPlan.items.length, 3, "engineering warnings and translated surfaces are all bulk confirmable");
+const warningResult = context.confirmSafeRecognizedFields(warningPlan);
+assert.equal(warningResult.count, 3);
+assert.equal(warningResult.translation_warning_acknowledgements.length, 3);
+assert.equal(warningResult.translation_warning_acknowledgements[0].original_content, warningFixtures[0].original_content);
+assert.equal(warningResult.translation_warning_acknowledgements[0].content, warningFixtures[0].content);
+assert.equal(warningReview.technical_requirements[2].normalization_status, "human_confirmed");
+assert.ok(warningReview.technical_requirements.every((item) => item.need_human_review === false));
 
 console.log("bulk confirmation UI test passed");

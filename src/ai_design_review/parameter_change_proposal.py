@@ -43,7 +43,7 @@ from .standardizers.stiffness import calculate_compression_spring_rate
 from .technical_requirements import (
     TECHNICAL_REQUIREMENT_TYPE_LABELS,
     TECHNICAL_REQUIREMENT_TYPES,
-    canonical_technical_requirement_key,
+    technical_requirements_are_duplicates,
     ensure_technical_requirement_ids,
     new_technical_requirement_id,
     normalize_technical_requirement_type,
@@ -890,9 +890,11 @@ def _has_duplicate_technical_requirement(
     *,
     exclude_requirement_id: str | None = None,
 ) -> bool:
-    expected = canonical_technical_requirement_key(requirement_type, content)
+    current = next((item for item in requirements if isinstance(item, dict)
+                    and item.get("requirement_id") == exclude_requirement_id), {})
+    expected = {**current, "type": requirement_type, "content": content}
     return any(
-        canonical_technical_requirement_key(item.get("type"), item.get("content")) == expected
+        technical_requirements_are_duplicates(item, expected)
         for item in requirements
         if isinstance(item, dict)
         and str(item.get("requirement_id") or "") != str(exclude_requirement_id or "")

@@ -24,6 +24,7 @@ env/
 # Codex / local agent workspace files
 .codex/
 .agents/
+.impeccable/review/
 
 # Logs
 *.log

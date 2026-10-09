@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import { translationTestHelpers } from "./translation_ui_test_support.mjs";
 
 const appSource = fs.readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 const helperStart = appSource.indexOf("function confirmationItemWasEdited");
@@ -23,11 +24,13 @@ const context = {
   reasonablenessSeverityForField(review, field) {
     return review?.severities?.[field] || "";
   },
+  isDuplicateTechnicalRequirement() { return false; },
   escapeHtml(value) {
     return String(value);
   },
 };
 vm.createContext(context);
+translationTestHelpers(context);
 vm.runInContext(appSource.slice(helperStart, helperEnd), context);
 
 const confirmed = { value: 3, need_human_review: false, source: ["human_confirmed"] };
@@ -45,6 +48,15 @@ control = context.confirmationControlState(
 );
 assert.equal(control.label, "确认");
 assert.equal(control.disabled, false);
+
+const translatedSurface = { requirement_id: "surface-warning", type: "surface", content: "镀层 Ц15.hr 按 GOST 9306-85 执行",
+  original_content: "Покрытие Ц15.hr ГОСТ 9306-85", need_human_review: true, normalization_status: "needs_confirmation", translation_status: "translated",
+  translation_warnings: [{ category: "标准编号", original: "GOST 9306-85", translated: "GOST 9301-86" }] };
+control = context.confirmationControlState(translatedSurface, { kind: "technical", field: "technical_requirements.surface-warning", review: {} });
+assert.equal(control.disabled, false, "translated surfaces with differences are single confirmable just like bulk confirmation");
+control = context.confirmationControlState({ ...translatedSurface, content: "Покрытие Ц15.hr ГОСТ 9306-85" },
+  { kind: "technical", field: "technical_requirements.surface-warning", review: {} });
+assert.equal(control.disabled, true, "translated state never permits foreign prose");
 
 const edited = { value: 3.2, need_human_review: true, source: ["human_edited"] };
 control = context.confirmationControlState(edited, {

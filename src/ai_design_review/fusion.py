@@ -4,6 +4,9 @@ from collections import defaultdict
 from math import isfinite
 from typing import Any
 
+from .technical_translation import TRANSLATION_KEYS
+from .technical_requirement_recognition import TECHNICAL_FIELD_TYPES, collect_technical_requirements
+
 
 SOURCE_PRIORITY = {
     "human": 1.0,
@@ -70,7 +73,7 @@ def fuse_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
         ordered = sorted(items, key=_candidate_score, reverse=True)
         selected = _merge_field(field, ordered)
         fields[field] = selected
-        conflict = _detect_conflict(field, ordered)
+        conflict = _detect_conflict(field, ordered) if field not in TECHNICAL_FIELD_TYPES else None
         if conflict:
             conflicts.append(conflict)
 
@@ -80,6 +83,11 @@ def fuse_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
         "fields": fields,
         "load_points": load_points,
         "conflicts": conflicts,
+        "technical_requirements": collect_technical_requirements([
+            {**item, "need_human_review": _needs_human_review(item, [item])}
+            if item.get("field") in TECHNICAL_FIELD_TYPES else item
+            for item in candidates
+        ], preserve_confirmation_policy=True),
     }
 
 
@@ -121,7 +129,7 @@ def _merge_field(field: str, ordered: list[dict[str, Any]]) -> dict[str, Any]:
         "suggested_region": best.get("suggested_region", ""),
         "need_human_review": _needs_human_review(best, ordered),
     }
-    for key in NORMALIZATION_KEYS:
+    for key in (*NORMALIZATION_KEYS, *TRANSLATION_KEYS):
         if key in best:
             merged[key] = best[key]
     if field == "surface_roughness_ra":

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import { translationTestHelpers } from "./translation_ui_test_support.mjs";
 
 const appSource = fs.readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 
@@ -48,6 +49,7 @@ async function testStaleStandardizationCannotUndoConfirmation() {
     loadGenerationState() {},
   };
   vm.createContext(context);
+  translationTestHelpers(context);
   vm.runInContext(extract("async function runStandardization(", "async function runStandardizationChat("), context);
   const running = context.runStandardization(null, { silent: true });
   for (let attempt = 0; attempt < 5 && !finishRequest; attempt += 1) await Promise.resolve();
@@ -99,6 +101,7 @@ async function testSaveAcknowledgementDoesNotReplaceNewerInput() {
     loadGenerationState() {},
   };
   vm.createContext(context);
+  translationTestHelpers(context);
   vm.runInContext(extract("function scheduleReviewPersistence()", "function refreshReviewChangeHistory()"), context);
   const saving = context.persistReviewChanges();
   assert.equal(context.state.reviewPersistenceInFlightEvents.length, 1);
@@ -162,6 +165,7 @@ async function testRevisionConflictKeepsUnrelatedServerChanges() {
     targetFieldLabel: String,
   };
   vm.createContext(context);
+  translationTestHelpers(context);
   vm.runInContext(extract("function parameterConflictFingerprint", "function refreshReviewChangeHistory()"), context);
   const resolved = await context.reconcileParameterRevisionConflict("review-1", [event]);
   assert.equal(resolved.revision, 2);
@@ -200,6 +204,7 @@ function testFreeEditingAndToleranceDraft() {
     generationContractValue() { return "right"; },
   };
   vm.createContext(context);
+  translationTestHelpers(context);
   vm.runInContext(extract("function parameterConfirmationInvalidReason", "function isFiniteReviewNumber"), context);
   vm.runInContext(extract("function formatTolerance(", "function applyLoadPointTolerance("), context);
   assert.equal(context.parameterConfirmationInvalidReason("free_length", { value: -5 }), "");

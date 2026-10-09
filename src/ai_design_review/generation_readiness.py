@@ -27,8 +27,10 @@ from .load_points import (
 )
 from .technical_requirements import (
     build_technical_requirements_text,
-    canonical_technical_requirement_key,
+    technical_requirements_are_duplicates,
+    technical_requirement_output_content,
 )
+from .technical_translation import translation_blocks_export
 
 
 def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
@@ -75,7 +77,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
     _append_material_warning(parameters, warnings)
 
     _append_standardization_warnings(review, warnings)
-    _append_technical_requirement_state(review, pending)
+    _append_technical_requirement_state(review, pending, warnings)
     _append_load_point_state(review, pending)
 
     if blocking_reasonableness:
@@ -212,17 +214,21 @@ def _append_standardization_warnings(
             warnings.append(_field_issue(target or "standardization", item.get("basis") or "标准化建议尚未处理；未应用的建议不会进入生图参数包。", label=_label(target) if target else "标准化建议"))
 
 
-def _append_technical_requirement_state(review: dict[str, Any], pending: list[dict[str, Any]]) -> None:
-    seen: set[tuple[str, str]] = set()
+def _append_technical_requirement_state(review: dict[str, Any], pending: list[dict[str, Any]], warnings: list[dict[str, Any]] | None = None) -> None:
+    seen: list[dict[str, Any]] = []
     for index, item in enumerate(review.get("technical_requirements") or [], start=1):
         if not isinstance(item, dict):
             continue
         content = str(item.get("content") or "").strip()
         requirement_type = str(item.get("type") or "other")
-        canonical = canonical_technical_requirement_key(requirement_type, content)
-        duplicate = bool(content) and canonical in seen
+        if translation_blocks_export(item):
+            issue = _field_issue(f"technical_requirements.{item.get('requirement_id') or index}", "外文技术要求尚未完成中文翻译，未写入本次图纸；请重试翻译或人工填写中文。", label=_technical_label(requirement_type))
+            issue["requirement_id"] = item.get("requirement_id")
+            (warnings if warnings is not None else pending).append(issue)
+            continue
+        duplicate = bool(content) and any(technical_requirements_are_duplicates(item, previous) for previous in seen)
         if content:
-            seen.add(canonical)
+            seen.append(item)
         if content and _technical_requirement_is_confirmed(item) and not duplicate:
             continue
         if duplicate:
@@ -255,6 +261,7 @@ def _technical_requirement_is_confirmed(item: Any) -> bool:
         isinstance(item, dict)
         and bool(str(item.get("content") or "").strip())
         and item.get("need_human_review") is False
+        and not translation_blocks_export(item)
     )
 
 
@@ -375,7 +382,7 @@ def _export_derived_parameter(
 def _generation_requirement(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": item.get("type"),
-        "content": str(item.get("content") or "").strip(),
+        "content": technical_requirement_output_content(item),
         "confirmation_source": "human_confirmed",
     }
 

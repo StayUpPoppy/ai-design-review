@@ -42,7 +42,7 @@ from .engines.ocr_providers import (
     normalize_ocr_provider,
     ocr_runtime_status,
 )
-from .engines.qwen_vision_adapter import QwenVisionEngine, qwen_runtime_status
+from .engines.qwen_vision_adapter import QwenVisionEngine, qwen_runtime_status, qwen_payload_to_candidates
 from .engines.werk24_adapter import Werk24Engine
 from .identity import IdentityContext, IdentityError, resolve_request_identity
 from .io_utils import project_path, read_json, write_json
@@ -98,7 +98,13 @@ from .solidworks import build_solidworks_command
 from .load_points import ensure_load_point_ids
 from .surface_roughness import ensure_surface_roughness_parameter
 from .technical_requirements import ensure_technical_requirement_ids
+from .technical_requirement_recognition import collect_technical_requirements, recovery_preview
+from .technical_translation import TechnicalTranslationEngine, prepare_review_translations, translation_snapshot
 from .workflow import DrawingReviewWorkflow, apply_standardization_to_review
+from .drawing_annotations import (
+    AnnotationConflictError, annotation_file_lock, apply_annotation_patch,
+    atomic_annotation_write, build_annotations, page_sort_key,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -1329,10 +1335,23 @@ async def run_recognition_execution(
     review = DrawingReviewWorkflow(rules).run(str(drawing_path), candidates, run_standardization=False)
     apply_generation_defaults(review)
     llm_standardization_payload: dict[str, Any] | None = None
+    translation_results = await run_in_threadpool(prepare_review_translations, review)
+    for translated in translation_results:
+        if translated["translation_status"] == "not_required":
+            continue
+        review.setdefault("change_history", []).append({
+            "client_event_id": f"translation_{uuid.uuid4().hex}",
+            "event_type": "technical_requirement_translation_failed" if translated["translation_status"] == "failed" else "technical_requirement_translated",
+            "target_field": f"technical_requirements.{translated['requirement_id']}",
+            "source": "machine_translation", "before_state": translated["source_snapshot"],
+            "reason": "识别技术要求中文化，仍需人工确认",
+            "after_state": {"content": translated["content"], "translation_status": translated["translation_status"], "need_human_review": True},
+            "metadata": {"requirement_id": translated["requirement_id"], "translation_source": translated["translation_source"], "translation_error": translated["translation_error"], "translation_warnings": translated.get("translation_warnings", [])},
+            "created_at": datetime.now(UTC).isoformat(), "sync_status": "saved_local",
+        })
     if use_llm_standardization:
         warnings.append("LLM/RAG 标准化已改为点击“标准化”按钮后执行，本次上传仅完成识别。")
 
-    _report_recognition_progress(progress_callback, "saving_result", 95)
     candidates_payload = {
         "job_id": job_id,
         "sources": candidate_sources,
@@ -1340,6 +1359,19 @@ async def run_recognition_execution(
         "dimension_evidence": raw_payloads.get("geometry", {}).get("dimension_evidence", []),
         "raw_payloads": raw_payloads,
     }
+    if review.get("drawing_summary", {}).get("spring_type") == "compression_spring":
+        _report_recognition_progress(progress_callback, "locating_parameters", 92)
+        try:
+            review["drawing_annotations"] = await run_in_threadpool(
+                build_annotations, review, job_dir, lambda path: _artifact_url(job_id, path),
+                candidates_payload=candidates_payload,
+            )
+            if not REVIEW_PERSISTENCE.configured:
+                atomic_annotation_write(job_dir / "annotations.json", review["drawing_annotations"])
+        except Exception:
+            LOGGER.exception("Original annotation localization failed for %s", job_id)
+            warnings.append("关键参数定位未完成，审图和生图不受影响，可在原图中人工标注。")
+    _report_recognition_progress(progress_callback, "saving_result", 95)
     write_json(job_dir / "candidates.json", candidates_payload)
     write_json(job_dir / "review.json", review)
     write_json(job_dir / "file_info.json", uploaded_file_info)
@@ -2028,6 +2060,133 @@ def get_candidates(job_id: str, identity: IdentityContext = Depends(require_iden
     return read_json(candidates_path)
 
 
+@app.post("/api/reviews/{job_id}/technical-requirements/recover-preview", tags=["审图管理"], summary="预览遗漏技术要求（不保存审图）")
+def preview_technical_requirement_recovery(job_id: str, payload: dict[str, Any] = Body(...), identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    job_dir = _job_dir(job_id)
+    review, revision = _load_persisted_review(job_id, job_dir / "review.json", identity)
+    if payload.get("expected_revision") != revision:
+        raise HTTPException(status_code=409, detail="审图版本已变化，请保存或刷新当前内容后重新预览。")
+    candidates: list[dict[str, Any]] = []
+    source = "none"
+    for filename in ("qwen_vision_raw.json", "candidates.json"):
+        file_path = job_dir / filename
+        if not file_path.exists():
+            continue
+        try:
+            saved = read_json(file_path)
+            if filename == "qwen_vision_raw.json" and isinstance(saved, dict) and isinstance(saved.get("parsed"), dict):
+                candidates = qwen_payload_to_candidates(saved["parsed"])
+                source = "qwen_vision_raw"
+            elif filename == "candidates.json":
+                candidates = saved.get("candidates", []) if isinstance(saved, dict) else saved
+                source = "candidates"
+            if isinstance(candidates, list):
+                recognized = collect_technical_requirements([row for row in candidates if isinstance(row, dict)])
+                if recognized:
+                    preview = recovery_preview(review, recognized)
+                    return {"job_id": job_id, "based_on_revision": revision, "source": source, **preview}
+        except (ValueError, TypeError, OSError, AttributeError, KeyError, OverflowError):
+            LOGGER.warning("Unreadable technical requirement source %s for %s", filename, job_id)
+    return {"job_id": job_id, "based_on_revision": revision, "source": "none", "items": [], "order_hints": [],
+            "message": "没有可用的原始技术要求记录；请重新识别图纸或人工补充，不会自动猜测遗漏内容。"}
+
+
+@app.post("/api/reviews/{job_id}/technical-requirements/translate", tags=["审图管理"], summary="将外文技术要求翻译为中文（不保存审图）")
+async def translate_technical_requirements(job_id: str, payload: dict[str, Any] = Body(...), identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    review, revision = _load_persisted_review(job_id, _job_dir(job_id) / "review.json", identity)
+    mode = payload.get("mode", "translate")
+    if mode not in {"translate", "revalidate"}:
+        raise HTTPException(status_code=400, detail="翻译模式无效。")
+    requested = payload.get("requirements")
+    if not isinstance(requested, list) or not 1 <= len(requested) <= 50:
+        raise HTTPException(status_code=400, detail="一次请选择1至50条技术要求。")
+    by_id = {item["requirement_id"]: item for item in review.get("technical_requirements") or []}
+    selected, seen = [], set()
+    for request in requested:
+        if not isinstance(request, dict) or request.get("requirement_id") not in by_id or request["requirement_id"] in seen:
+            raise HTTPException(status_code=400, detail="技术要求ID无效或重复。")
+        item = by_id[request["requirement_id"]]
+        if request.get("source_snapshot") != translation_snapshot(item):
+            raise HTTPException(status_code=409, detail="技术要求已变化，请保存最新内容后重试翻译。")
+        if len(str(item.get("content") or "")) > 6000:
+            raise HTTPException(status_code=400, detail="单条技术要求超过6000字，请分条处理。")
+        selected.append(item)
+        seen.add(item["requirement_id"])
+    if mode == "revalidate":
+        from .technical_translation_recovery import revalidate_translations
+        recognized = []
+        for filename in ("qwen_vision_raw.json", "candidates.json"):
+            path = _job_dir(job_id) / filename
+            if not path.exists():
+                continue
+            try:
+                saved = read_json(path)
+                if filename == "qwen_vision_raw.json":
+                    candidates = qwen_payload_to_candidates(saved["parsed"])
+                else:
+                    candidates = saved.get("candidates", []) if isinstance(saved, dict) else saved
+                recognized = collect_technical_requirements(candidates)
+                if recognized:
+                    break
+            except (ValueError, TypeError, OSError, AttributeError, KeyError):
+                LOGGER.warning("Unreadable translation evidence %s for %s", filename, job_id)
+        translated = revalidate_translations(review, selected, recognized)
+    else:
+        translated = await run_in_threadpool(TechnicalTranslationEngine().translate, selected)
+    return {"job_id": job_id, "based_on_revision": revision, "requirements": translated}
+
+
+def _load_drawing_annotations(job_id: str, identity: IdentityContext) -> dict[str, Any]:
+    job_dir = _job_dir(job_id)
+    review, _ = _load_persisted_review(job_id, job_dir / "review.json", identity)
+    if REVIEW_PERSISTENCE.configured and isinstance(review.get("drawing_annotations"), dict):
+        return review["drawing_annotations"]
+    if not REVIEW_PERSISTENCE.configured:
+        with annotation_file_lock(job_dir):
+            path = job_dir / "annotations.json"
+            if path.exists():
+                return read_json(path)
+            document = review.get("drawing_annotations") or build_annotations(review, job_dir, lambda relative: _artifact_url(job_id, relative))
+            atomic_annotation_write(path, document)
+            return document
+    document = build_annotations(review, job_dir, lambda relative: _artifact_url(job_id, relative))
+    return REVIEW_PERSISTENCE.save_drawing_annotations(job_id, owner_user_id=identity.user_id, initial=document)
+
+
+@app.get("/api/reviews/{job_id}/annotations", tags=["审图管理"], summary="获取原图关键参数气泡标注")
+def get_drawing_annotations(job_id: str, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    try:
+        return _load_drawing_annotations(job_id, identity)
+    except ReviewAccessError as exc:
+        raise HTTPException(status_code=404, detail="Review not found.") from exc
+    except PersistenceError as exc:
+        raise _persistence_http_error(exc) from exc
+
+
+@app.patch("/api/reviews/{job_id}/annotations", tags=["审图管理"], summary="独立保存原图标注位置")
+def save_drawing_annotations(job_id: str, body: dict[str, Any] = Body(...), identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    try:
+        _load_drawing_annotations(job_id, identity)
+        if set(body) - {"source_document_id", "expected_annotation_revision", "changes"}:
+            raise ValueError("只允许提交标注位置修改。")
+        if REVIEW_PERSISTENCE.configured:
+            return REVIEW_PERSISTENCE.save_drawing_annotations(job_id, owner_user_id=identity.user_id, patch=body)
+        job_dir = _job_dir(job_id)
+        with annotation_file_lock(job_dir):
+            path = job_dir / "annotations.json"
+            result = apply_annotation_patch(read_json(path), body)
+            atomic_annotation_write(path, result)
+            return result
+    except AnnotationConflictError as exc:
+        raise HTTPException(status_code=409, detail={"message": str(exc), "annotations": exc.current}) from exc
+    except ReviewAccessError as exc:
+        raise HTTPException(status_code=404, detail="Review not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PersistenceError as exc:
+        raise _persistence_http_error(exc) from exc
+
+
 @app.get("/api/reviews/{job_id}/download")
 def download_review(job_id: str, identity: IdentityContext = Depends(require_identity)) -> FileResponse:
     job_dir = _job_dir(job_id)
@@ -2651,7 +2810,7 @@ def _review_preview_url(job_id: str) -> str | None:
             for path in page_dir.rglob("*")
             if path.is_file() and path.suffix.lower() in supported_suffixes
         ),
-        key=lambda path: path.as_posix(),
+        key=page_sort_key,
     )
     if not candidates:
         return None

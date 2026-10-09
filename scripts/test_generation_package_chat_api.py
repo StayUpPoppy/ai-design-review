@@ -64,7 +64,9 @@ def main() -> None:
                 assert action["automatic_download"] is True
                 assert payload["turn"]["generation_package_export"] == action
                 assert payload["standardization_context"]["status"] == "current"
-                assert "parameter_reasonableness" not in payload["review"]
+                # Persisted review responses already include the current assessment.
+                assert payload["review"]["parameter_reasonableness_stale"] is False
+                assert payload["review"]["review_revision"] == payload["review_revision"]
 
                 package_response = client.get("/api/reviews/package-chat-review/generation-package")
                 assert package_response.status_code == 200, package_response.text

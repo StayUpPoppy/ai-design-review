@@ -65,6 +65,10 @@ def _operation(tag: str, summary: str, description: str) -> dict[str, str]:
 
 
 OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
+    ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): _operation("审图管理", "预览并核对遗漏技术要求", "按订单归属和当前修订读取原始识别列表，返回未保留的独立条目；不调用识别模型、不保存、不覆盖人工内容。客户端选择补回后使用既有保存接口，仍须逐条确认。"),
+    ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): _operation("审图管理", "翻译或核验技术要求中文译文", "校验订单归属、稳定ID及已保存文本快照，逐条保护工程信息。中文直接显示，工程差异以translation_warnings提示，允许单项或批量确认；真实外文和无效响应仍失败。mode=translate调用现有Qwen；mode=revalidate只核验已有译文，不调用模型。返回安全自动恢复或待用户选择的候选；不保存、不代替人工确认，客户端通过现有串行保存持久化。"),
+    ("GET", "/api/reviews/{job_id}/annotations"): _operation("审图管理", "获取原图关键参数气泡标注", "返回原图页面清单、稳定参数编号、定位依据和独立标注版本。历史订单按已有原图补建定位，不重新调用Qwen或RAG。"),
+    ("PATCH", "/api/reviews/{job_id}/annotations"): _operation("审图管理", "独立保存原图标注位置", "仅调整原图定位点和气泡位置，不改变参数、审图修订号或SW生图状态。标注版本冲突返回409并附带服务器位置。"),
     ("GET", "/"): _operation("系统状态", "查看 API 服务入口", "返回服务名称、健康检查地址和增强接口文档地址，不执行任何业务操作。"),
     ("GET", "/api/health"): _operation("系统状态", "检查服务运行状态", "返回数据库、识别队列、OCR、标准化、生图队列和模拟模板等运行状态；用于部署验收和故障诊断。"),
     ("GET", "/api/session"): _operation("会话与示例", "获取当前 ERP 用户", "解析当前请求携带的 ERP 身份 Cookie，并返回脱敏后的用户与组织信息；本地 mock 模式返回配置的模拟身份。"),
@@ -218,11 +222,25 @@ class TechnicalRequirementDocument(BaseModel):
         description="技术要求类型：surface、surface_roughness、hardness、heat_treatment、salt_spray、environmental、lifetime、process或other。",
         examples=["surface"],
     )
-    content: str = Field(default="", description="需要写入二维图纸固定区域的中文技术要求原文。", examples=["表面镀锌。"])
+    content: str = Field(default="", description="当前技术要求编辑及输出文本；译文放在此字段，送译原文另存original_content。", examples=["表面镀锌。"])
+    original_content: str | None = Field(default=None, description="保留的图纸原文；历史缺原文时保留已有文本，不伪造原文。")
+    original_number: str | None = Field(default=None, description="原图条目序号，仅用于核对，可重复；无编号时为空。")
+    source_order: float | None = Field(default=None, description="原图阅读顺序，不是SW输出编号。")
+    recognition_key: str | None = Field(default=None, description="原图识别条目标识，用于去重和安全补回。")
+    recognized_content: str | None = Field(default=None, description="初始识别正文；人工编辑后保留用于追溯。")
+    source_language: str | None = Field(default=None, description="原文自然语言代码，如ru、en、zh；未知为unknown。")
+    translation_status: Literal["not_required", "translated", "failed"] | None = Field(default=None, description="中文化状态；译文仍须人工确认。")
+    translation_error: str | None = Field(default=None, description="真正翻译失败原因；工程信息差异使用translation_warnings，不阻止确认。")
+    translation_error_code: str | None = Field(default=None, description="失败分类：request_failed、model_uncertain、invalid_response、foreign_prose_remaining；兼容历史engineering_mismatch，新工程差异仅使用警告。")
+    translation_error_details: dict[str, Any] | None = Field(default=None, description="真正失败的详细说明；兼容历史工程差异，新的差异保存在translation_warnings。")
+    translation_source: str | None = Field(default=None, description="翻译来源及模型；不代表人工确认。")
+    translation_input_snapshot: dict[str, Any] | None = Field(default=None, description="最后一次送译文本与类型，用于防止重复失败请求。")
+    translation_warnings: list[dict[str, Any]] = Field(default_factory=list, description="工程信息差异提醒；允许单项及批量人工确认，不表示翻译失败。")
+    translation_warning_snapshot: dict[str, Any] | None = Field(default=None, description="警告对应的当前中文正文和类型；编辑后旧警告不再生效。")
     source: list[str] = Field(default_factory=list, description="识别、人工编辑或AI方案等内部来源。")
     evidence: str | None = Field(default=None, description="图纸识别证据或人工修改说明。")
     confidence: float | None = Field(default=None, ge=0, le=1, description="识别或确认置信度。")
-    need_human_review: bool = Field(default=True, description="是否仍待人工确认；只有false的非空内容进入生图参数包。")
+    need_human_review: bool = Field(default=True, description="是否仍待人工确认；仅已完成中文化且false的非空内容进入生图参数包。")
 
 
 class ReasonablenessSuggestion(BaseModel):
@@ -746,6 +764,96 @@ class ReviewChangesResponse(BaseModel):
     events: list[dict[str, Any]] = Field(default_factory=list, description="按时间返回的审图修改事件。")
 
 
+class AnnotationPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    x: float = Field(ge=0, le=1, description="相对预览页宽度的横坐标，左上角为原点。")
+    y: float = Field(ge=0, le=1, description="相对预览页高度的纵坐标。")
+
+
+class AnnotationPositionChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    annotation_id: str = Field(description="固定参数字段标识，例如wire_diameter。")
+    location_id: str = Field(description="同一参数某个原图位置的稳定标识。")
+    page: int = Field(ge=1, description="原图页码。")
+    anchor: AnnotationPoint = Field(description="原图依据的定位点。")
+    bubble: AnnotationPoint = Field(description="编号气泡中心位置。")
+
+
+class SaveDrawingAnnotationsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_document_id: str = Field(description="原图及预览页面标识，防止把旧位置写入新原图。")
+    expected_annotation_revision: int = Field(ge=1, description="当前标注独立版本，与审图修订号无关。")
+    changes: list[AnnotationPositionChange] = Field(min_length=1, max_length=60, description="需要保存的位置调整。")
+
+
+class DrawingAnnotationsResponse(BaseModel):
+    schema_version: str = Field(description="原图标注格式版本original_annotations/v1。")
+    source_document_id: str = Field(description="原图及预览页面标识。")
+    annotation_revision: int = Field(description="独立标注版本，不影响生图参数修订。")
+    pages: list[dict[str, Any]] = Field(description="原图实际页码、图片地址、宽度和高度。")
+    annotations: list[dict[str, Any]] = Field(description="15个主参数的编号、原始识别值、位置及未定位原因；空模板项不展示。")
+    warnings: list[str] = Field(default_factory=list, description="不阻断审图的定位提示。")
+
+
+class TechnicalRecoveryRequest(BaseModel):
+    expected_revision: int | None = Field(default=None, description="当前已保存修订号，版本变化返回409。")
+
+
+class TechnicalRecoveryItem(BaseModel):
+    requirement: TechnicalRequirementDocument
+    status: Literal["available", "possible_existing"]
+    reason: str
+
+
+class TechnicalRecoveryResponse(BaseModel):
+    job_id: str
+    based_on_revision: int | None = None
+    source: Literal["qwen_vision_raw", "candidates", "none"]
+    items: list[TechnicalRecoveryItem]
+    order_hints: list[dict[str, Any]] = Field(default_factory=list, description="唯一匹配的已有条目原图顺序，仅作补回时排序依据，不改正文或确认。")
+    message: str
+
+
+class TechnicalTranslationSnapshot(BaseModel):
+    content: str = Field(description="翻译对象的当前已保存文本。")
+    type: str = Field(description="技术要求类型。")
+
+
+class TechnicalTranslationItemRequest(BaseModel):
+    requirement_id: str = Field(description="技术要求稳定ID。")
+    source_snapshot: TechnicalTranslationSnapshot
+
+
+class TechnicalTranslationRequest(BaseModel):
+    mode: Literal["translate", "revalidate"] = Field(default="translate", description="revalidate仅核对已保存译文，不调用模型、不保存审图。")
+    requirements: list[TechnicalTranslationItemRequest] = Field(min_length=1, max_length=50)
+
+
+class TechnicalTranslationResult(BaseModel):
+    requirement_id: str
+    source_snapshot: TechnicalTranslationSnapshot
+    content: str
+    original_content: str
+    source_language: str
+    translation_status: Literal["not_required", "translated", "failed"] = Field(description="not_required 也用于已核实的历史语言误判恢复；不代表已人工确认。")
+    translation_error: str
+    translation_error_code: str = ""
+    translation_error_details: dict[str, Any] = Field(default_factory=dict)
+    translation_warnings: list[dict[str, Any]] = Field(default_factory=list, description="当前中文译文的工程差异提醒，不作为翻译失败或确认拦截。")
+    translation_warning_snapshot: TechnicalTranslationSnapshot | None = Field(default=None, description="警告对应的正文和类型，编辑后旧警告不再适用。")
+    recovery_mode: Literal["automatic", "preview", "unavailable"] | None = None
+    translation_candidates: list[dict[str, Any]] = Field(default_factory=list, description="仅供用户预览；不能直接写入content。")
+    recovery_reason: str | None = None
+    translation_source: str
+    translation_input_snapshot: TechnicalTranslationSnapshot
+
+
+class TechnicalTranslationResponse(BaseModel):
+    job_id: str
+    based_on_revision: int | None = None
+    requirements: list[TechnicalTranslationResult]
+
+
 class ApiErrorResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -753,6 +861,9 @@ class ApiErrorResponse(BaseModel):
 
 
 DOCUMENTATION_MODELS: tuple[type[BaseModel], ...] = (
+    TechnicalRecoveryRequest, TechnicalRecoveryItem, TechnicalRecoveryResponse,
+    TechnicalTranslationSnapshot, TechnicalTranslationItemRequest, TechnicalTranslationRequest, TechnicalTranslationResult, TechnicalTranslationResponse,
+    AnnotationPoint, AnnotationPositionChange, SaveDrawingAnnotationsRequest, DrawingAnnotationsResponse,
     ReviewParameterValue,
     DrawingSummaryDocument,
     ReviewLoadPointDocument,
@@ -790,6 +901,9 @@ DOCUMENTATION_MODELS: tuple[type[BaseModel], ...] = (
 
 
 REQUEST_MODELS: dict[tuple[str, str], type[BaseModel]] = {
+    ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): TechnicalRecoveryRequest,
+    ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): TechnicalTranslationRequest,
+    ("PATCH", "/api/reviews/{job_id}/annotations"): SaveDrawingAnnotationsRequest,
     ("POST", "/api/reviews/standardize"): StandardizePayloadRequest,
     ("POST", "/api/reviews/reasonableness"): ReasonablenessRequest,
     ("POST", "/api/reviews/{job_id}/standardize"): ExistingStandardizeRequest,
@@ -801,6 +915,10 @@ REQUEST_MODELS: dict[tuple[str, str], type[BaseModel]] = {
 }
 
 RESPONSE_MODELS: dict[tuple[str, str], tuple[str, type[BaseModel]]] = {
+    ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): ("200", TechnicalRecoveryResponse),
+    ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): ("200", TechnicalTranslationResponse),
+    ("GET", "/api/reviews/{job_id}/annotations"): ("200", DrawingAnnotationsResponse),
+    ("PATCH", "/api/reviews/{job_id}/annotations"): ("200", DrawingAnnotationsResponse),
     ("POST", "/api/reviews"): ("202", ReviewCreateResponse),
     ("GET", "/api/reviews"): ("200", ReviewListResponse),
     ("GET", "/api/reviews/{job_id}"): ("200", ReviewDocument),

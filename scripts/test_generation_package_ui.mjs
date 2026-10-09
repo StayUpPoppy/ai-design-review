@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import { translationTestHelpers } from "./translation_ui_test_support.mjs";
 
 const appSource = fs.readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 const readinessStart = appSource.indexOf("function generationSourceParameter");
@@ -53,6 +54,9 @@ const context = {
   formatCompactNumber: (value) => Number.isInteger(Number(value)) ? String(Number(value)) : String(Number(Number(value).toFixed(4))),
 };
 vm.createContext(context);
+translationTestHelpers(context);
+const duplicateStart = appSource.indexOf("function technicalRequirementsAreDuplicates");
+vm.runInContext(appSource.slice(duplicateStart, appSource.indexOf("function isDuplicateTechnicalRequirement", duplicateStart)), context);
 vm.runInContext(appSource.slice(handednessStart, handednessEnd), context);
 vm.runInContext(appSource.slice(readinessStart, readinessEnd), context);
 vm.runInContext(appSource.slice(packageStart, packageEnd), context);
@@ -84,7 +88,7 @@ assert.equal(JSON.stringify(packageData.generation_parameters.load_points), JSON
 }]));
 assert.equal(packageData.generation_parameters.technical_requirements[0].content, "镀锌");
 assert.equal(packageData.generation_parameters.technical_requirements[0].requirement_id, undefined);
-assert.equal(packageData.generation_parameters.technical_requirements_text, "技术要求\n1.表面处理：镀锌");
+assert.equal(packageData.generation_parameters.technical_requirements_text, "1.表面处理：镀锌");
 
 const pendingRequirementReview = structuredClone(review);
 pendingRequirementReview.technical_requirements[0].requirement_id = "techreq-confirmed";
@@ -100,7 +104,7 @@ assert.deepEqual(
   Object.keys(filteredPackage.generation_parameters.technical_requirements[0]),
   ["type", "content", "confirmation_source"],
 );
-assert.equal(filteredPackage.generation_parameters.technical_requirements_text, "技术要求\n1.表面处理：镀锌");
+assert.equal(filteredPackage.generation_parameters.technical_requirements_text, "1.表面处理：镀锌");
 
 const formattedRequirementsReview = structuredClone(review);
 formattedRequirementsReview.technical_requirements = [
@@ -110,12 +114,30 @@ formattedRequirementsReview.technical_requirements = [
 ];
 assert.equal(
   context.makeGenerationParameterPackage(formattedRequirementsReview).generation_parameters.technical_requirements_text,
-  "技术要求\n1.表面处理：表面镀锌。\n2.盐雾试验：96小时。\n3.工艺要求：去除毛刺。；不得有锐边。",
+  "1.表面处理：表面镀锌。\n2.盐雾试验：96小时。\n3.工艺要求：去除毛刺。；不得有锐边。",
 );
 
 const noRequirementsReview = structuredClone(review);
 noRequirementsReview.technical_requirements = [];
 assert.equal(context.makeGenerationParameterPackage(noRequirementsReview).generation_parameters.technical_requirements_text, "");
+const originalNumberReview = structuredClone(review);
+originalNumberReview.technical_requirements = [{ type: "other", content: "9.未注尺寸以3D为准", original_number: "9", need_human_review: false }];
+assert.equal(context.makeGenerationParameterPackage(originalNumberReview).generation_parameters.technical_requirements_text, "1.其他要求：未注尺寸以3D为准");
+delete originalNumberReview.technical_requirements[0].original_number;
+assert.equal(context.makeGenerationParameterPackage(originalNumberReview).generation_parameters.technical_requirements_text, "1.其他要求：未注尺寸以3D为准");
+originalNumberReview.technical_requirements[0].content = "12.5 mm";
+originalNumberReview.technical_requirements[0].original_number = "12";
+assert.equal(context.makeGenerationParameterPackage(originalNumberReview).generation_parameters.technical_requirements_text, "1.其他要求：12.5 mm");
+
+const engineeringNoteReview = structuredClone(review);
+const engineeringNote = { requirement_id: "3d-note", type: "other", content: "未注尺寸以3D为准", need_human_review: false };
+engineeringNoteReview.technical_requirements = [engineeringNote];
+assert.match(context.makeGenerationParameterPackage(engineeringNoteReview).generation_parameters.technical_requirements_text, /未注尺寸以3D为准/);
+Object.assign(engineeringNote, { need_human_review: true, translation_status: "not_required" });
+assert.equal(context.makeGenerationParameterPackage(engineeringNoteReview).generation_parameters.technical_requirements_text, "");
+Object.assign(engineeringNote, { need_human_review: false, translation_status: "failed", translation_error: "翻译改变了数值或公差",
+  translation_input_snapshot: { content: engineeringNote.content, type: "other" } });
+assert.equal(context.makeGenerationParameterPackage(engineeringNoteReview).generation_parameters.technical_requirements_text, "");
 
 const pendingRoughnessReview = structuredClone(review);
 pendingRoughnessReview.spring_parameters.surface_roughness_ra = {
@@ -126,12 +148,12 @@ pendingRoughnessReview.spring_parameters.surface_roughness_ra = {
 };
 assert.equal(
   context.makeGenerationParameterPackage(pendingRoughnessReview).generation_parameters.technical_requirements_text,
-  "技术要求\n1.表面处理：镀锌",
+  "1.表面处理：镀锌",
 );
 const confirmedRoughnessReview = structuredClone(pendingRoughnessReview);
 confirmedRoughnessReview.spring_parameters.surface_roughness_ra.need_human_review = false;
 const roughnessPackage = context.makeGenerationParameterPackage(confirmedRoughnessReview);
-assert.equal(roughnessPackage.generation_parameters.technical_requirements_text, "技术要求\n1.两端面粗糙度 Ra 12.5μm\n2.表面处理：镀锌");
+assert.equal(roughnessPackage.generation_parameters.technical_requirements_text, "1.两端面粗糙度 Ra 12.5μm\n2.表面处理：镀锌");
 assert.equal(roughnessPackage.generation_parameters.technical_requirements[0].type, "surface_roughness");
 assert.equal(roughnessPackage.generation_parameters.spring_parameters.surface_roughness_ra, undefined);
 
@@ -193,6 +215,37 @@ assert.ok(incompletePackage);
 assert.equal(incompletePackage.generation_parameters.spring_parameters.active_coils, undefined);
 assert.equal(incompletePackage.solidworks_preview.modelParameters["有效圈数n"], null);
 assert.equal(incompletePackage.standardization_trace, undefined);
+
+const warningFixtures = JSON.parse(fs.readFileSync(new URL("./fixtures/technical_translation_warning_pairs.json", import.meta.url), "utf8"));
+const warningReview = readyReview();
+warningReview.technical_requirements = warningFixtures.map((fixture) => ({ ...fixture, need_human_review: false, translation_status: "translated",
+  translation_warnings: [{ category: fixture.expected_category, original: fixture.original_content, translated: fixture.content }],
+  translation_warning_snapshot: { content: fixture.content, type: fixture.type } }));
+const warningText = context.makeGenerationParameterPackage(warningReview).generation_parameters.technical_requirements_text;
+assert.ok(warningText.includes("STsKBA") && warningText.includes("B-1-1.5"));
+assert.ok(warningText.startsWith("1.") && warningText.includes("\n2.") && !warningText.startsWith("技术要求\n"));
+warningReview.technical_requirements[0].need_human_review = true;
+assert.ok(!context.makeGenerationParameterPackage(warningReview).generation_parameters.technical_requirements_text.includes("STsKBA"));
+warningReview.technical_requirements[0].need_human_review = false;
+const downloads = [];
+const action = { source_mode: "local", can_download: true };
+warningReview.standardization_chat = [{ generation_package_export: action }];
+Object.assign(context, { state: { review: warningReview, lastJob: null, pendingReviewAuditEvents: [], reviewPersistenceSaving: false },
+  flushReviewPersistence: async () => true, generationPackageExportDisplayStatus: () => "ready",
+  updateGenerationPackageExportAction: (_index, patch) => Object.assign(action, patch),
+  updateLatestReviewMessage() {}, downloadJson: (data) => downloads.push(data) });
+const exportStart = appSource.indexOf("async function executeGenerationPackageExport");
+vm.runInContext(appSource.slice(exportStart, appSource.indexOf("function renderAccuracyStandardizationResultHtml", exportStart)), context);
+assert.equal(await context.exportCurrentGenerationPackage(), true);
+assert.equal(await context.executeGenerationPackageExport(action, 0), true, action.failure_reason);
+assert.equal(downloads.length, 2);
+for (const downloaded of downloads) assert.equal(downloaded.generation_parameters.technical_requirements_text, warningText);
+context.state.pendingReviewAuditEvents.push({ target_field: "technical_requirements.warning" });
+context.flushReviewPersistence = async () => false;
+assert.equal(await context.exportCurrentGenerationPackage(), false);
+assert.equal(await context.executeGenerationPackageExport(action, 0), false);
+assert.equal(downloads.length, 2, "neither export entry downloads unpersisted translation confirmations");
+assert.equal(warningReview.technical_requirements[0].translation_warnings.length, 1, "failed saves preserve the local warning result");
 
 console.log("generation package UI test passed");
 
