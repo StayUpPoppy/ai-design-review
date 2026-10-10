@@ -1,17 +1,68 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from math import isclose, isfinite
 from pathlib import Path
 from typing import Any
 
 from ..io_utils import project_path, read_json
 from ..material_terms import normalize_material_key
+from ..material_catalog import load_material_catalog, match_material_catalog
 from .coil_counts import derive_active_coils
 
 
 MATERIAL_STIFFNESS_PATH = project_path("config", "material_stiffness_properties.json")
 FORMULA_CALCULATION_SOURCE = "formula_calculation"
 FORMULA = "G * d^4 / (8 * D^3 * n)"
+
+
+def refresh_compression_spring_rate_freshness(
+    spring_parameters: dict[str, Any],
+    spring_features: dict[str, Any] | None = None,
+) -> bool:
+    """Flag explicitly obsolete company-G formula evidence without changing values.
+
+    Recorded old G is required: an old version alone is not evidence that the
+    numeric result changed. Human edits and actual drawing stiffness stay intact.
+    """
+    existing = spring_parameters.get("spring_rate")
+    if not isinstance(existing, dict):
+        return False
+    sources = _source_values(existing.get("source"))
+    if FORMULA_CALCULATION_SOURCE not in sources or any(
+        source in {"human_edited", "human_modified", "manual", "manual_input", "standardization_chat", "ai_chat"}
+        for source in sources
+    ):
+        return False
+    old_inputs = existing.get("formula_calculation_inputs") or {}
+    old_g = _number(old_inputs.get("shear_modulus_mpa")) if isinstance(old_inputs, dict) else None
+    if old_g is None or not isfinite(old_g) or old_g <= 0:
+        return False
+    current = calculate_compression_spring_rate(spring_parameters, spring_features)
+    if current["status"] != "calculated" or current["config_version"] != load_material_catalog()["version"]:
+        return False
+    old_version = existing.get("formula_calculation_config_version")
+    if old_version == current["config_version"]:
+        return False
+    new_g = current["inputs"]["shear_modulus_mpa"]
+    old_value = _number(existing.get("value"))
+    changed = (not isclose(old_g, new_g, rel_tol=1e-10, abs_tol=1e-8)
+               and old_value is not None and isfinite(old_value)
+               and not isclose(old_value, float(current["value"]), rel_tol=1e-10, abs_tol=1e-8))
+    if changed:
+        existing.update({
+            "formula_recommendation_stale": True,
+            "formula_material_catalog_stale": True,
+            "formula_calculation_reason": (
+                f"公司材料表剪切模量已更新：G 由 {old_g:g} 更新为 {new_g:g} MPa；"
+                f"当前公式参考刚度为 {current['value']:g} N/mm，请核对并应用最新公式建议。"
+            ),
+        })
+    elif existing.get("formula_material_catalog_stale"):
+        existing.pop("formula_material_catalog_stale", None)
+        existing.pop("formula_recommendation_stale", None)
+        existing.pop("formula_calculation_reason", None)
+    return changed
 
 
 def apply_formula_compression_spring_rate(
@@ -97,7 +148,7 @@ def calculate_compression_spring_rate(
         return _result(
             "material_not_configured",
             missing_fields=["material"],
-            reason=f"当前临时剪切模量配置未覆盖材料：{material_value}。",
+            reason=f"当前剪切模量配置未覆盖材料：{material_value}。",
         )
 
     shear_modulus = float(material["shear_modulus_mpa"])
@@ -114,6 +165,8 @@ def calculate_compression_spring_rate(
         "公式计算：k=G*d^4/(8*D^3*n)；"
         f"G={shear_modulus:g} MPa, d={wire:g} mm, D={mean:g} mm, n={active:g}."
     )
+    if material.get("property_source"):
+        basis += f" {material['property_source']}。"
     return _result(
         "calculated",
         value=_round(value),
@@ -186,8 +239,16 @@ def _active_coils(parameters: dict[str, Any]) -> tuple[float | None, list[str]]:
 
 
 def _material_profile(parameters: dict[str, Any]) -> dict[str, Any] | None:
-    candidates = _material_candidates(parameters)
-    keys = {normalize_material_key(value) for value in candidates if value not in (None, "")}
+    # Only the current selection is authoritative. Drawing raw_value and old
+    # standard_value remain evidence, never a fallback for the current modulus.
+    value = _material_value(parameters)
+    if not value:
+        return None
+    entry = match_material_catalog(value)
+    if entry:
+        catalog = load_material_catalog()
+        return {**entry, "config_version": catalog["version"], "property_source": catalog["source"]}
+    keys = {normalize_material_key(value)}
     config = load_material_stiffness_properties()
     for profile in config.get("materials", []):
         values = profile.get("standard_values") or []
@@ -197,21 +258,9 @@ def _material_profile(parameters: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _material_value(parameters: dict[str, Any]) -> str:
-    for value in _material_candidates(parameters):
-        if value not in (None, ""):
-            return str(value).strip()
-    return ""
-
-
-def _material_candidates(parameters: dict[str, Any]) -> list[Any]:
     material = parameters.get("material")
     item = material if isinstance(material, dict) else {"value": material}
-    sources = _source_values(item.get("source"))
-    keys = ("value", "standard_value", "raw_value") if any(
-        source.startswith("human") or source in {"manual", "manual_input"}
-        for source in sources
-    ) else ("standard_value", "value", "raw_value")
-    return [item.get(key) for key in keys]
+    return str(item.get("value") or "").strip()
 
 
 def _result(

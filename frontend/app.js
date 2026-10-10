@@ -65,9 +65,12 @@ const state = {
   identity: null,
   identityReady: false,
   identityError: "",
+  materialCatalog: { status: "idle", items: [], version: "", source: "", error: "", apiBaseUrl: "" },
   technicalRequirementUndo: null,
   loadPointUndo: null,
 };
+let materialCatalogPromise = null;
+let materialCatalogRequestSerial = 0;
 
 window.addEventListener("beforeunload", (event) => {
   const hasUnsavedReviewWork = hasPendingEditedReviewItems(state.review)
@@ -488,6 +491,7 @@ apiBaseInput.addEventListener("change", () => {
   state.apiBaseUrl = normalizeBaseUrl(apiBaseInput.value || state.apiBaseUrl);
   apiBaseInput.value = state.apiBaseUrl;
   localStorage.setItem("aiDesignReviewApiBaseUrl", state.apiBaseUrl);
+  void ensureMaterialCatalog();
 });
 
 chooseFileButton.addEventListener("click", () => drawingInput.click());
@@ -527,6 +531,7 @@ async function initializeIdentity() {
     refreshIdentityUi();
     setBusy(false);
     void loadRecentReviews();
+    void ensureMaterialCatalog();
   } catch (error) {
     state.identity = null;
     state.identityReady = false;
@@ -1115,6 +1120,7 @@ function parameterAuditState(param) {
     evidence: param?.evidence ?? "",
     surface_location: param?.surface_location ?? null,
     roughness_conflict: Boolean(param?.roughness_conflict),
+    ...(Object.prototype.hasOwnProperty.call(param || {}, "material_selection_source") ? materialSelectionAudit(param) : {}),
   };
 }
 
@@ -3783,6 +3789,37 @@ function isCompressionSpringReview(review) {
   return templateLabel.includes("压缩") || normalizeSpringTypeValue(review?.spring_template?.spring_type) === "compression_spring";
 }
 
+function parameterDisplayUnit(unit) {
+  const value = String(unit ?? "").trim();
+  if (value === "turns") return "圈";
+  if (value === "µm") return "μm";
+  return value;
+}
+
+function parameterUnitLabel(field, label, param = {}, meta = {}) {
+  const unitless = [
+    "material", "standard_no", "accuracy_grade", "handedness", "end_type", "end_grinding",
+    "end_coils_closed", "spring_family", "spring_shape", "manufacturing_method", "wire_section",
+    "pitch_type", "controlled_diameter_field", "leg_end_type", "hook_type", "hook1_type",
+    "hook2_type", "hook_orientation", "ring_type",
+  ].includes(field) || String(field).endsWith("_accuracy_grade");
+  const unit = unitless ? "" : parameterDisplayUnit(String(param?.unit ?? "").trim() || meta?.unit);
+  const templateUnit = parameterDisplayUnit(meta?.unit);
+  let name = String(label ?? "");
+  if (unit) {
+    // Remove only unit annotations, not qualifiers such as “参考” or “单端”.
+    name = name.replace(/[（(]([^（）()]*)[）)]/g, (annotation, content) => {
+      const existing = parameterDisplayUnit(content);
+      return existing === unit || (templateUnit && existing === templateUnit) ? "" : annotation;
+    }).trim();
+  }
+  return { name, unit, text: unit ? `${name}（${unit}）` : name };
+}
+
+function parameterUnitLabelHtml(label) {
+  return `${escapeHtml(label.name)}${label.unit ? `<span class="parameter-label-unit">${escapeHtml(`（${label.unit}）`)}</span>` : ""}`;
+}
+
 function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)) {
   const evidence = param.evidence || param.suggested_region || "";
   const defaultCandidateNotice = pendingDefaultCandidateNotice(param);
@@ -3795,7 +3832,9 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
   }
   if (field === "spring_rate") {
     if (sources.includes("formula_calculation")) {
-      badges.push("公式计算 / 待确认");
+      badges.push(param.formula_recommendation_stale
+        ? "公式参考待更新"
+        : (param.need_human_review ? "公式计算 / 待确认" : "公式计算已确认"));
     } else if (sources.some((source) => source.startsWith("human") || source === "manual")) {
       badges.push("人工填写");
     } else if (param.value != null && param.value !== "") {
@@ -3820,25 +3859,31 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
   }
   const accuracyGradeStatus = field === "accuracy_grade" ? accuracyGradeStatusLabel(param) : "";
   const roughnessCandidates = field === "surface_roughness_ra" ? surfaceRoughnessCandidatesHtml(param) : "";
+  const materialNotes = field === "material" && isCompressionSpringReview(state.review) ? materialSelectionNotesHtml(param) : "";
+  const displayLabel = parameterUnitLabel(field, label, param, meta);
+  const wideInput = ["material", "standard_no", "accuracy_grade"].includes(field)
+    && isCompressionSpringReview(state.review) && !formatTolerance(param).trim();
   return `
-    <div class="data-row${reasonablenessSeverity ? ` parameter-risk-${escapeHtml(reasonablenessSeverity)}` : ""}" data-kind="param" data-field="${escapeHtml(field)}">
+    <div class="data-row${wideInput ? " parameter-wide-input" : ""}${reasonablenessSeverity ? ` parameter-risk-${escapeHtml(reasonablenessSeverity)}` : ""}" data-kind="param" data-field="${escapeHtml(field)}">
       <div class="data-label">
         ${typeof DrawingAnnotations !== "undefined" ? DrawingAnnotations.badgeHtml(field, param) : ""}
-        <strong title="${escapeHtml(label)}">${escapeHtml(label + requiredMark)}</strong>
+        <strong title="${escapeHtml(displayLabel.text)}">${parameterUnitLabelHtml(displayLabel)}${escapeHtml(requiredMark)}</strong>
         ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
+        ${field === "spring_rate" && param.formula_material_catalog_stale ? `<small class="parameter-formula-reference-note">${escapeHtml(param.formula_calculation_reason || "公司材料表剪切模量已更新，请核对最新刚度建议。")}</small>` : ""}
         ${defaultCandidateNotice ? `<small class="parameter-default-candidate-note">${escapeHtml(defaultCandidateNotice)}</small>` : ""}
         ${badges.length || accuracyGradeStatus ? `<div class="parameter-badges">${accuracyGradeStatus ? `<span class="accuracy-grade-source ${accuracyGradeStatusClass(param)}" data-accuracy-grade-source>${escapeHtml(accuracyGradeStatus)}</span>` : ""}${badges.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       </div>
       <label class="data-input-cell data-primary">
-        <span class="sr-only">${escapeHtml(label)}数值</span>
-        ${parameterValueControlHtml(field, param, label)}
+        <span class="sr-only">${escapeHtml(displayLabel.text)}数值</span>
+        ${parameterValueControlHtml(field, param, displayLabel.text)}
       </label>
       <label class="data-input-cell data-secondary">
-        <span class="sr-only">${escapeHtml(label)}公差</span>
-        <input data-role="tolerance" aria-label="${escapeHtml(label)}公差" value="${escapeHtml(formatTolerance(param))}">
+        <span class="sr-only">${escapeHtml(displayLabel.text)}公差</span>
+        <input data-role="tolerance" aria-label="${escapeHtml(displayLabel.text)}公差" value="${escapeHtml(formatTolerance(param))}">
       </label>
       ${confirmationButtonHtml(param, { kind: "parameter", field, review: state.review })}
       ${roughnessCandidates}
+      ${materialNotes}
     </div>
   `;
 }
@@ -3874,6 +3919,9 @@ function loadPointRowHtml(point, index, review = state.review) {
   const label = point.label || `F${index + 1}`;
   const tolerance = loadPointToleranceDisplay(point, label, review);
   const reasonablenessSeverity = reasonablenessSeverityForField(review, `load_points.${label}`);
+  const heightLabel = parameterUnitLabel("height", "高度", { unit: point.height_unit }, { unit: "mm" });
+  const forceLabel = parameterUnitLabel("force", "力值", { unit: point.force_unit }, { unit: "N" });
+  const toleranceLabel = `${label}公差（绝对公差单位：${forceLabel.unit}；百分比公差：%）`;
   return `
     <div class="data-row load-point${reasonablenessSeverity ? ` parameter-risk-${escapeHtml(reasonablenessSeverity)}` : ""}" data-kind="load_point" data-index="${index}" data-load-point-id="${escapeHtml(point.load_point_id || "")}">
       <div class="data-label">
@@ -3881,16 +3929,16 @@ function loadPointRowHtml(point, index, review = state.review) {
         ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
       </div>
       <label class="data-input-cell data-primary">
-        <span class="sr-only">${escapeHtml(label)}高度 mm</span>
-        <input data-role="height" aria-label="${escapeHtml(label)}高度 mm" value="${escapeHtml(point.height ?? "")}">
+        <span class="load-point-field-label">${parameterUnitLabelHtml(heightLabel)}</span>
+        <input data-role="height" aria-label="${escapeHtml(`${label}${heightLabel.text}`)}" value="${escapeHtml(point.height ?? "")}">
       </label>
       <label class="data-input-cell data-secondary">
-        <span class="sr-only">${escapeHtml(label)}力值 N</span>
-        <input data-role="force" aria-label="${escapeHtml(label)}力值 N" value="${escapeHtml(point.force ?? "")}">
+        <span class="load-point-field-label">${parameterUnitLabelHtml(forceLabel)}</span>
+        <input data-role="force" aria-label="${escapeHtml(`${label}${forceLabel.text}`)}" value="${escapeHtml(point.force ?? "")}">
       </label>
       <label class="data-input-cell data-tertiary load-point-tolerance">
-        <span class="sr-only">${escapeHtml(label)}&#20844;&#24046;</span>
-        <input data-role="load-tolerance" aria-label="${escapeHtml(label)}&#20844;&#24046;" value="${escapeHtml(tolerance.value)}" placeholder="${escapeHtml(tolerance.placeholder)}" title="${escapeHtml(tolerance.title)}">
+        <span class="sr-only">${escapeHtml(toleranceLabel)}</span>
+        <input data-role="load-tolerance" aria-label="${escapeHtml(toleranceLabel)}" value="${escapeHtml(tolerance.value)}" placeholder="${escapeHtml(tolerance.placeholder)}" title="${escapeHtml([tolerance.title, `绝对公差单位与力值一致（${forceLabel.unit}）；百分比公差使用 %。`].filter(Boolean).join("；"))}">
         ${tolerance.note ? `<small>${escapeHtml(tolerance.note)}</small>` : ""}
       </label>
       <div class="load-point-actions">
@@ -3923,12 +3971,13 @@ function renderLoadPointSectionHtml(review, rows) {
       ` : ""}
       <form class="load-point-create" data-kind="load_point_create" hidden>
         <label>编号<input data-role="new-load-label" placeholder="例如：F1"></label>
-        <label>高度 mm<input data-role="new-load-height" inputmode="decimal" placeholder="例如：25"></label>
-        <label>力值 N<input data-role="new-load-force" inputmode="decimal" placeholder="例如：100"></label>
-        <label>公差（可选）<input data-role="new-load-tolerance" placeholder="例如：±6 或 +6/-6"></label>
+        <label>${parameterUnitLabelHtml(parameterUnitLabel("height", "高度", {}, { unit: "mm" }))}<input data-role="new-load-height" inputmode="decimal" placeholder="例如：25"></label>
+        <label>${parameterUnitLabelHtml(parameterUnitLabel("force", "力值", {}, { unit: "N" }))}<input data-role="new-load-force" inputmode="decimal" placeholder="例如：100"></label>
+        <label>公差（可选）<input data-role="new-load-tolerance" placeholder="例如：±6 或 +6/-6" aria-label="公差（可选，绝对值单位 N，百分比单位 %）"></label>
         <small data-role="load-point-create-error" aria-live="polite"></small>
         <div><button type="submit">添加</button><button type="button" class="secondary-action" data-action="cancel-load-point-create">取消</button></div>
       </form>
+      <p class="load-point-unit-help">绝对公差单位与力值一致；百分比公差使用 %。</p>
       <div class="data-table load-point-table">
         ${loadPointTableHeadHtml()}
         ${rows.join("") || '<div class="empty-line load-point-empty">尚未识别载荷测试点，可手动新增。</div>'}
@@ -4122,6 +4171,7 @@ function syncConfirmationControl(row, item, options = {}) {
   button.title = control.reason || "";
   row.dataset.confirmationState = control.state;
   if (!item?.need_human_review) row.querySelector?.(".parameter-default-candidate-note")?.remove();
+  if (options.field === "material" && row.querySelector?.(".material-selection-notes")) refreshMaterialSelectionRow(row, item);
   return control;
 }
 
@@ -6216,14 +6266,24 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     const param = review.spring_parameters[field] || blankParam(fieldMeta.unit);
     review.spring_parameters[field] = param;
     const valueInput = row.querySelector('[data-role="value"]');
+    if (field === "material" && isCompressionSpringReview(review)) {
+      row.materialParameter = param;
+      bindMaterialCatalogRetry(row);
+      if (state.materialCatalog.status === "idle" || state.materialCatalog.apiBaseUrl !== state.apiBaseUrl) void ensureMaterialCatalog();
+    }
     let valueBeforeState = null;
     const applyValueDraft = (event) => {
       if (field === "accuracy_grade") return;
       activateReviewContext(messageId);
       valueBeforeState ||= parameterAuditState(param);
       rememberConfirmedSnapshot(param);
-      param.value = parseValue(event.target.value, param.value);
-      applyEditedConfirmationState(param, field);
+      if (field === "material" && isCompressionSpringReview(review)) {
+        if (!applyMaterialSelection(param, event.target.value)) return;
+      } else {
+        param.value = parseValue(event.target.value, param.value);
+      }
+      if (field === "material" && isCompressionSpringReview(review)) markParamEdited(param, field);
+      else applyEditedConfirmationState(param, field);
       syncBubbleValue(field, param.value);
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
       refreshCompressionDesignChecks(root, review);
@@ -6291,6 +6351,9 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         scheduleParameterReasonablenessRefresh(messageId);
       }
       toleranceBeforeState = null;
+      if (["material", "standard_no", "accuracy_grade"].includes(field) && isCompressionSpringReview(review)) {
+        row.classList.toggle("parameter-wide-input", !formatTolerance(param).trim());
+      }
       refreshBulkConfirmationFollowupAfterLocalChange(messageId);
     });
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
@@ -6309,7 +6372,10 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         target_field: field,
         before_state: beforeState,
         after_state: parameterAuditState(param),
-        metadata: eventType === "risk_value_confirmed" ? { accepted_warning: true } : {},
+        metadata: {
+          ...(eventType === "risk_value_confirmed" ? { accepted_warning: true } : {}),
+          ...(field === "material" ? { material_selection: materialSelectionAudit(param) } : {}),
+        },
       });
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
       if (field === "surface_roughness_ra") row.querySelector(".roughness-candidates")?.remove();
@@ -6507,6 +6573,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         ordinary_fields: confirmed.ordinary_fields,
         auto_formula_fields: confirmed.auto_formula_fields,
         translation_warning_acknowledgements: confirmed.translation_warning_acknowledgements || [],
+        material_selection_acknowledgements: confirmed.material_selection_acknowledgements || [],
         group_counts: confirmed.group_counts,
         skipped: confirmed.skipped.map((item) => ({
           kind: item.kind,
@@ -8233,6 +8300,8 @@ function confirmSafeRecognizedFields(plan = null) {
     auto_formula_fields: autoFormulaItems.map((item) => item.field),
     translation_warning_acknowledgements: confirmedItems.filter((item) => item.kind === "technical")
       .map((item) => technicalTranslationWarningAudit(item.item)).filter(Boolean),
+    material_selection_acknowledgements: confirmedItems.filter((item) => item.kind === "parameter" && item.field === "material")
+      .map((item) => materialSelectionAudit(item.param)),
     group_counts: safeConfirmationGroupCounts(confirmedItems),
     skipped: finalPlan.skipped,
   };
@@ -8343,6 +8412,7 @@ function bulkConfirmationTargetHasVisibleContent(resolved, visibleParameterField
   }
   if (!visibleParameterFields?.has(resolved.field)) return false;
   return [target.value, target.tolerance_upper, target.tolerance_lower, target.tolerance_input_draft, target.evidence, target.suggested_region]
+    .concat(resolved.field === "material" ? [target.raw_value] : [])
     .some((value) => value != null && String(value).trim() !== "");
 }
 
@@ -8631,7 +8701,154 @@ function accuracyGradeOptionsHtml(param) {
   `).join("")}`;
 }
 
+async function ensureMaterialCatalog(options = {}) {
+  const requestedBase = state.apiBaseUrl;
+  const current = state.materialCatalog;
+  if (current.apiBaseUrl === requestedBase && current.status === "ready" && !options.force) return true;
+  if (current.apiBaseUrl === requestedBase && current.status === "loading" && materialCatalogPromise) return materialCatalogPromise;
+  if (current.apiBaseUrl === requestedBase && current.status === "error" && !options.force) return false;
+  const requestSerial = ++materialCatalogRequestSerial;
+  state.materialCatalog = { status: "loading", items: [], version: "", source: "", error: "", apiBaseUrl: requestedBase };
+  refreshMaterialCatalogControls();
+  const pending = (async () => {
+    try {
+      const response = await apiFetch("/api/material-catalog");
+      const payload = await response.json();
+      if (!response.ok) throw new Error(typeof payload?.detail === "string" ? payload.detail : "无法加载材料选项");
+      const items = payload?.items;
+      if (!payload?.version || !Array.isArray(items) || items.length !== 15
+        || items.some((item) => !item?.id || !item?.display_name || !item?.standard_value
+          || !Number.isFinite(Number(item.shear_modulus_mpa)) || Number(item.shear_modulus_mpa) <= 0)
+        || new Set(items.map((item) => String(item.id))).size !== items.length
+        || new Set(items.map((item) => item.display_name)).size !== items.length) {
+        throw new Error("材料目录格式不完整，请重试或联系管理员");
+      }
+      if (requestSerial !== materialCatalogRequestSerial || requestedBase !== state.apiBaseUrl) return false;
+      state.materialCatalog = { status: "ready", items, version: String(payload.version), source: String(payload.source || "公司材料表"), error: "", apiBaseUrl: requestedBase };
+      return true;
+    } catch (error) {
+      if (requestSerial !== materialCatalogRequestSerial || requestedBase !== state.apiBaseUrl) return false;
+      state.materialCatalog = { status: "error", items: [], version: "", source: "", error: error.message || "无法加载材料选项", apiBaseUrl: requestedBase };
+      return false;
+    } finally {
+      if (requestSerial === materialCatalogRequestSerial && requestedBase === state.apiBaseUrl) {
+        materialCatalogPromise = null;
+        refreshMaterialCatalogControls();
+      }
+    }
+  })();
+  materialCatalogPromise = pending;
+  return pending;
+}
+
+function materialOptionsHtml(param) {
+  const selected = String(param?.value ?? "");
+  const items = state.materialCatalog.items || [];
+  const exact = items.some((item) => item.display_name === selected);
+  const legacy = selected && !exact ? `<option value="${escapeHtml(selected)}" selected disabled>原有材料：${escapeHtml(selected)}</option>` : "";
+  return `<option value=""${selected ? "" : " selected"}>请选择材料</option>${legacy}${items.map((item) =>
+    `<option value="${escapeHtml(item.display_name)}"${item.display_name === selected ? " selected" : ""}>${escapeHtml(item.display_name)}</option>`).join("")}`;
+}
+
+function applyMaterialSelection(param, value) {
+  if (state.materialCatalog.status !== "ready") return false;
+  const selected = String(value ?? "");
+  const entry = state.materialCatalog.items.find((item) => item.display_name === selected);
+  if (selected && !entry) return false;
+  if (String(param?.value ?? "") === selected) return false;
+  param.value = entry?.display_name || "";
+  param.standard_value = entry?.standard_value || "";
+  param.material_id = entry?.id || null;
+  param.material_catalog_version = state.materialCatalog.version;
+  param.material_selection_source = "manual";
+  param.material_match_status = entry ? "matched" : "empty";
+  param.material_selection_reason = entry ? `人工选择材料：${entry.display_name}。` : "请选择材料。";
+  param.normalization_status = entry ? "matched" : "unmatched";
+  param.normalization_source = "compression_material_catalog";
+  delete param.material_substitution_evidence;
+  return true;
+}
+
+function materialSelectionAudit(param) {
+  return {
+    material_id: param?.material_id ?? null,
+    material_catalog_version: param?.material_catalog_version ?? null,
+    standard_value: param?.standard_value ?? "",
+    raw_value: param?.raw_value ?? "",
+    material_selection_source: param?.material_selection_source ?? "legacy",
+    material_selection_reason: param?.material_selection_reason ?? "",
+    material_substitution_evidence: structuredClone(param?.material_substitution_evidence ?? null),
+    value: param?.value ?? null,
+  };
+}
+
+function materialEvidenceText(evidence) {
+  if (Array.isArray(evidence)) return evidence.map(materialEvidenceText).filter(Boolean).join("\n");
+  if (evidence && typeof evidence === "object") return materialEvidenceText(evidence.original_text || evidence.evidence || evidence.text || evidence.content || evidence.reason || "");
+  return String(evidence || "").trim();
+}
+
+function materialSelectionNotesBodyHtml(param) {
+  const catalog = state.materialCatalog;
+  const selected = String(param?.value ?? "").trim();
+  const raw = String(param?.raw_value ?? "").trim();
+  let html = "";
+  if (!selected) {
+    const reason = param?.material_match_status === "conflict" ? "识别到多个材料候选，请核对原图后选择。"
+      : raw ? "原图材料未匹配公司材料目录，请选择。" : "未识别到材料，请选择。";
+    html += `<small class="material-selection-warning">${escapeHtml(reason)}</small>`;
+  }
+  if (param?.material_selection_source === "drawing_substitute") {
+    const evidence = materialEvidenceText(param.material_substitution_evidence);
+    if (evidence) html += `<details class="material-substitution-evidence"><summary>查看替代依据</summary><p>${escapeHtml(evidence)}</p></details>`;
+  }
+  if (catalog.status === "loading" || catalog.status === "idle") html += '<small role="status">正在加载材料选项…</small>';
+  if (catalog.status === "error") html += `<div class="material-catalog-error" role="status"><small>${escapeHtml(catalog.error)}。原有材料已保留。</small><button type="button" data-action="retry-material-catalog">重试加载材料</button></div>`;
+  return html;
+}
+
+function materialSelectionNotesHtml(param) {
+  const body = materialSelectionNotesBodyHtml(param);
+  return `<div class="material-selection-notes"${body.trim() ? "" : " hidden"}>${body}</div>`;
+}
+
+function bindMaterialCatalogRetry(row) {
+  const button = row.querySelector('[data-action="retry-material-catalog"]');
+  if (!button || button.materialCatalogBound) return;
+  button.materialCatalogBound = true;
+  button.addEventListener("click", () => void ensureMaterialCatalog({ force: true }));
+}
+
+function refreshMaterialSelectionRow(row, param) {
+  const select = row.querySelector("[data-material-selector]");
+  if (select) select.title = String(param?.value || "请选择材料");
+  const notes = row.querySelector(".material-selection-notes");
+  if (notes) {
+    const body = materialSelectionNotesBodyHtml(param);
+    notes.innerHTML = body;
+    notes.hidden = !body.trim();
+  }
+  bindMaterialCatalogRetry(row);
+}
+
+function refreshMaterialCatalogControls() {
+  document.querySelectorAll('[data-kind="param"][data-field="material"]').forEach((row) => {
+    const select = row.querySelector("[data-material-selector]");
+    const param = row.materialParameter;
+    if (!select || !param) return;
+    select.innerHTML = materialOptionsHtml(param);
+    select.disabled = state.materialCatalog.status !== "ready";
+    select.title = String(param.value || "请选择材料");
+    refreshMaterialSelectionRow(row, param);
+  });
+}
+
 function parameterValueControlHtml(field, param, label) {
+  if (field === "material" && isCompressionSpringReview(state.review)) {
+    return `<select data-role="value" data-material-selector aria-label="${escapeHtml(label)}" title="${escapeHtml(param?.value || "请选择材料")}"${state.materialCatalog.status === "ready" ? "" : " disabled"}>
+      ${materialOptionsHtml(param)}
+    </select>`;
+  }
   if (field === "accuracy_grade") {
     return `
       <select data-role="value" data-accuracy-grade-selector aria-label="${escapeHtml(label)}">
@@ -10331,6 +10548,7 @@ function confirmParam(param, field) {
     confirmed: true,
     value: param.value ?? param.content ?? null,
     confirmed_at: new Date().toISOString(),
+    ...(field === "material" ? { material_selection: materialSelectionAudit(param) } : {}),
   };
   param.confirmation_snapshot = confirmationSnapshotFor(param);
 }

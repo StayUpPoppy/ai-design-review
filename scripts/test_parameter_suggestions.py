@@ -126,11 +126,20 @@ def _assert_recognized_matching_values_are_verifications() -> None:
     parameters["active_coils"].update({"value": 7, "need_human_review": True, "source": ["formula_calculation"]})
     parameters["end_type"]["value"] = "两端并紧"
     parameters["end_grinding"]["value"] = "两端磨削"
-    parameters.pop("spring_rate", None)
+    # 65Mn now has an explicit company-catalog G. Include its matching
+    # stiffness too, so this case still tests verifications rather than a
+    # legitimate proposal to fill a missing stiffness value.
+    parameters["spring_rate"] = {
+        "value": round(78000 * 2**4 / (8 * 26**3 * 7), 4),
+        "unit": "N/mm", "source": ["formula_calculation"], "need_human_review": True,
+    }
     suggestions = build_parameter_suggestions(review)
     application_items = [item for item in suggestions if item["application_mode"] != "none"]
     assert application_items
     assert all(item["status"] == "informational" for item in application_items)
+    parameters.pop("spring_rate")
+    stiffness = _by_rule(build_parameter_suggestions(review), "FORMULA-SPRING-RATE")
+    assert stiffness["status"] == "available" and stiffness["current_value"] is None
 
 
 def _assert_standardization_conflicts_and_stale_status() -> None:

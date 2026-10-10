@@ -65,6 +65,7 @@ def _operation(tag: str, summary: str, description: str) -> dict[str, str]:
 
 
 OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
+    ("GET", "/api/material-catalog"): _operation("审图管理", "获取公司压缩弹簧材料目录", "按当前 ERP 身份返回15种材料的稳定ID、完整名称、标准牌号、明确别名和公司表内固定剪切模量及目录版本。只读，不调用模型、不保存审图；新材料选择限定目录，历史人工原值兼容保留，确认后的完整名称用于参数包及SW材料字段。"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): _operation("审图管理", "预览并核对遗漏技术要求", "按订单归属和当前修订读取原始识别列表，返回未保留的独立条目；不调用识别模型、不保存、不覆盖人工内容。客户端选择补回后使用既有保存接口，仍须逐条确认。"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): _operation("审图管理", "翻译或核验技术要求中文译文", "校验订单归属、稳定ID及已保存文本快照，逐条保护工程信息。中文直接显示，工程差异以translation_warnings提示，允许单项或批量确认；真实外文和无效响应仍失败。mode=translate调用现有Qwen；mode=revalidate只核验已有译文，不调用模型。返回安全自动恢复或待用户选择的候选；不保存、不代替人工确认，客户端通过现有串行保存持久化。"),
     ("GET", "/api/reviews/{job_id}/annotations"): _operation("审图管理", "获取原图关键参数气泡标注", "返回原图页面清单、稳定参数编号、定位依据和独立标注版本。历史订单按已有原图补建定位，不重新调用Qwen或RAG。"),
@@ -120,6 +121,22 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
 }
 
 
+class MaterialCatalogItem(BaseModel):
+    id: str = Field(description="公司目录的稳定内部标识，不发送为SW materialCode。", examples=["4"])
+    display_name: str = Field(description="前端选择及确认后SW输出的完整材料名称。", examples=["SUS304 不锈钢"])
+    standard_value: str = Field(description="当前材料的标准牌号，用于匹配与计算。", examples=["SUS304"])
+    aliases: list[str] = Field(description="明确配置的牌号格式或拼写别名，不代表近似材料等效。")
+    shear_modulus_mpa: float = Field(gt=0, description="公司材料表固定参考剪切模量，单位MPa，不按温度、线径或热处理修正。", examples=[71500])
+
+
+class MaterialCatalogResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    version: str = Field(description="材料目录版本。", examples=["company-compression-materials-v1"])
+    source: str = Field(description="公司材料目录和剪切模量的来源说明。")
+    items: list[MaterialCatalogItem] = Field(min_length=15, max_length=15, description="按公司材料表顺序提供的15种材料。")
+
+
 class ReviewParameterValue(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -131,6 +148,17 @@ class ReviewParameterValue(BaseModel):
     evidence: str | None = Field(default=None, description="支持该参数值的图纸文字或计算依据。")
     confidence: float | None = Field(default=None, ge=0, le=1, description="识别置信度，范围为 0 至 1。")
     need_human_review: bool | None = Field(default=None, description="是否仍需人工核对。")
+
+
+class ReviewMaterialValue(ReviewParameterValue):
+    raw_value: str | None = Field(default=None, description="保留原图材料完整文字；改选或清空时不删除。")
+    standard_value: str | None = Field(default=None, description="当前选中材料的标准牌号，不是历史旧牌号。")
+    material_id: str | None = Field(default=None, description="材料目录稳定ID，仅用于审图，不加入生图参数包。")
+    material_catalog_version: str | None = Field(default=None, description="本次材料选择使用的公司目录版本。")
+    material_selection_source: str | None = Field(default=None, description="选择来源：drawing、drawing_substitute、manual或ai；历史数据可缺失。")
+    material_match_status: str | None = Field(default=None, description="材料匹配状态：matched、empty、unmatched或conflict。")
+    material_selection_reason: str | None = Field(default=None, description="材料匹配或待选择原因。")
+    material_substitution_evidence: dict[str, Any] | list[Any] | str | None = Field(default=None, description="图纸明确允许替代的原文、位置和来源；确认审计保留。")
 
 
 class DrawingSummaryDocument(BaseModel):
@@ -170,7 +198,7 @@ class ReviewLoadPointDocument(BaseModel):
 class SpringParametersDocument(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    material: ReviewParameterValue | None = Field(default=None, description="材料。")
+    material: ReviewMaterialValue | None = Field(default=None, description="当前材料及原图证据；压缩弹簧新选择采用公司目录完整名称。")
     standard_no: ReviewParameterValue | None = Field(default=None, description="执行标准号。")
     accuracy_grade: ReviewParameterValue | None = Field(default=None, description="通用精度等级。")
     diameter_accuracy_grade: ReviewParameterValue | None = Field(default=None, description="直径专项精度等级；存在时优先于通用精度。")
@@ -915,6 +943,7 @@ REQUEST_MODELS: dict[tuple[str, str], type[BaseModel]] = {
 }
 
 RESPONSE_MODELS: dict[tuple[str, str], tuple[str, type[BaseModel]]] = {
+    ("GET", "/api/material-catalog"): ("200", MaterialCatalogResponse),
     ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): ("200", TechnicalRecoveryResponse),
     ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): ("200", TechnicalTranslationResponse),
     ("GET", "/api/reviews/{job_id}/annotations"): ("200", DrawingAnnotationsResponse),

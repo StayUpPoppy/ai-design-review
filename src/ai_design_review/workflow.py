@@ -8,6 +8,7 @@ from .end_conditions import normalize_compression_end_conditions
 from .fusion import fuse_candidates
 from .llm_standardization import LLM_STANDARDIZATION_FIELD, normalize_llm_standardization_results
 from .material_terms import normalize_material
+from .material_catalog import MATERIAL_CATALOG_KEYS, ensure_compression_material
 from .preprocessing import probe_file
 from .rules import REQUIRED_FIELDS, determine_erp_ready, overall_status, run_rule_checks, should_require_human_review
 from .semantic import apply_spring_semantic_mapping
@@ -73,14 +74,19 @@ class DrawingReviewWorkflow:
         file_info = probe_file(file_path) if file_path else {"path": None, "kind": "unknown", "is_scanned_like": None}
         candidates = [*_file_text_candidates(file_info), *candidates]
         dimension_evidence = _dimension_evidence(candidates)
-        candidates = apply_spring_semantic_mapping(candidates)
+        preliminary_type = classify_spring_type(candidates, file_info)["spring_type"]
+        candidates = apply_spring_semantic_mapping(
+            candidates, normalize_materials=preliminary_type != "compression_spring",
+        )
         candidates = apply_compression_dimension_role_ranking(candidates)
         fused = fuse_candidates(candidates)
         classification = classify_spring_type(candidates, file_info)
         spring_type = classification["spring_type"]
         spring_template = template_for(spring_type)
         spring_parameters = self._build_spring_parameters(fused["fields"], fused["load_points"], spring_type)
+        technical_requirements = self._build_technical_requirements(fused["fields"], fused["technical_requirements"])
         if spring_type == "compression_spring":
+            _normalize_recognized_compression_material(spring_parameters, candidates, technical_requirements)
             normalize_compression_end_conditions(spring_parameters)
         self._apply_company_default_accuracy(spring_parameters, spring_type)
         if spring_type == "compression_spring":
@@ -90,7 +96,6 @@ class DrawingReviewWorkflow:
         if spring_type == "compression_spring":
             apply_formula_compression_solid_height(spring_parameters)
             apply_formula_compression_spring_rate(spring_parameters, spring_features)
-        technical_requirements = self._build_technical_requirements(fused["fields"], fused["technical_requirements"])
         if run_standardization:
             standardization = standardize_spring(
                 spring_type,
@@ -185,7 +190,10 @@ class DrawingReviewWorkflow:
         spring_type: str,
     ) -> dict[str, Any]:
         parameters = {
-            field: self._param(fields, field, field_default_unit(spring_type, field))
+            field: self._param(
+                fields, field, field_default_unit(spring_type, field),
+                normalize_legacy_material=spring_type != "compression_spring",
+            )
             for field in template_field_keys(spring_type)
         }
         parameters["load_points"] = [self._load_point(item) for item in load_points]
@@ -258,12 +266,15 @@ class DrawingReviewWorkflow:
             )
         return requirements
 
-    def _param(self, fields: dict[str, dict[str, Any]], field: str, default_unit: str | None = None) -> dict[str, Any]:
+    def _param(
+        self, fields: dict[str, dict[str, Any]], field: str, default_unit: str | None = None,
+        *, normalize_legacy_material: bool = True,
+    ) -> dict[str, Any]:
         item = fields.get(field, {})
         value = item.get("value")
         extra: dict[str, Any] = {}
-        if field == "material" and value not in (None, ""):
-            normalized = normalize_material(item.get("raw_value", value))
+        if field == "material" and normalize_legacy_material and value not in (None, ""):
+            normalized = normalize_material(value)
             value = normalized["value"]
             extra = {
                 "raw_value": normalized["raw_value"],
@@ -287,6 +298,13 @@ class DrawingReviewWorkflow:
             "suggested_region": item.get("suggested_region", ""),
             **extra,
         }
+        if field == "material":
+            for key in (
+                "raw_value", "standard_value", "normalization_status", "normalization_source",
+                *MATERIAL_CATALOG_KEYS, "human_modified", "human_confirmed",
+            ):
+                if key in item:
+                    result[key] = item[key]
         if field == "surface_roughness_ra":
             result.update(
                 {
@@ -325,6 +343,49 @@ class DrawingReviewWorkflow:
 
 def _value(fields: dict[str, dict[str, Any]], field: str, default: Any = None) -> Any:
     return fields.get(field, {}).get("value", default)
+
+
+def _normalize_recognized_compression_material(
+    parameters: dict[str, Any], candidates: list[dict[str, Any]],
+    technical_requirements: list[dict[str, Any]],
+) -> None:
+    """Preserve all primary and substitution evidence before field fusion loses it."""
+    material = parameters.setdefault("material", {})
+    primary_materials: list[dict[str, Any]] = []
+    alternatives: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if candidate.get("field") == "material":
+            value = candidate.get("raw_value") or candidate.get("value")
+            if value not in (None, ""):
+                primary_materials.append({
+                    "value": value, "evidence": candidate.get("evidence") or str(value),
+                    "page": candidate.get("page", 1), "position": candidate.get("position"),
+                })
+            for key in ("primary_materials",):
+                if isinstance(candidate.get(key), list):
+                    primary_materials.extend(item for item in candidate[key] if isinstance(item, dict))
+            for key in ("alternative_materials", "material_alternatives"):
+                if isinstance(candidate.get(key), list):
+                    alternatives.extend(item for item in candidate[key] if isinstance(item, dict))
+        elif candidate.get("field") == "material_alternatives" and isinstance(candidate.get("value"), list):
+            alternatives.extend(item for item in candidate["value"] if isinstance(item, dict))
+    if primary_materials:
+        material["primary_materials"] = primary_materials
+    source = material.get("source") or []
+    sources = source if isinstance(source, list) else [source]
+    if not any(str(item).lower() in {"human", "manual", "human_confirmed", "human_modified"} for item in sources):
+        material["need_human_review"] = True
+    context = {
+        "drawing_summary": {"spring_type": "compression_spring"},
+        "spring_parameters": parameters,
+        "technical_requirements": technical_requirements,
+        "material_alternatives": alternatives,
+        "notes": "\n".join(
+            str(item.get("value") or item.get("evidence") or "")
+            for item in candidates if item.get("feature_type") == "note"
+        ),
+    }
+    ensure_compression_material(context)
 
 
 def _file_text_candidates(file_info: dict[str, Any]) -> list[dict[str, Any]]:
@@ -413,6 +474,7 @@ def apply_standardization_to_review(
     spring_type = spring_type or review.get("spring_template", {}).get("spring_type") or "unknown_spring"
     spring_parameters = review.get("spring_parameters") or {}
     if spring_type == "compression_spring":
+        ensure_compression_material(review)
         normalize_compression_end_conditions(spring_parameters)
     _apply_company_default_accuracy(spring_parameters, spring_type)
     if spring_type == "compression_spring":

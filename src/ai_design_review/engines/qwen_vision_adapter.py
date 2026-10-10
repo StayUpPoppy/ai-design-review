@@ -158,6 +158,9 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
 任务：
 1. 判断弹簧类型，只能使用 compression_spring、torsion_spring、extension_spring、retaining_ring、unknown_spring。
 2. 提取图纸名称、图号、版本、材料。
+   - parameters.material 只记录原图主要材料，不使用替代材料覆盖主要材料。存在多个主要材料时，primary_materials 逐项保留牌号、原文 evidence 和 page，不自行择一。
+   - 图纸明确写“允许换用/可替代/допускается замена”等时，将明确允许的材料分别放入 material_alternatives，保留 value、原文 evidence、page 和 explicitly_allowed=true；仅出现材料名称、推荐或“类似材料”不等于明确允许某个牌号。替代说明仍作为原图技术要求保留。
+   - 不推断俄文牌号与中国牌号等效，不改写牌号；最终公司材料目录匹配由服务端确定，不额外计算材料属性。
 3. 按弹簧类型提取尺寸字段。字段名必须使用英文 key，前端会用中文标签显示；不要自造 key。
    - 通用：material、standard_no、accuracy_grade、wire_diameter、outer_diameter、inner_diameter、mean_diameter、free_length、body_length、total_coils、active_coils、handedness、pitch。
    - standard_no 只能填写弹簧产品适用的通用技术/公差标准，例如 GB/T 1239.2、GB/T 23934；材料或钢丝牌号标准（例如“弹簧钢丝 GB/T 4357-2009”）只能放在 material，绝不能填入 standard_no。
@@ -194,6 +197,8 @@ JSON 结构：
     "wire_diameter": {"value": null, "unit": "mm", "tolerance_upper": null, "tolerance_lower": null, "confidence": 0.0, "evidence": "", "need_human_review": true},
     "surface_roughness_ra": {"value": 12.5, "unit": "μm", "surface_location": "两端面", "confidence": 0.0, "evidence": "▽ 12.5", "need_human_review": true}
   },
+  "primary_materials": [],
+  "material_alternatives": [],
   "spring_features": {
     "spring_family": {"value": "helical", "confidence": 0.0, "evidence": "", "need_human_review": true},
     "spring_shape": {"value": "cylindrical", "confidence": 0.0, "evidence": "", "need_human_review": true},
@@ -260,6 +265,17 @@ def qwen_payload_to_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if _is_surface_roughness_field(field):
             continue
         candidates.extend(_parameter_candidate(field, item))
+    primary_materials = payload.get("primary_materials") or []
+    if isinstance(primary_materials, list):
+        for item in primary_materials:
+            candidates.extend(_parameter_candidate("material", item))
+    alternatives = payload.get("material_alternatives") or []
+    if isinstance(alternatives, list) and alternatives:
+        candidates.append(_candidate(
+            "material_alternatives", alternatives,
+            {"evidence": " | ".join(str(item.get("evidence") or "") for item in alternatives if isinstance(item, dict))},
+            suggested_region="Qwen explicitly permitted material alternatives",
+        ))
     if _is_compression_spring_type(spring_type):
         candidates.extend(_surface_roughness_candidates(payload))
 
@@ -521,7 +537,7 @@ def _candidate(
     confidence = _confidence(item, default_confidence)
     if bool(item.get("need_human_review", False)):
         confidence = min(confidence, 0.68)
-    return {
+    candidate = {
         "field": field,
         "feature_type": "dimension" if field in FIELD_LABELS else "note",
         "value": value,
@@ -535,6 +551,11 @@ def _candidate(
         "position": item.get("position"),
         "suggested_region": item.get("suggested_region") or suggested_region,
     }
+    if field == "material":
+        for key in ("raw_value", "primary_materials", "alternative_materials", "material_alternatives"):
+            if key in item:
+                candidate[key] = item[key]
+    return candidate
 
 
 def _spring_type_payload(value: Any) -> dict[str, Any] | None:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .material_catalog import match_material_catalog
+
 
 REQUIRED_FIELDS = [
     "material",
@@ -23,7 +25,7 @@ def run_rule_checks(
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     results.extend(_check_required_fields(spring_parameters, required_fields or REQUIRED_FIELDS))
-    results.append(_check_material(spring_parameters, factory_rules))
+    results.append(_check_material(spring_parameters, factory_rules, spring_type=spring_type))
     results.append(_check_process_ranges(spring_parameters, factory_rules))
     if spring_type == "compression_spring":
         results.append(_check_free_length_vs_load_heights(spring_parameters))
@@ -97,14 +99,37 @@ def _check_required_fields(spring_parameters: dict[str, Any], required_fields: l
     return results
 
 
-def _check_material(spring_parameters: dict[str, Any], factory_rules: dict[str, Any]) -> dict[str, Any]:
+def _check_material(spring_parameters: dict[str, Any], factory_rules: dict[str, Any], *, spring_type: str = "compression_spring") -> dict[str, Any]:
     material = spring_parameters.get("material", {}).get("value")
     allowed = factory_rules.get("materials", {}).get("allowed", [])
     if not material:
         return _result("MAT-001", "材料明确性", "missing", "材料未识别。", ["material"], "critical")
+    if spring_type == "compression_spring" and match_material_catalog(material):
+        return _result("MAT-000", "材料工艺能力", "pass", f"材料 {material} 属于公司压缩弹簧材料目录。", ["material"], "low")
     if allowed and material not in allowed:
         return _result("MAT-002", "材料工艺能力", "warning", f"材料 {material} 不在当前工艺白名单中。", ["material"], "medium")
     return _result("MAT-000", "材料工艺能力", "pass", f"材料 {material} 已识别。", ["material"], "low")
+
+
+def refresh_compression_material_check(review: dict[str, Any], factory_rules: dict[str, Any]) -> None:
+    """Refresh only material diagnostics; unrelated historical rules stay intact."""
+    if (review.get("drawing_summary") or {}).get("spring_type") != "compression_spring":
+        return
+    results = review.get("review_results")
+    if not isinstance(results, list):
+        return
+    material_check = _check_material(review.get("spring_parameters") or {}, factory_rules)
+    found = False
+    replacement = []
+    for result in results:
+        if isinstance(result, dict) and str(result.get("rule_id") or "").startswith("MAT-"):
+            if not found:
+                replacement.append(material_check)
+                found = True
+        else:
+            replacement.append(result)
+    if found:
+        review["review_results"] = replacement
 
 
 def _check_process_ranges(spring_parameters: dict[str, Any], factory_rules: dict[str, Any]) -> dict[str, Any]:

@@ -8,7 +8,9 @@ from .end_conditions import normalize_end_grinding, normalize_end_type
 from .material_terms import normalize_material
 
 
-def apply_spring_semantic_mapping(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def apply_spring_semantic_mapping(
+    candidates: list[dict[str, Any]], *, normalize_materials: bool = True,
+) -> list[dict[str, Any]]:
     """Add spring-specific candidates inferred from generic recognizer output."""
     enriched = [deepcopy(candidate) for candidate in candidates]
     existing_fields = {candidate.get("field") for candidate in enriched}
@@ -24,7 +26,9 @@ def apply_spring_semantic_mapping(candidates: list[dict[str, Any]]) -> list[dict
         if candidate.get("feature_type") == "dimension" and isinstance(candidate.get("value"), (int, float))
     ]
 
-    material = _normalize_material_candidate(enriched)
+    # Compression material selection uses the company catalogue after fusion.
+    # Legacy semantic aliases remain unchanged for other spring families.
+    material = _normalize_material_candidate(enriched) if normalize_materials else None
     if material and "material" not in existing_fields:
         enriched.append(material)
         existing_fields.add("material")

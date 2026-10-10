@@ -69,7 +69,7 @@ window.DrawingAnnotations = (() => {
   }
   function badgeHtml(field, param) {
     const index = fields.indexOf(field);
-    if (index < 0 || !config?.isCompression() || (!param?.evidence && (param?.value == null || param.value === ""))) return "";
+    if (index < 0 || !config?.isCompression()) return "";
     return `<button type="button" class="parameter-annotation-number" data-annotation-field="${esc(field)}" aria-label="定位${esc(config.fieldLabel(field))}原图标注">${index + 1}</button>`;
   }
   function bindFields(root, before) {

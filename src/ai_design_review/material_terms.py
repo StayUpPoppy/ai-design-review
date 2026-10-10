@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -46,8 +47,10 @@ def load_material_terms(path: str | Path | None = None) -> dict[str, Any]:
 
 
 def normalize_material_key(value: Any) -> str:
-    text = str(value or "").strip().upper()
-    return re.sub(r"[^0-9A-Z\u4e00-\u9fff]", "", text)
+    text = unicodedata.normalize("NFKC", str(value or "")).strip().upper()
+    # Keep Cyrillic and all other Unicode letters. Removing them could turn a
+    # foreign alloy into a numeric fragment matching an unrelated steel grade.
+    return "".join(character for character in text if character.isalnum())
 
 
 def _result(

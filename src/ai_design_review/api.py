@@ -96,6 +96,9 @@ from .standardization_chat_llm import standardization_chat_llm_runtime_status
 from .spring_feasibility import assess_parameter_reasonableness
 from .solidworks import build_solidworks_command
 from .load_points import ensure_load_point_ids
+from .material_catalog import ensure_compression_material, load_material_catalog, validate_material_change
+from .rules import refresh_compression_material_check
+from .standardizers.stiffness import refresh_compression_spring_rate_freshness
 from .surface_roughness import ensure_surface_roughness_parameter
 from .technical_requirements import ensure_technical_requirement_ids
 from .technical_requirement_recognition import collect_technical_requirements, recovery_preview
@@ -325,6 +328,12 @@ def _configured_recognition_concurrency() -> int:
 @app.get("/api/session")
 def get_session(identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     return {"identity": identity.as_public_dict()}
+
+
+@app.get("/api/material-catalog", tags=["审图管理"], summary="获取公司压缩弹簧材料目录")
+def get_material_catalog(_: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    """Read-only material choices and fixed company shear modulus reference values."""
+    return load_material_catalog()
 
 
 @app.get("/api/samples/mixed-review")
@@ -2223,6 +2232,7 @@ def _create_review_persistence(
     artifact_dir: str,
     identity: IdentityContext,
 ) -> dict[str, Any]:
+    ensure_compression_material(review)
     ensure_surface_roughness_parameter(review)
     apply_generation_defaults(review)
     ensure_load_point_ids(review)
@@ -2253,6 +2263,7 @@ def _load_persisted_review(
         if stored is None:
             raise HTTPException(status_code=404, detail="Review not found.")
         review = stored["review"]
+        ensure_compression_material(review)
         ensure_surface_roughness_parameter(review)
         apply_generation_defaults(review)
         ensure_load_point_ids(review)
@@ -2262,6 +2273,7 @@ def _load_persisted_review(
     if not _local_job_owned(review_path.parent, identity.user_id) or not review_path.exists():
         raise HTTPException(status_code=404, detail="Review not found.")
     review = read_json(review_path)
+    ensure_compression_material(review)
     ensure_surface_roughness_parameter(review)
     apply_generation_defaults(review)
     ensure_load_point_ids(review)
@@ -2275,6 +2287,9 @@ def _ensure_review_owned(job_id: str, review_path: Path, identity: IdentityConte
 
 
 def _prepare_review_reasonableness(review: dict[str, Any], revision: int | None) -> None:
+    refresh_compression_material_check(review, read_json(project_path("config", "factory_rules.json")))
+    if (review.get("drawing_summary") or {}).get("spring_type") == "compression_spring":
+        refresh_compression_spring_rate_freshness(review.get("spring_parameters") or {}, review.get("spring_features") or {})
     if revision is not None:
         review["review_revision"] = revision
     else:
@@ -2292,6 +2307,12 @@ def _save_review_persistence(
     events: list[dict[str, Any]] | None = None,
     identity: IdentityContext,
 ) -> dict[str, Any]:
+    previous, _ = _load_persisted_review(job_id, review_path, identity)
+    try:
+        validate_material_change(review, previous)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": "invalid_material_selection", "message": str(exc)}) from exc
+    ensure_compression_material(review)
     ensure_surface_roughness_parameter(review)
     apply_generation_defaults(review)
     ensure_load_point_ids(review)

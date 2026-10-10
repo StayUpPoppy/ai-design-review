@@ -26,6 +26,7 @@ from .load_points import (
     new_load_point_id,
     normalize_load_point_label,
 )
+from .material_catalog import select_compression_material
 from .parameter_impact import assess_parameter_change_impact
 from .spring_feasibility import assess_parameter_reasonableness
 from .spring_templates import FIELD_LABELS
@@ -383,6 +384,24 @@ def _resolve_proposal(
             continue
         target = str(action.get("target_field") or "")
         root = target.split(".")[0]
+        if root == "material" and action.get("type") == "propose_parameter_patch" and (
+            (candidate.get("drawing_summary") or {}).get("spring_type") == "compression_spring"
+        ):
+            try:
+                selected = select_compression_material(
+                    (candidate.get("spring_parameters") or {}).get("material") or {},
+                    action.get("proposed_value"), selection_source="ai",
+                )
+            except ValueError:
+                blocking.append({
+                    "code": "material_not_in_catalog", "field": target,
+                    "message": "材料不在公司材料目录中，请从下拉列表的15种材料中选择。",
+                })
+                continue
+            if target != "material":
+                blocking.append({"code": "material_target_invalid", "field": target, "message": "请直接修改材料字段，不修改材料内部元数据。"})
+                continue
+            action["proposed_value"] = selected.get("value")
         if root == "surface_roughness_ra" and action.get("type") == "propose_parameter_patch":
             roughness = _number(action.get("proposed_value"))
             if roughness is None or roughness <= 0:
@@ -1285,7 +1304,16 @@ def _apply_action(review: dict[str, Any], action: dict[str, Any], *, confirmatio
     else:
         before = item.get("value")
         after = action.get("proposed_value")
-        item["value"] = after
+        if target == "material" and (review.get("drawing_summary") or {}).get("spring_type") == "compression_spring":
+            item = select_compression_material(item, after, selection_source="ai")
+            after = item.get("value")
+            # Applying a whole proposal is the existing explicit human adoption;
+            # do not carry the confirmation snapshot for the previous material.
+            item.pop("confirmation_snapshot", None)
+            for key in ("material", "standardization_chat_material", "parameter_change_proposal_material"):
+                review.setdefault("manual_confirmations", {}).pop(key, None)
+        else:
+            item["value"] = after
     if action.get("unit"):
         item["unit"] = action.get("unit")
     item["need_human_review"] = False
@@ -1311,6 +1339,14 @@ def _apply_resolved_changes(review: dict[str, Any], proposal: dict[str, Any]) ->
             "proposal_version": proposal.get("version"),
             "confirmed_at": _now(),
         }
+        if target == "material":
+            material = (review.get("spring_parameters") or {}).get("material") or {}
+            review["manual_confirmations"][f"parameter_change_proposal_{target}"].update({
+                key: deepcopy(material.get(key)) for key in (
+                    "value", "standard_value", "raw_value", "material_id", "material_catalog_version",
+                    "material_selection_source", "material_substitution_evidence",
+                ) if key in material
+            })
     parameters = review.setdefault("spring_parameters", {})
     for change in proposal.get("synchronized_changes") or []:
         _set_parameter(
@@ -1480,7 +1516,10 @@ def _set_parameter(
             "derived_value_stale": False,
         }
     )
-    for stale_key in ("raw_value", "default_source", "default_reason", "confirmation_snapshot"):
+    stale_keys = ("default_source", "default_reason", "confirmation_snapshot") if field == "material" else (
+        "raw_value", "default_source", "default_reason", "confirmation_snapshot",
+    )
+    for stale_key in stale_keys:
         existing.pop(stale_key, None)
     parameters[field] = existing
 

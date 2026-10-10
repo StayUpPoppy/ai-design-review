@@ -74,6 +74,7 @@ outputs/spring_example_review.json
 - 图纸预览和全屏数据对比
 - 关键弹簧参数编辑
 - 技术要求确认
+- 压缩弹簧材料目录下拉、明确替代材料匹配与公司表内剪切模量计算（见 [材料选择说明](docs/material-catalog.md)）
 - 扫描图纸人工确认
 - ERP 放行预览
 - 导出人工确认版 JSON

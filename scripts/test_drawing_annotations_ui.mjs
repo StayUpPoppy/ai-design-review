@@ -9,10 +9,10 @@ const ui = context.window.DrawingAnnotations;
 const document = { source_document_id: "source-1", annotation_revision: 1, pages: [{ page: 1, image_url: "/one.png", width: 1000, height: 800 }, { page: 2, image_url: "/two.png", width: 1000, height: 800 }], annotations: [{ annotation_id: "wire_diameter", field: "wire_diameter", label: "线径", number: 4, original_value: 2, locations: [{ location_id: "wire_diameter-1", page: 2, anchor: { x: .2, y: .3 }, bubble: { x: .25, y: .25 } }] }, { annotation_id: "mean_diameter", field: "mean_diameter", label: "中径", number: 7, original_value: null, locations: [], reason: "无直接标注" }], warnings: [] };
 const params = { wire_diameter: { value: 3 }, mean_diameter: { value: 26 } };
 const beforeParams = JSON.stringify(params);
-let job = "job-1", requestCount = 0, loadCount = 0, failLoad = false, fail = false, conflict = false, updates = 0, hold = null;
+let job = "job-1", requestCount = 0, loadCount = 0, failLoad = false, fail = false, conflict = false, updates = 0, hold = null, isCompression = true;
 const image = { naturalWidth: 1000, naturalHeight: 800 };
 const view = { x: 20, y: 30, scale: .5 };
-ui.configure({ getJobId: () => job, isCompression: () => true, getParameter: (field) => params[field], fieldLabel: (field) => field,
+ui.configure({ getJobId: () => job, isCompression: () => isCompression, getParameter: (field) => params[field], fieldLabel: (field) => field,
   getImage: () => image, getViewport: () => job === "load-failure" ? null : ({ getBoundingClientRect: () => ({ left: 10, top: 20 }) }), getView: () => view,
   assetUrl: (url) => url, updateViewer: () => updates++, center: () => {}, fetch: async (path, options) => {
     if (!options) { loadCount++; if (failLoad) throw new Error("offline"); return { ok: true, json: async () => structuredClone(document) }; }
@@ -32,7 +32,23 @@ assert.equal(ui.screenPoint({ x: .2, y: .3 }).x, 120);
 assert.equal(ui.imagePoint({ clientX: 130, clientY: 170 }).y, .3);
 assert.match(ui.badgeHtml("wire_diameter", params.wire_diameter), />4<\/button>/);
 assert.equal(ui.badgeHtml("pitch", { value: 5 }), "");
-assert.equal(ui.badgeHtml("material", { value: null }), "");
+const numberedFields = ["material", "standard_no", "accuracy_grade", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "solid_height", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"];
+for (const [index, field] of numberedFields.entries()) {
+  for (const param of [undefined, {}, { value: null }, { value: "", evidence: "" }, { value: 0 }, { value: "识别值", need_human_review: true }, { value: "已确认值", need_human_review: false }]) {
+    const before = JSON.stringify(param);
+    assert.ok(ui.badgeHtml(field, param).includes(`>${index + 1}</button>`), `${field}: fixed number does not depend on content/confirmation`);
+    assert.equal(JSON.stringify(param), before);
+  }
+}
+isCompression = false;
+for (const field of numberedFields) assert.equal(ui.badgeHtml(field, { value: "" }), "", "Other spring types do not gain numbers");
+isCompression = true;
+const beforeUnlocated = JSON.stringify(ui.entry().document);
+await ui.focusField("standard_no");
+assert.match(ui.infoHtml(), /未找到可靠原图位置/);
+assert.equal(JSON.stringify(ui.entry().document), beforeUnlocated, "An empty/unlocated badge cannot fabricate a drawing location");
+assert.equal(requestCount, 0, "Focusing a badge never saves annotations or parameters");
+await ui.focusField("wire_diameter");
 const item = ui.entry();
 const change = { annotation_id: "wire_diameter", location_id: "wire_diameter-1", page: 2, anchor: { x: .2, y: .3 }, bubble: { x: .5, y: .5 } };
 item.pending.set("wire_diameter:wire_diameter-1", change);
@@ -106,4 +122,4 @@ assert.equal(standardFocused, false);
 navigation.focusMissingStandardizationField("standard_no", null, { highlight: true });
 assert.equal(navigation.state.compareTab, "standards");
 assert.equal(standardFocused, true);
-console.log("drawing annotation UI tests passed: coordinates, navigation, bounded loading, offline retry, conflict, serial saves and isolation");
+console.log("drawing annotation UI tests passed: fixed empty-field numbers, coordinates, navigation, bounded loading, offline retry, conflict, serial saves and isolation");

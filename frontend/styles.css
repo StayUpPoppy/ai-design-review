@@ -2025,6 +2025,14 @@ button:disabled {
   border-bottom: 0;
 }
 
+.data-row.parameter-wide-input .data-primary {
+  grid-column: 2 / 4;
+}
+
+.data-row.parameter-wide-input .data-secondary {
+  display: none;
+}
+
 .compression-design-check {
   display: grid;
   gap: 8px;
@@ -2100,6 +2108,35 @@ button:disabled {
   font-weight: 600;
 }
 
+.data-row[data-kind="param"] .data-label strong {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.parameter-label-unit {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.load-point-field-label {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.load-point-unit-help {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .data-label small {
   margin-top: 2px;
   color: #8994a7;
@@ -2108,11 +2145,67 @@ button:disabled {
   line-height: 1.25;
 }
 
-.data-label .parameter-default-candidate-note {
+.data-label .parameter-default-candidate-note,
+.data-label .parameter-formula-reference-note {
   overflow: visible;
   color: #8a4b00;
   text-overflow: clip;
   white-space: normal;
+}
+
+.material-selection-notes {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 4px;
+  padding: 0 0 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.material-selection-notes small {
+  font-size: inherit;
+  white-space: normal;
+}
+
+.material-selection-warning,
+.material-catalog-error {
+  color: #8a4b00;
+}
+
+.material-catalog-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.material-catalog-error button {
+  flex: 0 1 auto;
+  max-width: 100%;
+  white-space: normal;
+}
+
+.material-substitution-evidence summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--primary);
+}
+
+.material-substitution-evidence p {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+}
+
+.material-substitution-evidence summary:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+[data-material-selector] {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .parameter-badges {
@@ -2219,6 +2312,7 @@ button:disabled {
 
 .data-input-cell {
   display: block;
+  min-width: 0;
 }
 
 .data-input-cell input {
@@ -5639,12 +5733,34 @@ textarea {
     grid-area: secondary;
   }
 
+  .data-row.parameter-wide-input {
+    grid-template-areas:
+      "label label label"
+      "primary primary action";
+  }
+
+  .data-row.parameter-wide-input .data-primary {
+    grid-column: 1 / 3;
+  }
+
   .load-point-table .data-row {
     grid-template-areas:
       "label label label"
       "primary secondary action"
       "tertiary tertiary tertiary";
     min-height: 112px;
+  }
+
+  .load-point-actions {
+    grid-area: action;
+    flex-direction: column;
+    align-items: stretch;
+    min-width: 0;
+  }
+
+  .load-point-actions button {
+    padding-inline: 4px;
+    white-space: nowrap;
   }
 
   .data-tertiary {

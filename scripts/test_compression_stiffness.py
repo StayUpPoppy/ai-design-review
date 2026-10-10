@@ -27,11 +27,11 @@ def main() -> None:
 
 def _assert_material_profiles() -> None:
     profiles = {
-        "SUS304": 71000,
-        "SUS316": 71000,
-        "17-7PH": 78000,
+        "SUS304": 71500,
+        "SUS316": 71500,
+        "17-7PH": 75500,
         "Inconel X750": 79000,
-        "Inconel 718": 78500,
+        "Inconel 718": 77200,
     }
     for material, shear_modulus in profiles.items():
         result = calculate_compression_spring_rate(_parameters(material=material))
@@ -63,7 +63,7 @@ def _assert_missing_and_inapplicable_context() -> None:
     assert missing["status"] == "missing_context"
     assert missing["missing_fields"] == ["material"]
 
-    unknown_material = calculate_compression_spring_rate(_parameters(material="SWP-B"))
+    unknown_material = calculate_compression_spring_rate(_parameters(material="Unknown-alloy"))
     assert unknown_material["status"] == "material_not_configured"
 
     incompatible = calculate_compression_spring_rate(
@@ -139,7 +139,7 @@ def _assert_deferred_workflow_populates_formula_rate() -> None:
         run_standardization=False,
     )
     rate = review["spring_parameters"]["spring_rate"]
-    assert rate["value"] == round(71000 / (8 * 9**3 * 5), 4)
+    assert rate["value"] == round(71500 / (8 * 9**3 * 5), 4)
     assert rate["source"] == ["formula_calculation"]
     assert review["standardization_results"] == []
 

@@ -1,0 +1,22 @@
+{
+  "version": "company-compression-materials-v1",
+  "source": "公司材料表固定参考值（材料标准.xlsx）",
+  "description": "公司压缩弹簧材料目录；剪切模量为表内固定参考值，不作温度、线径或热处理修正。",
+  "items": [
+    {"id": "1", "display_name": "SWPB", "standard_value": "SWP-B", "aliases": ["SWPB", "SWP-B", "SWP B"], "shear_modulus_mpa": 78000},
+    {"id": "2", "display_name": "SWPA 琴钢丝", "standard_value": "SWP-A", "aliases": ["SWPA", "SWP-A", "SWP A", "SWPA琴钢丝"], "shear_modulus_mpa": 78000},
+    {"id": "3", "display_name": "SWC 硬钢线", "standard_value": "SWC", "aliases": ["SWC", "SW-C", "SWC硬钢线"], "shear_modulus_mpa": 78000},
+    {"id": "4", "display_name": "SUS304 不锈钢", "standard_value": "SUS304", "aliases": ["SUS304", "SUS 304", "SUS-304", "SUS304不锈钢"], "shear_modulus_mpa": 71500},
+    {"id": "5", "display_name": "SUS316 不锈钢", "standard_value": "SUS316", "aliases": ["SUS316", "SUS 316", "SUS-316", "SUS316不锈钢"], "shear_modulus_mpa": 71500},
+    {"id": "6", "display_name": "SUS631 不锈钢", "standard_value": "SUS631", "aliases": ["SUS631", "SUS 631", "SUS-631", "SUS631不锈钢"], "shear_modulus_mpa": 73500},
+    {"id": "7", "display_name": "65Mn 弹簧钢", "standard_value": "65Mn", "aliases": ["65Mn", "65 Mn", "65Mn弹簧钢"], "shear_modulus_mpa": 78000},
+    {"id": "8", "display_name": "60Si2Mn 硅锰钢", "standard_value": "60Si2Mn", "aliases": ["60Si2Mn", "60Si2Mn硅锰钢"], "shear_modulus_mpa": 78000},
+    {"id": "9", "display_name": "50CrVA 铬钒钢", "standard_value": "50CrVA", "aliases": ["50CrVA", "50CrVA铬钒钢"], "shear_modulus_mpa": 78000},
+    {"id": "10", "display_name": "Inconel X750 镍基合金钢", "standard_value": "Inconel X750", "aliases": ["Inconel X750", "Inconel X-750", "InconelX750", "INCONEL 750", "INCONEL750", "lnconelX750镍基合金钢"], "shear_modulus_mpa": 79000},
+    {"id": "11", "display_name": "70碳素钢", "standard_value": "70#", "aliases": ["70#", "70碳素钢", "70 碳素钢"], "shear_modulus_mpa": 79000},
+    {"id": "12", "display_name": "55CrSi合金钢", "standard_value": "55CrSi", "aliases": ["55CrSi", "55CrSi合金钢"], "shear_modulus_mpa": 79000},
+    {"id": "13", "display_name": "17-4PH不锈钢", "standard_value": "17-4PH", "aliases": ["17-4PH", "17 4 PH", "17-4PH不锈钢"], "shear_modulus_mpa": 76000},
+    {"id": "14", "display_name": "17-7PH不锈钢", "standard_value": "17-7PH", "aliases": ["17-7PH", "17 7 PH", "17-7PH不锈钢"], "shear_modulus_mpa": 75500},
+    {"id": "15", "display_name": "Inconel 718 镍基合金钢", "standard_value": "Inconel 718", "aliases": ["Inconel 718", "Inconel718", "lnconel718镍基合金钢"], "shear_modulus_mpa": 77200}
+  ]
+}

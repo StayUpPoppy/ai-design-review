@@ -33,6 +33,7 @@ EXPECTED_OPERATION_KEYS = {
     ("GET", "/"),
     ("GET", "/api/health"),
     ("GET", "/api/session"),
+    ("GET", "/api/material-catalog"),
     ("GET", "/api/samples/mixed-review"),
     ("GET", "/api/samples/spring-preview"),
     ("GET", "/api/standard-knowledge/search"),
@@ -81,6 +82,7 @@ EXPECTED_OPERATION_KEYS = {
 }
 
 EXPECTED_OPERATION_IDS = {
+    "get_material_catalog_api_material_catalog_get",
     "preview_technical_requirement_recovery_api_reviews__job_id__technical_requirements_recover_preview_post",
     "translate_technical_requirements_api_reviews__job_id__technical_requirements_translate_post",
     "get_drawing_annotations_api_reviews__job_id__annotations_get",
@@ -184,7 +186,7 @@ def main() -> None:
                 operations[key] = operation
 
     assert set(operations) == EXPECTED_OPERATION_KEYS
-    assert len(operations) == 52
+    assert len(operations) == 53
     assert {operation["operationId"] for operation in operations.values()} == EXPECTED_OPERATION_IDS
 
     for key, operation in operations.items():
@@ -211,6 +213,12 @@ def main() -> None:
     assert schemes["GenerationWorkerBearer"]["scheme"] == "bearer"
     assert operations[("GET", "/api/health")]["security"] == []
     assert operations[("GET", "/api/session")]["security"] == [{"ErpIdentityCookie": []}]
+    assert operations[("GET", "/api/material-catalog")]["security"] == [{"ErpIdentityCookie": []}]
+    assert operations[("GET", "/api/material-catalog")]["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/MaterialCatalogResponse"
+    }
+    material_schema = schema["components"]["schemas"]["ReviewMaterialValue"]["properties"]
+    assert {"raw_value", "standard_value", "material_id", "material_catalog_version", "material_substitution_evidence"} <= set(material_schema)
     assert operations[("POST", "/api/admin/generation-templates")]["security"] == [{"GenerationAdminBearer": []}]
     assert operations[("POST", "/api/generation-worker/jobs/claim")]["security"] == [{"GenerationWorkerBearer": []}]
     assert operations[("POST", "/api/solidworks/status")]["security"] == []
