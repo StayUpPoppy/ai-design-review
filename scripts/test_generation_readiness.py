@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -7,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from copy import deepcopy
 
-from ai_design_review.generation_contract import COMPRESSION_GENERATION_EXPORT_FIELDS, COMPRESSION_GENERATION_INPUT_FIELDS
+from ai_design_review.generation_contract import COMPRESSION_GENERATION_EXPORT_FIELDS, COMPRESSION_GENERATION_INPUT_FIELDS, apply_generation_defaults
 from ai_design_review.generation_readiness import assess_generation_readiness, build_generation_parameter_package
 from ai_design_review.generation_schemas import GenerationParameterPackageV1, GenerationParameterPackageV2
 from ai_design_review.solidworks import build_solidworks_command
@@ -22,6 +23,7 @@ def main() -> None:
     _assert_new_confirmed_values_do_not_change_old_snapshot()
     _assert_mean_diameter_source_precedence()
     _assert_missing_values_receive_pending_defaults()
+    _assert_cleared_human_dimensions_do_not_receive_defaults()
     _assert_handedness_has_no_default()
     _assert_optional_material_export_and_warning()
     _assert_pending_field_is_omitted_but_package_exports()
@@ -185,6 +187,26 @@ def _assert_missing_values_receive_pending_defaults() -> None:
     ))
     package = build_generation_parameter_package(review)
     assert set(package["generation_parameters"]["spring_parameters"]) == {"material", "handedness"}
+
+
+def _assert_cleared_human_dimensions_do_not_receive_defaults() -> None:
+    for source in ("human_edited", "human_confirmed", "manual", "manual_input"):
+        review = _ready_review()
+        for field in ("wire_diameter", "free_length"):
+            item = review["spring_parameters"][field]
+            item.update(value="", source=[source], need_human_review=True)
+            assert field not in apply_generation_defaults(review)
+            assert review["spring_parameters"][field] is item
+            assert item["value"] == ""
+        # The same helper runs during API save, load, and generation readiness.
+        reopened = json.loads(json.dumps(review))
+        assert apply_generation_defaults(reopened) == []
+        readiness = assess_generation_readiness(reopened)
+        missing = {item["field"] for item in readiness["missing_fields"]}
+        assert {"wire_diameter", "free_length"}.issubset(missing), readiness
+        for field in ("wire_diameter", "free_length"):
+            assert reopened["spring_parameters"][field]["value"] == ""
+            assert reopened["spring_parameters"][field]["source"] == [source]
 
 
 def _assert_handedness_has_no_default() -> None:

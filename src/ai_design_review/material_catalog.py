@@ -45,6 +45,12 @@ def load_material_catalog(path: str | Path | None = None) -> dict[str, Any]:
                 or not isinstance(modulus, (int, float)) or not math.isfinite(modulus) or modulus <= 0):
             raise ValueError("公司材料目录包含无效或重复条目。")
         ids.add(material_id)
+        for key in ("elastic_modulus_mpa", "density_g_cm3", "tensile_strength_mpa", "allowable_shear_stress_mpa", "allowable_stress_coefficient"):
+            value = item.get(key)
+            if value is None and catalog.get("version") not in {"company-compression-materials-v2", "company-compression-materials-v3"}:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"公司材料目录属性 {key} 必须为有限正数。")
     if len(ids) != 15 or not catalog.get("version"):
         raise ValueError("公司压缩弹簧材料目录必须包含 15 种材料及版本。")
     return catalog
@@ -73,6 +79,18 @@ def material_catalog_matches(value: Any) -> list[dict[str, Any]]:
 def match_material_catalog(value: Any) -> dict[str, Any] | None:
     matches = material_catalog_matches(value)
     return matches[0] if len(matches) == 1 else None
+
+
+def material_catalog_display_value(value: Any) -> str:
+    """Project a complete current catalog name without rewriting drawing evidence."""
+    text = str(value or "").strip()
+    entry = match_material_catalog(text)
+    if entry and normalize_material_key(text) in {
+        normalize_material_key(alias)
+        for alias in [entry["display_name"], entry["standard_value"], *entry["aliases"]]
+    }:
+        return entry["display_name"]
+    return text
 
 
 def _engineering_character(character: str) -> bool:
@@ -353,6 +371,9 @@ def validate_material_change(review: dict[str, Any], previous: dict[str, Any]) -
         if item.get("standard_value") not in (None, "", entry["standard_value"]):
             raise ValueError("材料牌号与当前材料不一致，请重新选择。")
         parameters["material"] = _apply_entry(item, entry, item.get("material_selection_source") or "drawing")
+        # Updating catalog metadata is not a new material selection. Keep legacy
+        # spelling so existing confirmation snapshots still refer to the same value.
+        parameters["material"]["value"] = item.get("value")
     if isinstance(parameters.get("material"), dict):
         if "raw_value" in old:
             parameters["material"]["raw_value"] = old["raw_value"]

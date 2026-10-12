@@ -11,13 +11,15 @@ END_TYPE_NOT_TIGHT = "两端不并紧"
 
 def normalize_end_grinding(value: Any) -> str | None:
     """Map drawing wording for compression spring end grinding to one UI value."""
+    if isinstance(value, (bool, int, float)) and value in (0, 1):
+        return END_GRINDING_GROUND if value == 1 else END_GRINDING_NOT_GROUND
     text = _text(value)
     if not text:
         return None
     lowered = text.lower().replace("-", "_").replace(" ", "")
-    if lowered in {"not_ground", "notground", "unground", "no", "false"}:
+    if lowered in {"0", "not_ground", "notground", "unground", "no", "false"}:
         return END_GRINDING_NOT_GROUND
-    if lowered in {"ground", "grounded", "yes", "true", "closed_and_ground"}:
+    if lowered in {"1", "ground", "grounded", "yes", "true", "closed_and_ground"}:
         return END_GRINDING_GROUND
     if any(token in text for token in ("不磨", "未磨", "不磨削", "未磨削")):
         return END_GRINDING_NOT_GROUND

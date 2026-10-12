@@ -120,7 +120,7 @@ docker compose logs -f mock-solidworks
 
 真实对接设置 `SOLIDWORKS_GENERATION_URL=http://192.168.31.200:5000/solidworks/command` 和 `SOLIDWORKS_REQUEST_TIMEOUT_SECONDS=10` 后，用户点击“生成图纸”时服务端会分配唯一、固定十位的正数 `TaskId`，冻结当前参数，并立即 `POST` 到 SolidWorks。相同幂等键的网络重试只返回原任务，不会分配或发送第二个 TaskId；修改参数或失败后点击“重新生图”会创建新的 TaskId。任何连接异常、超时或非 2xx 受理响应都会把本次任务置为 `failed`，错误码为 `solidworks_submit_failed`。
 
-发送给 SolidWorks 的数据以 `TaskId` 和 `models` 为根；`modelId` 固定为整型 `1`，`materialCode` 固定为 `null`。核心尺寸映射为“线径 / 中径 / 自由高度 / 圈数”，旋向转换为“左旋 / 右旋”；`Fb`、`F1`、`F2` 以及对应的 `Hb`、`H1`、`H2` 缺失时保留字段并传 `null`。完整发送 JSON 同时冻结在 `generation_job.execution_options.solidworks_payload`，用于联调排错和追溯。
+发送给 SolidWorks 的数据以 `TaskId` 和 `models` 为根；`modelId` 固定为整型 `1`，`materialCode` 固定为 `null`。`modelParameters` 包含“线径 / 中径 / 自由高度 / 圈数 / 有效圈数n / 是否磨平”六项；旋向以“左旋 / 右旋”写入 `customProperties`。`extraProperties` 首项为“技术要求”多行文字，合并已确认材料、旋向、粗糙度、压并高度、载荷点、圈数和其他原图要求；随后独立输出可用的 `P'`（N/mm）、`C`、`τ_b`（MPa），缺项省略键名。`titleBlockProperties` 同时提供已确认的纯牌号“材料”和数字“重量”（单件 Q，kg，最多八位小数）；缺失键独立省略，都缺失时为空对象。没有已有压并载荷时，文字省略 Fb，压并应力仍可采用有效理论估算值。完整 JSON 与计算依据冻结在任务中，历史任务及幂等重试保持原请求。详见 [SW 命令格式](docs/solidworks-command.md)。
 
 SolidWorks 通过 `POST /api/solidworks/status` 回调 `generating_3d`、`generating_2d`、`generating_3d_error`、`generating_2d_error` 或 `completed` 状态；旧 `failed` 状态暂时保留兼容，新接入不再使用。完成状态必须附带：
 

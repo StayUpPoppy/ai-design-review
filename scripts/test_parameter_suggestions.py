@@ -73,8 +73,8 @@ def _assert_formula_suggestions_do_not_mutate_manual_values() -> None:
     solid = _by_rule(assessment["suggestions"], "FORMULA-SOLID-HEIGHT")
     assert solid["current_value"] == 35
     assert solid["suggested_value"] == 32.025
-    assert solid["status"] == "available"
-    assert solid["application_mode"] == "value"
+    assert solid["status"] == "informational"
+    assert solid["application_mode"] == "none", "An upper limit must not overwrite a nominal or actual height"
     assert solid["source_fields"] == ["total_coils", "wire_diameter", "end_grinding"]
     assert solid["based_on_revision"] == 7
     assert solid["dependency_token"].startswith("fnv1a32:")
@@ -109,7 +109,7 @@ def _assert_applied_formula_reappears_after_manual_change() -> None:
     changed = _by_rule(build_parameter_suggestions(review), "FORMULA-SOLID-HEIGHT")
     assert changed["suggestion_id"] == first["suggestion_id"]
     assert changed["current_value"] == 35
-    assert changed["status"] == "available"
+    assert changed["status"] == "informational"
 
 
 def _assert_recognized_matching_values_are_verifications() -> None:
@@ -273,6 +273,7 @@ def _assert_identical_formula_and_standardization_suggestions_share_application(
         "suggested_value": 32.025,
         "unit": "mm",
         "rule_id": "STANDARD-SOLID-HEIGHT",
+        "metadata": {"value_kind": "reference_limit"},
         "basis": "标准公式与确定性公式一致。",
         "status": "suggested",
     }]

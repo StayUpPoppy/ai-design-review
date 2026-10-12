@@ -2043,6 +2043,10 @@ button:disabled {
   background: #f8fbff;
 }
 
+.parameter-formula-candidate { grid-column: 1 / -1; display: grid; gap: 6px; color: #9a570c; font-size: 12px; }
+.parameter-formula-candidate:empty { display: none; }
+.parameter-formula-candidate button { padding: 4px 8px; margin-left: 8px; }
+
 .compression-design-check-head {
   display: flex;
   align-items: center;
@@ -2063,6 +2067,18 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
+
+.compression-work-stress-list { display: grid; gap: 8px; margin-top: 10px; }
+.compression-work-stress { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 8px; font-size: 11px; }
+.compression-work-stress strong { color: #1d4f91; font-variant-numeric: tabular-nums; }
+.compression-work-stress small { grid-column: 1 / -1; color: #75839a; overflow-wrap: anywhere; }
+.compression-work-empty { display: block; margin-top: 8px; color: #75839a; }
+.compression-design-basis { margin-top: 10px; font-size: 11px; }
+.compression-design-basis summary { cursor: pointer; color: #52637a; }
+.compression-design-basis p { color: #52637a; overflow-wrap: anywhere; }
+.load-point-rename { padding: 2px 0; border: 0; background: transparent; color: #52637a; font-size: 10px; cursor: pointer; }
+.load-point [data-role="label"] { width: 100%; min-width: 0; }
+@media (max-width: 520px) { .compression-design-check-grid { grid-template-columns: 1fr; } }
 
 .compression-design-check-metric {
   display: grid;
@@ -2088,6 +2104,12 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.compression-design-check-metric > small[data-metric="solid_stress"],
+.compression-design-basis .compression-design-check-metric > small {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .data-row > div {

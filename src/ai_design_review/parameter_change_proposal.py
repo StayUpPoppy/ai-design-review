@@ -35,11 +35,12 @@ from .standardizers import derive_active_coils
 from .standardizers.coil_counts import apply_company_simple_active_coils
 from .standardizers.compression import (
     apply_formula_compression_solid_height,
-    calculate_compression_solid_height,
     derive_compression_parameters,
 )
 from .standardizers.diameters import apply_formula_compression_diameter_completion
 from .standardizers.stiffness import apply_formula_compression_spring_rate
+from .standardizers.design_checks import refresh_design_checks, calculate_nominal_solid_height, apply_formula_support_coils
+from .standardizers.calculation_state import solid_height_kind
 from .standardizers.stiffness import calculate_compression_spring_rate
 from .technical_requirements import (
     TECHNICAL_REQUIREMENT_TYPE_LABELS,
@@ -81,7 +82,7 @@ PARAMETER_RELATION_REGISTRY: dict[str, tuple[dict[str, Any], ...]] = {
         {"code": "diameter_group", "strategy": "automatic", "fields": list(DIAMETER_FIELDS)},
         {"code": "coil_count_relation", "strategy": "validate_only", "fields": ["total_coils", "active_coils"]},
         {"code": "active_coils_from_end", "strategy": "automatic_or_needs_choice", "fields": ["total_coils", "end_type", "support_coils", "active_coils"]},
-        {"code": "solid_height", "strategy": "automatic", "fields": ["wire_diameter", "total_coils", "end_grinding"]},
+        {"code": "solid_height", "strategy": "automatic", "fields": ["wire_diameter", "total_coils", "active_coils", "support_coils", "end_type", "end_grinding"]},
         {"code": "spring_rate", "strategy": "automatic", "fields": ["material", "wire_diameter", "mean_diameter", "active_coils"]},
         {"code": "generation_contract", "strategy": "validate_only", "fields": ["handedness", "end_grinding", "end_coils_closed"]},
     ),
@@ -1115,13 +1116,18 @@ def _solve_dependent_parameters(
     changes: list[dict[str, Any]] = []
     questions: list[str] = []
 
-    if changed_roots & {"total_coils", "end_type", "support_coils"} and "active_coils" not in explicit_fields:
+    if changed_roots & {"total_coils", "end_type", "support_coils", "end_grinding"} and "active_coils" not in explicit_fields:
         total = _parameter_number(parameters, "total_coils")
         end_type = _parameter_end_type(parameters)
         active: float | None = None
         source_fields = ["total_coils", "end_type"]
         if total is not None and end_type == END_TYPE_NOT_TIGHT:
-            active = total
+            grinding = normalize_end_grinding(_parameter_value(parameters, "end_grinding"))
+            source_fields.append("end_grinding")
+            if grinding:
+                active = total - (1 if grinding == END_GRINDING_GROUND else 0)
+            else:
+                questions.append("不并紧端型需要明确端面磨削方式，才能推导有效圈数。")
         elif total is not None and end_type == END_TYPE_TIGHT:
             support = _parameter_number(parameters, "support_coils")
             if support is None:
@@ -1142,14 +1148,20 @@ def _solve_dependent_parameters(
                 changes.append(change)
 
     changed_roots.update(str(item.get("field") or "") for item in changes)
-    if changed_roots & {"wire_diameter", "total_coils", "end_grinding"} and "solid_height" not in explicit_fields:
-        result = calculate_compression_solid_height(parameters)
-        if result.get("status") == "calculated" and result.get("value") is not None:
+    if changed_roots & {"wire_diameter", "total_coils", "active_coils", "support_coils", "end_type", "end_grinding"} and "solid_height" not in explicit_fields:
+        # Keep the proposed row consistent with the nominal height in the parameter editor.
+        if "end_type" not in parameters and _parameter_end_type(parameters):
+            parameters["end_type"] = {"value": _parameter_end_type(parameters)}
+        apply_formula_support_coils(candidate)
+        result = calculate_nominal_solid_height(parameters, candidate.get("spring_features") or {})
+        height = parameters.get("solid_height") or {}
+        protected = solid_height_kind(height) in {"input_height", "unknown"} or solid_height_kind(height) == "nominal_estimate" and height.get("need_human_review") is False
+        if not protected and result.get("value") is not None:
             change = _synchronize_parameter(
                 parameters,
                 baseline_parameters,
                 "solid_height",
-                result.get("value"),
+                _rounded(result["value"]),
                 unit=result.get("unit") or "mm",
                 source_fields=list(result.get("source_fields") or []),
             )
@@ -1464,6 +1476,7 @@ def _refresh_review_after_apply(review: dict[str, Any], *, preview: bool = False
         review["parameter_reasonableness"] = assess_parameter_reasonableness(review)
         review["parameter_reasonableness_stale"] = False
         review["derived_parameters_stale"] = False
+    refresh_design_checks(review)
     if not preview:
         review["standardization_apply_history"] = []
 
@@ -1522,6 +1535,13 @@ def _set_parameter(
     for stale_key in stale_keys:
         existing.pop(stale_key, None)
     parameters[field] = existing
+    if field == "solid_height":
+        if "parameter_change_proposal_derived" in source:
+            calculation = calculate_nominal_solid_height(parameters)
+            existing.update(value_kind="nominal_estimate", formula_calculation_kind="nominal_solid_height", formula=calculation["formula"],
+                            formula_calculation_inputs=calculation["inputs"], source=["formula_calculation", *source])
+        else:
+            existing["value_kind"] = "input_height"
 
 
 def _public_proposal(proposal: dict[str, Any]) -> dict[str, Any]:

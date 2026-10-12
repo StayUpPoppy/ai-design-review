@@ -152,7 +152,9 @@ def calculate_compression_spring_rate(
         )
 
     shear_modulus = float(material["shear_modulus_mpa"])
-    value = shear_modulus * wire**4 / (8 * mean**3 * active)
+    value = spring_rate_from_geometry(shear_modulus, wire, mean, active)
+    if value is None:
+        return _result("missing_context", reason="刚度输入无效或超出计算范围。")
     inputs = {
         "shear_modulus_mpa": shear_modulus,
         "wire_diameter_mm": _round(wire),
@@ -176,6 +178,17 @@ def calculate_compression_spring_rate(
         config_version=material["config_version"],
         basis=basis,
     )
+
+
+def spring_rate_from_geometry(g: float | None, wire: float | None, mean: float | None, active: float | None) -> float | None:
+    """Shared, unrounded stiffness calculation for standardization and design checks."""
+    if any(v is None or not isfinite(v) or v <= 0 for v in (g, wire, mean, active)):
+        return None
+    try:
+        value = g * wire**4 / (8 * mean**3 * active)
+        return value if isfinite(value) and value > 0 else None
+    except (OverflowError, ZeroDivisionError):
+        return None
 
 
 @lru_cache(maxsize=1)

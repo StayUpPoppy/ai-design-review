@@ -26,7 +26,7 @@ os.environ["SOLIDWORKS_REQUEST_TIMEOUT_SECONDS"] = "10"
 os.environ["GENERATION_MAX_ARTIFACT_MB"] = "1"
 
 from ai_design_review import api  # noqa: E402
-from ai_design_review.generation_persistence import GenerationEventRecord  # noqa: E402
+from ai_design_review.generation_persistence import GenerationEventRecord, GenerationJobRecord  # noqa: E402
 from ai_design_review.review_persistence import ReviewPersistence  # noqa: E402
 from ai_design_review.solidworks import build_solidworks_command  # noqa: E402
 
@@ -59,6 +59,7 @@ def ready_review() -> dict[str, object]:
             "free_length": parameter(50, "mm"),
             "total_coils": parameter(9, "圈"),
             "active_coils": parameter(7, "圈"),
+            "support_coils": parameter(1, "圈"), "pitch": parameter(6.5, "mm"),
             "surface_roughness_ra": {
                 **parameter(12.5, "μm"),
                 "surface_location": "两端面",
@@ -66,7 +67,7 @@ def ready_review() -> dict[str, object]:
             "handedness": parameter("left"),
             "end_type": parameter("closed_and_ground"),
             "end_grinding": parameter("ground"),
-            "solid_height": parameter(25, "mm"),
+            "solid_height": {**parameter(25, "mm"), "value_kind": "input_height"},
             "load_points": [
                 {"label": "Fb", "height": 25, "force": 2300, "need_human_review": False},
                 {"label": "F1", "height": 38, "force": 2000, "need_human_review": False},
@@ -121,19 +122,16 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
                 "technical_requirements_text": "",
             },
         },
-        {"spring_parameters": {"solid_height": {"value": 25, "need_human_review": True}}},
+        {"spring_parameters": {"solid_height": {"value": 25, "need_human_review": True, "value_kind": "input_height"}}},
     )
     model = payload["models"][0]
     assert model["modelParameters"]["有效圈数n"] is None
     assert model["modelParameters"]["是否磨平"] is None
-    assert model["modelParameters"]["压并高度Hb"] is None
-    assert model["modelParameters"]["工作高度H1"] is None
-    assert model["modelParameters"]["工作高度H2"] is None
-    assert model["extraProperties"]["Fb"] is None
-    assert model["extraProperties"]["F1"] is None
-    assert model["extraProperties"]["F2"] is None
-    assert model["extraProperties"]["技术要求"] == ""
+    assert set(model["modelParameters"]) == {"线径", "中径", "自由高度", "圈数", "有效圈数n", "是否磨平"}
+    assert "P'" not in model["extraProperties"]
+    assert "Hb =" not in model["extraProperties"]["技术要求"]
     assert model["customProperties"] == {"旋向": "右旋"}
+    assert model["titleBlockProperties"] == {}
 
     confirmed = build_solidworks_command(
         "1000000001",
@@ -148,9 +146,9 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
                 "load_points": [], "technical_requirements_text": "",
             },
         },
-        {"spring_parameters": {"solid_height": {"value": 35, "need_human_review": False}}},
+        {"spring_parameters": {"solid_height": {"value": 35, "need_human_review": False, "value_kind": "input_height"}}},
     )
-    assert confirmed["models"][0]["modelParameters"]["压并高度Hb"] == 35
+    assert "Hb = 35 mm" in confirmed["models"][0]["extraProperties"]["技术要求"]
 
     legacy_package = {
         "source": {"drawing_name": "压缩弹簧"},
@@ -224,25 +222,31 @@ def main() -> None:
                     "圈数": 9,
                     "有效圈数n": 7,
                     "是否磨平": 1,
-                    "压并高度Hb": 25,
-                    "工作高度H1": 38,
-                    "工作高度H2": 43,
                 }
                 exported = client.get("/api/reviews/review-solidworks-push/generation-package")
                 assert exported.status_code == 200, exported.text
                 assert exported.json()["parameter_package"]["solidworks_preview"]["modelParameters"] == model["modelParameters"]
                 assert (
-                    exported.json()["parameter_package"]["generation_parameters"]["technical_requirements_text"]
+                    exported.json()["parameter_package"]["solidworks_preview"]["extraProperties"]["技术要求"]
                     == model["extraProperties"]["技术要求"]
                 )
                 assert model["customProperties"] == {"旋向": "左旋"}
-                assert model["extraProperties"]["材料"] == "60Si2Mn"
-                assert model["extraProperties"]["Fb"] == 2300
-                assert model["extraProperties"]["F1"] == 2000
-                assert model["extraProperties"]["F2"] == 2100
-                assert model["extraProperties"]["表面粗糙度Ra"] == 12.5
-                assert isinstance(model["extraProperties"]["表面粗糙度Ra"], float)
-                assert model["extraProperties"]["技术要求"].startswith("1.两端面粗糙度 Ra 12.5μm\n")
+                extra = model["extraProperties"]
+                assert list(extra) == ["技术要求", "P'", "C", "τ_b"]
+                notes = extra["技术要求"]
+                assert notes.startswith("1.材料：60Si2Mn。\n2.绕制方向：左旋。\n3.两端面表面粗糙度：Ra 12.5 μm。\n")
+                for expected in ("Hb = 25 mm", "Fb = 2300 N", "H1 = 38 mm", "F1 = 2000 N", "H2 = 43 mm", "F2 = 2100 N", "表面喷丸处理"):
+                    assert expected in notes, notes
+                assert isinstance(extra["P'"], (int, float)) and extra["C"] == round(29 / 3, 4)
+                assert extra["τ_b"] > 0
+                title = model["titleBlockProperties"]
+                assert title["材料"] == "60Si2Mn" and isinstance(title["重量"], (int, float))
+                with repository._session() as session:
+                    stored_package = session.get(GenerationJobRecord, job["generation_id"]).parameter_package
+                    mass = stored_package["derived_parameters"]["solidworks_design_checks"]["metrics"]["unit_mass"]
+                    assert stored_package["solidworks_preview"]["titleBlockProperties"] == title
+                assert title["重量"] == round(mass["value"], 8) and mass["unit"] == "kg"
+                assert exported.json()["parameter_package"]["solidworks_preview"]["titleBlockProperties"] == title
                 assert "surface_roughness_ra" not in model["modelParameters"]
                 assert job["execution_options"]["solidworks_payload"] == payload
 

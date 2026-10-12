@@ -47,11 +47,11 @@ def main() -> None:
     raw = {"value": "ХН70МВТЮБ", "raw_value": "ХН70МВТЮБ ГОСТ 5632-72", "source": ["qwen_vision"], "need_human_review": True}
     alternative = {"value": "INCONEL 750", "evidence": "Допускается замена материала на INCONEL 750 или аналоги", "explicitly_allowed": True, "page": 1}
     selected = normalize_compression_material_parameter(raw, alternatives=[alternative])
-    assert selected["value"] == "Inconel X750 镍基合金钢" and selected["standard_value"] == "Inconel X750"
+    assert selected["value"] == "Inconel X750" and selected["standard_value"] == "Inconel X750"
     assert selected["raw_value"] == raw["raw_value"] and selected["need_human_review"] is True
     assert selected["material_selection_source"] == "drawing_substitute" and selected["material_substitution_evidence"]["page"] == 1
     primary = normalize_compression_material_parameter({**raw, "raw_value": "SUS304", "value": "SUS304"}, alternatives=[alternative])
-    assert primary["value"] == "SUS304 不锈钢" and primary["material_selection_source"] == "drawing"
+    assert primary["value"] == "SUS304" and primary["material_selection_source"] == "drawing"
     for alternatives in [[{"value": "INCONEL 750", "evidence": "material shown nearby"}],
                          [alternative, {**alternative, "value": "SUS304", "evidence": "允许换用 SUS304"}]]:
         assert normalize_compression_material_parameter(raw, alternatives=alternatives)["value"] == ""
@@ -64,13 +64,13 @@ def main() -> None:
     mixed_raw = {**raw, "raw_value": "ХН70МВТЮБ ГОСТ 5632-72；允许换用 INCONEL 750"}
     assert normalize_compression_material_parameter(mixed_raw)["material_selection_source"] == "drawing_substitute"
     forbidden_primary = {**raw, "raw_value": "ХН70МВТЮБ；禁止使用 SUS304；允许换用 INCONEL 750"}
-    assert normalize_compression_material_parameter(forbidden_primary)["value"] == "Inconel X750 镍基合金钢"
+    assert normalize_compression_material_parameter(forbidden_primary)["value"] == "Inconel X750"
     supported_primary = {**raw, "raw_value": "材料 SUS304；不允许换用 INCONEL 750"}
-    assert normalize_compression_material_parameter(supported_primary)["value"] == "SUS304 不锈钢"
+    assert normalize_compression_material_parameter(supported_primary)["value"] == "SUS304"
     conflict = normalize_compression_material_parameter({**raw, "raw_value": "SUS304", "primary_materials": [{"value": "SUS304"}, {"value": "ХН70МВТЮБ"}]})
     assert conflict["value"] == "" and conflict["material_match_status"] == "conflict"
     same_primary = normalize_compression_material_parameter({**raw, "raw_value": "SUS304", "primary_materials": [{"value": "SUS304"}, {"value": "SUS304 ГОСТ 5632-72"}]})
-    assert same_primary["value"] == "SUS304 不锈钢"
+    assert same_primary["value"] == "SUS304"
     blank = select_compression_material(selected, "")
     assert blank["value"] == "" and not blank.get("standard_value") and not blank.get("material_id")
     assert normalize_compression_material_parameter(blank, alternatives=[alternative])["value"] == ""
@@ -164,7 +164,7 @@ def _assert_api(catalog: dict) -> None:
                 with patch.dict(os.environ, {"AI_REVIEW_IDENTITY_MODE": "cookie_json"}):
                     assert client.get("/api/material-catalog").status_code == 401
                 loaded = client.get("/api/reviews/test-job").json()
-                assert loaded["spring_parameters"]["material"]["value"] == "SUS304 不锈钢"
+                assert loaded["spring_parameters"]["material"]["value"] == "SUS304"
                 assert loaded["review_results"][0]["status"] == "pass"
                 assert loaded["spring_parameters"]["spring_rate"]["formula_recommendation_stale"] is True
                 assert loaded["spring_parameters"]["spring_rate"]["value"] == review["spring_parameters"]["spring_rate"]["value"]
@@ -173,7 +173,7 @@ def _assert_api(catalog: dict) -> None:
                 loaded["spring_parameters"]["material"]["need_human_review"] = False
                 assert client.patch("/api/reviews/test-job", json={"review": loaded}).status_code == 200
                 saved = client.get("/api/reviews/test-job").json()
-                assert saved["spring_parameters"]["material"]["value"] == "17-7PH不锈钢"
+                assert saved["spring_parameters"]["material"]["value"] == "17-7PH"
                 assert saved["spring_parameters"]["material"]["need_human_review"] is False
                 assert saved["spring_parameters"]["material"]["raw_value"] == "SUS304"
                 invalid = deepcopy(saved)

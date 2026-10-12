@@ -118,7 +118,7 @@ async function downloadFromTab(page, tab) {
   await button.click();
   const download = await downloaded;
   const result = JSON.parse(fs.readFileSync(await download.path(), "utf8"));
-  assert.equal(result.generation_parameters.spring_parameters.material.value, "SUS316 不锈钢", `${tab}: full material name is downloaded`);
+  assert.equal(result.generation_parameters.spring_parameters.material.value, "SUS316", `${tab}: pure material grade is downloaded`);
   assert.ok(!("material_id" in result.generation_parameters.spring_parameters.material));
 }
 
@@ -131,13 +131,17 @@ try {
     page.on("pageerror", (error) => errors.push(error.message));
     const api = await installApiMocks(page);
     await openReview(page);
-    assert.equal(await materialSelect(page).inputValue(), "SUS304 不锈钢");
+    assert.equal(await materialSelect(page).inputValue(), "SUS304");
+    assert.equal((await materialState(page)).value, "SUS304 不锈钢", "Legacy stored value and its confirmation are preserved");
+    assert.equal((await materialState(page)).need_human_review, false);
+    assert.equal(await materialSelect(page).getAttribute("title"), "SUS304");
     await assertCompactMaterialRow(page);
     await assertWideParameterInputs(page);
     const options = await materialSelect(page).locator("option").evaluateAll((items) => items.map((item) => ({ value: item.value, text: item.textContent, disabled: item.disabled })));
     assert.deepEqual(options.filter((item) => item.value).map((item) => item.value), catalogFixture.items.map((item) => item.display_name));
     assert.match(options.find((item) => item.value === "").text, /请选择材料/);
     assert.equal(options.length, 16, "Exactly 15 company options and one placeholder");
+    options.filter((item) => item.value).forEach((item) => assert.doesNotMatch(item.text, /[\u3400-\u9fff]/));
     assert.equal(await materialRow(page).locator(".parameter-label-unit").count(), 0);
     const before = await page.evaluate(() => JSON.stringify(state.review));
     await page.evaluate(() => { renderCompareOverlay(); renderCompareOverlay(); refreshMaterialCatalogControls(); });
@@ -145,7 +149,7 @@ try {
     assert.equal(api.mutations.length, 0, "Loading the directory must not save a review");
     await assertCompactMaterialRow(page);
 
-    await materialSelect(page).selectOption("SUS316 不锈钢");
+    await materialSelect(page).selectOption("SUS316");
     await page.waitForFunction(() => state.review.spring_parameters.material.need_human_review === true);
     let selected = await materialState(page);
     assert.equal(selected.standard_value, "SUS316");
@@ -153,7 +157,7 @@ try {
     assert.equal(selected.raw_value, "SUS304");
     assert.equal(selected.material_selection_source, "manual");
     await assertCompactMaterialRow(page);
-    assert.equal(await page.evaluate(() => state.review.balloons.find((item) => item.field === "material").value), "SUS316 不锈钢");
+    assert.equal(await page.evaluate(() => state.review.balloons.find((item) => item.field === "material").value), "SUS316");
     assert.equal(await page.evaluate(() => makeGenerationParameterPackage().generation_parameters.spring_parameters.material), undefined, "Unconfirmed choice is not exported");
     await flush(page);
     assert.ok(api.mutations.length >= 1);
@@ -169,7 +173,7 @@ try {
     assert.equal((await materialState(page)).raw_value, "SUS304", "Reopening retains original material data without showing an extra line");
     await assertCompactMaterialRow(page);
     const local = await page.evaluate(() => makeGenerationParameterPackage().generation_parameters.spring_parameters.material);
-    assert.equal(local.value, "SUS316 不锈钢");
+    assert.equal(local.value, "SUS316");
     assert.ok(!("material_id" in local));
     await downloadFromTab(page, "workbench");
     await downloadFromTab(page, "generation");
@@ -300,7 +304,7 @@ try {
   const evidence = { value: "INCONEL750", evidence: "允许换用 INCONEL750 或类似材料", explicitly_allowed: true, page: 1 };
   const substituteApi = await installApiMocks(substitutePage, { material: { value: "Inconel X750 镍基合金钢", raw_value: original, standard_value: "Inconel X750", material_id: "10", need_human_review: true, source: ["qwen_vision"], material_selection_source: "drawing_substitute", material_match_status: "matched", material_substitution_evidence: evidence } });
   await openReview(substitutePage);
-  assert.equal(await materialSelect(substitutePage).inputValue(), "Inconel X750 镍基合金钢");
+  assert.equal(await materialSelect(substitutePage).inputValue(), "Inconel X750");
   assert.doesNotMatch(await materialRow(substitutePage).innerText(), /当前材料：|原图材料：|公司材料表固定参考值/);
   const disclosure = materialRow(substitutePage).locator(".material-substitution-evidence");
   assert.equal(await disclosure.evaluate((element) => element.open), false, "Substitution evidence stays collapsed by default");
@@ -316,7 +320,7 @@ try {
   assert.ok(Array.isArray(acknowledgements) && acknowledgements.length === 1);
   assert.ok(JSON.stringify(acknowledgements).includes(original), "Audit retains original foreign grade");
   assert.ok(JSON.stringify(acknowledgements).includes("允许换用 INCONEL750"), "Audit retains substitute permission evidence");
-  assert.equal(await substitutePage.evaluate(() => makeGenerationParameterPackage().generation_parameters.spring_parameters.material.value), "Inconel X750 镍基合金钢");
+  assert.equal(await substitutePage.evaluate(() => makeGenerationParameterPackage().generation_parameters.spring_parameters.material.value), "Inconel X750");
   await substitutePage.close();
 
   const unmatchedPage = await browser.newPage({ viewport: { width: 1100, height: 900 } });
@@ -333,16 +337,16 @@ try {
   const failedSaveApi = await installApiMocks(failedSavePage);
   await openReview(failedSavePage);
   failedSaveApi.failSave = true;
-  await materialSelect(failedSavePage).selectOption("SUS316 不锈钢");
+  await materialSelect(failedSavePage).selectOption("SUS316");
   assert.equal(await failedSavePage.evaluate(async () => flushReviewPersistence()), false);
-  assert.equal((await materialState(failedSavePage)).value, "SUS316 不锈钢", "Failed save retains the local final choice");
+  assert.equal((await materialState(failedSavePage)).value, "SUS316", "Failed save retains the local final choice");
   assert.equal((await materialState(failedSavePage)).raw_value, "SUS304");
   assert.equal((await materialState(failedSavePage)).need_human_review, true);
   assert.equal(failedSaveApi.review.spring_parameters.material.value, "SUS304 不锈钢", "Failure does not pretend server changed");
   assert.ok(await failedSavePage.evaluate(() => state.pendingReviewAuditEvents.length > 0));
   failedSaveApi.failSave = false;
   assert.equal(await failedSavePage.evaluate(async () => flushReviewPersistence()), true);
-  assert.equal(failedSaveApi.review.spring_parameters.material.value, "SUS316 不锈钢");
+  assert.equal(failedSaveApi.review.spring_parameters.material.value, "SUS316");
   assert.equal((await materialState(failedSavePage)).need_human_review, true, "Saving a selection never silently confirms it");
   await failedSavePage.close();
 

@@ -80,6 +80,8 @@ def _formula_suggestions(
             basis=solid.get("basis") or "",
             source_fields=solid.get("source_fields") or [],
             based_on_revision=revision,
+            application_mode="none",
+            status="informational",
         ))
 
     for field, calculation in calculate_compression_diameter_completion(parameters).items():
@@ -190,6 +192,7 @@ def _standardization_suggestions(
             based_on_revision=revision,
             status=status,
             result_index=index,
+            application_mode="none" if metadata.get("value_kind") == "reference_limit" or result.get("rule_id") == "GBT1239.2-SOLID" else None,
         ))
     return suggestions
 

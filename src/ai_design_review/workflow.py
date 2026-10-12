@@ -18,6 +18,7 @@ from .standardizers.coil_counts import apply_company_simple_active_coils
 from .standardizers.compression import apply_formula_compression_solid_height
 from .standardizers.diameters import apply_formula_compression_diameter_completion
 from .standardizers.stiffness import apply_formula_compression_spring_rate
+from .standardizers.design_checks import refresh_design_checks
 from .spring_templates import (
     classify_spring_type,
     field_default_unit,
@@ -180,6 +181,7 @@ class DrawingReviewWorkflow:
             "erp_ready": erp_ready,
             "erp_block_reason": erp_block_reason,
         }
+        refresh_design_checks(review)
         _apply_reasonableness_state(review)
         return review
 
@@ -505,6 +507,7 @@ def apply_standardization_to_review(
         review["erp_block_reason"] = review.get("erp_block_reason") or "标准化建议需要人工确认。"
         review.setdefault("drawing_summary", {})
         review["drawing_summary"]["summary"] = "已生成标准化建议，需要人工确认后再导出。"
+    refresh_design_checks(review)
     _apply_reasonableness_state(review)
     return standardization
 

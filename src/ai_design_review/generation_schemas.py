@@ -95,6 +95,7 @@ class GenerationLoadForceV1(BaseModel):
     unit: Literal["N"] = Field(description="固定单位 N。")
     tolerance_upper: float | None = Field(default=None, description="可选载荷上偏差，单位 N。")
     tolerance_lower: float | None = Field(default=None, description="可选载荷下偏差，单位 N。")
+    tolerance_percent: float | None = Field(default=None, exclude_if=lambda value: value is None, description="可选百分比载荷允差，技术要求保留百分比形式。")
 
 
 class GenerationLoadPointV1(BaseModel):
@@ -211,7 +212,15 @@ class SolidWorksPreviewV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     modelParameters: dict[str, int | float | str | None] = Field(
-        description="按当前已确认参数推算的 SolidWorks 建模字段；不含尚未创建的 TaskId。"
+        description="六个 SolidWorks 建模字段：线径、中径、自由高度、圈数、有效圈数n、是否磨平；不含 TaskId。"
+    )
+    customProperties: dict[str, str | None] = Field(default_factory=dict, description="旋向等模型属性；旧预览可省略。")
+    extraProperties: dict[str, int | float | str] = Field(default_factory=dict, description="技术要求多行文本及可用的 P'（N/mm）、C、τ_b（MPa）；缺项省略键名。")
+    titleBlockProperties: dict[str, int | float | str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="标题栏属性：已确认材料纯牌号及单件重量（数字，kg，最多八位小数）。各项缺失时省略键；新预览都缺失时为空对象，旧预览可省略此字段。",
+        examples=[{"材料": "SUS304", "重量": 0.00642403}],
     )
 
 
@@ -245,7 +254,7 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
                 "technical_requirements_text": "1.其他要求：两端磨平，表面镀锌。",
             },
             "derived_parameters": {},
-            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10, "有效圈数n": 8, "是否磨平": 1, "压并高度Hb": None, "工作高度H1": 25, "工作高度H2": None}},
+            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10, "有效圈数n": 8, "是否磨平": 1}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.材料：65Mn。\n2.绕制方向：右旋。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn"}},
         }]},
     )
 
@@ -257,7 +266,7 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
     solidworks_preview: SolidWorksPreviewV2 | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="可选的只读 SolidWorks modelParameters 预览；旧 V2 参数包可不包含。",
+        description="可选的只读 SolidWorks 建模、模型属性、附加属性及标题栏属性预览；旧 V2 参数包可不包含。",
     )
 
 

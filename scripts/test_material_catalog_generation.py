@@ -10,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ai_design_review.generation_readiness import build_generation_parameter_package
 from ai_design_review.generation_schemas import GenerationParameterPackageV2
 from ai_design_review.solidworks import build_solidworks_command
+from ai_design_review.standardizers.design_checks import calculate_design_checks
+from ai_design_review.material_catalog import validate_material_change
 
 
 MATERIAL_NAMES = (
@@ -18,6 +20,8 @@ MATERIAL_NAMES = (
     "Inconel X750 镍基合金钢", "70碳素钢", "55CrSi合金钢", "17-4PH不锈钢",
     "17-7PH不锈钢", "Inconel 718 镍基合金钢",
 )
+GRADE_NAMES = ("SWPB", "SWPA", "SWC", "SUS304", "SUS316", "SUS631", "65Mn", "60Si2Mn", "50CrVA",
+               "Inconel X750", "70#", "55CrSi", "17-4PH", "17-7PH", "Inconel 718")
 
 
 def param(value: object, unit: str | None = None, **extra: object) -> dict:
@@ -33,6 +37,7 @@ def ready_review(material: str = "SUS304 不锈钢") -> dict:
             "inner_diameter": param(16, "mm"), "mean_diameter": param(18, "mm"),
             "free_length": param(40, "mm"), "total_coils": param(12, "turns"),
             "active_coils": param(10, "turns"), "handedness": param("右旋"),
+            "pitch": param(3.7, "mm"), "support_coils": param(1, "turns"),
             "end_type": param("两端并紧"), "end_grinding": param("两端磨削"),
             "solid_height": param(24, "mm"), "load_points": [],
         },
@@ -43,19 +48,19 @@ def ready_review(material: str = "SUS304 不锈钢") -> dict:
 
 def main() -> None:
     baseline_model = None
-    for index, name in enumerate(MATERIAL_NAMES):
+    for index, (name, grade) in enumerate(zip(MATERIAL_NAMES, GRADE_NAMES, strict=True)):
         review = ready_review(name)
         before = deepcopy(review)
         package = build_generation_parameter_package(review)
         GenerationParameterPackageV2.model_validate(package)
         material = package["generation_parameters"]["spring_parameters"]["material"]
-        assert material["value"] == name
+        assert material["value"] == grade
         assert material["unit"] is None
         assert material["tolerance_upper"] is None and material["tolerance_lower"] is None
         assert not {"material_id", "material_catalog_version", "raw_value", "standard_value", "material_selection_source"}.intersection(material), material
         command = build_solidworks_command(str(1_000_000_001 + index), package, review)
         model = command["models"][0]
-        assert model["extraProperties"]["材料"] == name
+        assert model["extraProperties"]["技术要求"].startswith(f"1.材料：{grade}。")
         assert model["materialCode"] is None, "Catalog ids are not SolidWorks materialCode"
         assert model["extraProperties"]["技术要求"].startswith("1.")
         assert not model["extraProperties"]["技术要求"].startswith("技术要求\n")
@@ -67,6 +72,23 @@ def main() -> None:
         assert review["spring_parameters"]["material"] == before["spring_parameters"]["material"], "Export must not mutate current material or original evidence"
         for field, item in before["spring_parameters"].items():
             assert review["spring_parameters"][field] == item, f"Export must not change existing {field} values"
+        pure = deepcopy(review)
+        pure["spring_parameters"]["material"]["value"] = grade
+        old_checks = calculate_design_checks(review["spring_parameters"], {})
+        new_checks = calculate_design_checks(pure["spring_parameters"], {})
+        assert all(old_checks["metrics"][key]["value"] is not None for key in ("theoretical_spring_rate", "solid_stress", "unit_mass"))
+        assert {k: (v["value"], v["status"]) for k, v in old_checks["metrics"].items()} == {
+            k: (v["value"], v["status"]) for k, v in new_checks["metrics"].items()
+        }, (name, grade)
+        assert build_generation_parameter_package(pure)["solidworks_preview"] == package["solidworks_preview"]
+
+    legacy = ready_review()
+    legacy["manual_confirmations"] = {"material": {"value": "SUS304 不锈钢", "confirmation_state": "human_confirmed"}}
+    original = deepcopy(legacy)
+    validate_material_change(legacy, original)
+    assert legacy["spring_parameters"]["material"]["value"] == "SUS304 不锈钢"
+    assert legacy["spring_parameters"]["material"]["need_human_review"] is False
+    assert legacy["manual_confirmations"] == original["manual_confirmations"]
 
     for value, pending in [("SUS304 不锈钢", True), (None, False), ("", False)]:
         review = ready_review()
@@ -74,17 +96,19 @@ def main() -> None:
         package = build_generation_parameter_package(review)
         assert "material" not in package["generation_parameters"]["spring_parameters"]
         command = build_solidworks_command("1000000020", package, review)
-        assert command["models"][0]["extraProperties"]["材料"] is None
+        assert "材料：" not in command["models"][0]["extraProperties"]["技术要求"]
 
     historical = ready_review("ХН70МВТЮБ ГОСТ 5632-72")
     frozen = build_generation_parameter_package(historical)
     snapshot = json.dumps(frozen, ensure_ascii=False, sort_keys=True)
     historical["spring_parameters"]["material"].update(value="Inconel X750 镍基合金钢", standard_value="Inconel X750", material_id="10")
     current = build_generation_parameter_package(historical)
-    assert build_solidworks_command("1000000021", frozen, historical)["models"][0]["extraProperties"]["材料"] == "ХН70МВТЮБ ГОСТ 5632-72"
-    assert build_solidworks_command("1000000022", current, historical)["models"][0]["extraProperties"]["材料"] == "Inconel X750 镍基合金钢"
+    assert build_solidworks_command("1000000021", frozen, historical)["models"][0]["extraProperties"]["技术要求"].startswith("1.材料：ХН70МВТЮБ ГОСТ 5632-72。")
+    assert build_solidworks_command("1000000022", current, historical)["models"][0]["extraProperties"]["技术要求"].startswith("1.材料：Inconel X750。")
     assert json.dumps(frozen, ensure_ascii=False, sort_keys=True) == snapshot
-    print("PASS: all 15 full material names, pending omission, clean v2 schema, unchanged SW model fields and frozen history")
+    frozen["solidworks_preview"]["extraProperties"]["技术要求"] = "1.材料：SUS304 不锈钢。"
+    assert build_solidworks_command("1000000023", frozen, historical)["models"][0]["extraProperties"]["技术要求"] == "1.材料：SUS304 不锈钢。"
+    print("PASS: all 15 pure grades and legacy names, unchanged calculations/confirmation, pending omission and frozen history")
 
 
 if __name__ == "__main__":

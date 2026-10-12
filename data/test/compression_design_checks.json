@@ -1,0 +1,1227 @@
+{
+  "base": {
+    "drawing_summary": {
+      "spring_type": "compression_spring"
+    },
+    "spring_features": {
+      "pitch_type": {
+        "value": "constant"
+      }
+    },
+    "spring_parameters": {
+      "material": {
+        "value": "SUS304",
+        "source": [
+          "qwen_vision"
+        ],
+        "need_human_review": true
+      },
+      "wire_diameter": {
+        "value": 2,
+        "unit": "mm"
+      },
+      "mean_diameter": {
+        "value": 18,
+        "unit": "mm"
+      },
+      "free_length": {
+        "value": 36,
+        "unit": "mm"
+      },
+      "active_coils": {
+        "value": 10,
+        "unit": "turns"
+      },
+      "total_coils": {
+        "value": 12,
+        "unit": "turns"
+      },
+      "support_coils": {
+        "value": 1,
+        "unit": "turns"
+      },
+      "end_type": {
+        "value": "两端并紧"
+      },
+      "end_grinding": {
+        "value": "两端磨削"
+      },
+      "spring_rate": {
+        "value": 99,
+        "source": [
+          "qwen_vision"
+        ]
+      },
+      "load_points": [
+        {
+          "load_point_id": "one",
+          "label": "F1",
+          "height": 32,
+          "force": 10,
+          "force_unit": "N"
+        },
+        {
+          "load_point_id": "two",
+          "label": "F2",
+          "height": 28,
+          "force": 20,
+          "force_unit": "N"
+        },
+        {
+          "load_point_id": "three",
+          "label": "F3",
+          "height": 30,
+          "force": null,
+          "height_unit": "mm"
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "baseline",
+      "expected": {
+        "pitch": 3.3,
+        "theoretical_spring_rate": 2.4519890260631003,
+        "unit_mass": 0.01693420942045807,
+        "solid_stress": 212.23733290911716,
+        "nominal_solid_height": 23,
+        "work": [
+          66.58247044249443,
+          133.16494088498885,
+          97.95569211190023
+        ]
+      }
+    },
+    {
+      "name": "ground-1.5",
+      "overrides": {
+        "support_coils": {
+          "value": 0.75
+        },
+        "total_coils": {
+          "value": 11.5
+        }
+      },
+      "expected": {
+        "pitch": 3.4,
+        "nominal_solid_height": 22
+      }
+    },
+    {
+      "name": "ground-2.5",
+      "overrides": {
+        "support_coils": {
+          "value": 1.25
+        },
+        "total_coils": {
+          "value": 12.5
+        }
+      },
+      "expected": {
+        "pitch": 3.2,
+        "nominal_solid_height": 24
+      }
+    },
+    {
+      "name": "unground-2",
+      "overrides": {
+        "end_grinding": {
+          "value": "两端不磨削"
+        }
+      },
+      "expected": {
+        "pitch": 3,
+        "nominal_solid_height": 26
+      }
+    },
+    {
+      "name": "unground-2.5",
+      "overrides": {
+        "support_coils": {
+          "value": 1.25
+        },
+        "end_grinding": {
+          "value": "两端不磨削"
+        },
+        "total_coils": {
+          "value": 12.5
+        }
+      },
+      "expected": {
+        "pitch": 2.9,
+        "nominal_solid_height": 27
+      }
+    },
+    {
+      "name": "support-from-independent-counts",
+      "overrides": {
+        "support_coils": {
+          "value": null
+        }
+      },
+      "expected": {
+        "pitch": 3.3,
+        "unit_mass": 0.01693420942045807,
+        "solid_stress": 212.23733290911716
+      }
+    },
+    {
+      "name": "missing-support-company-default",
+      "overrides": {
+        "support_coils": {
+          "value": null
+        },
+        "active_coils": {
+          "source": [
+            "company_active_coil_rule"
+          ],
+          "derived_rule_id": "COMPANY-ACTIVE-COILS-END-CONDITION-V2",
+          "need_human_review": true
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "unit_mass": null,
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "missing-support-unconfirmed-protocol-count",
+      "overrides": {
+        "support_coils": {
+          "value": null
+        },
+        "active_coils": {
+          "source": [
+            "solidworks_protocol_default"
+          ],
+          "need_human_review": true
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "unit_mass": null,
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "support-counter-dependent",
+      "overrides": {
+        "support_coils": {
+          "value": null
+        },
+        "active_coils": {
+          "source": [
+            "derived"
+          ],
+          "source_fields": [
+            "total_coils"
+          ]
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "unit_mass": null,
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "support-human-cleared",
+      "overrides": {
+        "support_coils": {
+          "value": "",
+          "source": [
+            "human_edited"
+          ]
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "unit_mass": null,
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "support-invalid-count-relation",
+      "overrides": {
+        "support_coils": {
+          "value": null
+        },
+        "active_coils": {
+          "value": 12
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "unit_mass": null,
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "order2-user-confirmed-counts",
+      "overrides": {
+        "wire_diameter": {
+          "value": 1.8
+        },
+        "mean_diameter": {
+          "value": 25.2
+        },
+        "free_length": {
+          "value": 19
+        },
+        "total_coils": {
+          "value": 6,
+          "source": [
+            "human_confirmed",
+            "human_edited",
+            "qwen_vision"
+          ],
+          "need_human_review": false
+        },
+        "active_coils": {
+          "value": 4,
+          "source": [
+            "human_confirmed",
+            "human_edited",
+            "solidworks_protocol_default"
+          ],
+          "need_human_review": false
+        },
+        "support_coils": {
+          "value": null
+        },
+        "end_type": {
+          "source": [
+            "solidworks_protocol_default"
+          ],
+          "need_human_review": true
+        },
+        "solid_height": {
+          "value": 11.1,
+          "source": [
+            "human_confirmed",
+            "formula_suggestion_applied",
+            "derived_recalculation",
+            "formula_calculation"
+          ],
+          "formula_calculation_kind": "solid_height",
+          "need_human_review": false
+        },
+        "load_points": [
+          {
+            "load_point_id": "one",
+            "label": "F1",
+            "force": 13.2,
+            "height": 14.284
+          },
+          {
+            "load_point_id": "two",
+            "label": "F2",
+            "force": 18.9,
+            "height": 12.284
+          }
+        ]
+      },
+      "expected": {
+        "pitch": 4.075,
+        "theoretical_spring_rate": 1.4656978862973764,
+        "nominal_solid_height": 9.9,
+        "solid_stress": 161.67436065316636,
+        "unit_mass": 0.009598078574462507,
+        "work": [
+          160.00340670874309,
+          229.09578687842762
+        ]
+      }
+    },
+    {
+      "name": "direct-pitch",
+      "overrides": {
+        "pitch": {
+          "value": 4,
+          "source": [
+            "qwen_vision"
+          ]
+        }
+      },
+      "expected": {
+        "pitch": 4
+      }
+    },
+    {
+      "name": "human-cleared",
+      "overrides": {
+        "pitch": {
+          "value": "",
+          "source": [
+            "human_edited"
+          ],
+          "need_human_review": true
+        }
+      },
+      "expected": {
+        "pitch": "",
+        "unit_mass": null
+      }
+    },
+    {
+      "name": "solid-zero",
+      "overrides": {
+        "load_points": [
+          {
+            "label": "Fb",
+            "force": 0
+          }
+        ]
+      },
+      "expected": {
+        "solid_stress": 0,
+        "work": []
+      }
+    },
+    {
+      "name": "solid-invalid",
+      "overrides": {
+        "load_points": [
+          {
+            "label": "Pb",
+            "force": -1,
+            "height": 23
+          }
+        ]
+      },
+      "expected": {
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "solid-ambiguous",
+      "overrides": {
+        "load_points": [
+          {
+            "label": "Fb",
+            "force": 10
+          },
+          {
+            "label": "Pb",
+            "force": 20
+          }
+        ]
+      },
+      "expected": {
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "invalid-force",
+      "overrides": {
+        "load_points": [
+          {
+            "label": "F1",
+            "force": "abc",
+            "height": 30
+          }
+        ]
+      },
+      "expected": {
+        "work": [
+          null
+        ]
+      }
+    },
+    {
+      "name": "unsupported-force-unit",
+      "overrides": {
+        "load_points": [
+          {
+            "label": "F1",
+            "force": 10,
+            "force_unit": "lbf"
+          }
+        ]
+      },
+      "expected": {
+        "work": [
+          null
+        ]
+      }
+    },
+    {
+      "name": "force-conversion",
+      "overrides": {
+        "load_points": [
+          {
+            "label": "F1",
+            "force": 0.01,
+            "force_unit": "kN"
+          }
+        ]
+      },
+      "expected": {
+        "work": [
+          66.58247044249443
+        ]
+      }
+    },
+    {
+      "name": "dimension-conversion",
+      "overrides": {
+        "wire_diameter": {
+          "value": 0.2,
+          "unit": "cm"
+        },
+        "mean_diameter": {
+          "value": 1.8,
+          "unit": "cm"
+        }
+      },
+      "expected": {
+        "pitch": 3.3,
+        "theoretical_spring_rate": 2.4519890260631003
+      }
+    },
+    {
+      "name": "standard-solid-upper",
+      "overrides": {
+        "solid_height": {
+          "value": 25.2,
+          "source": [
+            "formula_calculation"
+          ],
+          "formula_calculation_kind": "solid_height"
+        }
+      },
+      "expected": {
+        "nominal_solid_height": 23,
+        "solid_stress": 212.23733290911716
+      }
+    },
+    {
+      "name": "drawing-solid-height",
+      "overrides": {
+        "solid_height": {
+          "value": 24,
+          "source": [
+            "qwen_vision"
+          ]
+        }
+      },
+      "expected": {
+        "nominal_solid_height": 23,
+        "solid_height_used": 24
+      }
+    },
+    {
+      "name": "variable-pitch",
+      "features": {
+        "pitch_type": {
+          "value": "variable"
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "theoretical_spring_rate": null,
+        "solid_stress": null,
+        "unit_mass": null
+      }
+    },
+    {
+      "name": "unknown-material",
+      "overrides": {
+        "material": {
+          "value": "Unconfigured"
+        }
+      },
+      "expected": {
+        "theoretical_spring_rate": null,
+        "unit_mass": null,
+        "work": [
+          66.58247044249443,
+          133.16494088498885,
+          null
+        ]
+      }
+    },
+    {
+      "name": "invalid-index",
+      "overrides": {
+        "mean_diameter": {
+          "value": 2
+        }
+      },
+      "expected": {
+        "curvature_factor": null,
+        "work": [
+          null,
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "name": "invalid-height",
+      "overrides": {
+        "load_points": [
+          {
+            "label": "F1",
+            "height": 40,
+            "force": null
+          }
+        ]
+      },
+      "expected": {
+        "work": [
+          null
+        ]
+      }
+    },
+    {
+      "name": "stale-mean",
+      "overrides": {
+        "mean_diameter": {
+          "value": 18,
+          "derived_value_stale": true
+        }
+      },
+      "expected": {
+        "theoretical_spring_rate": null,
+        "unit_mass": null,
+        "work": [
+          null,
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "name": "zero-wire",
+      "overrides": {
+        "wire_diameter": {
+          "value": 0
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "theoretical_spring_rate": null,
+        "unit_mass": null
+      }
+    },
+    {
+      "name": "not-numeric",
+      "overrides": {
+        "wire_diameter": {
+          "value": "NaN"
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "theoretical_spring_rate": null
+      }
+    },
+    {
+      "name": "unknown-unit",
+      "overrides": {
+        "wire_diameter": {
+          "value": 2,
+          "unit": "px"
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "theoretical_spring_rate": null
+      }
+    },
+    {
+      "name": "tiny-wire",
+      "overrides": {
+        "wire_diameter": {
+          "value": 1e-200
+        }
+      },
+      "expected": {
+        "theoretical_spring_rate": null
+      }
+    },
+    {
+      "name": "large-wire",
+      "overrides": {
+        "wire_diameter": {
+          "value": 1e+200
+        }
+      },
+      "expected": {
+        "theoretical_spring_rate": null
+      }
+    },
+    {
+      "name": "invalid-support-no-active",
+      "overrides": {
+        "active_coils": {
+          "value": null
+        },
+        "support_coils": {
+          "value": -1
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "theoretical_spring_rate": null
+      }
+    },
+    {
+      "name": "company-active-invalid-total",
+      "overrides": {
+        "active_coils": {
+          "source": [
+            "company_active_coil_rule"
+          ],
+          "derived_rule_id": "COMPANY-ACTIVE-COILS-END-CONDITION-V2",
+          "need_human_review": true
+        },
+        "total_coils": {
+          "value": "12abc"
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "theoretical_spring_rate": null
+      }
+    },
+    {
+      "name": "company-active-invalid-support",
+      "overrides": {
+        "active_coils": {
+          "source": [
+            "company_active_coil_rule"
+          ],
+          "derived_rule_id": "COMPANY-ACTIVE-COILS-END-CONDITION-V2",
+          "need_human_review": true
+        },
+        "support_coils": {
+          "value": -1
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "theoretical_spring_rate": null
+      }
+    },
+    {
+      "name": "company-active-refresh",
+      "overrides": {
+        "active_coils": {
+          "source": [
+            "company_active_coil_rule"
+          ],
+          "derived_rule_id": "COMPANY-ACTIVE-COILS-END-CONDITION-V2",
+          "need_human_review": true
+        },
+        "total_coils": {
+          "value": 14
+        }
+      },
+      "expected": {
+        "pitch": 2.75,
+        "theoretical_spring_rate": 2.0433241883859177
+      }
+    },
+    {
+      "name": "very-large-index",
+      "overrides": {
+        "mean_diameter": {
+          "value": 1e+308
+        }
+      },
+      "expected": {
+        "curvature_factor": null,
+        "theoretical_spring_rate": null,
+        "unit_mass": null
+      }
+    },
+    {
+      "name": "book-order2-baseline",
+      "overrides": {
+        "wire_diameter": {
+          "value": 1.8,
+          "tolerance_upper": 0.05
+        },
+        "mean_diameter": {
+          "value": 25.2
+        },
+        "free_length": {
+          "value": 19
+        },
+        "total_coils": {
+          "value": 4
+        },
+        "active_coils": {
+          "value": 2
+        },
+        "load_points": [
+          {
+            "label": "F1",
+            "force": 13.2
+          },
+          {
+            "label": "F2",
+            "force": 18.9
+          }
+        ]
+      },
+      "expected": {
+        "pitch": 8.15,
+        "nominal_solid_height": 6.3,
+        "solid_height_used": 6.3,
+        "reference_solid_height_limit": 7.4,
+        "theoretical_spring_rate": 2.931395772594753,
+        "solid_stress": 451.26689676793944,
+        "unit_mass": 0.0064240313393816775,
+        "work": [
+          160.00340670874309,
+          229.09578687842762
+        ]
+      }
+    },
+    {
+      "name": "open-not_ground",
+      "overrides": {
+        "wire_diameter": {
+          "value": 1.8,
+          "tolerance_upper": 0.05
+        },
+        "mean_diameter": {
+          "value": 25.2
+        },
+        "free_length": {
+          "value": 19
+        },
+        "total_coils": {
+          "value": 4
+        },
+        "active_coils": {
+          "value": null,
+          "source": []
+        },
+        "load_points": [
+          {
+            "label": "F1",
+            "force": 13.2
+          },
+          {
+            "label": "F2",
+            "force": 18.9
+          }
+        ],
+        "end_type": {
+          "value": "open"
+        },
+        "end_grinding": {
+          "value": "not_ground"
+        },
+        "support_coils": {
+          "value": null
+        }
+      },
+      "expected": {
+        "pitch": 4.3,
+        "nominal_solid_height": 9
+      }
+    },
+    {
+      "name": "open-ground",
+      "overrides": {
+        "wire_diameter": {
+          "value": 1.8,
+          "tolerance_upper": 0.05
+        },
+        "mean_diameter": {
+          "value": 25.2
+        },
+        "free_length": {
+          "value": 19
+        },
+        "total_coils": {
+          "value": 4
+        },
+        "active_coils": {
+          "value": null,
+          "source": []
+        },
+        "load_points": [
+          {
+            "label": "F1",
+            "force": 13.2
+          },
+          {
+            "label": "F2",
+            "force": 18.9
+          }
+        ],
+        "end_type": {
+          "value": "open"
+        },
+        "end_grinding": {
+          "value": "ground"
+        },
+        "support_coils": {
+          "value": null
+        }
+      },
+      "expected": {
+        "pitch": 4.75,
+        "nominal_solid_height": 7.2
+      }
+    },
+    {
+      "name": "open-conflicting-counts",
+      "overrides": {
+        "wire_diameter": {
+          "value": 1.8,
+          "tolerance_upper": 0.05
+        },
+        "mean_diameter": {
+          "value": 25.2
+        },
+        "free_length": {
+          "value": 19
+        },
+        "total_coils": {
+          "value": 4
+        },
+        "active_coils": {
+          "value": 4
+        },
+        "load_points": [
+          {
+            "label": "F1",
+            "force": 13.2
+          },
+          {
+            "label": "F2",
+            "force": 18.9
+          }
+        ],
+        "end_type": {
+          "value": "open"
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "nominal_solid_height": null,
+        "solid_stress": null,
+        "work": [
+          160.00340670874309,
+          229.09578687842762
+        ]
+      }
+    },
+    {
+      "name": "closed-conflicting-counts",
+      "overrides": {
+        "total_coils": {
+          "value": 13
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "nominal_solid_height": null,
+        "solid_stress": null,
+        "work": [
+          66.58247044249443,
+          133.16494088498885,
+          97.95569211190023
+        ]
+      }
+    },
+    {
+      "name": "missing-pitch-still-stress",
+      "overrides": {
+        "pitch": {
+          "value": "",
+          "source": [
+            "human_edited"
+          ]
+        }
+      },
+      "expected": {
+        "pitch": "",
+        "unit_mass": null,
+        "solid_stress": 212.23733290911716
+      }
+    },
+    {
+      "name": "force-without-height-or-geometry",
+      "overrides": {
+        "end_type": {
+          "value": null
+        },
+        "solid_height": {
+          "value": "",
+          "source": [
+            "human_edited"
+          ]
+        },
+        "load_points": [
+          {
+            "label": "Fb",
+            "force": 10
+          }
+        ]
+      },
+      "expected": {
+        "solid_stress": 66.58247044249443,
+        "solid_height_used": null,
+        "nominal_solid_height": null
+      }
+    },
+    {
+      "name": "manual-height-cleared",
+      "overrides": {
+        "solid_height": {
+          "value": "",
+          "source": [
+            "human_edited"
+          ],
+          "value_kind": "input_height"
+        }
+      },
+      "expected": {
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "manual-height-zero",
+      "overrides": {
+        "solid_height": {
+          "value": 0,
+          "source": [
+            "human_edited"
+          ],
+          "value_kind": "input_height"
+        }
+      },
+      "expected": {
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "manual-height-negative",
+      "overrides": {
+        "solid_height": {
+          "value": -1,
+          "source": [
+            "human_edited"
+          ],
+          "value_kind": "input_height"
+        }
+      },
+      "expected": {
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "manual-height-nonnumeric",
+      "overrides": {
+        "solid_height": {
+          "value": "abc",
+          "source": [
+            "human_edited"
+          ],
+          "value_kind": "input_height"
+        }
+      },
+      "expected": {
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "manual-height-equal-free",
+      "overrides": {
+        "solid_height": {
+          "value": 36,
+          "source": [
+            "human_edited"
+          ],
+          "value_kind": "input_height"
+        }
+      },
+      "expected": {
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "manual-height-above-free",
+      "overrides": {
+        "solid_height": {
+          "value": 40,
+          "source": [
+            "human_edited"
+          ],
+          "value_kind": "input_height"
+        }
+      },
+      "expected": {
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "unclassified-legacy-height",
+      "overrides": {
+        "solid_height": {
+          "value": 24,
+          "source": []
+        }
+      },
+      "expected": {
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "stale-input-height",
+      "overrides": {
+        "solid_height": {
+          "value": 24,
+          "source": [
+            "qwen_vision"
+          ],
+          "derived_value_stale": true
+        }
+      },
+      "expected": {
+        "solid_stress": null
+      }
+    },
+    {
+      "name": "negative-wire-upper",
+      "overrides": {
+        "wire_diameter": {
+          "tolerance_upper": -0.1
+        }
+      },
+      "expected": {
+        "reference_solid_height_limit": 22.8
+      }
+    },
+    {
+      "name": "invalid-wire-upper",
+      "overrides": {
+        "wire_diameter": {
+          "tolerance_upper": "abc"
+        }
+      },
+      "expected": {
+        "reference_solid_height_limit": null,
+        "solid_stress": 212.23733290911716
+      }
+    },
+    {
+      "name": "missing-open-grinding",
+      "overrides": {
+        "end_type": {
+          "value": "open"
+        },
+        "end_grinding": {
+          "value": null
+        },
+        "active_coils": {
+          "value": null
+        }
+      },
+      "expected": {
+        "pitch": null,
+        "theoretical_spring_rate": null,
+        "nominal_solid_height": null
+      }
+    },
+    {
+      "name": "legacy-ground-binary",
+      "overrides": {
+        "end_grinding": {
+          "value": 1
+        }
+      },
+      "expected": {
+        "pitch": 3.3,
+        "nominal_solid_height": 23,
+        "reference_solid_height_limit": 24
+      }
+    },
+    {
+      "name": "legacy-unground-binary",
+      "overrides": {
+        "end_grinding": {
+          "value": 0
+        }
+      },
+      "expected": {
+        "pitch": 3,
+        "nominal_solid_height": 26,
+        "reference_solid_height_limit": 27
+      }
+    },
+    {
+      "name": "active-coil-cycle",
+      "overrides": {
+        "active_coils": {
+          "value": null
+        },
+        "total_coils": {
+          "source": [
+            "derived"
+          ],
+          "source_fields": [
+            "active_coils"
+          ]
+        }
+      },
+      "expected": {
+        "theoretical_spring_rate": null,
+        "reference_solid_height_limit": null,
+        "pitch": null
+      }
+    },
+    {
+      "name": "wire-diameter-cycle",
+      "overrides": {
+        "wire_diameter": {
+          "source": [
+            "derived"
+          ],
+          "source_fields": [
+            "outer_diameter"
+          ]
+        },
+        "outer_diameter": {
+          "value": 20,
+          "source": [
+            "derived"
+          ],
+          "source_fields": [
+            "wire_diameter"
+          ]
+        }
+      },
+      "expected": {
+        "theoretical_spring_rate": null,
+        "reference_solid_height_limit": null,
+        "pitch": null
+      }
+    },
+    {
+      "name": "missing-height-from-vision",
+      "overrides": {
+        "solid_height": {
+          "value": null,
+          "source": [
+            "qwen_vision"
+          ]
+        }
+      },
+      "expected": {
+        "solid_stress": 212.23733290911716,
+        "solid_height_used": 23
+      }
+    }
+  ]
+}

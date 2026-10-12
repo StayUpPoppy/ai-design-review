@@ -87,7 +87,7 @@ def _assert_each_diameter_direction_and_multi_change() -> None:
     b = build_parameter_change_proposal(second, list(reversed(actions)), user_goal="中径28，线径5")
     a_sync = {(item["field"], item["after"]) for item in a["synchronized_changes"]}
     b_sync = {(item["field"], item["after"]) for item in b["synchronized_changes"]}
-    assert a_sync == b_sync == {("outer_diameter", 33), ("inner_diameter", 23)}
+    assert a_sync == b_sync == {("outer_diameter", 33), ("inner_diameter", 23), ("solid_height", 47.5)}
 
     pair_review = _review()
     pair = build_parameter_change_proposal(
@@ -210,6 +210,7 @@ def _assert_end_condition_keeps_protocol_field_in_sync() -> None:
     applied, _ = apply_parameter_change_proposal(review, proposal["proposal_id"], version=proposal["version"])
     assert applied["spring_parameters"]["end_type"]["value"] == "两端不并紧"
     assert applied["spring_parameters"]["end_coils_closed"]["value"] == 0
+    assert applied["spring_parameters"]["active_coils"]["value"] == 9
 
 
 def _assert_calculated_and_load_dependencies_are_included() -> None:
@@ -225,8 +226,10 @@ def _assert_calculated_and_load_dependencies_are_included() -> None:
         user_goal="线径5，自由长度65",
     )
     synchronized = {item["field"]: item for item in proposal["synchronized_changes"]}
-    assert synchronized["solid_height"]["after"] == 50
+    assert synchronized["solid_height"]["after"] == 47.5
     assert synchronized["spring_rate"]["after"] > 0
+    applied, _ = apply_parameter_change_proposal(review, proposal["proposal_id"], version=proposal["version"])
+    assert applied["spring_parameters"]["solid_height"]["value_kind"] == "nominal_estimate"
     derived = {item["field"]: item for item in proposal["derived_changes"]}
     assert derived["load_points.F1.deflection"]["before"] == 20
     assert derived["load_points.F1.deflection"]["after"] == 15

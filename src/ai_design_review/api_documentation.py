@@ -95,7 +95,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/apply"): _operation("标准化与合理性", "应用完整参数修改方案", "按方案版本和审图修订执行乐观锁校验，重新求解全部关联参数并原子写入。ready 或 warning 方案可以应用；过期、缺信息或存在冲突时返回409。"),
     ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/discard"): _operation("标准化与合理性", "放弃参数修改方案", "关闭尚未应用的方案草稿并保存审计事件，不修改正式参数；已应用或版本已变化时返回409。"),
     ("GET", "/api/reviews/{job_id}/generation-readiness"): _operation("生图准备", "检查审图是否可以生图", "由服务端根据当前审图修订重新计算缺失字段、待确认字段、警告和参数矛盾，是前端启用“生成图纸”的唯一可信依据。标准化为可选功能；未标准化、标准未确认或标准化结果过期只产生警告，不阻止按当前人工确认参数生图。"),
-    ("GET", "/api/reviews/{job_id}/generation-package"): _operation("生图准备", "获取 SolidWorks 生图参数包", "仅 ready 或 ready_with_warnings 状态返回冻结的 spring_generation_parameters/v2 参数快照。spring_parameters 包含线径、中径、自由长度、总圈数、有效圈数、旋向、两端磨削和端圈压并八个必填字段，以及可选的已确认材料字段 material；solidworks_preview.modelParameters 展示实际发送给 SolidWorks 的建模字段映射（不含尚未创建的 TaskId），其中有效圈数n为已确认有效圈数，是否磨平为整数 1 或 0。SolidWorks 根据中径和线径计算外径、内径。材料缺失或待确认时仍可生成，但参数包省略 material 并在就绪状态中给出警告。未执行标准化时 standard_context 保持空值，参数包仍可用于生图；其他未就绪状态返回 409 和具体原因。"),
+    ("GET", "/api/reviews/{job_id}/generation-package"): _operation("生图准备", "获取 SolidWorks 生图参数包", "仅 ready 或 ready_with_warnings 状态返回冻结的 spring_generation_parameters/v2 参数快照。spring_parameters 包含线径、中径、自由长度、总圈数、有效圈数、旋向、两端磨削和端圈压并八个必填字段，以及可选的已确认材料字段 material；solidworks_preview.modelParameters 展示实际发送给 SolidWorks 的建模字段映射（不含尚未创建的 TaskId），其中有效圈数n为已确认有效圈数，是否磨平为整数 1 或 0。solidworks_preview.titleBlockProperties 展示标题栏已确认材料纯牌号及单件重量（数字、kg、最多八位小数），缺失键独立省略，都缺失时为空对象；材料继续保留在技术要求中。SolidWorks 根据中径和线径计算外径、内径。材料缺失或待确认时仍可生成，但参数包省略 material 并在就绪状态中给出警告。未执行标准化时 standard_context 保持空值，参数包仍可用于生图；其他未就绪状态返回 409 和具体原因。"),
     ("POST", "/api/reviews/{job_id}/generation-template-match"): _operation("生图准备", "匹配 SolidWorks 生图模板", "根据图纸类型、必填字段、匹配规则和优先级返回模板候选；可指定 template_code，也可由后端自动选择。"),
     ("GET", "/api/generation-templates"): _operation("模板查询", "查询启用的生图模板", "返回当前启用的模板及匹配规则、参数映射和 Worker 能力要求；不返回已禁用版本。"),
     ("GET", "/api/generation-templates/{template_code}/versions"): _operation("模板查询", "查询模板的启用版本", "返回指定 template_code 当前所有启用版本；模板代码可包含斜杠。"),
@@ -123,7 +123,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
 
 class MaterialCatalogItem(BaseModel):
     id: str = Field(description="公司目录的稳定内部标识，不发送为SW materialCode。", examples=["4"])
-    display_name: str = Field(description="前端选择及确认后SW输出的完整材料名称。", examples=["SUS304 不锈钢"])
+    display_name: str = Field(description="前端选择及确认后SW输出的纯牌号名称，不含中文材料类别说明。", examples=["SUS304"])
     standard_value: str = Field(description="当前材料的标准牌号，用于匹配与计算。", examples=["SUS304"])
     aliases: list[str] = Field(description="明确配置的牌号格式或拼写别名，不代表近似材料等效。")
     shear_modulus_mpa: float = Field(gt=0, description="公司材料表固定参考剪切模量，单位MPa，不按温度、线径或热处理修正。", examples=[71500])
@@ -132,7 +132,7 @@ class MaterialCatalogItem(BaseModel):
 class MaterialCatalogResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    version: str = Field(description="材料目录版本。", examples=["company-compression-materials-v1"])
+    version: str = Field(description="材料目录版本。", examples=["company-compression-materials-v3"])
     source: str = Field(description="公司材料目录和剪切模量的来源说明。")
     items: list[MaterialCatalogItem] = Field(min_length=15, max_length=15, description="按公司材料表顺序提供的15种材料。")
 

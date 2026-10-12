@@ -22,7 +22,12 @@ def main() -> None:
     assert normalize_end_grinding("未磨") == "两端不磨削"
     assert normalize_end_type("闭口") == "两端并紧"
     assert normalize_end_type("开口") == "两端不并紧"
-    assert _derived_value("compression_spring", 10, end_type="两端不并紧") == 10
+    open_parameters = _parameters(10, end_type="两端不并紧")
+    assert derive_active_coils("compression_spring", open_parameters) == {}
+    open_parameters["end_grinding"] = {"value": "两端不磨削"}
+    assert derive_active_coils("compression_spring", open_parameters)["active_coils"]["value"] == 10
+    open_parameters["end_grinding"]["value"] = "两端磨削"
+    assert derive_active_coils("compression_spring", open_parameters)["active_coils"]["value"] == 9
     assert _derived_value("compression_spring", 10, end_type="两端并紧") == 8
     assert _derived_value("compression_spring", 10, end_type="两端并紧", support=1.5) == 7
     assert _derived_value("extension_spring", 10) == 10

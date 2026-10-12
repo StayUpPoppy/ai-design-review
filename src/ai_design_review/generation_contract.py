@@ -3,6 +3,8 @@ from __future__ import annotations
 from math import isfinite
 from typing import Any
 
+from .material_catalog import material_catalog_display_value
+
 from .end_conditions import (
     END_GRINDING_GROUND,
     END_GRINDING_NOT_GROUND,
@@ -90,6 +92,12 @@ def apply_generation_defaults(review: dict[str, Any]) -> list[str]:
         internal_field, internal_value = _default_internal_value(field, default)
         existing = parameters.get(internal_field)
         item = dict(existing) if isinstance(existing, dict) else {}
+        sources = item.get("source") or []
+        if not isinstance(sources, list):
+            sources = [sources]
+        # Preserve an explicitly cleared human value across saving/readiness.
+        if any(str(source).startswith("human") or source in ("manual", "manual_input") for source in sources):
+            continue
         item.update(
             {
                 "value": internal_value,
@@ -211,6 +219,8 @@ def export_generation_parameters(parameters: dict[str, Any]) -> dict[str, dict[s
             value = normalize_generation_value(field, item.get("value"))
         except ValueError:
             continue
+        if field == "material":
+            value = material_catalog_display_value(value)
         exported[field] = {
             "label": COMPRESSION_GENERATION_LABELS[field],
             "value": value,

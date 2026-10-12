@@ -103,7 +103,7 @@ function formulaSuggestion(overrides = {}) {
     suggested_tolerance_lower: null,
     unit: "mm",
     application_mode: "value",
-    rule_id: "FORMULA-SOLID-HEIGHT",
+    rule_id: "TEST-HEIGHT-VALUE",
     basis: "Hb=(n1+1.5)×dmax",
     source_fields: ["total_coils", "wire_diameter", "end_grinding"],
     based_on_revision: 7,
@@ -139,6 +139,9 @@ const paritySnapshot = {
   support_coils: null,
   total_coils: { value: 9, tolerance_upper: 0.25, tolerance_lower: -0.25 },
 };
+const upperReference = formulaSuggestion({rule_id:"FORMULA-SOLID-HEIGHT"});
+assert.equal(context.applyReasonablenessSuggestionValue(upperReference),false);
+assert.equal(context.state.review.spring_parameters.solid_height.value,35,"An upper reference cannot overwrite a parameter height");
 assert.equal(context.reasonablenessDependencyToken(paritySnapshot), "fnv1a32:26b145c2");
 
 const solid = formulaSuggestion();

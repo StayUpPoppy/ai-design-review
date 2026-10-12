@@ -1845,6 +1845,7 @@ function applyReasonablenessSuggestions(items, options = {}) {
 
 function applyReasonablenessSuggestionValue(item) {
   const target = String(item.target_field || "");
+  if (target === "solid_height" && (["GBT1239.2-SOLID", "FORMULA-SOLID-HEIGHT"].includes(item.rule_id) || item.metadata?.value_kind === "reference_limit")) return false;
   const loadTarget = parseLoadPointTarget(target);
   const mode = String(item.application_mode || "none");
   if (loadTarget) {
@@ -1885,7 +1886,7 @@ function applyReasonablenessSuggestionValue(item) {
     applied_at: new Date().toISOString(),
   };
   state.review.spring_parameters[target] = param;
-  confirmParam(param, target);
+  if (!applySolidHeightReferenceSuggestion(state.review, target, param, item)) confirmParam(param, target);
   if (target === "standard_no" && standardNumberSuggestionEligible(item, state.review)) {
     confirmStandardSelection();
   }
@@ -3133,6 +3134,7 @@ function reasonablenessSuggestionProposalMatches(left, right) {
 function applyReasonablenessSuggestionToReview(review, item) {
   const target = String(item?.target_field || "");
   const mode = String(item?.application_mode || "none");
+  if (target === "solid_height" && (["GBT1239.2-SOLID", "FORMULA-SOLID-HEIGHT"].includes(item?.rule_id) || item?.metadata?.value_kind === "reference_limit")) return false;
   const loadTarget = parseLoadPointTarget(target);
   const targetItem = reasonablenessSuggestionTargetItem(review, target);
   if (!targetItem || mode === "none") return false;
@@ -3170,6 +3172,7 @@ function applyReasonablenessSuggestionToReview(review, item) {
     confirmed_at: new Date().toISOString(),
     confirmation_source: "reasonableness_suggestion_applied",
   };
+  applySolidHeightReferenceSuggestion(review, target, targetItem, item);
   if (target === "standard_no") {
     review.standard_selection ||= {};
     review.standard_selection.human_confirmed = true;
@@ -3181,6 +3184,18 @@ function applyReasonablenessSuggestionToReview(review, item) {
       confirmation_source: "reasonableness_suggestion_applied",
     };
   }
+  return true;
+}
+
+function applySolidHeightReferenceSuggestion(review, field, param, suggestion) {
+  if (field !== "solid_height" || !(suggestion.rule_id === "GBT1239.2-SOLID" || suggestion.metadata?.value_kind === "reference_limit") || typeof CompressionDesignChecks === "undefined") return false;
+  const calculation = CompressionDesignChecks.calculateReferenceHeight(review.spring_parameters || {});
+  // Use current dependencies, never apply an outdated recommendation as an actual height.
+  Object.assign(param, { value_kind: "reference_limit", formula_calculation_kind: "solid_height", source: ["formula_calculation", "reference_limit_applied"], formula_recalculation_candidate: calculation });
+  if (calculation.value == null) Object.assign(param, { need_human_review: true, derived_value_stale: true, formula_recommendation_stale: true, formula_calculation_reason: calculation.reason });
+  else CompressionDesignChecks.applyCandidate(param);
+  delete param.confirmation_snapshot;
+  delete review.manual_confirmations?.[field];
   return true;
 }
 
@@ -3439,6 +3454,7 @@ function reasonablenessSeverityForField(review, field) {
 }
 
 function renderParameterTableHtml(review) {
+  prepareCompressionDesignChecks(review);
   const params = review.spring_parameters || {};
   const fieldGroups = getParameterFieldGroups(params, review);
   const confirmationPlan = buildSafeConfirmationPlan(review);
@@ -3471,7 +3487,7 @@ function renderParameterTableHtml(review) {
         <details class="advanced-parameters">
           <summary>
             <span>高级参数</span>
-            <small>${advancedRows.length} 项有识别值或标准化建议</small>
+            <small>${advancedRows.length} 项</small>
           </summary>
           <div class="data-table advanced-data-table">
             ${dataTableHeadHtml("参数", "数值", "公差")}
@@ -3595,6 +3611,7 @@ function dataTableHeadHtml(nameLabel, primaryLabel, secondaryLabel) {
 function renderCompressionDesignCheckHtml(review) {
   if (!isCompressionSpringReview(review)) return "";
   const values = compressionDesignCheckValues(review.spring_parameters || {});
+  const checks = prepareCompressionDesignChecks(review);
   return `
     <section class="compression-design-check" data-kind="compression-design-check">
       <div class="compression-design-check-head">
@@ -3602,11 +3619,62 @@ function renderCompressionDesignCheckHtml(review) {
         <small>自动计算</small>
       </div>
       <div class="compression-design-check-grid">
-        ${compressionDesignCheckMetricHtml("旋绕比 C", "spring_index", values.spring_index, "C = D / d", values.spring_index_missing)}
-        ${compressionDesignCheckMetricHtml("细长比 b", "slenderness_ratio", values.slenderness_ratio, "b = H0 / D", values.slenderness_ratio_missing)}
+        ${checks ? compressionDesignResultHtml("旋绕比 C", "spring_index", checks.metrics.spring_index) : compressionDesignCheckMetricHtml("旋绕比 C", "spring_index", values.spring_index, "C = D / d", values.spring_index_missing)}
+        ${checks ? compressionDesignResultHtml("细长比 b", "slenderness_ratio", checks.metrics.slenderness_ratio) : compressionDesignCheckMetricHtml("细长比 b", "slenderness_ratio", values.slenderness_ratio, "b = H0 / D", values.slenderness_ratio_missing)}
+        ${compressionDesignResultHtml("理论刚度 P′", "theoretical_spring_rate", checks?.metrics.theoretical_spring_rate)}
+        ${compressionDesignResultHtml("压并应力 τ_b", "solid_stress", checks?.metrics.solid_stress)}
+        ${compressionDesignResultHtml("单件重量 Q", "unit_mass", checks?.metrics.unit_mass)}
       </div>
+      <div data-role="work-stresses">${compressionWorkStressHtml(checks)}</div>
+      <details class="compression-design-basis"><summary>计算依据</summary><div data-role="calculation-details">${compressionCalculationDetailsHtml(checks)}</div></details>
     </section>
   `;
+}
+
+function prepareCompressionDesignChecks(review) {
+  if (typeof CompressionDesignChecks === "undefined" || !isCompressionSpringReview(review)) return null;
+  CompressionDesignChecks.applyPitch(review);
+  const checks = CompressionDesignChecks.calculate(review.spring_parameters || {}, review.spring_features || {}, state.materialCatalog || {});
+  review.design_checks = checks;
+  return checks;
+}
+
+function compressionDesignResultText(metric, result) {
+  if (result?.value == null) return "--";
+  const value = metric === "unit_mass" ? String(Number(result.value.toFixed(8))) : formatCompactNumber(result.value);
+  return `${metric === "reference_solid_height_limit" ? "Hb ≤ " : ""}${value}${result.unit ? ` ${result.unit}` : ""}`;
+}
+
+function compressionDesignReasonText(result) {
+  let text = result?.value == null ? result?.reason || "等待计算参数" : `${result.basis} · ${result.formula}`;
+  if (result?.value != null && Object.prototype.hasOwnProperty.call(result, "height_source") && Object.prototype.hasOwnProperty.call(result, "force_n")) {
+    text = `${result.basis}${result.force_n != null ? ` · Pb=${formatCompactNumber(result.force_n)} N` : ""}${result.inputs?.solid_height_mm != null ? ` · Hb=${formatCompactNumber(result.inputs.solid_height_mm)} mm` : ""}${result.force_n != null ? ` · ${result.formula}` : ""}`;
+  }
+  return text.replace(/\b[a-z]+(?:_[a-z]+)*\b/g, (field) => FIELD_LABELS[field] || field);
+}
+
+function compressionDesignResultHtml(label, metric, result) {
+  return `<div class="compression-design-check-metric"><span>${escapeHtml(label)}</span>
+    <strong data-role="design-check-value" data-metric="${escapeHtml(metric)}">${escapeHtml(compressionDesignResultText(metric, result))}</strong>
+    <small data-role="design-check-basis" data-metric="${escapeHtml(metric)}" title="${escapeHtml(compressionDesignReasonText(result))}">${escapeHtml(compressionDesignReasonText(result))}</small></div>`;
+}
+
+function compressionWorkStressHtml(checks) {
+  const points = checks?.work_stresses || [];
+  if (!points.length) return '<small class="compression-work-empty">工作应力：待补充载荷测试点</small>';
+  return `<div class="compression-work-stress-list">${points.map((point) =>
+    `<div class="compression-work-stress" data-load-point-id="${escapeHtml(point.load_point_id || "")}">
+      <span>${escapeHtml(point.label || "未编号")} 工作应力</span><strong>${escapeHtml(compressionDesignResultText("work_stress", point))}</strong>
+      <small>${escapeHtml(compressionDesignReasonText(point))}${point.force_n != null ? ` · P=${escapeHtml(formatCompactNumber(point.force_n))} N` : ""}</small>
+    </div>`).join("")}</div>`;
+}
+
+function compressionCalculationDetailsHtml(checks) {
+  const properties = checks?.material_properties;
+  const material = properties ? `材料：${properties.display_name}；G=${properties.shear_modulus_mpa} MPa；ρ=${properties.density_g_cm3 ?? "--"} g/cm³` : "材料属性待加载或待选择";
+  const rows = [["曲度系数 K", "curvature_factor"], ["螺旋角 α", "helix_angle"], ["展开长度 L", "wire_length"], ["压并高度上限参考（含公差）", "reference_solid_height_limit"], ["名义压并高度", "nominal_solid_height"], ["应力采用的压并高度", "solid_height_used"]];
+  const rate = checks?.metrics.theoretical_spring_rate;
+  return `<p>${escapeHtml(material)}</p><p>理论刚度 P′：${escapeHtml(compressionDesignResultText("theoretical_spring_rate", rate))} · ${escapeHtml(compressionDesignReasonText(rate))}</p><div class="compression-design-check-grid">${rows.map(([label, metric]) => compressionDesignResultHtml(label, metric, checks?.metrics[metric])).join("")}</div>`;
 }
 
 function compressionDesignCheckMetricHtml(label, metric, value, formula, missingFields) {
@@ -3623,27 +3691,27 @@ function compressionDesignCheckMetricHtml(label, metric, value, formula, missing
   `;
 }
 
-function compressionDesignCheckValues(params, overrides = {}) {
-  const valueFor = (field) => {
-    const raw = Object.prototype.hasOwnProperty.call(overrides, field)
-      ? overrides[field]
-      : params[field]?.value;
-    if (raw == null || String(raw).trim() === "") return null;
-    const numeric = Number(raw);
-    return Number.isFinite(numeric) ? numeric : null;
-  };
+function compressionDesignCheckValues(params) {
+  const valueFor = (field) => currentPositiveDimensionValue(params, field);
   const wire = valueFor("wire_diameter");
   const outer = valueFor("outer_diameter");
   const inner = valueFor("inner_diameter");
   const recognizedMean = valueFor("mean_diameter");
   const freeLength = valueFor("free_length");
-  const mean = recognizedMean ?? (wire != null && outer != null ? outer - wire : null) ?? (wire != null && inner != null ? inner + wire : null);
+  const mean = recognizedMean
+    ?? positiveDimensionNumber(wire != null && outer != null ? outer - wire : null)
+    ?? positiveDimensionNumber(wire != null && inner != null ? inner + wire : null);
   const meanMissing = mean == null ? ["mean_diameter", "outer_diameter", "inner_diameter", "wire_diameter"] : [];
-  const springIndex = mean != null && wire != null && wire !== 0 ? mean / wire : null;
-  const slendernessRatio = mean != null && mean !== 0 && freeLength != null ? freeLength / mean : null;
+  const ratio = (numerator, denominator) => {
+    if (numerator == null || denominator == null) return null;
+    const value = numerator / denominator;
+    return Number.isFinite(value) ? value : null;
+  };
+  const springIndex = ratio(mean, wire);
+  const slendernessRatio = ratio(freeLength, mean);
   return {
     spring_index: springIndex,
-    spring_index_missing: springIndex == null ? (wire == null || wire === 0 ? ["wire_diameter"] : meanMissing) : [],
+    spring_index_missing: springIndex == null ? (wire == null ? ["wire_diameter"] : meanMissing) : [],
     slenderness_ratio: slendernessRatio,
     slenderness_ratio_missing: slendernessRatio == null
       ? (freeLength == null ? ["free_length"] : meanMissing)
@@ -3651,24 +3719,72 @@ function compressionDesignCheckValues(params, overrides = {}) {
   };
 }
 
-function designCheckInputOverrides(root) {
-  const overrides = {};
+function syncDependentFormulaParameterRows(root, review, editedField) {
+  if (typeof CompressionDesignChecks !== "undefined") prepareCompressionDesignChecks(review);
   root.querySelectorAll('[data-kind="param"][data-field]').forEach((row) => {
-    const input = row.querySelector('[data-role="value"]');
-    if (input) overrides[row.dataset.field] = input.value;
+    const field = row.dataset.field;
+    const param = review.spring_parameters?.[field];
+    if (!param) return;
+    if (field !== editedField && isFormulaCalculatedParameter(param)) {
+      const input = row.querySelector('[data-role="value"]');
+      if (input && (typeof document === "undefined" || input !== document.activeElement)) input.value = String(param.value ?? "");
+    }
+    syncFormulaParameterPresentation(row, field, param);
+    syncBubbleValue(field, param.value);
+    syncConfirmationControl(row, param, { kind: "parameter", field, review });
   });
-  return overrides;
+}
+
+function formulaCandidateHtml(param) {
+  if (!param?.derived_value_stale && !param?.formula_recommendation_stale) return "";
+  const candidate = param.formula_recalculation_candidate;
+  const value = candidate?.value;
+  return `<small>原确认值已失效：${escapeHtml(candidate?.reason || param.formula_calculation_reason || "计算依据已变化，请核对")}</small>${Number.isFinite(value) && value > 0 ? `<span>新候选值：${escapeHtml(formatCompactNumber(value))} ${escapeHtml(candidate.unit || "")} <button type="button" data-role="apply-formula-candidate">应用新候选值</button>（应用后需重新确认）</span>` : ""}`;
+}
+
+function syncFormulaParameterPresentation(row, field, param) {
+  // Replace only labels/notes; the user's active input retains its caret.
+  if (!["active_coils", "support_coils", "pitch", "solid_height"].includes(field)) return;
+  const template = document.createElement("div");
+  template.innerHTML = parameterRowHtml(field, param, getFieldMeta(field, state.review));
+  const label = row.querySelector(".data-label"), updated = template.querySelector(".data-label");
+  if (label && updated) {
+    const title = label.querySelector("strong"), newTitle = updated.querySelector("strong");
+    if (title && newTitle) { title.innerHTML = newTitle.innerHTML; title.title = newTitle.title; }
+    const note = label.querySelector(":scope > small"), newNote = updated.querySelector(":scope > small");
+    if (note && newNote) { note.textContent = newNote.textContent; note.title = newNote.title; }
+    const badges = label.querySelector(".parameter-badges"), newBadges = updated.querySelector(".parameter-badges");
+    if (badges && newBadges) badges.replaceWith(newBadges);
+    else if (newBadges) label.append(newBadges);
+    else badges?.remove();
+  }
+  const candidate = row.querySelector('[data-role="formula-candidate"]');
+  if (candidate) candidate.innerHTML = formulaCandidateHtml(param);
 }
 
 function refreshCompressionDesignChecks(root, review) {
   const containers = root.querySelectorAll('[data-kind="compression-design-check"]');
   if (!containers.length) return;
-  const values = compressionDesignCheckValues(review.spring_parameters || {}, designCheckInputOverrides(root));
+  const values = compressionDesignCheckValues(review.spring_parameters || {});
+  const checks = typeof CompressionDesignChecks !== "undefined" ? prepareCompressionDesignChecks(review) : null;
   const metrics = {
     spring_index: { value: values.spring_index, formula: "C = D / d", missing: values.spring_index_missing },
     slenderness_ratio: { value: values.slenderness_ratio, formula: "b = H0 / D", missing: values.slenderness_ratio_missing },
   };
   containers.forEach((container) => {
+    if (checks) {
+      Object.entries(checks.metrics).forEach(([metric, result]) => {
+        const valueNode = container.querySelector(`[data-role="design-check-value"][data-metric="${metric}"]`);
+        const basisNode = container.querySelector(`[data-role="design-check-basis"][data-metric="${metric}"]`);
+        if (valueNode) valueNode.textContent = compressionDesignResultText(metric, result);
+        if (basisNode) { basisNode.textContent = compressionDesignReasonText(result); basisNode.title = basisNode.textContent; }
+      });
+      const work = container.querySelector('[data-role="work-stresses"]');
+      if (work) work.innerHTML = compressionWorkStressHtml(checks);
+      const details = container.querySelector('[data-role="calculation-details"]');
+      if (details) details.innerHTML = compressionCalculationDetailsHtml(checks);
+      return;
+    }
     Object.entries(metrics).forEach(([metric, item]) => {
       const value = container.querySelector(`[data-role="design-check-value"][data-metric="${metric}"]`);
       const basis = container.querySelector(`[data-role="design-check-basis"][data-metric="${metric}"]`);
@@ -3725,6 +3841,7 @@ function shouldShowSolidHeightCore(param) {
 }
 
 function shouldShowAdvancedParameter(field, param, review) {
+  if (["pitch", "support_coils"].includes(field)) return true;
   if (SPECIALIZED_ACCURACY_PARAMETER_FIELDS.has(field)) {
     return hasExplicitSpecializedAccuracyContent(param);
   }
@@ -3842,15 +3959,21 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
     }
   }
   if (field === "solid_height") {
-    if (sources.includes("formula_calculation") && !sources.includes("human_edited")) {
-      label = `${label}（参考）`;
+    label = "压并高度";
+    const kind = typeof CompressionDesignChecks !== "undefined" ? CompressionDesignChecks.solidHeightKind(param) : param.value_kind;
+    if (kind === "nominal_estimate") {
+      badges.push(param.derived_value_stale || param.formula_recommendation_stale
+        ? "名义估算 / 待更新"
+        : (param.need_human_review ? "名义估算 / 待确认" : "名义估算已确认"));
+    } else if (kind === "reference_limit") {
       badges.push(param.formula_recommendation_stale
         ? "公式参考待更新"
         : (param.need_human_review ? "公式参考 / 待确认" : "公式参考已确认"));
+      if (param.value != null) badges.push(`Hb ≤ ${formatCompactNumber(Number(param.value))} ${param.unit || "mm"}`);
     } else if (sources.some((source) => source.startsWith("human") || source === "manual")) {
       badges.push("人工值");
     } else if (param.value != null && param.value !== "") {
-      badges.push("图纸值");
+      badges.push(kind === "unknown" ? "用途不明 / 请核对" : "图纸值");
     }
   }
   const reasonablenessSeverity = reasonablenessSeverityForField(state.review, field);
@@ -3884,6 +4007,7 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
       ${confirmationButtonHtml(param, { kind: "parameter", field, review: state.review })}
       ${roughnessCandidates}
       ${materialNotes}
+      <div class="parameter-formula-candidate" data-role="formula-candidate">${["active_coils", "support_coils", "pitch", "solid_height"].includes(field) && (param.derived_value_stale || param.formula_recommendation_stale) ? formulaCandidateHtml(param) : ""}</div>
     </div>
   `;
 }
@@ -3926,6 +4050,8 @@ function loadPointRowHtml(point, index, review = state.review) {
     <div class="data-row load-point${reasonablenessSeverity ? ` parameter-risk-${escapeHtml(reasonablenessSeverity)}` : ""}" data-kind="load_point" data-index="${index}" data-load-point-id="${escapeHtml(point.load_point_id || "")}">
       <div class="data-label">
         <strong title="${escapeHtml(label)}">${escapeHtml(label)}</strong>
+        <button type="button" class="load-point-rename" data-role="rename-load-point" aria-label="修改${escapeHtml(label)}编号">修改编号</button>
+        <input hidden data-role="label" aria-label="测试点编号" value="${escapeHtml(point.label || "")}">
         ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
       </div>
       <label class="data-input-cell data-primary">
@@ -3972,7 +4098,7 @@ function renderLoadPointSectionHtml(review, rows) {
       <form class="load-point-create" data-kind="load_point_create" hidden>
         <label>编号<input data-role="new-load-label" placeholder="例如：F1"></label>
         <label>${parameterUnitLabelHtml(parameterUnitLabel("height", "高度", {}, { unit: "mm" }))}<input data-role="new-load-height" inputmode="decimal" placeholder="例如：25"></label>
-        <label>${parameterUnitLabelHtml(parameterUnitLabel("force", "力值", {}, { unit: "N" }))}<input data-role="new-load-force" inputmode="decimal" placeholder="例如：100"></label>
+        <label>${parameterUnitLabelHtml(parameterUnitLabel("force", "力值", {}, { unit: "N" }))}<input data-role="new-load-force" inputmode="decimal" placeholder="可留空，仅估算应力"></label>
         <label>公差（可选）<input data-role="new-load-tolerance" placeholder="例如：±6 或 +6/-6" aria-label="公差（可选，绝对值单位 N，百分比单位 %）"></label>
         <small data-role="load-point-create-error" aria-live="polite"></small>
         <div><button type="submit">添加</button><button type="button" class="secondary-action" data-action="cancel-load-point-create">取消</button></div>
@@ -4096,6 +4222,9 @@ function confirmationControlState(item, options = {}) {
   const kind = options.kind || "parameter";
   const field = options.field || "";
   const review = options.review || state.review;
+  if (kind === "parameter" && ["active_coils", "support_coils", "pitch", "solid_height"].includes(field) && (item?.derived_value_stale || item?.formula_recommendation_stale)) {
+    return { state: "invalid", label: "原值已失效", disabled: true, reason: "请应用新候选值后重新确认，或填写有效的人工值。" };
+  }
   if (kind === "technical") {
     const persistence = parameterPersistenceState(field);
     if (persistence === "failed") return { state: "save_failed", label: "保存失败·重试保存", disabled: false, reason: "当前文本和译文仍保留，请重试保存。" };
@@ -4522,6 +4651,11 @@ function applyGenerationDefaults(review) {
   Object.entries(COMPRESSION_GENERATION_DEFAULTS).forEach(([field, value]) => {
     if (generationSourceParameter(review.spring_parameters, field)) return;
     const internalField = field === "end_coils_closed" ? "end_type" : field;
+    const existing = review.spring_parameters[internalField];
+    const sources = Array.isArray(existing?.source) ? existing.source : [existing?.source];
+    // A deliberately cleared input is missing, rather than a new default
+    // candidate. Replacing it also detaches the editor's parameter reference.
+    if (sources.some((source) => String(source || "").startsWith("human") || source === "manual" || source === "manual_input")) return;
     const internalValue = field === "end_coils_closed"
       ? "两端并紧"
       : field === "end_grinding"
@@ -4646,7 +4780,7 @@ function assessGenerationReadiness(review) {
     if (canonical) seenLoadPointLabels.add(canonical);
     if (duplicate) {
       pending.push(generationIssue(loadPointField(point, index), `载荷测试点编号“${label}”重复，请修改或删除重复项。`, `载荷测试点 ${label}`));
-    } else if (!isValidLoadPoint(point)) {
+    } else if (!isValidLoadPoint(point) || !SolidWorksExport.exportLoadPoint(point)) {
       pending.push(generationIssue(loadPointField(point, index), `载荷测试点“${label || index + 1}”的编号、高度和力值必须完整且有效。`, `载荷测试点 ${label || index + 1}`));
     } else if (point.need_human_review !== false) {
       pending.push(generationIssue(loadPointField(point, index), `载荷测试点“${label}”尚未人工确认。`, `载荷测试点 ${label}`));
@@ -6281,15 +6415,39 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         if (!applyMaterialSelection(param, event.target.value)) return;
       } else {
         param.value = parseValue(event.target.value, param.value);
+        if (field === "solid_height") {
+          param.value_kind = "input_height";
+          param.source = sourceValues(param.source).filter((source) => source !== "reference_limit_applied");
+        }
       }
       if (field === "material" && isCompressionSpringReview(review)) markParamEdited(param, field);
       else applyEditedConfirmationState(param, field);
+      syncDependentFormulaParameterRows(root, review, field);
       syncBubbleValue(field, param.value);
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
       refreshCompressionDesignChecks(root, review);
       scheduleParameterReasonablenessRefresh(messageId);
     };
     valueInput.addEventListener("input", applyValueDraft);
+    row.addEventListener("click", (event) => {
+      if (!event.target.closest('[data-role="apply-formula-candidate"]')) return;
+      activateReviewContext(messageId);
+      const before = parameterAuditState(param);
+      if (!CompressionDesignChecks.applyCandidate(param)) return;
+      delete param.confirmation_snapshot;
+      state.reviewEditSerial += 1;
+      state.reviewDraftFields.add(field);
+      revokeManualConfirmations(field, "formula_candidate_applied");
+      invalidateReasonablenessSuggestions(field);
+      invalidateStandardizationResults(field);
+      markDependentFormulaParametersPending(field);
+      valueInput.value = String(param.value ?? "");
+      syncDependentFormulaParameterRows(root, review, null);
+      refreshCompressionDesignChecks(root, review);
+      queueReviewAuditEvent({ event_type: "parameter_value_updated", target_field: field, before_state: before, after_state: parameterAuditState(param), metadata: { source: "formula_candidate_applied" } });
+      scheduleParameterReasonablenessRefresh(messageId);
+      refreshBulkConfirmationFollowupAfterLocalChange(messageId);
+    });
     valueInput.addEventListener("change", (event) => {
       activateReviewContext(messageId);
       if (field === "accuracy_grade") {
@@ -6334,7 +6492,9 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       rememberConfirmedSnapshot(param);
       applyTolerance(param, event.target.value);
       applyEditedConfirmationState(param, field);
+      syncDependentFormulaParameterRows(root, review, field);
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
+      refreshCompressionDesignChecks(root, review);
       scheduleParameterReasonablenessRefresh(messageId);
     };
     toleranceInput.addEventListener("input", applyToleranceDraft);
@@ -6379,6 +6539,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       });
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
       if (field === "surface_roughness_ra") row.querySelector(".roughness-candidates")?.remove();
+      refreshCompressionDesignChecks(root, review);
       if (field === "accuracy_grade") syncAccuracyGradeControls(root, param);
       scheduleParameterReasonablenessRefresh(messageId);
       refreshBulkConfirmationFollowupAfterLocalChange(messageId);
@@ -6410,7 +6571,8 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     ensureLoadPointIds(review);
     const label = normalizeLoadPointLabel(createLoadPointForm.querySelector('[data-role="new-load-label"]')?.value);
     const height = Number(createLoadPointForm.querySelector('[data-role="new-load-height"]')?.value);
-    const force = Number(createLoadPointForm.querySelector('[data-role="new-load-force"]')?.value);
+    const forceText = createLoadPointForm.querySelector('[data-role="new-load-force"]')?.value.trim() || "";
+    const force = forceText ? Number(forceText) : null;
     const toleranceInput = createLoadPointForm.querySelector('[data-role="new-load-tolerance"]')?.value || "";
     const error = createLoadPointForm.querySelector('[data-role="load-point-create-error"]');
     if (!label) {
@@ -6421,7 +6583,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       if (error) error.textContent = `测试点编号“${label}”已经存在。`;
       return;
     }
-    if (!Number.isFinite(height) || height <= 0 || !Number.isFinite(force) || force < 0) {
+    if (!Number.isFinite(height) || height <= 0 || force != null && (!Number.isFinite(force) || force < 0)) {
       if (error) error.textContent = "高度必须大于 0，力值不能为负数。";
       return;
     }
@@ -6467,7 +6629,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     const pointIndex = (review.spring_parameters.load_points || []).findIndex((item) => String(item?.load_point_id || "") === pointId);
     const point = review.spring_parameters.load_points[pointIndex];
     if (!point) return;
-    const pointField = loadPointField(point, pointIndex);
+    let pointField = loadPointField(point, pointIndex);
     const confirmationField = loadPointConfirmationKey(point, pointIndex);
     const bindLoadPointDraft = (input, applyValue, eventType) => {
       let beforeState = null;
@@ -6478,6 +6640,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         applyValue(event);
         applyEditedConfirmationState(point, pointField, { confirmationField });
         syncConfirmationControl(row, point, { kind: "load_point", field: pointField, review });
+        refreshCompressionDesignChecks(root, review);
         scheduleParameterReasonablenessRefresh(messageId);
       };
       input.addEventListener("input", applyDraft);
@@ -6497,6 +6660,18 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     }, "load_point_value_updated");
     bindLoadPointDraft(row.querySelector('[data-role="force"]'), (event) => {
       point.force = parseValue(event.target.value, point.force);
+    }, "load_point_value_updated");
+    const labelInput = row.querySelector('[data-role="label"]');
+    row.querySelector('[data-role="rename-load-point"]')?.addEventListener("click", () => {
+      labelInput.hidden = false;
+      labelInput.focus();
+    });
+    if (labelInput) bindLoadPointDraft(labelInput, (event) => {
+      invalidateReasonablenessSuggestions(pointField);
+      invalidateStandardizationResults(pointField);
+      point.label = normalizeLoadPointLabel(event.target.value);
+      pointField = loadPointField(point, pointIndex);
+      row.querySelector(".data-label strong").textContent = point.label || "未编号";
     }, "load_point_value_updated");
     bindLoadPointDraft(row.querySelector('[data-role="load-tolerance"]'), (event) => {
       applyLoadPointTolerance(point, event.target.value);
@@ -7021,6 +7196,11 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
 }
 
 function applyStandardizationResult(item) {
+  if (item?.rule_id === "GBT1239.2-SOLID" || item?.metadata?.value_kind === "reference_limit") {
+    item.status = "human_confirmed";
+    item.need_human_review = false;
+    return true;
+  }
   if (!item) return false;
   if (item.metadata?.target_field_valid === false) return false;
   if (item.metadata?.target_field_error) return false;
@@ -7055,7 +7235,7 @@ function applyStandardizationResult(item) {
       param.unit = item.unit;
     }
     state.review.spring_parameters[target] = param;
-    confirmParam(param, `standardization_${target}`);
+    if (!applySolidHeightReferenceSuggestion(state.review, target, param, item)) confirmParam(param, `standardization_${target}`);
     syncBubbleValue(target, param.value);
   }
   item.status = "human_confirmed";
@@ -8149,6 +8329,7 @@ function safeConfirmableReviewItems(review) {
 }
 
 function bulkParameterInvalidReason(field, param) {
+  if (param?.derived_value_stale || param?.formula_recommendation_stale) return "公式结果已过期，请应用新候选值后确认";
   if (param?.value == null || param.value === "") return "参数值缺失";
   try {
     if (COMPRESSION_GENERATION_CORE_FIELDS.includes(field)) generationContractValue(field, param.value);
@@ -8742,7 +8923,7 @@ async function ensureMaterialCatalog(options = {}) {
 }
 
 function materialOptionsHtml(param) {
-  const selected = String(param?.value ?? "");
+  const selected = materialDisplayValue(param?.value);
   const items = state.materialCatalog.items || [];
   const exact = items.some((item) => item.display_name === selected);
   const legacy = selected && !exact ? `<option value="${escapeHtml(selected)}" selected disabled>原有材料：${escapeHtml(selected)}</option>` : "";
@@ -8750,12 +8931,16 @@ function materialOptionsHtml(param) {
     `<option value="${escapeHtml(item.display_name)}"${item.display_name === selected ? " selected" : ""}>${escapeHtml(item.display_name)}</option>`).join("")}`;
 }
 
+function materialDisplayValue(value) {
+  return CompressionDesignChecks.materialDisplayValue(value, state.materialCatalog);
+}
+
 function applyMaterialSelection(param, value) {
   if (state.materialCatalog.status !== "ready") return false;
   const selected = String(value ?? "");
   const entry = state.materialCatalog.items.find((item) => item.display_name === selected);
   if (selected && !entry) return false;
-  if (String(param?.value ?? "") === selected) return false;
+  if (materialDisplayValue(param?.value) === selected) return false;
   param.value = entry?.display_name || "";
   param.standard_value = entry?.standard_value || "";
   param.material_id = entry?.id || null;
@@ -8821,7 +9006,7 @@ function bindMaterialCatalogRetry(row) {
 
 function refreshMaterialSelectionRow(row, param) {
   const select = row.querySelector("[data-material-selector]");
-  if (select) select.title = String(param?.value || "请选择材料");
+  if (select) select.title = materialDisplayValue(param?.value) || "请选择材料";
   const notes = row.querySelector(".material-selection-notes");
   if (notes) {
     const body = materialSelectionNotesBodyHtml(param);
@@ -8838,14 +9023,21 @@ function refreshMaterialCatalogControls() {
     if (!select || !param) return;
     select.innerHTML = materialOptionsHtml(param);
     select.disabled = state.materialCatalog.status !== "ready";
-    select.title = String(param.value || "请选择材料");
+    select.title = materialDisplayValue(param.value) || "请选择材料";
     refreshMaterialSelectionRow(row, param);
   });
+  if (typeof CompressionDesignChecks !== "undefined" && state.review) {
+    document.querySelectorAll('[data-kind="compression-design-check"]').forEach((container) => {
+      const messageId = container.closest("[data-review-message-id]")?.dataset.reviewMessageId || state.activeReviewMessageId;
+      const review = getReviewContext(messageId)?.review || state.review;
+      refreshCompressionDesignChecks({ querySelectorAll: () => [container] }, review);
+    });
+  }
 }
 
 function parameterValueControlHtml(field, param, label) {
   if (field === "material" && isCompressionSpringReview(state.review)) {
-    return `<select data-role="value" data-material-selector aria-label="${escapeHtml(label)}" title="${escapeHtml(param?.value || "请选择材料")}"${state.materialCatalog.status === "ready" ? "" : " disabled"}>
+    return `<select data-role="value" data-material-selector aria-label="${escapeHtml(label)}" title="${escapeHtml(materialDisplayValue(param?.value) || "请选择材料")}"${state.materialCatalog.status === "ready" ? "" : " disabled"}>
       ${materialOptionsHtml(param)}
     </select>`;
   }
@@ -10577,6 +10769,7 @@ function confirmationSnapshotFor(item) {
     value: item.value ?? null,
     tolerance_upper: item.tolerance_upper ?? null,
     tolerance_lower: item.tolerance_lower ?? null,
+    ...(item.value_kind ? { value_kind: item.value_kind } : {}),
   };
 }
 
@@ -10609,6 +10802,9 @@ function applyEditedConfirmationState(item, field, options = {}) {
     state.reviewEditSerial += 1;
     state.reviewDraftFields.delete(field);
     restoreSnapshotConfirmation(item, confirmationField);
+    if (!options.skipDependentInvalidation && !field.startsWith("load_points.") && !field.startsWith("technical_requirements.")) {
+      markDependentFormulaParametersPending(field);
+    }
     return "restored";
   }
   markParamEdited(item, field, options);
@@ -10622,45 +10818,129 @@ function confirmationAuditEventType(item, field, review = state.review) {
 
 function markDependentFormulaParametersPending(field) {
   const parameters = state.review?.spring_parameters || {};
-  Object.entries(parameters).forEach(([targetField, target]) => {
-    if (targetField === field || !target || typeof target !== "object" || Array.isArray(target)) return;
-    const sourceFields = Array.isArray(target.source_fields) ? target.source_fields : [];
-    const isCalculated = sourceValues(target.source).some((source) => source === "formula_calculation" || source === "derived");
-    if (!isCalculated || !sourceFields.includes(field)) return;
-    if (target.need_human_review === false || sourceValues(target.source).some((source) => source.startsWith("human"))) {
-      target.formula_recommendation_stale = true;
-      state.review.derived_parameters_stale = true;
-      return;
+  const affected = new Set();
+  const pending = new Set();
+  const changedSources = new Set([field]);
+  // Discover downstream calculations without crossing a protected human value.
+  let discovered = true;
+  while (discovered) {
+    discovered = false;
+    Object.entries(parameters).forEach(([targetField, target]) => {
+      if (targetField === field || affected.has(targetField) || !isFormulaCalculatedParameter(target)) return;
+      const sourceFields = Array.isArray(target.source_fields) ? target.source_fields : [];
+      if (!sourceFields.some((source) => changedSources.has(source))) return;
+      affected.add(targetField);
+      if (target.need_human_review === false || sourceValues(target.source).some((source) => source.startsWith("human") || source === "manual" || source === "manual_input")) {
+        target.formula_recommendation_stale = true;
+        state.review.derived_parameters_stale = true;
+        return;
+      }
+      pending.add(targetField);
+      changedSources.add(targetField);
+      discovered = true;
+    });
+  }
+
+  const finish = (targetField, recalculated) => {
+    const target = parameters[targetField];
+    target.derived_value_stale = !recalculated;
+    if (["wire_diameter", "mean_diameter", "outer_diameter", "inner_diameter"].includes(targetField)) {
+      target.formula_calculation_status = recalculated ? "calculated" : "missing_inputs";
     }
-    rememberConfirmedSnapshot(target);
-    const recalculated = recalculateKnownDependentParameter(targetField, target, parameters);
+    if (recalculated) delete target.formula_recommendation_stale;
+    state.review.derived_parameters_stale = true;
+    invalidateReasonablenessSuggestions(targetField);
+    invalidateStandardizationResults(targetField);
+    syncBubbleValue(targetField, target.value);
     if (recalculated && confirmationSnapshotMatches(target)) {
       restoreSnapshotConfirmation(target, targetField);
       return;
     }
     target.need_human_review = true;
     target.source = Array.from(new Set(["derived_recalculation", ...sourceValues(target.source)]));
-    target.derived_value_stale = !recalculated;
     revokeManualConfirmations(targetField, "source_parameter_edited");
-  });
+  };
+
+  // Update sources before their consumers. Unsortable nodes include cycles and
+  // their descendants; keep the recorded value but exclude it from calculations.
+  while (pending.size) {
+    const ready = [...pending].filter((targetField) => (
+      !(parameters[targetField].source_fields || []).some((source) => pending.has(source))
+    ));
+    if (!ready.length) {
+      pending.forEach((targetField) => finish(targetField, false));
+      break;
+    }
+    ready.forEach((targetField) => {
+      pending.delete(targetField);
+      const target = parameters[targetField];
+      rememberConfirmedSnapshot(target);
+      finish(targetField, recalculateKnownDependentParameter(targetField, target, parameters));
+    });
+  }
+  return [...affected];
+}
+
+function isFormulaCalculatedParameter(param) {
+  return param && typeof param === "object" && !Array.isArray(param)
+    && sourceValues(param.source).some((source) => ["formula_calculation", "derived", "company_active_coil_rule"].includes(source));
+}
+
+function positiveDimensionNumber(value) {
+  if (value == null || typeof value === "boolean" || String(value).trim() === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function currentPositiveDimensionValue(parameters, field) {
+  const param = parameters[field];
+  return param?.derived_value_stale ? null : positiveDimensionNumber(param?.value);
 }
 
 function recalculateKnownDependentParameter(field, target, parameters) {
-  const wire = Number(parameters.wire_diameter?.value);
-  const mean = Number(parameters.mean_diameter?.value);
-  const outer = Number(parameters.outer_diameter?.value);
-  const inner = Number(parameters.inner_diameter?.value);
-  let value = null;
-  if (field === "mean_diameter" && Number.isFinite(wire)) {
-    if (target.source_fields?.includes("outer_diameter") && Number.isFinite(outer)) value = outer - wire;
-    else if (target.source_fields?.includes("inner_diameter") && Number.isFinite(inner)) value = inner + wire;
-  } else if (field === "outer_diameter" && Number.isFinite(wire) && Number.isFinite(mean)) {
-    value = mean + wire;
-  } else if (field === "inner_diameter" && Number.isFinite(wire) && Number.isFinite(mean)) {
-    value = mean - wire;
+  if (field === "support_coils" && target.formula_calculation_kind === "support_coils" && typeof CompressionDesignChecks !== "undefined") {
+    const calculated = CompressionDesignChecks.calculateSupportCoils(parameters);
+    if (calculated.value == null) return false;
+    target.value = Number(calculated.value.toFixed(4));
+    target.formula_calculation_inputs = calculated.inputs;
+    target.formula_calculation_reason = "";
+    target.formula_calculation_status = "calculated";
+    return true;
   }
-  if (!Number.isFinite(value)) return false;
-  target.value = Number(value.toFixed(3));
+  if (field === "pitch" && target.formula_calculation_kind === "pitch" && typeof CompressionDesignChecks !== "undefined") {
+    const calculated = CompressionDesignChecks.calculatePitch(parameters, state.review?.spring_features || {});
+    if (calculated.value == null) return false;
+    target.value = Number(calculated.value.toFixed(4));
+    target.formula_calculation_inputs = calculated.inputs;
+    target.formula_calculation_reason = "";
+    target.formula_calculation_status = "calculated";
+    return true;
+  }
+  const sourceFields = Array.isArray(target.source_fields) ? target.source_fields : [];
+  if (!sourceFields.length || sourceFields.some((source) => currentPositiveDimensionValue(parameters, source) == null)) return false;
+  const uses = (...fields) => fields.every((source) => sourceFields.includes(source));
+  const wire = currentPositiveDimensionValue(parameters, "wire_diameter");
+  const mean = currentPositiveDimensionValue(parameters, "mean_diameter");
+  const outer = currentPositiveDimensionValue(parameters, "outer_diameter");
+  const inner = currentPositiveDimensionValue(parameters, "inner_diameter");
+  let value = null;
+  if (field === "wire_diameter" && uses("outer_diameter", "inner_diameter")) {
+    value = (outer - inner) / 2;
+  } else if (field === "mean_diameter") {
+    if (uses("outer_diameter", "inner_diameter")) value = (outer + inner) / 2;
+    else if (uses("outer_diameter", "wire_diameter")) value = outer - wire;
+    else if (uses("inner_diameter", "wire_diameter")) value = inner + wire;
+  } else if (field === "outer_diameter") {
+    if (uses("inner_diameter", "wire_diameter")) value = inner + 2 * wire;
+    else if (uses("mean_diameter", "wire_diameter")) value = mean + wire;
+  } else if (field === "inner_diameter") {
+    if (uses("outer_diameter", "wire_diameter")) value = outer - 2 * wire;
+    else if (uses("mean_diameter", "wire_diameter")) value = mean - wire;
+  }
+  if (positiveDimensionNumber(value) == null) return false;
+  const rounded = Number(value.toFixed(4));
+  if (rounded <= 0) return false;
+  target.value = rounded;
   return true;
 }
 
@@ -10668,6 +10948,9 @@ function markParamEdited(param, field = "", options = {}) {
   state.reviewEditSerial += 1;
   if (field) state.reviewDraftFields.add(field);
   param.need_human_review = true;
+  delete param.derived_value_stale;
+  delete param.formula_recommendation_stale;
+  delete param.formula_recalculation_candidate;
   delete param.last_applied_suggestion_id;
   delete param.last_applied_suggestion;
   param.source = Array.from(new Set(["human_edited", ...sourceValues(param.source)]));
@@ -10801,7 +11084,8 @@ function makeGenerationParameterPackage(review = state.review) {
   COMPRESSION_GENERATION_EXPORT_FIELDS.forEach((field) => {
     const param = generationSourceParameter(review.spring_parameters || {}, field);
     if (!param || generationContractState(review.spring_parameters || {}, field) !== "confirmed") return;
-    const value = generationContractValue(field, param.value);
+    const rawValue = generationContractValue(field, param.value);
+    const value = field === "material" ? CompressionDesignChecks.materialDisplayValue(rawValue, typeof state === "undefined" ? {} : state.materialCatalog) : rawValue;
     confirmedParameters[field] = {
       label: COMPRESSION_GENERATION_LABELS[field],
       value,
@@ -10830,16 +11114,7 @@ function makeGenerationParameterPackage(review = state.review) {
       exportedLoadPointLabels.add(label);
       return true;
     })
-    .map((point) => ({
-      label: normalizeLoadPointLabel(point.label),
-      height: { value: Number(Number(point.height).toFixed(3)), unit: "mm" },
-      force: {
-        value: Number(Number(point.force).toFixed(3)), unit: "N",
-        tolerance_upper: point.load_tolerance_upper != null && point.load_tolerance_upper !== "" && Number.isFinite(Number(point.load_tolerance_upper)) ? Number(Number(point.load_tolerance_upper).toFixed(3)) : null,
-        tolerance_lower: point.load_tolerance_lower != null && point.load_tolerance_lower !== "" && Number.isFinite(Number(point.load_tolerance_lower)) ? Number(Number(point.load_tolerance_lower).toFixed(3)) : null,
-      },
-      confirmation_source: "human_confirmed",
-    }));
+    .map((point) => SolidWorksExport.exportLoadPoint(point)).filter(Boolean);
   const summary = review.drawing_summary || {};
   const selection = review.standard_selection || {};
   const parameterPackage = {
@@ -10869,39 +11144,8 @@ function makeGenerationParameterPackage(review = state.review) {
     },
     derived_parameters: generationDerivedParameters(review),
   };
-  parameterPackage.solidworks_preview = {
-    modelParameters: makeSolidworksModelParametersPreview(parameterPackage, review),
-  };
+  parameterPackage.solidworks_preview = SolidWorksExport.buildPreview(parameterPackage, review, typeof state === "undefined" ? {} : state.materialCatalog || {});
   return parameterPackage;
-}
-
-function makeSolidworksModelParametersPreview(parameterPackage, review) {
-  const generationParameters = parameterPackage.generation_parameters || {};
-  const springParameters = generationParameters.spring_parameters || {};
-  const loadPoints = generationParameters.load_points || [];
-  const modelValue = (value) => {
-    if (value === null || value === undefined || value === "" || typeof value === "boolean") return null;
-    const number = Number(value);
-    if (Number.isFinite(number)) return Number(number.toFixed(3));
-    return typeof value === "string" ? value.trim() || null : null;
-  };
-  const parameterValue = (field) => modelValue(springParameters[field]?.value);
-  const loadHeight = (label) => {
-    const point = loadPoints.find((item) => String(item?.label || "").trim().toUpperCase() === label);
-    return modelValue(point?.height?.value);
-  };
-  const solidHeight = review?.spring_parameters?.solid_height;
-  return {
-    "线径": parameterValue("wire_diameter"),
-    "中径": parameterValue("mean_diameter"),
-    "自由高度": parameterValue("free_length"),
-    "圈数": parameterValue("total_coils"),
-    "有效圈数n": parameterValue("active_coils"),
-    "是否磨平": parameterValue("end_grinding"),
-    "压并高度Hb": solidHeight && !solidHeight.need_human_review ? modelValue(solidHeight.value) : null,
-    "工作高度H1": loadHeight("F1"),
-    "工作高度H2": loadHeight("F2"),
-  };
 }
 
 function confirmedSurfaceRoughnessRequirement(review) {

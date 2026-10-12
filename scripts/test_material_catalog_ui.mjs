@@ -7,20 +7,20 @@ import { fileURLToPath } from "node:url";
 // Deliberately independent expected values: catches accidental source-table drift.
 const materials = [
   ["SWPB", "SWP-B", 78000, ["SWPB", "SWP-B"]],
-  ["SWPA 琴钢丝", "SWP-A", 78000, ["SWPA", "SWP-A"]],
-  ["SWC 硬钢线", "SWC", 78000, ["SWC", "SW-C"]],
-  ["SUS304 不锈钢", "SUS304", 71500, ["SUS304"]],
-  ["SUS316 不锈钢", "SUS316", 71500, ["SUS316"]],
-  ["SUS631 不锈钢", "SUS631", 73500, ["SUS631"]],
-  ["65Mn 弹簧钢", "65Mn", 78000, ["65Mn"]],
-  ["60Si2Mn 硅锰钢", "60Si2Mn", 78000, ["60Si2Mn"]],
-  ["50CrVA 铬钒钢", "50CrVA", 78000, ["50CrVA"]],
-  ["Inconel X750 镍基合金钢", "Inconel X750", 79000, ["INCONEL X750", "INCONEL X-750", "INCONEL 750", "lnconelX750镍基合金钢"]],
-  ["70碳素钢", "70#", 79000, ["70#", "70碳素钢"]],
-  ["55CrSi合金钢", "55CrSi", 79000, ["55CrSi"]],
-  ["17-4PH不锈钢", "17-4PH", 76000, ["17-4PH"]],
-  ["17-7PH不锈钢", "17-7PH", 75500, ["17-7PH"]],
-  ["Inconel 718 镍基合金钢", "Inconel 718", 77200, ["INCONEL 718", "lnconel718镍基合金钢"]],
+  ["SWPA", "SWP-A", 78000, ["SWPA", "SWP-A", "SWPA 琴钢丝"]],
+  ["SWC", "SWC", 78000, ["SWC", "SW-C", "SWC 硬钢线"]],
+  ["SUS304", "SUS304", 71500, ["SUS304", "SUS304 不锈钢"]],
+  ["SUS316", "SUS316", 71500, ["SUS316", "SUS316 不锈钢"]],
+  ["SUS631", "SUS631", 73500, ["SUS631", "SUS631 不锈钢"]],
+  ["65Mn", "65Mn", 78000, ["65Mn", "65Mn 弹簧钢"]],
+  ["60Si2Mn", "60Si2Mn", 78000, ["60Si2Mn", "60Si2Mn 硅锰钢"]],
+  ["50CrVA", "50CrVA", 78000, ["50CrVA", "50CrVA 铬钒钢"]],
+  ["Inconel X750", "Inconel X750", 79000, ["INCONEL X750", "INCONEL X-750", "INCONEL 750", "lnconelX750镍基合金钢", "Inconel X750 镍基合金钢"]],
+  ["70#", "70#", 79000, ["70#", "70碳素钢"]],
+  ["55CrSi", "55CrSi", 79000, ["55CrSi", "55CrSi合金钢"]],
+  ["17-4PH", "17-4PH", 76000, ["17-4PH", "17-4PH不锈钢"]],
+  ["17-7PH", "17-7PH", 75500, ["17-7PH", "17-7PH不锈钢"]],
+  ["Inconel 718", "Inconel 718", 77200, ["INCONEL 718", "lnconel718镍基合金钢", "Inconel 718 镍基合金钢"]],
 ];
 
 export const catalogFixture = {
@@ -74,11 +74,26 @@ export async function runMaterialUiTests() {
   vm.createContext(context);
   const functions = materialFunctionBlocks(source);
   assert.match(functions, /function applyMaterialSelection\(/, "Material selection helper must exist");
+  vm.runInContext(fs.readFileSync(new URL("../frontend/compression-design-checks.js", import.meta.url), "utf8"), context);
   vm.runInContext(functions, context);
+  for (const entry of catalogFixture.items) {
+    assert.doesNotMatch(entry.display_name, /[\u3400-\u9fff]/);
+    for (const alias of [entry.display_name, entry.standard_value, ...entry.aliases]) {
+      const parameter = { value: alias, need_human_review: false, raw_value: alias, source: ["human_confirmed"] };
+      const before = JSON.stringify(parameter);
+      assert.equal(context.materialDisplayValue(alias), entry.display_name);
+      assert.ok(context.materialOptionsHtml(parameter).includes(`value="${entry.display_name}" selected`));
+      assert.equal(context.applyMaterialSelection(parameter, entry.display_name), false, "Same material identity is not an edit");
+      assert.equal(JSON.stringify(parameter), before, "Display projection preserves confirmed legacy values/evidence");
+    }
+  }
+  assert.equal(context.materialDisplayValue("70"), "70", "A bare dimension must not become a steel grade");
+  assert.equal(context.materialDisplayValue("SUS316L"), "SUS316L");
+  assert.equal(context.materialDisplayValue("材料 SUS304，表面喷丸"), "材料 SUS304，表面喷丸", "Composite drawing evidence must remain whole");
   const original = { value: "SUS304 不锈钢", standard_value: "SUS304", raw_value: "SUS304 ГОСТ 5632-72", material_id: "4", material_catalog_version: catalogFixture.version, source: ["qwen_vision"], need_human_review: false };
   const selected = structuredClone(original);
-  assert.equal(context.applyMaterialSelection(selected, "SUS316 不锈钢"), true);
-  assert.equal(selected.value, "SUS316 不锈钢");
+  assert.equal(context.applyMaterialSelection(selected, "SUS316"), true);
+  assert.equal(selected.value, "SUS316");
   assert.equal(selected.standard_value, "SUS316");
   assert.equal(String(selected.material_id), "5");
   assert.equal(selected.material_catalog_version, catalogFixture.version);
@@ -93,7 +108,7 @@ export async function runMaterialUiTests() {
   assert.ok(selected.material_id == null || selected.material_id === "");
   assert.equal(selected.raw_value, original.raw_value);
   const legacyWithoutOriginal = { value: "旧人工材料", source: ["human_edited"], need_human_review: false };
-  assert.equal(context.applyMaterialSelection(legacyWithoutOriginal, "SUS304 不锈钢"), true);
+  assert.equal(context.applyMaterialSelection(legacyWithoutOriginal, "SUS304"), true);
   assert.ok(!Object.hasOwn(legacyWithoutOriginal, "raw_value"), "Missing drawing evidence must not be invented from historical manual values");
   const legacy = { value: "ХН70МВТЮБ ГОСТ 5632-72", standard_value: "ХН70МВТЮБ", raw_value: "ХН70МВТЮБ ГОСТ 5632-72", need_human_review: false };
   const frozen = JSON.stringify(legacy);

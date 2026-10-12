@@ -54,6 +54,8 @@ const context = {
   formatCompactNumber: (value) => Number.isInteger(Number(value)) ? String(Number(value)) : String(Number(Number(value).toFixed(4))),
 };
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(new URL("../frontend/compression-design-checks.js", import.meta.url), "utf8"), context);
+vm.runInContext(fs.readFileSync(new URL("../frontend/solidworks-export.js", import.meta.url), "utf8"), context);
 translationTestHelpers(context);
 const duplicateStart = appSource.indexOf("function technicalRequirementsAreDuplicates");
 vm.runInContext(appSource.slice(duplicateStart, appSource.indexOf("function isDuplicateTechnicalRequirement", duplicateStart)), context);
@@ -64,6 +66,18 @@ vm.runInContext(appSource.slice(packageStart, packageEnd), context);
 const review = readyReview();
 const readiness = context.assessGenerationReadiness(review);
 assert.equal(readiness.status, "ready");
+for (const source of ["human_edited", "human_confirmed", "manual", "manual_input"]) {
+  const cleared = readyReview();
+  const wire = cleared.spring_parameters.wire_diameter;
+  wire.value = "";
+  wire.source = [source];
+  wire.need_human_review = true;
+  assert.equal(context.applyGenerationDefaults(cleared).includes("wire_diameter"), false);
+  assert.equal(cleared.spring_parameters.wire_diameter, wire, "Keep the editor's parameter reference");
+  assert.equal(wire.value, "");
+  const clearedReadiness = context.assessGenerationReadiness(cleared);
+  assert.equal(clearedReadiness.missing_fields.some((item) => item.field === "wire_diameter"), true);
+}
 const packageData = context.makeGenerationParameterPackage(review);
 assert.deepEqual(
   Object.keys(packageData.generation_parameters.spring_parameters),
@@ -76,8 +90,9 @@ assert.equal(packageData.generation_parameters.spring_parameters.end_grinding.va
 assert.equal(packageData.generation_parameters.spring_parameters.end_coils_closed.value, 1);
 assert.equal(packageData.solidworks_preview.modelParameters["有效圈数n"], 10);
 assert.equal(packageData.solidworks_preview.modelParameters["是否磨平"], 1);
-assert.equal(packageData.solidworks_preview.modelParameters["工作高度H1"], 25);
-assert.equal(packageData.solidworks_preview.modelParameters["工作高度H2"], null);
+assert.equal(packageData.solidworks_preview.modelParameters["工作高度H1"], undefined);
+assert.ok(packageData.solidworks_preview.extraProperties["技术要求"].includes("H1 = 25 mm"));
+assert.equal(packageData.solidworks_preview.modelParameters["工作高度H2"], undefined);
 assert.equal(packageData.solidworks_preview.TaskId, undefined);
 assert.equal(packageData.generation_parameters.spring_parameters.material.value, "SUS304 raw");
 assert.equal(JSON.stringify(packageData.generation_parameters.load_points), JSON.stringify([{

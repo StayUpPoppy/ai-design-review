@@ -1,0 +1,133 @@
+/* SolidWorks projection; shared fixtures verify parity with solidworks.py. */
+(() => {
+  const calculatedProperties = { "P'": "theoretical_spring_rate", C: "spring_index", "τ_b": "solid_stress" };
+  const lengthUnits = { mm: 1, "毫米": 1, cm: 10, m: 1000, in: 25.4, inch: 25.4, "英寸": 25.4 };
+  const forceUnits = { n: 1, "牛": 1, kn: 1000, kgf: 9.80665 };
+  const types = { surface: "表面处理", surface_roughness: "表面粗糙度", hardness: "硬度要求", heat_treatment: "热处理", salt_spray: "盐雾试验", environmental: "环保要求", lifetime: "寿命要求", process: "工艺要求", other: "其他要求" };
+  const number = (v) => ["number", "string"].includes(typeof v) && String(v).trim() && Number.isFinite(Number(v)) ? Number(v) : null;
+  const rounded = (v, digits = 4) => Number(Number(v).toFixed(digits));
+  const textNumber = (v) => String(rounded(v));
+  const parameterValue = (item) => number(item?.value) != null ? rounded(item.value, 3) : typeof item?.value === "string" ? item.value.trim() || null : null;
+  const handedness = (value) => ["right", "right_hand", "r", "右旋"].includes(String(value).toLowerCase()) ? "右旋" : ["left", "left_hand", "l", "左旋"].includes(String(value).toLowerCase()) ? "左旋" : null;
+  const solidLabel = (label) => ["fb", "pb", "压并载荷", "压并负荷", "压并力"].includes(String(label || "").replace(/[\s_]/g, "").toLowerCase());
+  const sources = (item) => (Array.isArray(item?.source) ? item.source : [item?.source]).filter(Boolean).map((s) => String(s).toLowerCase());
+  const humanOverride = (item) => item?.human_modified || sources(item).some((s) => s.startsWith("human") && s !== "human_confirmed" || ["manual", "manual_input", "standardization_chat", "ai_chat"].includes(s));
+  function current(parameters, field, path = []) {
+    if (path.includes(field)) return false;
+    const item = parameters[field];
+    if (!item || typeof item !== "object") return true;
+    if (item.derived_value_stale || item.formula_recommendation_stale && !humanOverride(item)) return false;
+    if (humanOverride(item) || !sources(item).some((s) => ["formula_calculation", "derived"].includes(s))) return true;
+    return (item.source_fields || []).every((parent) => parameters[parent]?.value != null && parameters[parent]?.value !== "" && current(parameters, parent, [...path, field]));
+  }
+  function confirmedSolidHeight(review) {
+    const parameters = review.spring_parameters || {}, item = parameters.solid_height;
+    if (!item || item.need_human_review !== false || !current(parameters, "solid_height") || item.formula_recommendation_stale) return null;
+    const kind = globalThis.CompressionDesignChecks?.solidHeightKind(item);
+    if (!["input_height", "nominal_estimate"].includes(kind)) return null;
+    const value = number(item.value), factor = lengthUnits[String(item.unit || "mm").trim().toLowerCase()];
+    const result = value != null && factor != null ? value * factor : null;
+    const free = parameters.free_length || {}, freeValue = number(free.value), freeFactor = lengthUnits[String(free.unit || "mm").trim().toLowerCase()];
+    if (result != null && freeValue != null && freeFactor != null && result >= freeValue * freeFactor) return null;
+    return result != null && Number.isFinite(result) && result > 0 ? result : null;
+  }
+  function forceText(point) {
+    const force = point.force || {};
+    const text = `${textNumber(force.value)} N`, percent = number(force.tolerance_percent);
+    const upper = number(force.tolerance_upper), lower = number(force.tolerance_lower);
+    if (percent != null) return `${text}（允差 ±${textNumber(Math.abs(percent))}%）`;
+    if (upper == null && lower == null) return text;
+    if (upper != null && lower != null && upper >= 0 && Math.abs(upper + lower) <= 1e-9) return `${text}（允差 ±${textNumber(upper)} N）`;
+    const signed = (v) => `${v > 0 ? "+" : ""}${textNumber(v)}`;
+    return `${text}（允差 ${[upper, lower].filter((v) => v != null).map(signed).join("/")} N）`;
+  }
+  function content(item) {
+    let value = String(item.content || "").trim();
+    const label = String(item.original_number || "").trim() || value.match(/^\s*(\d+)\s*[.．、)]\s*(?=[^\d\s])/)?.[1] || "";
+    if (/^\d+$/.test(label)) value = value.replace(new RegExp(`^\\s*${label}\\s*[.．、)]\\s*(?=[^\\d\\s])`), "");
+    return value.replace(/(?:\s*(?:\r\n?|\n)\s*)+/g, "；").replace(/[\t ]+/g, " ").trim();
+  }
+  const roughnessLine = (value) => value.replace(/粗糙度\s*[:：]?\s*Ra\s*/, "表面粗糙度：Ra ").replace("表面表面粗糙度", "表面粗糙度").replace(/(?<=\d)\s*[μµ]m/g, " μm").replace(/[。.]+$/, "") + "。";
+  function sentenceKey(value, catalog) {
+    let key = value.trim().replace(/^\d+[.．、)]\s*/, "").replace(/^(?:其他要求|工艺要求)\s*[:：]\s*/, "");
+    const material = key.match(/^(?:材质|材料)\s*[:：]?\s*(.+?)\s*[。.]*$/);
+    if (material) key = `材料：${CompressionDesignChecks.materialDisplayValue(material[1], catalog)}`;
+    return key.replace(/^(?:材质|材料)/, "材料").replace(/^(?:旋向|绕制方向)/, "绕制方向").replace(/^(?:有效圈数n?|工作圈数)/, "工作圈数").replace(/表面粗糙度/g, "粗糙度").replace(/[。.]+$/, "").replace(/[\s:：]/g, "").toLowerCase();
+  }
+  function technicalText(packageData, review, catalog = {}) {
+    const generation = packageData.generation_parameters || {}, parameters = generation.spring_parameters || {};
+    const lines = [], remaining = [], material = parameterValue(parameters.material), direction = handedness(parameterValue(parameters.handedness));
+    if (material != null) lines.push(`材料：${CompressionDesignChecks.materialDisplayValue(material, catalog)}。`);
+    if (direction) lines.push(`绕制方向：${direction}。`);
+    const requirements = generation.technical_requirements || [];
+    for (const item of requirements) {
+      if (!item || typeof item !== "object") continue;
+      const body = content(item);
+      if (["surface_roughness", "roughness"].includes(item.type) && body) lines.push(roughnessLine(body));
+      else remaining.push(item);
+    }
+    const hb = confirmedSolidHeight(review), points = (generation.load_points || []).filter((p) => p && typeof p === "object");
+    const solid = points.filter((p) => solidLabel(p.label)), fb = solid.length === 1 ? number(solid[0].force?.value) : null;
+    const fbHeight = solid.length === 1 ? number(solid[0].height?.value) : null, fbText = fb != null && fb >= 0 ? forceText(solid[0]) : null;
+    if (hb != null && fbText != null && fbHeight != null && Math.abs(hb - fbHeight) <= 1e-9) lines.push(`当弹簧压并至高度 Hb = ${textNumber(hb)} mm 时，对应压并载荷 Fb = ${fbText}。`);
+    else {
+      if (hb != null) lines.push(`压并高度：Hb = ${textNumber(hb)} mm。`);
+      if (fbText != null) lines.push(`压并载荷：Fb = ${fbText}${hb != null && fbHeight != null ? `（载荷测试高度 ${textNumber(fbHeight)} mm）` : ""}。`);
+    }
+    for (const point of points) {
+      if (solidLabel(point.label)) continue;
+      const height = number(point.height?.value), force = number(point.force?.value), label = String(point.label || "").trim();
+      if (height == null || height <= 0 || force == null || force < 0) continue;
+      const match = label.match(/^[Ff](\d+)$/);
+      lines.push(match ? `当弹簧工作高度 H${match[1]} = ${textNumber(height)} mm 时，对应工作载荷 ${label} = ${forceText(point)}。` : `载荷点 ${label}：高度 ${textNumber(height)} mm，力值 ${forceText(point)}。`);
+    }
+    for (const [label, field] of [["总圈数", "total_coils"], ["工作圈数", "active_coils"]]) {
+      const value = parameterValue(parameters[field]);
+      if (value != null) lines.push(`${label}：${value} 圈。`);
+    }
+    const keys = new Set(lines.map((line) => sentenceKey(line, catalog)));
+    for (const item of remaining) {
+      const body = content(item), label = types[item.type] || "其他要求";
+      if (!body || keys.has(sentenceKey(body, catalog))) continue;
+      const withoutLabel = body.replace(new RegExp(`^${label}\\s*[:：]\\s*`), "").trim() || body;
+      lines.push(`${label}：${withoutLabel}`);
+    }
+    if (!requirements.length) {
+      const legacy = String(generation.technical_requirements_text || "").replace(/\r\n?/g, "\n").trim().replace(/^技术要求[:：]?\s*(?:\n|$)/, "");
+      for (const line of legacy.split("\n")) {
+        const body = line.replace(/^\s*\d+\s*[.．、)]\s*/, "").trim();
+        if (body && !keys.has(sentenceKey(body, catalog))) lines.push(body);
+      }
+    }
+    return lines.map((line, index) => `${index + 1}.${line}`).join("\n");
+  }
+  function buildPreview(packageData, review, catalog = {}) {
+    const parameters = packageData.generation_parameters?.spring_parameters || {};
+    const checks = globalThis.CompressionDesignChecks.calculate(review.spring_parameters || {}, review.spring_features || {}, catalog);
+    packageData.derived_parameters ||= {};
+    packageData.derived_parameters.solidworks_design_checks = structuredClone({ version: checks.version, material_catalog_version: checks.material_catalog_version, material_properties: checks.material_properties,
+      metrics: Object.fromEntries([...Object.values(calculatedProperties), "unit_mass"].map((key) => [key, checks.metrics[key]])) });
+    const extra = { "技术要求": technicalText(packageData, review, catalog) };
+    for (const [key, metric] of Object.entries(calculatedProperties)) {
+      const result = checks.metrics[metric], value = number(result?.value);
+      if (["calculated", "estimated"].includes(result?.status) && value != null) extra[key] = rounded(value);
+    }
+    const titleBlock = {}, material = parameterValue(parameters.material);
+    if (typeof material === "string" && material) titleBlock["材料"] = CompressionDesignChecks.materialDisplayValue(material, catalog);
+    const mass = checks.metrics.unit_mass, weight = number(mass?.value);
+    if (["calculated", "estimated"].includes(mass?.status) && mass.unit === "kg" && weight != null && weight > 0) titleBlock["重量"] = rounded(weight, 8);
+    return {
+      modelParameters: Object.fromEntries([["线径", "wire_diameter"], ["中径", "mean_diameter"], ["自由高度", "free_length"], ["圈数", "total_coils"], ["有效圈数n", "active_coils"], ["是否磨平", "end_grinding"]].map(([label, field]) => [label, parameterValue(parameters[field])])),
+      customProperties: { "旋向": handedness(parameterValue(parameters.handedness)) }, extraProperties: extra, titleBlockProperties: titleBlock,
+    };
+  }
+  function exportLoadPoint(point) {
+    const height = number(point.height), force = number(point.force), hFactor = lengthUnits[String(point.height_unit || "mm").trim().toLowerCase()], fFactor = forceUnits[String(point.force_unit || "N").trim().toLowerCase()];
+    if (height == null || force == null || height <= 0 || force < 0 || hFactor == null || fFactor == null || !Number.isFinite(height * hFactor) || !Number.isFinite(force * fFactor)) return null;
+    const tolerance = (value) => number(value) == null ? null : rounded(Number(value) * fFactor, 3);
+    const percent = point.load_tolerance_percent ?? point.force_tolerance_percent;
+    return { label: String(point.label || "").trim().replace(/\s+/g, " "), height: { value: rounded(height * hFactor, 3), unit: "mm" },
+      force: { value: rounded(force * fFactor, 3), unit: "N", tolerance_upper: tolerance(point.load_tolerance_upper), tolerance_lower: tolerance(point.load_tolerance_lower), ...(percent != null ? { tolerance_percent: number(percent) == null ? null : rounded(percent, 3) } : {}) }, confirmation_source: "human_confirmed" };
+  }
+  globalThis.SolidWorksExport = { buildPreview, technicalText, exportLoadPoint };
+})();

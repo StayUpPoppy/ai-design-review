@@ -17,7 +17,8 @@ from .generation_contract import (
 from .spring_templates import FIELD_LABELS
 from .spring_feasibility import assess_parameter_reasonableness
 from .surface_roughness import confirmed_surface_roughness_requirement, ensure_surface_roughness_parameter
-from .solidworks import build_solidworks_model_parameters
+from .solidworks import build_solidworks_preview
+from .standardizers.design_checks import FORCE_UNITS, LENGTH_UNITS
 from .load_points import (
     canonical_load_point_label,
     ensure_load_point_ids,
@@ -129,7 +130,7 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
     load_points: list[dict[str, Any]] = []
     exported_load_point_labels: set[str] = set()
     for item in parameters.get("load_points") or []:
-        if not load_point_is_complete(item) or not load_point_is_confirmed(item):
+        if not _generation_load_point_is_valid(item) or not load_point_is_confirmed(item):
             continue
         canonical_label = canonical_load_point_label(item.get("label"))
         if not canonical_label or canonical_label in exported_load_point_labels:
@@ -165,9 +166,7 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
         },
         "derived_parameters": _export_derived_parameters(review, parameters),
     }
-    package["solidworks_preview"] = {
-        "modelParameters": build_solidworks_model_parameters(package, review),
-    }
+    package["solidworks_preview"] = build_solidworks_preview(package, review)
     return package
 
 
@@ -282,8 +281,8 @@ def _append_load_point_state(review: dict[str, Any], pending: list[dict[str, Any
             reason = f"载荷测试点编号“{label}”重复，请修改或删除重复项。"
         elif not label:
             reason = "载荷测试点缺少编号，请补充唯一编号或删除该项。"
-        elif not load_point_is_complete(item):
-            reason = f"载荷测试点“{label}”的高度和力值必须完整且有效。"
+        elif not _generation_load_point_is_valid(item):
+            reason = f"载荷测试点“{label}”的高度和力值必须完整且有效，并使用支持的 mm/cm/m/in、N/kN/kgf 单位。"
         elif not load_point_is_confirmed(item):
             reason = f"载荷测试点“{label}”尚未人工确认。"
         else:
@@ -387,7 +386,19 @@ def _generation_requirement(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _generation_load_point_is_valid(item: Any) -> bool:
+    if not load_point_is_complete(item) or isinstance(item.get("height"), bool) or isinstance(item.get("force"), bool):
+        return False
+    height_factor = LENGTH_UNITS.get(str(item.get("height_unit") or "mm").strip().lower())
+    force_factor = FORCE_UNITS.get(str(item.get("force_unit") or "N").strip().lower())
+    return height_factor is not None and force_factor is not None and isfinite(float(item["height"]) * height_factor) and isfinite(float(item["force"]) * force_factor)
+
+
 def _generation_load_point(item: dict[str, Any]) -> dict[str, Any]:
+    force_factor = FORCE_UNITS[str(item.get("force_unit") or "N").strip().lower()]
+    percent = item.get("load_tolerance_percent")
+    if percent is None:
+        percent = item.get("force_tolerance_percent")
     def number(value: Any) -> float:
         rounded = round(float(value), 3)
         return int(rounded) if rounded.is_integer() else rounded
@@ -399,14 +410,22 @@ def _generation_load_point(item: dict[str, Any]) -> dict[str, Any]:
             return None
         return number(candidate) if isfinite(candidate) else None
 
+    def force_tolerance(value: Any) -> float | int | None:
+        try:
+            candidate = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return optional_number(candidate * force_factor)
+
     return {
         "label": normalize_load_point_label(item.get("label")),
-        "height": {"value": number(item.get("height")), "unit": "mm"},
+        "height": {"value": number(float(item.get("height")) * LENGTH_UNITS[str(item.get("height_unit") or "mm").strip().lower()]), "unit": "mm"},
         "force": {
-            "value": number(item.get("force")),
+            "value": number(float(item.get("force")) * FORCE_UNITS[str(item.get("force_unit") or "N").strip().lower()]),
             "unit": "N",
-            "tolerance_upper": optional_number(item.get("load_tolerance_upper")),
-            "tolerance_lower": optional_number(item.get("load_tolerance_lower")),
+            "tolerance_upper": force_tolerance(item.get("load_tolerance_upper")),
+            "tolerance_lower": force_tolerance(item.get("load_tolerance_lower")),
+            **({"tolerance_percent": optional_number(percent)} if percent is not None else {}),
         },
         "confirmation_source": "human_confirmed",
     }

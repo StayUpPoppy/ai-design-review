@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import math
+import re
+from copy import deepcopy
 from typing import Any
 
 from .generation_contract import handedness_label
-from .surface_roughness import positive_surface_roughness, surface_roughness_mentions
-from .technical_requirements import strip_technical_requirements_title
+from .material_catalog import material_catalog_display_value
+from .standardizers.calculation_state import parameter_current, solid_height_kind
+from .standardizers.design_checks import LENGTH_UNITS, calculate_design_checks
+from .technical_requirements import TECHNICAL_REQUIREMENT_TYPE_LABELS, strip_technical_requirements_title, technical_requirement_output_content
+
+CALCULATED_PROPERTIES = {"P'": "theoretical_spring_rate", "C": "spring_index", "τ_b": "solid_stress"}
+FROZEN_CALCULATION_METRICS = (*CALCULATED_PROPERTIES.values(), "unit_mass")
+SOLID_LABELS = {"fb", "pb", "压并载荷", "压并负荷", "压并力"}
 
 
 def build_solidworks_command(
@@ -22,32 +30,10 @@ def build_solidworks_command(
     if not 1_000_000_000 <= task_id <= 9_999_999_999:
         raise ValueError("SolidWorks TaskId must be a positive 10-digit Long value.")
 
-    generation_parameters = parameter_package.get("generation_parameters") or {}
-    spring_parameters = generation_parameters.get("spring_parameters") or {}
-    load_points = generation_parameters.get("load_points") or []
+    preview = parameter_package.get("solidworks_preview")
+    if not isinstance(preview, dict) or not all(isinstance(preview.get(key), dict) for key in ("modelParameters", "customProperties", "extraProperties")) or "技术要求" not in preview["extraProperties"]:
+        preview = build_solidworks_preview(parameter_package, review)
     source = parameter_package.get("source") or {}
-
-    load_values = _load_point_values(load_points)
-    solid_height = _review_parameter_value(review, "solid_height")
-    handedness = handedness_label(_parameter_value(spring_parameters.get("handedness")))
-    technical_text = strip_technical_requirements_title(generation_parameters.get("technical_requirements_text"))
-    model_parameters = build_solidworks_model_parameters(parameter_package, review)
-    extra_properties = {
-        "技术要求": technical_text,
-        "材料": _parameter_value(spring_parameters.get("material")),
-        "旋向": handedness,
-        "压并高度Hb": solid_height,
-        "工作高度H1": load_values["F1"]["height"],
-        "工作高度H2": load_values["F2"]["height"],
-        "Fb": load_values["Fb"]["force"],
-        "F1": load_values["F1"]["force"],
-        "F2": load_values["F2"]["force"],
-    }
-    surface_roughness_ra = _surface_roughness_ra(generation_parameters)
-    if surface_roughness_ra is not None:
-        # SolidWorks expects a unitless JSON number here. Keep it as float even
-        # when the drawing contains an integral Ra value such as ``Ra 12``.
-        extra_properties["表面粗糙度Ra"] = surface_roughness_ra
     spring_label = str(source.get("spring_type_label") or "压缩弹簧")
     return {
         "TaskId": task_id,
@@ -57,9 +43,7 @@ def build_solidworks_command(
                 "modelName": str(source.get("drawing_name") or spring_label),
                 "modelLabel": spring_label,
                 "materialCode": None,
-                "modelParameters": model_parameters,
-                "customProperties": {"旋向": handedness},
-                "extraProperties": extra_properties,
+                **deepcopy(preview),
             }
         ],
     }
@@ -73,7 +57,6 @@ def build_solidworks_model_parameters(
 
     generation_parameters = parameter_package.get("generation_parameters") or {}
     spring_parameters = generation_parameters.get("spring_parameters") or {}
-    load_values = _load_point_values(generation_parameters.get("load_points") or [])
     return {
         "线径": _parameter_value(spring_parameters.get("wire_diameter")),
         "中径": _parameter_value(spring_parameters.get("mean_diameter")),
@@ -81,9 +64,6 @@ def build_solidworks_model_parameters(
         "圈数": _parameter_value(spring_parameters.get("total_coils")),
         "有效圈数n": _parameter_value(spring_parameters.get("active_coils")),
         "是否磨平": _parameter_value(spring_parameters.get("end_grinding")),
-        "压并高度Hb": _review_parameter_value(review, "solid_height"),
-        "工作高度H1": load_values["F1"]["height"],
-        "工作高度H2": load_values["F2"]["height"],
     }
 
 
@@ -91,38 +71,6 @@ def _parameter_value(item: Any) -> Any | None:
     if not isinstance(item, dict):
         return None
     return _finite_or_text(item.get("value"))
-
-
-def _review_parameter_value(review: dict[str, Any], field: str) -> Any | None:
-    parameters = review.get("spring_parameters") or {}
-    item = parameters.get(field) if isinstance(parameters, dict) else None
-    if not isinstance(item, dict) or item.get("need_human_review"):
-        return None
-    return _finite_or_text(item.get("value"))
-
-
-def _load_point_values(load_points: Any) -> dict[str, dict[str, float | None]]:
-    result: dict[str, dict[str, float | None]] = {
-        "Fb": {"height": None, "force": None},
-        "F1": {"height": None, "force": None},
-        "F2": {"height": None, "force": None},
-    }
-    if not isinstance(load_points, list):
-        return result
-    for item in load_points:
-        if not isinstance(item, dict):
-            continue
-        label = str(item.get("label") or "").strip().casefold()
-        normalized_label = "Fb" if label == "fb" else label.upper()
-        if normalized_label not in result:
-            continue
-        height = item.get("height") if isinstance(item.get("height"), dict) else {}
-        force = item.get("force") if isinstance(item.get("force"), dict) else {}
-        result[normalized_label] = {
-            "height": _finite_number(height.get("value")),
-            "force": _finite_number(force.get("value")),
-        }
-    return result
 
 
 def _finite_or_text(value: Any) -> Any | None:
@@ -147,29 +95,179 @@ def _finite_number(value: Any) -> float | int | None:
     return int(number) if number.is_integer() else round(number, 3)
 
 
-def _surface_roughness_ra(generation_parameters: dict[str, Any]) -> float | None:
-    """Return confirmed Ra roughness as a unitless float for SolidWorks."""
+def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
+    """Recalculate authoritative inputs and freeze their calculation basis."""
+    checks = calculate_design_checks(review.get("spring_parameters") or {}, review.get("spring_features") or {})
+    parameter_package.setdefault("derived_parameters", {})["solidworks_design_checks"] = {
+        "version": checks["version"], "material_catalog_version": checks["material_catalog_version"],
+        "material_properties": deepcopy(checks["material_properties"]),
+        "metrics": {key: deepcopy(checks["metrics"][key]) for key in FROZEN_CALCULATION_METRICS},
+    }
+    parameters = (parameter_package.get("generation_parameters") or {}).get("spring_parameters") or {}
+    extra: dict[str, Any] = {"技术要求": build_solidworks_technical_text(parameter_package, review)}
+    for key, metric in CALCULATED_PROPERTIES.items():
+        result = checks["metrics"][metric]
+        number = _number(result.get("value"))
+        if result.get("status") in {"calculated", "estimated"} and number is not None:
+            extra[key] = _rounded(number, 4)
+    title_block: dict[str, str | int | float] = {}
+    material = _parameter_value(parameters.get("material"))
+    if isinstance(material, str) and material:
+        title_block["材料"] = material_catalog_display_value(material)
+    mass = checks["metrics"]["unit_mass"]
+    number = _number(mass.get("value"))
+    if mass.get("status") in {"calculated", "estimated"} and mass.get("unit") == "kg" and number is not None and number > 0:
+        title_block["重量"] = _rounded(number, 8)
+    return {"modelParameters": build_solidworks_model_parameters(parameter_package, review),
+            "customProperties": {"旋向": handedness_label(_parameter_value(parameters.get("handedness")))},
+            "extraProperties": extra, "titleBlockProperties": title_block}
 
-    texts: list[str] = []
-    for item in generation_parameters.get("technical_requirements") or []:
+
+def build_solidworks_technical_text(parameter_package: dict[str, Any], review: dict[str, Any]) -> str:
+    generation = parameter_package.get("generation_parameters") or {}
+    parameters = generation.get("spring_parameters") or {}
+    lines: list[str] = []
+    material = _parameter_value(parameters.get("material"))
+    if material is not None:
+        lines.append(f"材料：{material_catalog_display_value(material)}。")
+    handedness = handedness_label(_parameter_value(parameters.get("handedness")))
+    if handedness:
+        lines.append(f"绕制方向：{handedness}。")
+    requirements = generation.get("technical_requirements") or []
+    remaining: list[dict[str, Any]] = []
+    for item in requirements:
         if not isinstance(item, dict):
             continue
-        requirement_type = str(item.get("type") or "").strip().casefold()
-        content = str(item.get("content") or "").strip()
-        if requirement_type in {"surface_roughness", "roughness"}:
-            direct = positive_surface_roughness(item.get("surface_roughness_ra"))
-            if direct is not None:
-                return float(direct)
-        if requirement_type in {"surface_roughness", "roughness"} and content:
-            texts.insert(0, content)
-        elif content:
-            texts.append(content)
-    technical_text = str(generation_parameters.get("technical_requirements_text") or "").strip()
-    if technical_text:
-        texts.append(technical_text)
+        content = _content(item)
+        if item.get("type") in {"surface_roughness", "roughness"} and content:
+            lines.append(_roughness_line(content))
+        else:
+            remaining.append(item)
+    hb = _confirmed_solid_height(review)
+    points = [point for point in generation.get("load_points") or [] if isinstance(point, dict)]
+    solid = [point for point in points if _solid_label(point.get("label"))]
+    fb = _number((solid[0].get("force") or {}).get("value")) if len(solid) == 1 else None
+    fb_height = _number((solid[0].get("height") or {}).get("value")) if len(solid) == 1 else None
+    fb_text = _force_text(solid[0]) if fb is not None and fb >= 0 else None
+    if hb is not None and fb_text is not None and fb_height is not None and math.isclose(hb, fb_height, rel_tol=0, abs_tol=1e-9):
+        lines.append(f"当弹簧压并至高度 Hb = {_text_number(hb)} mm 时，对应压并载荷 Fb = {fb_text}。")
+    else:
+        if hb is not None:
+            lines.append(f"压并高度：Hb = {_text_number(hb)} mm。")
+        if fb_text is not None:
+            suffix = f"（载荷测试高度 {_text_number(fb_height)} mm）" if hb is not None and fb_height is not None else ""
+            lines.append(f"压并载荷：Fb = {fb_text}{suffix}。")
+    for point in points:
+        if _solid_label(point.get("label")):
+            continue
+        height = _number((point.get("height") or {}).get("value"))
+        force = _number((point.get("force") or {}).get("value"))
+        if height is None or height <= 0 or force is None or force < 0:
+            continue
+        label = str(point.get("label") or "").strip()
+        match = re.fullmatch(r"[Ff](\d+)", label)
+        if match:
+            lines.append(f"当弹簧工作高度 H{match[1]} = {_text_number(height)} mm 时，对应工作载荷 {label} = {_force_text(point)}。")
+        else:
+            lines.append(f"载荷点 {label}：高度 {_text_number(height)} mm，力值 {_force_text(point)}。")
+    for label, field in (("总圈数", "total_coils"), ("工作圈数", "active_coils")):
+        value = _parameter_value(parameters.get(field))
+        if value is not None:
+            lines.append(f"{label}：{value} 圈。")
+    # Only whole equivalent sentences are removed; composite/conflicting notes survive.
+    keys = {_sentence_key(line) for line in lines}
+    for item in remaining:
+        content = _content(item)
+        if not content or _sentence_key(content) in keys:
+            continue
+        label = TECHNICAL_REQUIREMENT_TYPE_LABELS.get(item.get("type"), "其他要求")
+        body = re.sub(rf"^{re.escape(label)}\s*[:：]\s*", "", content, count=1).strip() or content
+        lines.append(f"{label}：{body}")
+    if not requirements:
+        for line in strip_technical_requirements_title(generation.get("technical_requirements_text")).splitlines():
+            body = re.sub(r"^\s*\d+\s*[.．、)]\s*", "", line).strip()
+            if body and _sentence_key(body) not in keys:
+                lines.append(body)
+    return "\n".join(f"{index}.{line}" for index, line in enumerate(lines, 1))
 
-    for text in texts:
-        mentions = surface_roughness_mentions(text)
-        if mentions:
-            return float(mentions[0]["value"])
-    return None
+
+def _confirmed_solid_height(review: dict[str, Any]) -> float | None:
+    item = (review.get("spring_parameters") or {}).get("solid_height")
+    if not isinstance(item, dict) or item.get("need_human_review") is not False:
+        return None
+    if not parameter_current(review.get("spring_parameters") or {}, "solid_height") or item.get("formula_recommendation_stale") or solid_height_kind(item) not in {"input_height", "nominal_estimate"}:
+        return None
+    value = _number(item.get("value"))
+    factor = LENGTH_UNITS.get(str(item.get("unit") or "mm").strip().lower())
+    normalized = value * factor if value is not None and factor is not None else None
+    free = (review.get("spring_parameters") or {}).get("free_length") or {}
+    free_value, free_factor = _number(free.get("value")), LENGTH_UNITS.get(str(free.get("unit") or "mm").strip().lower())
+    if free_value is not None and free_factor is not None and normalized is not None and normalized >= free_value * free_factor:
+        return None
+    return normalized if normalized is not None and math.isfinite(normalized) and normalized > 0 else None
+
+
+def _solid_label(value: Any) -> bool:
+    return re.sub(r"[\s_]", "", str(value or "")).casefold() in SOLID_LABELS
+
+
+def _force_text(point: dict[str, Any]) -> str:
+    force = point.get("force") or {}
+    text = f"{_text_number(force['value'])} N"
+    percent = _number(force.get("tolerance_percent"))
+    upper, lower = (_number(force.get(key)) for key in ("tolerance_upper", "tolerance_lower"))
+    if percent is not None:
+        return text + f"（允差 ±{_text_number(abs(percent))}%）"
+    if upper is None and lower is None:
+        return text
+    if upper is not None and lower is not None and upper >= 0 and math.isclose(upper, -lower, rel_tol=0, abs_tol=1e-9):
+        return text + f"（允差 ±{_text_number(upper)} N）"
+    def signed(number: float) -> str:
+        return ("+" if number > 0 else "") + _text_number(number)
+    tolerance = "/".join(signed(number) for number in (upper, lower) if number is not None)
+    return text + f"（允差 {tolerance} N）"
+
+
+def _content(item: dict[str, Any]) -> str:
+    content = technical_requirement_output_content(item)
+    content = re.sub(r"(?:\s*(?:\r\n?|\n)\s*)+", "；", content)
+    return re.sub(r"[\t ]+", " ", content).strip()
+
+
+def _roughness_line(content: str) -> str:
+    line = re.sub(r"粗糙度\s*[:：]?\s*Ra\s*", "表面粗糙度：Ra ", content, count=1)
+    line = line.replace("表面表面粗糙度", "表面粗糙度")
+    line = re.sub(r"(?<=\d)\s*[μµ]m", " μm", line)
+    return line.rstrip("。.") + "。"
+
+
+def _sentence_key(content: str) -> str:
+    key = re.sub(r"^\d+[.．、)]\s*", "", content.strip())
+    key = re.sub(r"^(?:其他要求|工艺要求)\s*[:：]\s*", "", key)
+    material = re.fullmatch(r"(?:材质|材料)\s*[:：]?\s*(.+?)\s*[。.]*", key)
+    if material:
+        key = f"材料：{material_catalog_display_value(material[1])}"
+    key = re.sub(r"^(?:材质|材料)", "材料", key)
+    key = re.sub(r"^(?:旋向|绕制方向)", "绕制方向", key)
+    key = re.sub(r"^(?:有效圈数n?|工作圈数)", "工作圈数", key)
+    key = key.replace("表面粗糙度", "粗糙度")
+    return re.sub(r"[\s:：]", "", key.rstrip("。.")).casefold()
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None or isinstance(value, str) and not value.strip():
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _rounded(number: float, digits: int) -> int | float:
+    number = round(number, digits)
+    return int(number) if number.is_integer() else number
+
+
+def _text_number(value: Any) -> str:
+    return str(_rounded(float(value), 4))

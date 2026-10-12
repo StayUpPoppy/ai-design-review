@@ -99,6 +99,7 @@ from .load_points import ensure_load_point_ids
 from .material_catalog import ensure_compression_material, load_material_catalog, validate_material_change
 from .rules import refresh_compression_material_check
 from .standardizers.stiffness import refresh_compression_spring_rate_freshness
+from .standardizers.design_checks import refresh_design_checks
 from .surface_roughness import ensure_surface_roughness_parameter
 from .technical_requirements import ensure_technical_requirement_ids
 from .technical_requirement_recognition import collect_technical_requirements, recovery_preview
@@ -2287,6 +2288,7 @@ def _ensure_review_owned(job_id: str, review_path: Path, identity: IdentityConte
 
 
 def _prepare_review_reasonableness(review: dict[str, Any], revision: int | None) -> None:
+    refresh_design_checks(review)
     refresh_compression_material_check(review, read_json(project_path("config", "factory_rules.json")))
     if (review.get("drawing_summary") or {}).get("spring_type") == "compression_spring":
         refresh_compression_spring_rate_freshness(review.get("spring_parameters") or {}, review.get("spring_features") or {})
