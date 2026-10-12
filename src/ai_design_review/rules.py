@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .material_catalog import match_material_catalog
+from .load_units import in_base_units, normalized_load_point
 
 
 REQUIRED_FIELDS = [
@@ -153,10 +154,13 @@ def _check_process_ranges(spring_parameters: dict[str, Any], factory_rules: dict
 
 
 def _check_free_length_vs_load_heights(spring_parameters: dict[str, Any]) -> dict[str, Any]:
-    free_length = spring_parameters.get("free_length", {}).get("value")
-    load_points = spring_parameters.get("load_points", [])
+    free = spring_parameters.get("free_length") or {}
+    free_length = in_base_units(free.get("value"), free.get("unit"))
+    load_points = [normalized_load_point(p) for p in spring_parameters.get("load_points", []) if isinstance(p, dict)]
     if free_length is None or not load_points:
         return _result("LOAD-001", "自由长度与压缩高度", "need_review", "自由长度或载荷测试点缺失，无法判断压缩高度关系。", ["free_length", "load_points"], "high")
+    if any(p.get("height") is None for p in load_points):
+        return _result("LOAD-001", "自由长度与压缩高度", "need_review", "测试高度缺失、数值无效或单位不支持，无法完整判断。", ["free_length", "load_points"], "high")
     bad = [p for p in load_points if p.get("height") is not None and float(p["height"]) >= float(free_length)]
     if bad:
         return _result("LOAD-002", "自由长度与压缩高度", "fail", "存在压缩高度大于或等于自由长度的载荷测试点。", ["free_length", "load_points"], "critical")
@@ -164,9 +168,12 @@ def _check_free_length_vs_load_heights(spring_parameters: dict[str, Any]) -> dic
 
 
 def _check_load_monotonicity(spring_parameters: dict[str, Any]) -> dict[str, Any]:
-    free_length = spring_parameters.get("free_length", {}).get("value")
+    free = spring_parameters.get("free_length") or {}
+    free_length = in_base_units(free.get("value"), free.get("unit"))
     load_points = [
-        p for p in spring_parameters.get("load_points", [])
+        normalized_load_point(p) for p in spring_parameters.get("load_points", []) if isinstance(p, dict)
+    ]
+    load_points = [p for p in load_points
         if p.get("height") is not None and p.get("force") is not None
     ]
     if free_length is None or len(load_points) < 2:

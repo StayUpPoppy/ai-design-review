@@ -193,6 +193,7 @@ def _normalize_load_point(candidate: dict[str, Any]) -> dict[str, Any]:
         "position": candidate.get("position"),
         "suggested_region": candidate.get("suggested_region", ""),
         "need_human_review": _candidate_source_weight(candidate) < 0.98,
+        "source_context": candidate.get("source_context") or {},
     }
 
 
@@ -266,6 +267,7 @@ def _merge_load_point(
         "position": best.get("position"),
         "suggested_region": best.get("suggested_region", ""),
         "need_human_review": has_conflict or _needs_human_review(best, ordered),
+        "source_context": next((point["source_context"] for point in ordered if point.get("source_context")), {}),
     }
 
 

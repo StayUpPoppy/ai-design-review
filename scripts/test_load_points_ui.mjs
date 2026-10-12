@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-const app = fs.readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
+const app = fs.readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const styles = fs.readFileSync(new URL("../frontend/styles.css", import.meta.url), "utf8");
 
 for (const marker of [

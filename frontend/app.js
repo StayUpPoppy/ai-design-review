@@ -4197,6 +4197,7 @@ function renderLoadPointSectionHtml(review, rows) {
         <label>${parameterUnitLabelHtml(parameterUnitLabel("force", "力值", {}, { unit: "N" }))}<input data-role="new-load-force" inputmode="decimal" placeholder="可留空，仅估算应力"></label>
         <label>公差（可选）<input data-role="new-load-tolerance" placeholder="例如：±6 或 +6/-6" aria-label="公差（可选，绝对值单位 N，百分比单位 %）"></label>
         <small data-role="load-point-create-error" aria-live="polite"></small>
+        <small data-role="load-candidate-form-note" hidden>请核对原图并补齐参数；加入后仍需确认。</small>
         <div><button type="submit">添加</button><button type="button" class="secondary-action" data-action="cancel-load-point-create">取消</button></div>
       </form>
       <p class="load-point-unit-help">绝对公差单位与力值一致；百分比公差使用 %。</p>
@@ -4204,8 +4205,31 @@ function renderLoadPointSectionHtml(review, rows) {
         ${loadPointTableHeadHtml()}
         ${rows.join("") || '<div class="empty-line load-point-empty">尚未识别载荷测试点，可手动新增。</div>'}
       </div>
+      ${renderLoadPointDiagnosticsHtml(review)}
     </div>
   `;
+}
+
+function renderLoadPointDiagnosticsHtml(review) {
+  const diagnostics = Array.isArray(review.load_point_diagnostics) ? review.load_point_diagnostics : [];
+  const pending = diagnostics.filter((item) => item.status === "pending");
+  const history = diagnostics.filter((item) => item.status !== "pending");
+  const entry = (item) => {
+    const original = item.original_candidate || {}, point = original.value || {};
+    const context = item.source_context || original.source_context || {};
+    const unit = (field) => original.reported_units ? original.reported_units[field] || "单位未注明" : point[field] || "单位未注明";
+    const source = [item.evidence, context.table_title, ...(Array.isArray(context.headers) ? context.headers : []), context.row_text, context.unit_evidence].filter(Boolean).join(" · ");
+    const status = { excluded: "已排除", promoted: "已加入", dismissed: "已忽略" }[item.status] || "待核对";
+    return `<div class="load-candidate" data-candidate-id="${escapeHtml(item.candidate_id)}">
+      <strong>${escapeHtml(point.label || "未编号候选")} · ${status}</strong>
+      <p>高度：${escapeHtml(String(point.height ?? "--"))} ${escapeHtml(unit("height_unit"))}；力值：${escapeHtml(String(point.force ?? "--"))} ${escapeHtml(unit("force_unit"))}</p>
+      <p>${escapeHtml(item.reason || "请核对原图依据")}</p>
+      <p class="load-candidate-evidence">第 ${escapeHtml(String(item.page || 1))} 页 · ${escapeHtml(source || "缺少可见标注原文")}</p>
+      ${item.status === "pending" ? '<div class="load-candidate-actions"><button type="button" class="secondary-action" data-action="promote-load-candidate">核对后加入</button><button type="button" class="secondary-action" data-action="dismiss-load-candidate">忽略</button></div>' : ""}
+    </div>`;
+  };
+  return `${pending.length ? `<details class="load-candidate-section" open><summary>疑似载荷待核对（${pending.length}）</summary><p>以下候选尚不参与计算或生图，请对照原图核对。</p>${pending.map(entry).join("")}</details>` : ""}
+    ${history.length ? `<details class="load-candidate-section load-candidate-history"><summary>载荷识别说明（${history.length}）</summary>${history.map(entry).join("")}</details>` : ""}`;
 }
 
 function loadPointToleranceDisplay(point, label, review) {
@@ -6653,11 +6677,15 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   const createLoadPointForm = root.querySelector('[data-kind="load_point_create"]');
   root.querySelector('[data-action="show-load-point-create"]')?.addEventListener("click", () => {
     if (!createLoadPointForm) return;
+    delete createLoadPointForm.dataset.candidateId;
+    createLoadPointForm.querySelector('[data-role="load-candidate-form-note"]').hidden = true;
     createLoadPointForm.hidden = false;
     createLoadPointForm.querySelector('[data-role="new-load-label"]')?.focus();
   });
   createLoadPointForm?.querySelector('[data-action="cancel-load-point-create"]')?.addEventListener("click", () => {
     createLoadPointForm.reset();
+    delete createLoadPointForm.dataset.candidateId;
+    createLoadPointForm.querySelector('[data-role="load-candidate-form-note"]').hidden = true;
     createLoadPointForm.hidden = true;
     const error = createLoadPointForm.querySelector('[data-role="load-point-create-error"]');
     if (error) error.textContent = "";
@@ -6666,6 +6694,9 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     event.preventDefault();
     activateReviewContext(messageId);
     ensureLoadPointIds(review);
+    const candidateId = createLoadPointForm.dataset.candidateId;
+    const candidate = candidateId ? (review.load_point_diagnostics || []).find((item) => item.candidate_id === candidateId) : null;
+    if (candidateId && candidate?.status !== "pending") return;
     const label = normalizeLoadPointLabel(createLoadPointForm.querySelector('[data-role="new-load-label"]')?.value);
     const height = Number(createLoadPointForm.querySelector('[data-role="new-load-height"]')?.value);
     const forceText = createLoadPointForm.querySelector('[data-role="new-load-force"]')?.value.trim() || "";
@@ -6688,8 +6719,19 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       load_point_id: createLoadPointId(review), label, height, height_unit: "mm", force, force_unit: "N",
       source: ["human_added"], evidence: "人工新增载荷测试点", confidence: 1, need_human_review: true,
     };
+    if (candidate) {
+      point.evidence = candidate.evidence || "人工核对载荷候选";
+      point.source_context = structuredClone(candidate.source_context || {});
+      point.recognition_candidate_id = candidate.candidate_id;
+    }
     applyLoadPointTolerance(point, toleranceInput);
     review.spring_parameters.load_points.push(point);
+    if (candidate) {
+      const before = structuredClone(candidate);
+      candidate.status = "promoted";
+      candidate.promoted_load_point_id = point.load_point_id;
+      queueReviewAuditEvent({ event_type: "load_candidate_promoted", target_field: "load_point_diagnostics", before_state: before, after_state: structuredClone(candidate), metadata: { candidate_id: candidateId, load_point_id: point.load_point_id } });
+    }
     state.loadPointUndo = null;
     markParameterChangeProposalsStale("载荷测试点已新增");
     queueReviewAuditEvent({
@@ -6698,6 +6740,49 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       metadata: { load_point_id: point.load_point_id, index: review.spring_parameters.load_points.length - 1 },
     });
     updateLatestReviewMessage("已新增载荷测试点，确认后才会写入生图参数包。");
+  });
+
+  root.querySelectorAll('.load-candidate[data-candidate-id]').forEach((row) => {
+    const find = () => (review.load_point_diagnostics || []).find((item) => item.candidate_id === row.dataset.candidateId);
+    row.querySelector('[data-action="dismiss-load-candidate"]')?.addEventListener("click", () => {
+      const candidate = find();
+      if (candidate?.status !== "pending") return;
+      activateReviewContext(messageId);
+      const before = structuredClone(candidate);
+      candidate.status = "dismissed";
+      queueReviewAuditEvent({ event_type: "load_candidate_dismissed", target_field: "load_point_diagnostics", before_state: before, after_state: structuredClone(candidate), metadata: { candidate_id: candidate.candidate_id } });
+      updateLatestReviewMessage("已忽略疑似载荷，原始识别依据已保留。");
+    });
+    row.querySelector('[data-action="promote-load-candidate"]')?.addEventListener("click", () => {
+      const candidate = find();
+      if (candidate?.status !== "pending" || !createLoadPointForm) return;
+      const original = candidate.original_candidate || {}, point = original.value || {};
+      const lengthUnits = { mm: 1, "毫米": 1, cm: 10, m: 1000, in: 25.4, inch: 25.4, "英寸": 25.4 };
+      const forceUnits = { n: 1, "牛": 1, kn: 1000, kgf: 9.80665 };
+      const convert = (raw, unit, units) => {
+        const factor = units[String(unit || "").trim().toLowerCase()];
+        return raw !== null && raw !== undefined && raw !== "" && factor !== undefined && Number.isFinite(Number(raw) * factor) ? Number(raw) * factor : "";
+      };
+      // Do not silently assign mm/N to a unit the recognizer did not report.
+      const units = original.reported_units || point;
+      const height = convert(point.height, units.height_unit, lengthUnits);
+      const force = convert(point.force, units.force_unit, forceUnits);
+      createLoadPointForm.dataset.candidateId = candidate.candidate_id;
+      createLoadPointForm.querySelector('[data-role="new-load-label"]').value = point.label || "";
+      createLoadPointForm.querySelector('[data-role="new-load-height"]').value = height;
+      createLoadPointForm.querySelector('[data-role="new-load-force"]').value = force;
+      const forceFactor = forceUnits[String(units.force_unit || "").trim().toLowerCase()];
+      const tolerancePoint = { ...point };
+      for (const key of ["load_tolerance_upper", "load_tolerance_lower"]) {
+        tolerancePoint[key] = point[key] == null || forceFactor === undefined ? null : Number(point[key]) * forceFactor;
+      }
+      createLoadPointForm.querySelector('[data-role="new-load-tolerance"]').value = loadPointToleranceDisplay(tolerancePoint, point.label || "", review).value;
+      createLoadPointForm.querySelector('[data-role="load-candidate-form-note"]').hidden = false;
+      createLoadPointForm.querySelector('[data-role="load-point-create-error"]').textContent = (point.height != null && height === "" || point.force != null && force === "") ? "候选单位缺失或不支持，请核对后按 mm/N 填写。" : "";
+      createLoadPointForm.hidden = false;
+      createLoadPointForm.scrollIntoView({ block: "nearest" });
+      createLoadPointForm.querySelector('[data-role="new-load-label"]').focus();
+    });
   });
 
   root.querySelector('[data-action="undo-load-point-delete"]')?.addEventListener("click", () => {

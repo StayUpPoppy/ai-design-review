@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 from .end_conditions import normalize_end_type
+from .load_units import in_base_units, normalized_load_point
 from .parameter_suggestions import build_parameter_suggestions
 from .standardizers.compression import derive_compression_parameters, solid_height_mode
 
@@ -276,8 +277,10 @@ def _compression_issues(
             customer_question="请客户确认是否有垂直度、直线度或导向装配要求。",
         )
 
-    reference_solid = _reference_solid_height(parameters, wire, total)
-    explicit_solid = _number(_value(parameters, "solid_height"))
+    wire_mm = in_base_units(_value(parameters, "wire_diameter"), (parameters.get("wire_diameter") or {}).get("unit"))
+    free_length_mm = in_base_units(_value(parameters, "free_length"), (parameters.get("free_length") or {}).get("unit"))
+    reference_solid = _reference_solid_height(parameters, wire_mm, total)
+    explicit_solid = in_base_units(_value(parameters, "solid_height"), (parameters.get("solid_height") or {}).get("unit"))
     minimum_free_length = explicit_solid if explicit_solid is not None else reference_solid
     end_mode = solid_height_mode(_value(parameters, "end_grinding"))
     load_points = [point for point in parameters.get("load_points") or [] if isinstance(point, dict)]
@@ -295,7 +298,7 @@ def _compression_issues(
             customer_question="请客户补充端部是否磨平，或直接提供压并高度要求。",
         )
 
-    if free_length is not None and minimum_free_length is not None and free_length <= minimum_free_length:
+    if free_length_mm is not None and minimum_free_length is not None and free_length_mm <= minimum_free_length:
         source = "图纸压并高度" if explicit_solid is not None else "按当前端部形式推导的压并高度"
         _issue(
             issues,
@@ -304,13 +307,13 @@ def _compression_issues(
             "SPRING-LOAD-FREE-OVER-SOLID",
             ["free_length", "solid_height", "total_coils", "wire_diameter", "end_grinding"],
             f"自由长度必须大于{source} {minimum_free_length:g} mm。",
-            calculation=f"H0={free_length:g} mm；压并高度参考值={minimum_free_length:g} mm",
+            calculation=f"H0={free_length_mm:g} mm；压并高度参考值={minimum_free_length:g} mm",
             basis="压簧自由长度必须大于压并高度，才存在有效压缩行程。",
             explanation="当前弹簧在自由状态下已接近或小于压死状态，无法正常工作。",
             customer_question="请客户确认自由长度、总圈数、线径和端部形式，或提供明确压并高度。",
         )
 
-    _append_load_point_issues(issues, load_points, free_length, minimum_free_length)
+    _append_load_point_issues(issues, load_points, free_length_mm, minimum_free_length)
     _append_load_relation_issues(issues, load_points)
     return issues
 
@@ -322,11 +325,19 @@ def _append_load_point_issues(
     minimum_free_length: float | None,
 ) -> None:
     for index, point in enumerate(load_points, start=1):
+        original = point
+        point = normalized_load_point(point)
         label = str(point.get("label") or f"F{index}")
         height = _number(point.get("height"))
         force = _number(point.get("force"))
         height_field = f"load_points.{label}.height"
         force_field = f"load_points.{label}.force"
+        for field, target in (("height", height_field), ("force", force_field)):
+            if original.get(field) not in (None, "") and point.get(field) is None:
+                _issue(issues, "warning", "load_condition", f"SPRING-LOAD-{field.upper()}-UNIT", [target],
+                       f"{label} 的{'高度' if field == 'height' else '力值'}不是有限数值或单位不支持，无法比较载荷条件。",
+                       calculation=f"{original.get(field)} {original.get(field + '_unit', '')}", basis="统一到 mm/N 后检查载荷条件。",
+                       explanation="不会把不支持的单位直接当作 mm 或 N。", customer_question="请核对载荷数值和单位。")
         if height is not None and height <= 0:
             _issue(
                 issues, "blocked", "load_condition", "SPRING-LOAD-HEIGHT-POSITIVE", [height_field],
@@ -363,6 +374,7 @@ def _append_load_point_issues(
 def _append_load_relation_issues(issues: list[dict[str, Any]], load_points: list[dict[str, Any]]) -> None:
     points = []
     for index, point in enumerate(load_points, start=1):
+        point = normalized_load_point(point)
         height = _number(point.get("height"))
         force = _number(point.get("force"))
         if height is None or force is None:
@@ -401,7 +413,8 @@ def _append_load_relation_issues(issues: list[dict[str, Any]], load_points: list
 def _reference_solid_height(parameters: dict[str, Any], wire: float | None, total: float | None) -> float | None:
     if wire is None or total is None:
         return None
-    wire_upper = _number((parameters.get("wire_diameter") or {}).get("tolerance_upper")) or 0
+    wire_param = parameters.get("wire_diameter") or {}
+    wire_upper = in_base_units(wire_param.get("tolerance_upper"), wire_param.get("unit")) or 0
     max_wire = wire + max(0, wire_upper)
     end_mode = solid_height_mode(_value(parameters, "end_grinding"))
     if not end_mode:

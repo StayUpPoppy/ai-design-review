@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..load_point_recognition import normalize_source_context
+
 import base64
 import json
 import os
@@ -185,6 +187,9 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
    - pitch_type 只能为 constant、variable、unknown。
 6. 对压缩弹簧，输出 standard_selection_inference：推荐标准、制造方式、置信度、证据、原因、是否需要人工确认。只能在有标准号、工艺关键词或明显结构证据时推荐；证据不足时 selected_standard 为空或 unknown，并 need_human_review=true。
 7. 对压缩弹簧，只识别图纸已写明的标准号、等级、端部形式、刚度、垂直度、直线度等；不要计算标准公差，标准公差由后端规则表计算。
+   - 提取载荷前先判断表格用途。未注尺寸/无标示尺寸/一般公差表中的尺寸区间上下限及公差，绝不能配成高度和力值，不能生成 F1/F2/F3。不能仅凭两列数字、自动编号或默认 N 单位推断载荷。
+   - 保留明确 H/F 标注、写明压缩高度及对应载荷的要求文字，以及有高度/载荷表头的真实载荷表；真实载荷表可以没有 F 编号，也可以包含载荷公差列。缺少高度或力值时保留已写明的部分，不补算力值。
+   - load_points.evidence 必须逐字保留可见标注，不用“载荷表第一行”等描述代替原文。增加 source_context：kind 为 annotation/sentence/table/unknown；表格候选保留 table_title、headers（原文列名数组）、row_text（对应原文行）；unit_evidence 保留明确表头或图纸统一单位原文。没有证据的单位保持空，不因格式默认值声称原图有单位。证据不足时保留候选并标记 need_human_review=true，后端将单列待核对。
 8. 不确定或识别不到的字段不要猜；可以留空或省略，并标记 need_human_review=true。只根据图纸可见文字、尺寸线和表格内容输出。
 9. 每个参数附带page（原图页码，从1开始）和具体可见标注原文evidence，说明对应尺寸角色。不要猜测坐标；原图定位由服务端PDF文本/OCR完成。
 
@@ -208,7 +213,7 @@ JSON 结构：
   },
   "standard_selection_inference": {"selected_standard": "", "manufacturing_method": "unknown", "confidence": 0.0, "evidence": [], "reason": "", "need_human_review": true},
   "load_points": [
-    {"label": "F1", "height": null, "height_unit": "mm", "force": null, "force_unit": "N", "force_tolerance_percent": null, "load_tolerance_upper": null, "load_tolerance_lower": null, "load_tolerance_percent": null, "test_height_type": "", "reference_only": false, "confidence": 0.0, "evidence": "", "need_human_review": true}
+    {"label": "F1", "height": null, "height_unit": "mm", "force": null, "force_unit": "N", "force_tolerance_percent": null, "load_tolerance_upper": null, "load_tolerance_lower": null, "load_tolerance_percent": null, "test_height_type": "", "reference_only": false, "confidence": 0.0, "evidence": "", "source_context": {"kind": "unknown", "table_title": "", "headers": [], "row_text": "", "unit_evidence": ""}, "need_human_review": true}
   ],
   "technical_requirements": [
     {"type": "surface", "content": "中文技术要求正文", "original_content": "图纸可见原文", "original_number": null, "source_order": 1, "page": 1, "source_language": "zh", "confidence": 0.0, "evidence": "", "need_human_review": true}
@@ -335,6 +340,8 @@ def qwen_payload_to_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 suggested_region="Qwen load point recognition",
             )
         )
+        candidates[-1]["source_context"] = normalize_source_context(item.get("source_context"))
+        candidates[-1]["reported_units"] = {key: item.get(key) for key in ("height_unit", "force_unit")}
 
     for source_order, item in enumerate(payload.get("technical_requirements") or [], start=1):
         if not isinstance(item, dict):

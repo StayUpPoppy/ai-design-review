@@ -6,6 +6,7 @@ from .balloons import generate_balloons
 from .dimension_roles import apply_compression_dimension_role_ranking
 from .end_conditions import normalize_compression_end_conditions
 from .fusion import fuse_candidates
+from .load_point_recognition import partition_load_candidates
 from .llm_standardization import LLM_STANDARDIZATION_FIELD, normalize_llm_standardization_results
 from .material_terms import normalize_material
 from .material_catalog import MATERIAL_CATALOG_KEYS, ensure_compression_material
@@ -79,6 +80,7 @@ class DrawingReviewWorkflow:
         candidates = apply_spring_semantic_mapping(
             candidates, normalize_materials=preliminary_type != "compression_spring",
         )
+        candidates, load_point_diagnostics = partition_load_candidates(candidates)
         candidates = apply_compression_dimension_role_ranking(candidates)
         fused = fuse_candidates(candidates)
         classification = classify_spring_type(candidates, file_info)
@@ -173,6 +175,7 @@ class DrawingReviewWorkflow:
             "llm_standardization_diagnostics": llm_standardization["diagnostics"],
             "technical_requirements": technical_requirements,
             "dimension_evidence": dimension_evidence,
+            "load_point_diagnostics": load_point_diagnostics,
             "review_results": review_results,
             "balloons": balloons,
             "conflicts": fused["conflicts"],
@@ -340,6 +343,7 @@ class DrawingReviewWorkflow:
             "page": item.get("page", 1),
             "position": item.get("position"),
             "suggested_region": item.get("suggested_region", ""),
+            "source_context": item.get("source_context") or {},
         }
 
 

@@ -858,6 +858,18 @@ button:disabled {
 
 .load-point-create[hidden] { display: none; }
 
+.load-candidate-section { margin-top: 10px; padding: 10px 12px; border: 1px solid #dce7f5; border-radius: 6px; background: #f8fbff; color: #52637a; font-size: 11px; }
+.load-candidate-section summary { color: #253149; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.load-candidate-section summary:focus-visible { outline: 2px solid #2857d4; outline-offset: 3px; }
+.load-candidate-section > p { margin: 8px 0; }
+.load-candidate { padding: 10px 0; border-top: 1px solid #dce7f5; overflow-wrap: anywhere; }
+.load-candidate strong { font-size: 12px; }
+.load-candidate p { margin: 5px 0; line-height: 1.5; }
+.load-candidate-evidence { color: #68768e; }
+.load-candidate-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.load-candidate-actions button { min-height: 30px; font-size: 11px; }
+.load-candidate-history { background: #fff; }
+
 .load-point-create > small,
 .load-point-create > div {
   grid-column: 1 / -1;

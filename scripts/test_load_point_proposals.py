@@ -171,10 +171,11 @@ def _review() -> dict:
     return {
         "drawing_summary": {"spring_type": "compression_spring"},
         "spring_parameters": {
-            "wire_diameter": _param(3, "mm"),
+            # Keep solid height (20 mm) below the 24–30 mm test conditions.
+            "wire_diameter": _param(2, "mm"),
             "mean_diameter": _param(23, "mm"),
-            "outer_diameter": _param(26, "mm"),
-            "inner_diameter": _param(20, "mm"),
+            "outer_diameter": _param(25, "mm"),
+            "inner_diameter": _param(21, "mm"),
             "free_length": _param(45, "mm"),
             "total_coils": _param(10, "turns"),
             "active_coils": _param(8, "turns"),

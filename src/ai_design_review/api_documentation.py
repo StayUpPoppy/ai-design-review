@@ -187,12 +187,26 @@ class ReviewLoadPointDocument(BaseModel):
     )
     label: str = Field(default="", description="用户填写且唯一的测试点编号，忽略大小写和空格后不可重复。", examples=["F1"])
     height: float | None = Field(default=None, gt=0, description="测试高度，单位mm；新增或修改后需要人工确认。", examples=[25.0])
-    height_unit: Literal["mm"] = Field(default="mm", description="测试高度固定单位mm。")
+    height_unit: str = Field(default="mm", description="测试高度单位，支持mm/cm/m/in；界面人工新增使用mm。")
     force: float | None = Field(default=None, ge=0, description="测试力值，单位N；新增或修改后需要人工确认。", examples=[100.0])
-    force_unit: Literal["N"] = Field(default="N", description="测试力值固定单位N。")
+    force_unit: str = Field(default="N", description="测试力值单位，支持N/kN/kgf；界面人工新增使用N。")
     load_tolerance_upper: float | None = Field(default=None, description="可选力值上偏差，单位N。", examples=[6.0])
     load_tolerance_lower: float | None = Field(default=None, description="可选力值下偏差，单位N。", examples=[-6.0])
     need_human_review: bool = Field(default=True, description="是否待人工确认；仅false且内容完整的测试点写入生图参数包。")
+    source_context: dict[str, Any] = Field(default_factory=dict, description="原图标注或表格的表头、对应行及单位依据；不发送给SW。")
+
+
+class LoadPointDiagnosticDocument(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    candidate_id: str = Field(description="识别候选稳定ID。")
+    status: Literal["pending", "excluded", "promoted", "dismissed"] = Field(description="待核对、已排除、已加入或已忽略。")
+    original_candidate: dict[str, Any] = Field(default_factory=dict, description="保留原始识别候选，不参与正式载荷计算。")
+    page: int | None = Field(default=1, description="原图页码。")
+    evidence: str = Field(default="", description="原图可见标注。")
+    source_context: dict[str, Any] = Field(default_factory=dict)
+    reason_code: str = Field(default="")
+    reason: str = Field(default="")
+    promoted_load_point_id: str | None = Field(default=None, description="核对加入后的正式载荷点ID。")
 
 
 class SpringParametersDocument(BaseModel):
@@ -330,6 +344,7 @@ class ReviewDocument(BaseModel):
     parameter_reasonableness: ParameterReasonablenessAssessment | None = Field(default=None, description="最近一次参数合理性诊断和可选建议。")
     parameter_reasonableness_stale: bool = Field(default=False, description="参数变化后合理性结果是否已经过期。")
     conflicts: list[dict[str, Any]] = Field(default_factory=list, description="不同识别来源之间的参数冲突。")
+    load_point_diagnostics: list[LoadPointDiagnosticDocument] = Field(default_factory=list, description="疑似载荷及公差表排除记录；不参与计算或SW输出。旧记录可省略。")
     missing_fields: list[str] = Field(default_factory=list, description="当前缺失的必要字段。")
     change_history: list[dict[str, Any]] = Field(default_factory=list, description="参数修改与确认历史。")
     review_revision: int | None = Field(default=None, description="审图修订号，每次持久化修改后递增。")
