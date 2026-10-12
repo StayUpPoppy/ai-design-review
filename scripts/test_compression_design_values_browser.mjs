@@ -53,7 +53,15 @@ try {
   await reopen();
   const panel=page.locator('.compare-tab-panel[data-compare-panel="parameters"]');
   const input=(f)=>panel.locator(`[data-kind="param"][data-field="${f}"] [data-role="value"]`);
-  const metric=(m)=>panel.locator(`[data-role="design-check-value"][data-metric="${m}"]`);
+  const metric=(m)=>({ async innerText() {
+    const value=await panel.locator(`[data-role="design-check-value"][data-metric="${m}"]`).innerText();
+    const unit=await panel.locator(`[data-role="design-check-unit"][data-metric="${m}"]`).innerText();
+    return value==="--" ? value : `${m==="reference_solid_height_limit"?"Hb ":""}${value}${unit==="—"?"":` ${unit}`}`;
+  } });
+  const workText=async(id)=>{
+    const row=panel.locator(`.compression-work-stress[data-load-point-id="${id}"]`);
+    return `${await row.locator('[data-role="design-check-value"]').innerText()} ${await row.locator('[data-role="design-check-unit"]').innerText()}`;
+  };
   const edit=async(f,v)=>{if(!await input(f).isVisible()) await panel.locator(".advanced-parameters summary").click();await input(f).fill(v);await input(f).dispatchEvent("change");};
   const flush=async()=>assert.equal(await page.evaluate(()=>flushReviewPersistence({throwOnError:true})),true);
   assert.equal(await input("pitch").inputValue(),"3.3");
@@ -67,14 +75,14 @@ try {
   await edit("free_length","36");
   assert.equal(await metric("unit_mass").innerText(),"0.01693421 kg");
   assert.equal(await metric("solid_stress").innerText(),"212.2373 MPa");
-  assert.ok((await panel.locator('[data-role="work-stresses"]').innerText()).includes("66.5825 MPa"));
+  assert.equal(await workText("one"),"66.5825 MPa");
   const focus=await input("free_length").evaluate((element)=>{element.focus();element.value="40";element.setSelectionRange(1,1);element.dispatchEvent(new Event("input",{bubbles:true}));return {focused:document.activeElement===element,caret:element.selectionStart};});
   assert.deepEqual(focus,{focused:true,caret:1});
   await input("free_length").dispatchEvent("change");
   await edit("free_length","36");
   const load=(id,role)=>panel.locator(`[data-kind="load_point"][data-load-point-id="${id}"] [data-role="${role}"]`);
   await load("one","force").fill("0");await load("one","force").dispatchEvent("change");
-  assert.ok((await panel.locator('.compression-work-stress[data-load-point-id="one"]').innerText()).includes("0 MPa"));
+  assert.equal(await workText("one"),"0 MPa");
   await load("one","force").fill("abc");await load("one","force").dispatchEvent("change");
   assert.ok((await panel.locator('.compression-work-stress[data-load-point-id="one"]').innerText()).includes("--"));
   await load("one","force").fill("10");await load("one","force").dispatchEvent("change");
@@ -83,17 +91,17 @@ try {
   await panel.locator('[data-role="new-load-height"]').fill("30");
   await panel.locator('[data-kind="load_point_create"]').evaluate((form)=>form.requestSubmit());
   const addedId=await page.evaluate(()=>state.review.spring_parameters.load_points.find((p)=>p.label==="F4").load_point_id);
-  assert.ok((await panel.locator(`.compression-work-stress[data-load-point-id="${addedId}"]`).innerText()).includes("估算"));
+  assert.ok((await panel.locator(`.compression-work-stress[data-load-point-id="${addedId}"] [data-role="design-check-basis"]`).textContent()).includes("估算"));
   assert.equal(await load(addedId,"force").inputValue(),"");
   await load(addedId,"rename-load-point").click();
   await load(addedId,"label").fill("F4-new");await load(addedId,"label").dispatchEvent("change");
   assert.ok((await panel.locator(`.compression-work-stress[data-load-point-id="${addedId}"]`).innerText()).includes("F4-new"));
   await load(addedId,"delete-load-point").click();
   assert.equal(await panel.locator(`.compression-work-stress[data-load-point-id="${addedId}"]`).count(),0);
-  await input("material").selectOption("SUS316 不锈钢");
+  await input("material").selectOption("SUS316");
   const mass316=await metric("unit_mass").innerText();
   assert.notEqual(mass316,"0.01693421 kg");
-  await input("material").selectOption("SUS304 不锈钢");
+  await input("material").selectOption("SUS304");
   patchDelay=150;
   await load("one","force").fill("11");await load("one","force").dispatchEvent("change");
   const saving=page.evaluate(()=>persistReviewChanges({throwOnError:true}));
@@ -114,7 +122,7 @@ try {
   assert.equal(await input("pitch").inputValue(),"");
   assert.equal(await metric("unit_mass").innerText(),"--");
   await edit("pitch","3.7");
-  await panel.locator(".compression-design-basis summary").click();
+  await panel.locator(".compression-design-basis").evaluate((el)=>{el.open=true;});
   await page.setViewportSize({width:390,height:1600});
   assert.ok(await panel.locator('[data-role="calculation-details"]').isVisible());
   const output="outputs/design-values-qa";fs.mkdirSync(output,{recursive:true});
@@ -190,7 +198,7 @@ try {
   assert.equal(await metric("solid_stress").innerText(),"--");
   assert.equal(await metric("unit_mass").innerText(),"0.00642403 kg");
   await heightRow.screenshot({path:`${output}/stale-reference.png`});
-  await panel.locator('.compression-design-basis summary').click();
+  await panel.locator('.compression-design-basis').evaluate((el)=>{el.open=true;});
   await panel.locator('[data-kind="compression-design-check"]').screenshot({path:`${output}/book-model.png`});
   await heightRow.locator('[data-role="apply-formula-candidate"]').click();
   assert.equal(await input("solid_height").inputValue(),"6.3");
@@ -200,7 +208,7 @@ try {
   await page.reload();await reopen();
   assert.equal(await input("solid_height").inputValue(),"6.3");
   assert.equal(await metric("solid_stress").innerText(),"451.2669 MPa");
-  await panel.locator('.compression-design-basis summary').click();
+  await panel.locator('.compression-design-basis').evaluate((el)=>{el.open=true;});
   assert.equal(await metric("solid_height_used").innerText(),"6.3 mm");
   assert.equal(await metric("reference_solid_height_limit").innerText(),"Hb ≤ 7.4 mm");
   // An explicit manual height changes the estimate; clearing it does not restore a fallback.
@@ -220,7 +228,7 @@ try {
   await page.reload();await reopen();
   assert.equal(await input("active_coils").inputValue(),"4");
   assert.equal(await input("pitch").inputValue(),"4.3");
-  await panel.locator('.compression-design-basis summary').click();
+  await panel.locator('.compression-design-basis').evaluate((el)=>{el.open=true;});
   assert.equal(await metric("nominal_solid_height").innerText(),"9 mm");
   assert.equal(await input("solid_height").inputValue(),"9");
   await flush();await page.reload();await reopen();
@@ -234,7 +242,7 @@ try {
   await input("end_grinding").selectOption("两端磨削");
   assert.equal(await input("active_coils").inputValue(),"3");
   assert.equal(await input("pitch").inputValue(),"4.75");
-  await panel.locator('.compression-design-basis summary').click();
+  await panel.locator('.compression-design-basis').evaluate((el)=>{el.open=true;});
   assert.equal(await metric("nominal_solid_height").innerText(),"7.2 mm");
   assert.equal(await input("solid_height").inputValue(),"7.2");
   await edit("pitch","");

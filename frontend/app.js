@@ -3612,23 +3612,49 @@ function renderCompressionDesignCheckHtml(review) {
   if (!isCompressionSpringReview(review)) return "";
   const values = compressionDesignCheckValues(review.spring_parameters || {});
   const checks = prepareCompressionDesignChecks(review);
+  const disclosure = compressionDesignDisclosureState(review);
   return `
     <section class="compression-design-check" data-kind="compression-design-check">
       <div class="compression-design-check-head">
         <strong>设计校核值</strong>
         <small>自动计算</small>
       </div>
-      <div class="compression-design-check-grid">
+      <table class="compression-design-table compression-design-primary" aria-label="设计校核结果">
+        <colgroup><col class="design-col-label"><col class="design-col-value"><col class="design-col-unit"><col class="design-col-basis"></colgroup>
+        <thead><tr><th scope="col">参数</th><th scope="col">数值</th><th scope="col">单位</th><th scope="col" class="design-basis-column">依据</th></tr></thead>
+        <tbody>
         ${checks ? compressionDesignResultHtml("旋绕比 C", "spring_index", checks.metrics.spring_index) : compressionDesignCheckMetricHtml("旋绕比 C", "spring_index", values.spring_index, "C = D / d", values.spring_index_missing)}
         ${checks ? compressionDesignResultHtml("细长比 b", "slenderness_ratio", checks.metrics.slenderness_ratio) : compressionDesignCheckMetricHtml("细长比 b", "slenderness_ratio", values.slenderness_ratio, "b = H0 / D", values.slenderness_ratio_missing)}
         ${compressionDesignResultHtml("理论刚度 P′", "theoretical_spring_rate", checks?.metrics.theoretical_spring_rate)}
         ${compressionDesignResultHtml("压并应力 τ_b", "solid_stress", checks?.metrics.solid_stress)}
         ${compressionDesignResultHtml("单件重量 Q", "unit_mass", checks?.metrics.unit_mass)}
-      </div>
-      <div data-role="work-stresses">${compressionWorkStressHtml(checks)}</div>
-      <details class="compression-design-basis"><summary>计算依据</summary><div data-role="calculation-details">${compressionCalculationDetailsHtml(checks)}</div></details>
+        </tbody>
+        <tbody data-role="work-stresses">${compressionWorkStressHtml(checks)}</tbody>
+      </table>
+      <p class="compression-solid-load-note" data-role="solid-load-note">${escapeHtml(compressionSolidLoadText(checks?.metrics.solid_stress))}</p>
+      <details class="compression-design-basis" data-design-disclosure="basis"${disclosure.basis ? " open" : ""}>
+        <summary>计算依据</summary><div data-role="calculation-details">${compressionCalculationDetailsHtml(checks, disclosure.formulas)}</div>
+      </details>
     </section>
   `;
+}
+
+function compressionDesignDisclosureState(review) {
+  state.compressionDesignDisclosures ||= new Map();
+  const key = review.job_id || review;
+  if (!state.compressionDesignDisclosures.has(key)) state.compressionDesignDisclosures.set(key, { basis: true, formulas: false });
+  return state.compressionDesignDisclosures.get(key);
+}
+
+function bindCompressionDesignDisclosures(root, review) {
+  const disclosure = compressionDesignDisclosureState(review);
+  root.querySelectorAll('[data-design-disclosure]').forEach((details) => {
+    if (details.designDisclosureBound) return;
+    details.designDisclosureBound = true;
+    details.addEventListener("toggle", () => {
+      if (details.isConnected) disclosure[details.dataset.designDisclosure] = details.open;
+    });
+  });
 }
 
 function prepareCompressionDesignChecks(review) {
@@ -3640,55 +3666,108 @@ function prepareCompressionDesignChecks(review) {
 }
 
 function compressionDesignResultText(metric, result) {
-  if (result?.value == null) return "--";
+  if (!Number.isFinite(result?.value)) return "--";
   const value = metric === "unit_mass" ? String(Number(result.value.toFixed(8))) : formatCompactNumber(result.value);
-  return `${metric === "reference_solid_height_limit" ? "Hb ≤ " : ""}${value}${result.unit ? ` ${result.unit}` : ""}`;
+  return `${metric === "reference_solid_height_limit" ? "≤ " : ""}${value}`;
+}
+
+function compressionDesignUnitText(metric, result) {
+  const units = { theoretical_spring_rate: "N/mm", solid_stress: "MPa", work_stress: "MPa", unit_mass: "kg", helix_angle: "°", wire_length: "mm", reference_solid_height_limit: "mm", nominal_solid_height: "mm", solid_height_used: "mm" };
+  return result?.unit || units[metric] || "—";
+}
+
+function compressionDesignBasisText(metric, result) {
+  if (!Number.isFinite(result?.value)) return compressionDesignReasonText(result);
+  if (["solid_stress", "work_stress"].includes(metric)) return result.status === "estimated" ? "估算载荷" : "已有载荷";
+  if (result.status === "estimated") return "近似计算";
+  return "理论计算";
 }
 
 function compressionDesignReasonText(result) {
-  let text = result?.value == null ? result?.reason || "等待计算参数" : `${result.basis} · ${result.formula}`;
-  if (result?.value != null && Object.prototype.hasOwnProperty.call(result, "height_source") && Object.prototype.hasOwnProperty.call(result, "force_n")) {
+  let text = !Number.isFinite(result?.value) ? result?.reason || "等待计算参数" : [result.basis, result.formula].filter(Boolean).join(" · ");
+  if (Number.isFinite(result?.value) && Object.prototype.hasOwnProperty.call(result, "height_source") && Object.prototype.hasOwnProperty.call(result, "force_n")) {
     text = `${result.basis}${result.force_n != null ? ` · Pb=${formatCompactNumber(result.force_n)} N` : ""}${result.inputs?.solid_height_mm != null ? ` · Hb=${formatCompactNumber(result.inputs.solid_height_mm)} mm` : ""}${result.force_n != null ? ` · ${result.formula}` : ""}`;
   }
   return text.replace(/\b[a-z]+(?:_[a-z]+)*\b/g, (field) => FIELD_LABELS[field] || field);
 }
 
-function compressionDesignResultHtml(label, metric, result) {
-  return `<div class="compression-design-check-metric"><span>${escapeHtml(label)}</span>
-    <strong data-role="design-check-value" data-metric="${escapeHtml(metric)}">${escapeHtml(compressionDesignResultText(metric, result))}</strong>
-    <small data-role="design-check-basis" data-metric="${escapeHtml(metric)}" title="${escapeHtml(compressionDesignReasonText(result))}">${escapeHtml(compressionDesignReasonText(result))}</small></div>`;
+function compressionDesignResultHtml(label, metric, result, options = {}) {
+  const value = escapeHtml(compressionDesignResultText(metric, result));
+  const unit = escapeHtml(compressionDesignUnitText(metric, result));
+  const basis = escapeHtml(compressionDesignBasisText(metric, result));
+  const key = escapeHtml(metric), reason = escapeHtml(compressionDesignReasonText(result));
+  const workAttributes = options.point ? ` class="compression-work-stress" data-load-point-id="${escapeHtml(options.point.load_point_id || "")}"` : "";
+  const cells = `<th scope="row">${escapeHtml(label)}</th><td class="design-value-cell"><strong data-role="design-check-value" data-metric="${key}">${value}</strong></td><td class="design-unit-cell" data-role="design-check-unit" data-metric="${key}">${unit}</td>`;
+  if (options.secondary) return `<tr>${cells}</tr>${!Number.isFinite(result?.value) ? `<tr class="design-secondary-reason"><td colspan="3">${reason}</td></tr>` : ""}`;
+  return `<tr${workAttributes}>${cells}<td class="design-basis-column" data-role="design-check-basis" data-metric="${key}" title="${reason}">${basis}</td></tr>
+    <tr class="design-mobile-basis"><td colspan="3" data-role="design-check-mobile-basis" data-metric="${key}" title="${reason}">${basis}</td></tr>`;
 }
 
 function compressionWorkStressHtml(checks) {
   const points = checks?.work_stresses || [];
-  if (!points.length) return '<small class="compression-work-empty">工作应力：待补充载荷测试点</small>';
-  return `<div class="compression-work-stress-list">${points.map((point) =>
-    `<div class="compression-work-stress" data-load-point-id="${escapeHtml(point.load_point_id || "")}">
-      <span>${escapeHtml(point.label || "未编号")} 工作应力</span><strong>${escapeHtml(compressionDesignResultText("work_stress", point))}</strong>
-      <small>${escapeHtml(compressionDesignReasonText(point))}${point.force_n != null ? ` · P=${escapeHtml(formatCompactNumber(point.force_n))} N` : ""}</small>
-    </div>`).join("")}</div>`;
+  if (!points.length) return '<tr class="compression-work-empty"><td colspan="3">工作应力：待补充载荷测试点</td><td class="design-basis-column"></td></tr>';
+  return points.map((point) => compressionDesignResultHtml(`${point.label || "未编号"} 工作应力`, "work_stress", point, { point })).join("");
 }
 
-function compressionCalculationDetailsHtml(checks) {
+function compressionSolidLoadText(result) {
+  if (!Number.isFinite(result?.value) || !Number.isFinite(result?.force_n)) return "";
+  let text = `压并应力依据：${result.status === "estimated" ? "估算载荷" : "已有压并载荷"} Pb = ${formatCompactNumber(result.force_n)} N`;
+  if (result.status === "estimated" && Number.isFinite(result.inputs?.solid_height_mm)) {
+    const source = { manual: "人工输入高度", drawing: "图纸标注高度", book_nominal: "书页名义高度", open_nominal: "不并紧名义高度" }[result.height_source] || "高度来源待核对";
+    text += ` · Hb = ${formatCompactNumber(result.inputs.solid_height_mm)} mm（${source}）`;
+  }
+  return text;
+}
+
+function compressionCalculationDetailsHtml(checks, formulasOpen = false) {
   const properties = checks?.material_properties;
   const material = properties ? `材料：${properties.display_name}；G=${properties.shear_modulus_mpa} MPa；ρ=${properties.density_g_cm3 ?? "--"} g/cm³` : "材料属性待加载或待选择";
   const rows = [["曲度系数 K", "curvature_factor"], ["螺旋角 α", "helix_angle"], ["展开长度 L", "wire_length"], ["压并高度上限参考（含公差）", "reference_solid_height_limit"], ["名义压并高度", "nominal_solid_height"], ["应力采用的压并高度", "solid_height_used"]];
-  const rate = checks?.metrics.theoretical_spring_rate;
-  return `<p>${escapeHtml(material)}</p><p>理论刚度 P′：${escapeHtml(compressionDesignResultText("theoretical_spring_rate", rate))} · ${escapeHtml(compressionDesignReasonText(rate))}</p><div class="compression-design-check-grid">${rows.map(([label, metric]) => compressionDesignResultHtml(label, metric, checks?.metrics[metric])).join("")}</div>`;
+  return `<p class="compression-design-material">${escapeHtml(material)}</p>
+    <table class="compression-design-table compression-design-secondary" aria-label="计算依据参数">
+      <colgroup><col class="design-col-label"><col class="design-col-value"><col class="design-col-unit"></colgroup>
+      <thead><tr><th scope="col">参数</th><th scope="col">数值</th><th scope="col">单位</th></tr></thead>
+      <tbody>${rows.map(([label, metric]) => compressionDesignResultHtml(label, metric, checks?.metrics[metric], { secondary: true })).join("")}</tbody>
+    </table>
+    <p class="compression-height-purpose">上限参考用于尺寸校核；估算压并载荷时，采用上表“应力采用的压并高度”。</p>
+    <details class="compression-design-formulas" data-design-disclosure="formulas"${formulasOpen ? " open" : ""}><summary>完整公式与输入参数</summary>
+      <div data-role="calculation-formulas">${compressionDesignFormulasHtml(checks)}</div>
+    </details>`;
+}
+
+function compressionDesignFormulasHtml(checks) {
+  const labels = { spring_index: "旋绕比 C", slenderness_ratio: "细长比 b", theoretical_spring_rate: "理论刚度 P′", solid_stress: "压并应力 τ_b", unit_mass: "单件重量 Q", curvature_factor: "曲度系数 K", helix_angle: "螺旋角 α", wire_length: "展开长度 L", reference_solid_height_limit: "压并高度上限参考（含公差）", nominal_solid_height: "名义压并高度", solid_height_used: "应力采用的压并高度" };
+  const rows = Object.entries(labels).map(([metric, label]) => ({ metric, label, result: checks?.metrics[metric] }));
+  rows.push(...(checks?.work_stresses || []).map((point) => ({ metric: "work_stress", label: `${point.label || "未编号"} 工作应力`, result: point })));
+  if (checks?.pitch_calculation) rows.push({ metric: "pitch", label: "节距补算", result: checks.pitch_calculation });
+  return rows.map(({ metric, label, result }) => {
+    const inputs = { ...result?.inputs };
+    if (metric === "theoretical_spring_rate") inputs.G = checks?.material_properties?.shear_modulus_mpa ?? null;
+    if (metric === "unit_mass") { inputs.rho = checks?.material_properties?.density_g_cm3 ?? null; inputs.wire_length = checks?.metrics.wire_length?.value ?? null; }
+    if (metric === "curvature_factor") inputs.spring_index = checks?.metrics.spring_index?.value ?? null;
+    if (metric === "wire_length") inputs.helix_angle = checks?.metrics.helix_angle?.value ?? null;
+    ["model_version", "model_id", "notes", "load_points"].forEach((field) => delete inputs[field]);
+    return `<section class="compression-formula-item"><h4>${escapeHtml(label)}</h4><p class="compression-formula-expression">${escapeHtml(result?.formula || "公式待确定")}</p>
+      <p>依据：${escapeHtml(result?.basis || "等待计算参数")}</p>${!Number.isFinite(result?.value) ? `<p>原因：${escapeHtml(compressionDesignReasonText(result))}</p>` : ""}
+      <dl>${Object.entries(inputs).map(([field, value]) => compressionDesignInputHtml(field, value, inputs)).join("") || "<dt>输入参数</dt><dd>待补充</dd>"}</dl></section>`;
+  }).join("");
+}
+
+function compressionDesignInputHtml(field, value, inputs) {
+  const labels = { G: "剪切模量 G", rho: "密度 ρ", force_n: "载荷 P", curvature_factor: "曲度系数 K", free_length_mm: "自由高度 H₀", theoretical_spring_rate: "理论刚度 P′", solid_height_mm: "压并高度 Hb", test_height: "载荷点高度", test_height_unit: "载荷点高度单位", dmax: "最大线径 dmax", wire_length: "展开长度 L", spring_index: "旋绕比 C", helix_angle: "螺旋角 α", wire_diameter_mm: "名义线径 d", wire_tolerance_upper_mm: "线径上偏差", max_wire_diameter_mm: "最大线径 dmax", end_mode: "端面磨削方式", a: "端部系数 a", pitch_type: "节距形式" };
+  const units = { wire_diameter: "mm", mean_diameter: "mm", free_length: "mm", pitch: "mm", solid_height: "mm", total_coils: "圈", active_coils: "圈", support_coils: "圈（单端）", G: "MPa", rho: "g/cm³", force_n: "N", free_length_mm: "mm", solid_height_mm: "mm", theoretical_spring_rate: "N/mm", dmax: "mm", wire_length: "mm", helix_angle: "°", test_height: inputs.test_height_unit || "mm", wire_diameter_mm: "mm", wire_tolerance_upper_mm: "mm", max_wire_diameter_mm: "mm" };
+  if (field === "end_mode") value = { ground: "两端磨削", not_ground: "两端不磨削" }[value] || value;
+  if (field === "pitch_type") value = { constant: "等节距", variable: "变节距" }[value] || value;
+  const label = labels[field] || FIELD_LABELS[field] || field;
+  const text = value == null ? "--" : typeof value === "number" ? Number.isFinite(value) ? `${formatCompactNumber(value)}${units[field] ? ` ${units[field]}` : ""}` : "--" : typeof value === "object" ? JSON.stringify(value) : String(value);
+  return `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(text)}</dd>`;
 }
 
 function compressionDesignCheckMetricHtml(label, metric, value, formula, missingFields) {
-  const valueText = value == null ? "--" : formatCompactNumber(value);
   const missingText = value == null && missingFields.length
     ? `待补充：${missingFields.map((field) => targetFieldLabel(field)).join("、")}`
     : formula;
-  return `
-    <div class="compression-design-check-metric">
-      <span>${escapeHtml(label)}</span>
-      <strong data-role="design-check-value" data-metric="${escapeHtml(metric)}">${escapeHtml(valueText)}</strong>
-      <small data-role="design-check-basis" data-metric="${escapeHtml(metric)}">${escapeHtml(missingText)}</small>
-    </div>
-  `;
+  return compressionDesignResultHtml(label, metric, { value, reason: missingText, basis: "理论计算", formula });
 }
 
 function compressionDesignCheckValues(params) {
@@ -3775,14 +3854,26 @@ function refreshCompressionDesignChecks(root, review) {
     if (checks) {
       Object.entries(checks.metrics).forEach(([metric, result]) => {
         const valueNode = container.querySelector(`[data-role="design-check-value"][data-metric="${metric}"]`);
-        const basisNode = container.querySelector(`[data-role="design-check-basis"][data-metric="${metric}"]`);
+        const unitNode = container.querySelector(`[data-role="design-check-unit"][data-metric="${metric}"]`);
         if (valueNode) valueNode.textContent = compressionDesignResultText(metric, result);
-        if (basisNode) { basisNode.textContent = compressionDesignReasonText(result); basisNode.title = basisNode.textContent; }
+        if (unitNode) unitNode.textContent = compressionDesignUnitText(metric, result);
+        container.querySelectorAll(`[data-role="design-check-basis"][data-metric="${metric}"], [data-role="design-check-mobile-basis"][data-metric="${metric}"]`).forEach((basisNode) => {
+          basisNode.textContent = compressionDesignBasisText(metric, result);
+          basisNode.title = compressionDesignReasonText(result);
+        });
       });
       const work = container.querySelector('[data-role="work-stresses"]');
       if (work) work.innerHTML = compressionWorkStressHtml(checks);
+      const note = container.querySelector('[data-role="solid-load-note"]');
+      if (note) note.textContent = compressionSolidLoadText(checks.metrics.solid_stress);
       const details = container.querySelector('[data-role="calculation-details"]');
-      if (details) details.innerHTML = compressionCalculationDetailsHtml(checks);
+      const formulas = container.querySelector('[data-design-disclosure="formulas"]');
+      const disclosure = compressionDesignDisclosureState(review);
+      const basis = container.querySelector('[data-design-disclosure="basis"]');
+      if (basis) disclosure.basis = basis.open;
+      if (formulas) disclosure.formulas = formulas.open;
+      if (details) details.innerHTML = compressionCalculationDetailsHtml(checks, disclosure.formulas);
+      bindCompressionDesignDisclosures(container, review);
       return;
     }
     Object.entries(metrics).forEach(([metric, item]) => {
@@ -3792,7 +3883,12 @@ function refreshCompressionDesignChecks(root, review) {
       if (basis) {
         basis.textContent = item.value == null && item.missing.length
           ? `待补充：${item.missing.map((field) => targetFieldLabel(field)).join("、")}`
-          : item.formula;
+          : item.value == null ? "等待计算参数" : "理论计算";
+        basis.title = item.value == null ? basis.textContent : item.formula;
+        container.querySelectorAll?.(`[data-role="design-check-mobile-basis"][data-metric="${metric}"]`).forEach((mobileBasis) => {
+          mobileBasis.textContent = basis.textContent;
+          mobileBasis.title = basis.title;
+        });
       }
     });
   });
@@ -6382,6 +6478,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   const context = getReviewContext(messageId) || activeReviewContext();
   const review = context?.review || state.review;
   if (!review) return;
+  bindCompressionDesignDisclosures(root, review);
   if (typeof DrawingAnnotations !== "undefined") DrawingAnnotations.bindFields(root, () => activateReviewContext(messageId));
   bindReasonablenessIssueFocus(root, messageId);
   bindBulkConfirmationFollowupControls(root, messageId);

@@ -2035,12 +2035,14 @@ button:disabled {
 
 .compression-design-check {
   display: grid;
+  container: compression-design / inline-size;
   gap: 8px;
   margin: 12px 0 2px;
-  padding: 10px 12px;
+  padding: 12px 14px;
   border: 1px solid #dce7f5;
   border-radius: 8px;
   background: #f8fbff;
+  min-width: 0;
 }
 
 .parameter-formula-candidate { grid-column: 1 / -1; display: grid; gap: 6px; color: #9a570c; font-size: 12px; }
@@ -2053,64 +2055,117 @@ button:disabled {
   justify-content: space-between;
   gap: 12px;
   color: #21324a;
-  font-size: 12px;
-}
-
-.compression-design-check-head small,
-.compression-design-check-metric small {
-  color: #75839a;
-  font-size: 10px;
-}
-
-.compression-design-check-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.compression-work-stress-list { display: grid; gap: 8px; margin-top: 10px; }
-.compression-work-stress { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 8px; font-size: 11px; }
-.compression-work-stress strong { color: #1d4f91; font-variant-numeric: tabular-nums; }
-.compression-work-stress small { grid-column: 1 / -1; color: #75839a; overflow-wrap: anywhere; }
-.compression-work-empty { display: block; margin-top: 8px; color: #75839a; }
-.compression-design-basis { margin-top: 10px; font-size: 11px; }
-.compression-design-basis summary { cursor: pointer; color: #52637a; }
-.compression-design-basis p { color: #52637a; overflow-wrap: anywhere; }
-.load-point-rename { padding: 2px 0; border: 0; background: transparent; color: #52637a; font-size: 10px; cursor: pointer; }
-.load-point [data-role="label"] { width: 100%; min-width: 0; }
-@media (max-width: 520px) { .compression-design-check-grid { grid-template-columns: 1fr; } }
-
-.compression-design-check-metric {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 3px 8px;
-  align-items: baseline;
-  min-width: 0;
-}
-
-.compression-design-check-metric > span {
-  color: #52637a;
-  font-size: 11px;
-}
-
-.compression-design-check-metric > strong {
-  color: #1d4f91;
   font-size: 14px;
-  font-variant-numeric: tabular-nums;
 }
 
-.compression-design-check-metric > small {
-  grid-column: 1 / -1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.compression-design-check-head small {
+  color: #75839a;
+  font-size: 10.5px;
+  font-weight: 400;
 }
 
-.compression-design-check-metric > small[data-metric="solid_stress"],
-.compression-design-basis .compression-design-check-metric > small {
-  white-space: normal;
+.compression-design-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  color: #52637a;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.compression-design-primary .design-col-label { width: 39%; }
+.compression-design-primary .design-col-value { width: 26%; }
+.compression-design-primary .design-col-unit { width: 17%; }
+.compression-design-primary .design-col-basis { width: 18%; }
+.compression-design-table th,
+.compression-design-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #dce7f5;
+  text-align: left;
+  vertical-align: baseline;
   overflow-wrap: anywhere;
 }
+.compression-design-table thead {
+  background: #eaf2fc;
+  color: #21324a;
+}
+.compression-design-table thead th { font-weight: 600; font-size: 11.5px; }
+.compression-design-table th[scope="row"] { font-weight: 400; }
+.compression-design-table .design-value-cell,
+.compression-design-table thead th:nth-child(2) { text-align: right; }
+.compression-design-table .design-value-cell strong {
+  color: #1d4f91;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.compression-design-table .design-unit-cell { font-size: 11.5px; white-space: nowrap; }
+.compression-design-table .design-basis-column { font-size: 10.5px; }
+.compression-design-table .design-mobile-basis { display: none; }
+.compression-work-empty td { color: #75839a; font-size: 10.5px; }
+.compression-solid-load-note {
+  margin: 0;
+  color: #52637a;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.compression-solid-load-note:empty { display: none; }
+.compression-design-basis { border-top: 1px solid #dce7f5; padding-top: 10px; min-width: 0; }
+.compression-design-basis > summary,
+.compression-design-formulas > summary {
+  cursor: pointer;
+  color: #21324a;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.compression-design-basis summary:focus-visible { outline: 2px solid #2857d4; outline-offset: 4px; }
+.compression-design-material { margin: 8px 0; color: #52637a; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.compression-design-secondary { font-size: 13px; }
+.compression-design-secondary .design-col-label { width: 48%; }
+.compression-design-secondary .design-col-value { width: 28%; }
+.compression-design-secondary .design-col-unit { width: 24%; }
+.compression-design-secondary .design-unit-cell,
+.compression-design-secondary thead th:nth-child(3) { padding-left: 60px; }
+.compression-design-secondary .design-value-cell strong { font-size: 14px; }
+.design-secondary-reason td { font-size: 10.5px; color: #75839a; padding-top: 0; }
+.compression-height-purpose { margin: 8px 0; font-size: 11px; color: #52637a; line-height: 1.6; }
+.compression-design-formulas { border-top: 1px solid #dce7f5; padding-top: 8px; }
+.compression-design-formulas > summary { color: #52637a; font-size: 11.5px; font-weight: 400; }
+.compression-formula-item { padding: 10px 0; border-bottom: 1px solid #dce7f5; color: #52637a; font-size: 11px; line-height: 1.6; }
+.compression-formula-item:last-child { border-bottom: 0; }
+.compression-formula-item h4 { margin: 0 0 6px; color: #21324a; font-size: 12.5px; font-weight: 600; }
+.compression-formula-item p { margin: 4px 0; overflow-wrap: anywhere; }
+.compression-formula-expression { font-variant-numeric: tabular-nums; }
+.compression-formula-item dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: 4px 12px; margin: 8px 0 0; }
+.compression-formula-item dt,
+.compression-formula-item dd { margin: 0; overflow-wrap: anywhere; }
+.compression-formula-item dd { font-variant-numeric: tabular-nums; }
+
+@container compression-design (max-width: 519.98px) {
+  .compression-design-primary .design-col-label { width: 44%; }
+  .compression-design-primary .design-col-value { width: 36%; }
+  .compression-design-primary .design-col-unit { width: 20%; }
+  .compression-design-primary .design-col-basis,
+  .compression-design-primary .design-basis-column { display: none; }
+  .compression-design-primary .design-mobile-basis { display: table-row; }
+  .compression-design-primary tr:not(.design-mobile-basis) > th[scope="row"],
+  .compression-design-primary tr:not(.design-mobile-basis) > td { border-bottom: 0; padding-bottom: 3px; }
+  .compression-design-primary .design-mobile-basis td { padding-top: 0; padding-bottom: 6px; font-size: 10.5px; color: #75839a; }
+  .compression-design-secondary .design-col-label { width: 58%; }
+  .compression-design-secondary .design-col-value { width: 26%; }
+  .compression-design-secondary .design-col-unit { width: 16%; }
+  .compression-design-secondary .design-unit-cell,
+  .compression-design-secondary thead th:nth-child(3) { padding-left: 4px; }
+  .compression-design-table th,
+  .compression-design-table td { padding-left: 4px; padding-right: 4px; }
+}
+
+@media (max-width: 520px) { .compression-design-check { padding: 12px; } }
+.load-point-rename { padding: 2px 0; border: 0; background: transparent; color: #52637a; font-size: 10px; cursor: pointer; }
+.load-point [data-role="label"] { width: 100%; min-width: 0; }
 
 .data-row > div {
   min-width: 0;
