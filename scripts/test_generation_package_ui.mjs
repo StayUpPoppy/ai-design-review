@@ -55,6 +55,7 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(new URL("../frontend/compression-design-checks.js", import.meta.url), "utf8"), context);
+vm.runInContext(fs.readFileSync(new URL("../frontend/technical-requirement-equivalence.js", import.meta.url), "utf8"), context);
 vm.runInContext(fs.readFileSync(new URL("../frontend/solidworks-export.js", import.meta.url), "utf8"), context);
 translationTestHelpers(context);
 const duplicateStart = appSource.indexOf("function technicalRequirementsAreDuplicates");

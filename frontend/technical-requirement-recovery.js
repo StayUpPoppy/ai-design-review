@@ -79,10 +79,11 @@
     }
     const selected = entry.items.filter((row) => entry.selected.has(row.requirement.recognition_key));
     if (!selected.length) return false;
-    const existingKeys = new Set((review.technical_requirements || []).map((item) => item.recognition_key).filter(Boolean));
+    const recognitionKeys = (item) => [item, ...(item.recognition_aliases || [])].map((note) => note.recognition_key).filter(Boolean);
+    const existingKeys = new Set((review.technical_requirements || []).flatMap(recognitionKeys));
     const existingIds = new Set((review.technical_requirements || []).map((item) => item.requirement_id));
     const additions = selected.map((row) => structuredClone(row.requirement));
-    if (additions.some((item) => existingKeys.has(item.recognition_key) || existingIds.has(item.requirement_id))) {
+    if (additions.some((item) => recognitionKeys(item).some((key) => existingKeys.has(key)) || existingIds.has(item.requirement_id))) {
       entry.status = "error"; entry.error = "部分条目已存在，请重新预览，避免重复补入。"; refresh(); return false;
     }
     // One explicit operation: only provenance hints change on existing notes.

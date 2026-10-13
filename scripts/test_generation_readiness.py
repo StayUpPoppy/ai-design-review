@@ -31,7 +31,7 @@ def main() -> None:
     _assert_technical_requirements_text_formatting()
     _assert_surface_roughness_is_optional_and_exported_as_note()
     _assert_legacy_surface_roughness_is_promoted()
-    _assert_duplicate_technical_requirements_block_release()
+    _assert_duplicate_technical_requirements_export_once()
     _assert_load_points_require_explicit_confirmation_and_export_cleanly()
     _assert_contract_validation()
     _assert_optional_standardization_is_warning()
@@ -406,7 +406,7 @@ def _assert_legacy_surface_roughness_is_promoted() -> None:
     assert package["generation_parameters"]["technical_requirements"][0]["content"] == "两端面粗糙度 Ra 12.5μm"
 
 
-def _assert_duplicate_technical_requirements_block_release() -> None:
+def _assert_duplicate_technical_requirements_export_once() -> None:
     review = _ready_review()
     review["technical_requirements"].append(
         {
@@ -417,12 +417,13 @@ def _assert_duplicate_technical_requirements_block_release() -> None:
         }
     )
     readiness = assess_generation_readiness(review)
-    assert readiness["status"] == "needs_confirmation", readiness
-    duplicate = next(
-        item for item in readiness["pending_fields"]
-        if item.get("requirement_id") == "techreq_duplicate"
-    )
-    assert "重复" in duplicate["reason"]
+    assert readiness["status"] == "ready_with_warnings", readiness
+    assert not readiness["pending_fields"]
+    assert len(review["technical_requirements"]) == 2
+    text = build_generation_parameter_package(review)["solidworks_preview"]["extraProperties"]["技术要求"]
+    assert text.count("镀锌") == 1
+    review["technical_requirements"][-1]["need_human_review"] = True
+    assert assess_generation_readiness(review)["status"] == "needs_confirmation"
 
 
 def _assert_load_points_require_explicit_confirmation_and_export_cleanly() -> None:

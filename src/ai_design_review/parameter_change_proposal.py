@@ -676,20 +676,6 @@ def _resolve_technical_requirement_actions(
             questions.append("修改后的技术要求内容不能为空，请补充完整内容。")
             continue
         content = str(requested_content).strip() if requested_content is not None else str(current.get("content") or "").strip()
-        if _has_duplicate_technical_requirement(
-            requirements,
-            requirement_type,
-            content,
-            exclude_requirement_id=requirement_id,
-        ):
-            blocking.append(
-                {
-                    "code": "technical_requirement_duplicate",
-                    "requirement_id": requirement_id,
-                    "message": "修改后会与另一条技术要求完全重复，不能应用。",
-                }
-            )
-            continue
         updated = _confirmed_technical_requirement(
             current,
             requirement_id=requirement_id,

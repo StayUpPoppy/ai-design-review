@@ -13,6 +13,8 @@ from fastapi.testclient import TestClient
 from ai_design_review import api
 from ai_design_review.io_utils import write_json
 from ai_design_review.review_persistence import ReviewPersistence
+from ai_design_review.engines.qwen_vision_adapter import qwen_payload_to_candidates
+from ai_design_review.technical_requirement_recognition import collect_technical_requirements
 
 
 def main():
@@ -61,6 +63,27 @@ def main():
                 stored = repository.get_review("db-test", owner_user_id="recovery-test")
                 assert stored["revision"] == 1 and stored["review"]["technical_requirements"] == []
                 assert len(repository.list_change_events("db-test", owner_user_id="recovery-test")) == 1, "preview must not write audit events"
+                raw = {"parameters": {"heat_treatment": {"value": "热处理要求：300℃/20min", "original_content": "2.热处理要求：300℃/20min", "page": 1}},
+                       "technical_requirements": [{"type": "heat_treatment", "content": "热处理要求：300℃/20min", "original_content": "2.热处理要求：300℃/20min", "page": 1}]}
+                notes = collect_technical_requirements(qwen_payload_to_candidates(raw))
+                assert len(notes) == 1 and len(notes[0]["recognition_aliases"]) == 1
+                alias_review = {**review, "technical_requirements": notes}
+                repository.create_review("alias-test", alias_review, owner={"user_id": "recovery-test"})
+                alias_job = root / "alias-test"
+                alias_job.mkdir()
+                write_json(alias_job / "qwen_vision_raw.json", {"parsed": raw})
+                loaded = client.get("/api/reviews/alias-test")
+                assert loaded.status_code == 200, loaded.text
+                assert loaded.json()["technical_requirements"][0]["recognition_aliases"] == notes[0]["recognition_aliases"]
+                loaded_review = loaded.json()
+                loaded_review["technical_requirements"][0]["content"] = "人工改为310℃/20min"
+                saved = client.patch("/api/reviews/alias-test", json={"expected_revision": 1, "review": loaded_review, "events": []})
+                assert saved.status_code == 200, saved.text
+                reopened = client.get("/api/reviews/alias-test").json()
+                assert reopened["technical_requirements"][0]["recognition_aliases"] == notes[0]["recognition_aliases"]
+                preview = client.post("/api/reviews/alias-test/technical-requirements/recover-preview", json={"expected_revision": 2})
+                assert preview.status_code == 200 and preview.json()["items"] == [], preview.text
+                assert repository.get_review("alias-test", owner_user_id="recovery-test")["revision"] == 2
         finally:
             repository.dispose()
     print("PASS: recovery API ownership, revision, calculate-only behavior, raw priority and fallback")

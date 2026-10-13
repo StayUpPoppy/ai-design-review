@@ -9,7 +9,7 @@ from .generation_contract import handedness_label
 from .material_catalog import material_catalog_display_value
 from .standardizers.calculation_state import parameter_current, solid_height_kind
 from .standardizers.design_checks import LENGTH_UNITS, calculate_design_checks
-from .technical_requirements import TECHNICAL_REQUIREMENT_TYPE_LABELS, strip_technical_requirements_title, technical_requirement_output_content
+from .technical_requirements import format_technical_requirement, strip_technical_requirements_title, technical_requirement_output_content, technical_requirement_body, technical_requirement_equivalence_key
 
 CALCULATED_PROPERTIES = {"P'": "theoretical_spring_rate", "C": "spring_index", "τ_b": "solid_stress"}
 FROZEN_CALCULATION_METRICS = (*CALCULATED_PROPERTIES.values(), "unit_mass")
@@ -127,12 +127,20 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
     generation = parameter_package.get("generation_parameters") or {}
     parameters = generation.get("spring_parameters") or {}
     lines: list[str] = []
+    keys: set[tuple[str, str, str]] = set()
+
+    def append(line: str, scope: Any = None) -> None:
+        key = _sentence_key(line, scope)
+        if line and key not in keys:
+            keys.add(key)
+            lines.append(line)
+
     material = _parameter_value(parameters.get("material"))
     if material is not None:
-        lines.append(f"材料：{material_catalog_display_value(material)}。")
+        append(f"材料：{material_catalog_display_value(material)}。")
     handedness = handedness_label(_parameter_value(parameters.get("handedness")))
     if handedness:
-        lines.append(f"绕制方向：{handedness}。")
+        append(f"绕制方向：{handedness}。")
     requirements = generation.get("technical_requirements") or []
     remaining: list[dict[str, Any]] = []
     for item in requirements:
@@ -140,7 +148,7 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
             continue
         content = _content(item)
         if item.get("type") in {"surface_roughness", "roughness"} and content:
-            lines.append(_roughness_line(content))
+            append(_roughness_line(content), item.get("application_scope"))
         else:
             remaining.append(item)
     hb = _confirmed_solid_height(review)
@@ -150,13 +158,13 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
     fb_height = _number((solid[0].get("height") or {}).get("value")) if len(solid) == 1 else None
     fb_text = _force_text(solid[0]) if fb is not None and fb >= 0 else None
     if hb is not None and fb_text is not None and fb_height is not None and math.isclose(hb, fb_height, rel_tol=0, abs_tol=1e-9):
-        lines.append(f"当弹簧压并至高度 Hb = {_text_number(hb)} mm 时，对应压并载荷 Fb = {fb_text}。")
+        append(f"当弹簧压并至高度 Hb = {_text_number(hb)} mm 时，对应压并载荷 Fb = {fb_text}。")
     else:
         if hb is not None:
-            lines.append(f"压并高度：Hb = {_text_number(hb)} mm。")
+            append(f"压并高度：Hb = {_text_number(hb)} mm。")
         if fb_text is not None:
             suffix = f"（载荷测试高度 {_text_number(fb_height)} mm）" if hb is not None and fb_height is not None else ""
-            lines.append(f"压并载荷：Fb = {fb_text}{suffix}。")
+            append(f"压并载荷：Fb = {fb_text}{suffix}。")
     for point in points:
         if _solid_label(point.get("label")):
             continue
@@ -167,27 +175,21 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
         label = str(point.get("label") or "").strip()
         match = re.fullmatch(r"[Ff](\d+)", label)
         if match:
-            lines.append(f"当弹簧工作高度 H{match[1]} = {_text_number(height)} mm 时，对应工作载荷 {label} = {_force_text(point)}。")
+            append(f"当弹簧工作高度 H{match[1]} = {_text_number(height)} mm 时，对应工作载荷 {label} = {_force_text(point)}。")
         else:
-            lines.append(f"载荷点 {label}：高度 {_text_number(height)} mm，力值 {_force_text(point)}。")
+            append(f"载荷点 {label}：高度 {_text_number(height)} mm，力值 {_force_text(point)}。")
     for label, field in (("总圈数", "total_coils"), ("工作圈数", "active_coils")):
         value = _parameter_value(parameters.get(field))
         if value is not None:
-            lines.append(f"{label}：{value} 圈。")
+            append(f"{label}：{value} 圈。")
     # Only whole equivalent sentences are removed; composite/conflicting notes survive.
-    keys = {_sentence_key(line) for line in lines}
     for item in remaining:
-        content = _content(item)
-        if not content or _sentence_key(content) in keys:
-            continue
-        label = TECHNICAL_REQUIREMENT_TYPE_LABELS.get(item.get("type"), "其他要求")
-        body = re.sub(rf"^{re.escape(label)}\s*[:：]\s*", "", content, count=1).strip() or content
-        lines.append(f"{label}：{body}")
+        append(format_technical_requirement(item), item.get("application_scope"))
     if not requirements:
         for line in strip_technical_requirements_title(generation.get("technical_requirements_text")).splitlines():
-            body = re.sub(r"^\s*\d+\s*[.．、)]\s*", "", line).strip()
-            if body and _sentence_key(body) not in keys:
-                lines.append(body)
+            body = technical_requirement_output_content({"content": line})
+            if body:
+                append(format_technical_requirement({"content": body}))
     return "\n".join(f"{index}.{line}" for index, line in enumerate(lines, 1))
 
 
@@ -241,9 +243,8 @@ def _roughness_line(content: str) -> str:
     return line.rstrip("。.") + "。"
 
 
-def _sentence_key(content: str) -> str:
-    key = re.sub(r"^\d+[.．、)]\s*", "", content.strip())
-    key = re.sub(r"^(?:其他要求|工艺要求)\s*[:：]\s*", "", key)
+def _sentence_key(content: str, scope: Any = None) -> tuple[str, str, str]:
+    key, kind = technical_requirement_body(content)
     material = re.fullmatch(r"(?:材质|材料)\s*[:：]?\s*(.+?)\s*[。.]*", key)
     if material:
         key = f"材料：{material_catalog_display_value(material[1])}"
@@ -251,7 +252,9 @@ def _sentence_key(content: str) -> str:
     key = re.sub(r"^(?:旋向|绕制方向)", "绕制方向", key)
     key = re.sub(r"^(?:有效圈数n?|工作圈数)", "工作圈数", key)
     key = key.replace("表面粗糙度", "粗糙度")
-    return re.sub(r"[\s:：]", "", key.rstrip("。.")).casefold()
+    # Generic category headings do not change a template sentence's meaning.
+    key = re.sub(r"^(材料|绕制方向|工作圈数)\s*:\s*", r"\1", key)
+    return technical_requirement_equivalence_key({"type": kind if kind not in {None, "other", "process"} else "other", "content": key, "application_scope": scope})
 
 
 def _number(value: Any) -> float | None:

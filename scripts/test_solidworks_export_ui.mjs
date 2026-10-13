@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 const python = process.env.DESIGN_TEST_PYTHON || ".venv/Scripts/python.exe";
 const cases = JSON.parse(execFileSync(python, ["scripts/test_solidworks_export.py", "--json"], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }));
 const context = vm.createContext({ structuredClone });
-for (const file of ["frontend/compression-design-checks.js", "frontend/solidworks-export.js"]) vm.runInContext(fs.readFileSync(file, "utf8"), context);
+for (const file of ["frontend/compression-design-checks.js", "frontend/technical-requirement-equivalence.js", "frontend/solidworks-export.js"]) vm.runInContext(fs.readFileSync(file, "utf8"), context);
 const catalog = JSON.parse(fs.readFileSync("config/compression_material_catalog.json", "utf8"));
 for (const test of cases) {
   const input = structuredClone(test.package);

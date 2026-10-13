@@ -57,7 +57,7 @@ def run():
     recovered_item["need_human_review"] = False
     package_3d = build_generation_parameter_package(recovered_review)
     assert package_3d["generation_parameters"]["technical_requirements_text"] == "1.其他要求：未注尺寸以3D为准"
-    assert build_solidworks_command("1000000070", package_3d, recovered_review)["models"][0]["extraProperties"]["技术要求"] == "1.其他要求：未注尺寸以3D为准"
+    assert build_solidworks_command("1000000070", package_3d, recovered_review)["models"][0]["extraProperties"]["技术要求"].count("未注尺寸以3D为准") == 1
     assert recovered_item["content"] == chinese_3d, "output numbering must not rewrite the saved original text"
     for change in [{"translation_error": "翻译改变了数值或公差，原文已保留，请核对后重试。"},
                    {"translation_error": "翻译未返回此条目或返回了重复ID，请重试。"},

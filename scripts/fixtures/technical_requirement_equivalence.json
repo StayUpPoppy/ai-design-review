@@ -1,0 +1,207 @@
+[
+  {
+    "same": true,
+    "type": "heat_treatment",
+    "left": "9.热处理：热处理要求：300℃+10℃/20min+1min。",
+    "right": "热处理300 °C +10° C /20 min+1 min"
+  },
+  {
+    "same": true,
+    "type": "salt_spray",
+    "left": "盐雾要求720h无红锈。",
+    "right": "盐雾试验：720 h无红锈"
+  },
+  {
+    "same": true,
+    "type": "surface",
+    "left": "表面处理：产品不可有油污，研磨粉尘。",
+    "right": "产品不可有油污, 研磨粉尘."
+  },
+  {
+    "same": true,
+    "type": "surface_roughness",
+    "left": "两端面 Ra ≤ 12.5 μm。",
+    "right": "两端面 Ra≤12.5µm"
+  },
+  {
+    "same": true,
+    "type": "heat_treatment",
+    "left": "热处理要求：３００℃，２０min。",
+    "right": "300°C,20min"
+  },
+  {
+    "same": true,
+    "type": "heat_treatment",
+    "left": "热处理：300°C，20min",
+    "right": "300°C,20min",
+    "left_key": "a",
+    "right_key": "b"
+  },
+  {
+    "same": false,
+    "type": "heat_treatment",
+    "left": "300°C,20min",
+    "right": "310°C,20min"
+  },
+  {
+    "same": false,
+    "type": "heat_treatment",
+    "left": "300°C,20min",
+    "right": "300°C,21min"
+  },
+  {
+    "same": false,
+    "type": "heat_treatment",
+    "left": "300°C±10°C",
+    "right": "300°C+10°C"
+  },
+  {
+    "same": false,
+    "type": "heat_treatment",
+    "left": "300°C+10°C",
+    "right": "300°C-10°C"
+  },
+  {
+    "same": false,
+    "type": "surface",
+    "left": "毛刺≤线径10%",
+    "right": "毛刺<线径10%"
+  },
+  {
+    "same": false,
+    "type": "surface",
+    "left": "不得有油污",
+    "right": "可有油污"
+  },
+  {
+    "same": false,
+    "type": "surface",
+    "left": "两端面镀锌",
+    "right": "外圆镀锌"
+  },
+  {
+    "same": false,
+    "type": "salt_spray",
+    "left": "中性盐雾720h无红锈",
+    "right": "酸性盐雾720h无红锈"
+  },
+  {
+    "same": false,
+    "type": "salt_spray",
+    "left": "按GB/T10125检验",
+    "right": "按GB/T2423检验"
+  },
+  {
+    "same": false,
+    "type": "surface",
+    "left": "不可有油污，去除毛刺",
+    "right": "不可有油污"
+  },
+  {
+    "same": false,
+    "type": "surface_roughness",
+    "left": "12.5 μm",
+    "right": "5 μm"
+  },
+  {
+    "same": false,
+    "type": "other",
+    "left": "1.5 mm",
+    "right": "5 mm"
+  },
+  {
+    "same": false,
+    "type": "other",
+    "left": "1 6 mm",
+    "right": "16 mm"
+  },
+  {
+    "same": false,
+    "type": "process",
+    "left": "热处理后检查",
+    "right": "后检查"
+  },
+  {
+    "same": false,
+    "type": "other",
+    "left": "2.去除毛刺",
+    "right": "2.允许油污"
+  },
+  {
+    "same": false,
+    "type": "surface",
+    "left": "镀锌",
+    "right": "镀锌",
+    "left_scope": "外圆",
+    "right_scope": "两端面"
+  },
+  {
+    "same": true,
+    "type": "surface",
+    "left": "镀锌",
+    "right": "镀锌。",
+    "left_scope": "外圆",
+    "right_scope": "外圆"
+  },
+  {
+    "same": false,
+    "type": "other",
+    "left": "H1=12.5 mm",
+    "right": "H1=12.50 mm"
+  },
+  {
+    "same": false,
+    "type": "other",
+    "left": "F1=10 N",
+    "right": "F1=10 n"
+  },
+  {
+    "same": false,
+    "type": "other",
+    "left": "12.5²",
+    "right": "12.52"
+  },
+  {
+    "same": true,
+    "type": "process",
+    "right_type": "other",
+    "left": "工艺要求：未注尺寸以3D为准",
+    "right": "其他要求：未注尺寸以3D为准"
+  },
+  {
+    "same": true,
+    "type": "environmental",
+    "left": "环保要求：材料环保要求：不含有害物质",
+    "right": "不含有害物质"
+  },
+  {
+    "same": false,
+    "type": "surface",
+    "left": "表面处理后不得有毛刺",
+    "right": "后不得有毛刺"
+  },
+  {
+    "same": true,
+    "type": "process",
+    "left": "去除毛刺\n表面镀锌",
+    "right": "去除毛刺；表面镀锌"
+  },
+  {
+    "same": false,
+    "type": "process",
+    "left": "去除毛刺\n表面镀锌",
+    "right": "去除毛刺表面镀锌"
+  },
+  {
+    "same": true,
+    "type": "heat_treatment",
+    "left": "９）热处理要求：３００℃，２０min。",
+    "right": "300°C,20min"
+  },
+  {
+    "same": false,
+    "type": "other",
+    "left": "１２．５ mm",
+    "right": "５ mm"
+  }
+]

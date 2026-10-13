@@ -787,6 +787,17 @@ button:disabled {
   white-space: nowrap;
 }
 
+.technical-group-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; color: #52637a; }
+.technical-group-meta small, .technical-group-reason { font-size: 12px; line-height: 1.5; }
+.technical-group-reason { display: block; color: #a13224; }
+.technical-group-reason[hidden] { display: none; }
+.technical-group-sources summary { min-height: 30px; padding: 5px 0; cursor: pointer; }
+.technical-group-sources summary:focus-visible { outline: 2px solid #2857d4; outline-offset: 2px; }
+.technical-source-record { padding: 8px 0; border-top: 1px solid #dce7f5; overflow-wrap: anywhere; }
+.technical-source-record small { font-size: 12px; color: #52637a; }
+.technical-source-record p { margin: 5px 0; font-size: 12px; line-height: 1.5; }
+.technical-requirements-block .requirement-actions button { font-size: 12px; padding: 0 6px; white-space: nowrap; }
+
 .load-point-section-head {
   display: flex;
   align-items: center;

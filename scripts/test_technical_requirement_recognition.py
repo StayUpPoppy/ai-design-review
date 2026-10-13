@@ -39,7 +39,8 @@ def main():
     assert not any(conflict.get("field") in {"process_requirement", "other_requirement"} for conflict in fused["conflicts"])
     assert len(collect_technical_requirements([*candidates, *candidates])) == 5, "same occurrence deduplicates"
     assert len(collect_technical_requirements(qwen_payload_to_candidates(payload))) == 5
-    assert not technical_requirements_are_duplicates(notes[2], notes[4]), "identical words at distinct positions remain independent"
+    assert technical_requirements_are_duplicates(notes[2], notes[4]), "equivalent output ignores occurrence location"
+    assert notes[2]["requirement_id"] != notes[4]["requirement_id"], "drawing occurrences retain independent records"
     built = DrawingReviewWorkflow({}).run(None, candidates, run_standardization=False)
     assert len(built["technical_requirements"]) == 5
     assert built["spring_parameters"]["wire_diameter"]["value"] == 1.8
@@ -79,7 +80,8 @@ def main():
     assert not any("重复" in issue["message"] for issue in assess_generation_readiness(ready).get("pending_fields", []))
     package = build_generation_parameter_package(ready)
     text = package["generation_parameters"]["technical_requirements_text"]
-    assert text == "1.其他要求：未注尺寸以3D为准\n2.其他要求：未注尺寸以3D为准"
+    assert text == "1.其他要求：未注尺寸以3D为准"
+    assert len(package["generation_parameters"]["technical_requirements"]) == 2
     numbered = copy.deepcopy(ready)
     numbered["technical_requirements"] = [{"type": "other", "content": "9.未注尺寸以3D为准", "original_number": "9", "need_human_review": False}]
     assert build_generation_parameter_package(numbered)["generation_parameters"]["technical_requirements_text"] == "1.其他要求：未注尺寸以3D为准"
@@ -87,7 +89,9 @@ def main():
     assert build_generation_parameter_package(numbered)["generation_parameters"]["technical_requirements_text"] == "1.其他要求：未注尺寸以3D为准", "legacy source numbering must not produce a second output number"
     frozen = copy.deepcopy(package)
     package["generation_parameters"]["technical_requirements_text"] = "技术要求\n" + text
-    assert build_solidworks_command("1000000001", package, ready)["models"][0]["extraProperties"]["技术要求"] == text
+    exported_text = build_solidworks_command("1000000001", package, ready)["models"][0]["extraProperties"]["技术要求"]
+    assert exported_text.count("未注尺寸以3D为准") == 1
+    assert not exported_text.startswith("技术要求\n")
     assert package["generation_parameters"]["technical_requirements_text"].startswith("技术要求\n"), "sending must not rewrite frozen package"
     assert frozen["solidworks_preview"]["modelParameters"] == build_solidworks_command("1000000002", package, ready)["models"][0]["modelParameters"]
     print("PASS: occurrence-based notes, order, identities, non-mutating recovery and unchanged SW geometry")

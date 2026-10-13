@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import os
 import sys
 import tempfile
@@ -85,6 +86,9 @@ def ready_review() -> dict[str, object]:
         "technical_requirements": [
             {"requirement_id": "tech-1", "type": "other", "content": "端圈并紧磨平。", "need_human_review": False},
             {"requirement_id": "tech-2", "type": "surface", "content": "表面喷丸处理。", "need_human_review": False},
+            {"requirement_id": "tech-3", "type": "surface", "content": "表面处理：表面喷丸处理。", "page": 2, "recognition_key": "note-other-position", "need_human_review": False},
+            {"requirement_id": "tech-4", "type": "heat_treatment", "content": "热处理：热处理要求：300℃/20min。", "need_human_review": False},
+            {"requirement_id": "tech-5", "type": "heat_treatment", "content": "300 °C/20 min", "need_human_review": False},
         ],
         "derived_parameters": {},
         "derived_parameters_stale": False,
@@ -234,6 +238,8 @@ def main() -> None:
                 extra = model["extraProperties"]
                 assert list(extra) == ["技术要求", "P'", "C", "τ_b"]
                 notes = extra["技术要求"]
+                assert notes.count("表面喷丸处理") == 1 and notes.count("热处理：") == 1
+                assert "热处理：热处理要求" not in notes
                 assert notes.startswith("1.材料：60Si2Mn。\n2.绕制方向：左旋。\n3.两端面表面粗糙度：Ra 12.5 μm。\n")
                 for expected in ("Hb = 25 mm", "Fb = 2300 N", "H1 = 38 mm", "F1 = 2000 N", "H2 = 43 mm", "F2 = 2100 N", "表面喷丸处理"):
                     assert expected in notes, notes
@@ -257,6 +263,33 @@ def main() -> None:
                 assert duplicate_create.status_code == 200, duplicate_create.text
                 assert duplicate_create.json()["generation_job"]["generation_id"] == job["generation_id"]
                 assert len(submissions) == 1
+
+                from test_technical_requirement_equivalence import order2_review
+                order2 = order2_review()
+                order2["spring_parameters"]["solid_height"].update(source=["manual"], value_kind="input_height")
+                repository.create_review("order2-technical-dedup", order2, owner=OWNER)
+                order2_preview = client.get("/api/reviews/order2-technical-dedup/generation-package")
+                assert order2_preview.status_code == 200, order2_preview.text
+                order2_created = client.post("/api/reviews/order2-technical-dedup/generation-jobs", json=create_request("order2-dedup-r1"))
+                assert order2_created.status_code == 202, order2_created.text
+                order2_job = order2_created.json()["generation_job"]
+                order2_payload = submissions[-1]["payload"]
+                order2_notes = order2_payload["models"][0]["extraProperties"]["技术要求"]
+                assert len(order2_notes.splitlines()) == 14, order2_notes
+                assert order2_payload["models"][0]["extraProperties"] == order2_preview.json()["parameter_package"]["solidworks_preview"]["extraProperties"]
+                assert len(repository.get_review("order2-technical-dedup", owner_user_id=OWNER["user_id"])["review"]["technical_requirements"]) == 9
+                with repository._session() as session:
+                    order2_frozen = session.get(GenerationJobRecord, order2_job["generation_id"]).parameter_package
+                    assert order2_frozen["solidworks_preview"]["extraProperties"]["技术要求"] == order2_notes
+                submission_count = len(submissions)
+                order2_retry = client.post("/api/reviews/order2-technical-dedup/generation-jobs", json=create_request("order2-dedup-r1"))
+                assert order2_retry.status_code == 200 and len(submissions) == submission_count
+                assert order2_retry.json()["generation_job"]["execution_options"]["solidworks_payload"] == order2_payload
+                if os.getenv("SAVE_SW_QA_OUTPUT") == "1":
+                    out = Path("outputs/technical-duplication-qa")
+                    out.mkdir(parents=True, exist_ok=True)
+                    (out / "order2-request.json").write_text(json.dumps(order2_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    (out / "order2-requirements.txt").write_text(order2_notes, encoding="utf-8")
 
                 progress = {"TaskId": task_id, "status": "generating_3d", "progress": 35, "message": "正在生成三维图"}
                 progress_response = client.post("/api/solidworks/status", json=progress)

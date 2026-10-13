@@ -270,6 +270,8 @@ class TechnicalRequirementDocument(BaseModel):
     source_order: float | None = Field(default=None, description="原图阅读顺序，不是SW输出编号。")
     recognition_key: str | None = Field(default=None, description="原图识别条目标识，用于去重和安全补回。")
     recognized_content: str | None = Field(default=None, description="初始识别正文；人工编辑后保留用于追溯。")
+    recognition_aliases: list[dict[str, Any]] = Field(default_factory=list, description="同一原图要求的其他识别通道记录，保留recognition_key、原文、页码、位置及来源；安全补回时同时检查主记录与别名。")
+    application_scope: str | None = Field(default=None, description="原图明确指定的作用范围；比较等价要求时一并保留。")
     source_language: str | None = Field(default=None, description="原文自然语言代码，如ru、en、zh；未知为unknown。")
     translation_status: Literal["not_required", "translated", "failed"] | None = Field(default=None, description="中文化状态；译文仍须人工确认。")
     translation_error: str | None = Field(default=None, description="真正翻译失败原因；工程信息差异使用translation_warnings，不阻止确认。")

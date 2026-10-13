@@ -1087,11 +1087,13 @@ function captureReviewScrollState() {
     conversationScrollTop: conversation.scrollTop,
     comparePanels: captureComparePanelScrollPositions(),
     chatLists: Array.from(document.querySelectorAll(".standardization-chat-list"), (list) => list.scrollTop),
+    technicalView: captureTechnicalRequirementViewState(),
   };
 }
 
 function restoreReviewScrollState(scrollState) {
   if (!scrollState) return;
+  restoreTechnicalRequirementViewState(scrollState.technicalView);
   const restore = () => {
     window.scrollTo(scrollState.windowX || 0, scrollState.windowY || 0);
     conversation.scrollTop = scrollState.conversationScrollTop || 0;
@@ -4346,7 +4348,8 @@ function confirmationControlState(item, options = {}) {
     return { state: "invalid", label: "原值已失效", disabled: true, reason: "请应用新候选值后重新确认，或填写有效的人工值。" };
   }
   if (kind === "technical") {
-    const persistence = parameterPersistenceState(field);
+    const persistenceState = parameterPersistenceState(field);
+    const persistence = options.allowQueuedSave && persistenceState === "saving" && !state.reviewPersistenceSaving ? null : persistenceState;
     if (persistence === "failed") return { state: "save_failed", label: "保存失败·重试保存", disabled: false, reason: "当前文本和译文仍保留，请重试保存。" };
     if (technicalTranslationService()?.isPending(review, item)) return { state: "validating", label: "正在翻译", disabled: true, reason: "翻译完成后请核对中文并确认。" };
     if (technicalRequirementBlocksExport(item)) return { state: "invalid", label: "待中文化", disabled: true, reason: "外文说明需翻译或人工填写中文后确认；当前不会写入本次图纸。" };
@@ -4371,7 +4374,6 @@ function confirmationControlState(item, options = {}) {
     }
   } else if (kind === "technical") {
     if (!String(item?.content || "").trim()) invalidReason = "技术要求内容不能为空";
-    else if (isDuplicateTechnicalRequirement(review, item)) invalidReason = "已存在相同类型和内容的技术要求";
     else if (item?.type === "surface" && item.translation_status !== "translated" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item?.normalization_status)) {
       invalidReason = "请先明确表面处理标准术语";
     }
@@ -4439,9 +4441,7 @@ function syncReviewConfirmationControls(root, review = state.review) {
     if (item) syncConfirmationControl(row, item, { kind: "load_point", field, review });
   });
   root.querySelectorAll('[data-kind="technical"][data-requirement-id]').forEach((row) => {
-    const index = (review.technical_requirements || []).findIndex((item) => String(item?.requirement_id || "") === String(row.dataset.requirementId || ""));
-    const item = review.technical_requirements?.[index];
-    if (item) syncConfirmationControl(row, item, { kind: "technical", field: technicalRequirementField(item, index), review });
+    syncTechnicalGroupControl(row, review);
   });
 }
 
@@ -4881,10 +4881,11 @@ function assessGenerationReadiness(review) {
     }
     const duplicate = Boolean(content) && seenTechnicalRequirements.some((previous) => technicalRequirementsAreDuplicates(item, previous));
     if (content) seenTechnicalRequirements.push(item);
-    if (content && item.need_human_review === false && !duplicate) return;
-    const reason = duplicate
-      ? `技术要求“${label}”与已有内容重复，请修改或删除重复项。`
-      : content
+    if (content && item.need_human_review === false) {
+      if (duplicate) warnings.push({ ...generationIssue(technicalRequirementField(item, index), "等价技术要求保留独立记录，生成图只输出一次。", label), requirement_id: item.requirement_id });
+      return;
+    }
+    const reason = content
         ? `技术要求“${label}”尚未人工确认。`
         : `技术要求“${label}”内容为空，请补充内容或删除该项。`;
     pending.push({
@@ -6188,24 +6189,272 @@ function technicalRequirementAuditState(item, extra = {}) {
     need_human_review: item.need_human_review !== false,
     normalization_status: item.normalization_status || null,
     recognition_key: item.recognition_key || null,
+    recognition_aliases: structuredClone(item.recognition_aliases || []),
     recognized_content: item.recognized_content || null,
     original_content: item.original_content || null,
     original_number: item.original_number ?? null,
     source_order: item.source_order ?? null,
+    application_scope: item.application_scope || null,
     ...extra,
   };
 }
 
 function technicalRequirementCounts(review) {
-  const requirements = review?.technical_requirements || [];
-  const confirmed = requirements.filter((item) => String(item?.content || "").trim() && item?.need_human_review === false && !technicalRequirementBlocksExport(item)).length;
-  return { total: requirements.length, confirmed, pending: requirements.length - confirmed };
+  const groups = technicalRequirementGroups(review);
+  const confirmed = groups.filter((group) => group.confirmed).length;
+  return { total: groups.length, confirmed, pending: groups.length - confirmed,
+    original: (review?.technical_requirements || []).length, exportable: groups.filter((group) => group.exportable).length };
+}
+
+function technicalRequirementGroups(review) {
+  return TechnicalRequirementEquivalence.groups(review?.technical_requirements, (item) =>
+    Boolean(String(item?.content || "").trim()) && item.need_human_review === false && !technicalRequirementBlocksExport(item));
+}
+
+function technicalRowIds(row) {
+  try { return JSON.parse(row?.dataset?.requirementIds || "[]"); } catch { return []; }
+}
+
+function technicalRowMembers(row, review, editing = false) {
+  const ids = editing && row.technicalEditingIds ? row.technicalEditingIds : technicalRowIds(row);
+  return (review?.technical_requirements || []).map((item, index) => ({ item, index }))
+    .filter(({ item }) => ids.includes(String(item.requirement_id)));
+}
+
+function technicalGroupControl(members, review, allowQueuedSave = false) {
+  const controls = members.map(({ item, index }) => String(item?.content || "").trim()
+    ? confirmationControlState(item, { kind: "technical", field: technicalRequirementField(item, index), review, allowQueuedSave })
+    : { state: "invalid", label: "无法确认", disabled: true, reason: "技术要求内容不能为空。" });
+  const failed = controls.find((control) => control.state === "save_failed");
+  if (failed) return failed;
+  const blocked = controls.find((control) => ["invalid", "validating", "saving"].includes(control.state));
+  if (blocked) return { ...blocked, reason: `对应原始记录：${blocked.reason}` };
+  if (controls.every((control) => control.state === "confirmed")) return { state: "confirmed", label: "已确认", disabled: true, reason: "对应记录均已确认。" };
+  const modified = controls.some((control) => control.state === "modified");
+  const partial = controls.some((control) => control.state === "confirmed");
+  return { state: modified ? "modified" : "pending", label: modified ? "确认修改" : partial ? "确认其余记录" : "确认", disabled: false, reason: "一次确认此项对应的全部原始记录。" };
+}
+
+function technicalGroupButtonHtml(group, review) {
+  const control = technicalGroupControl(group.members, review);
+  return `<button class="confirm-button ${escapeHtml(control.state)}" type="button" data-role="confirm"${control.disabled ? " disabled" : ""} title="${escapeHtml(control.reason || "")}">${escapeHtml(control.label)}</button>`;
+}
+
+function syncTechnicalGroupControl(row, review) {
+  if (state.technicalRequirementPointerDown && row.contains(state.technicalRequirementPointerTarget)) return;
+  const members = technicalRowMembers(row, review);
+  if (!members.length) return;
+  const control = technicalGroupControl(members, review), button = row.querySelector('[data-role="confirm"]');
+  if (button) {
+    button.className = `confirm-button ${control.state}`;
+    button.disabled = control.disabled;
+    button.textContent = control.label; button.title = control.reason || "";
+  }
+  row.dataset.confirmationState = control.state;
+  const status = row.querySelector('[data-role="technical-group-status"]');
+  if (status) status.textContent = technicalGroupStatus(members, review);
+  const reason = row.querySelector('[data-role="technical-group-reason"]');
+  if (reason) { reason.textContent = control.disabled && control.state !== "confirmed" ? control.reason : ""; reason.hidden = !reason.textContent; }
+}
+
+function technicalGroupStatus(members, review) {
+  const confirmed = members.filter(({ item }) => Boolean(String(item.content || "").trim()) && item.need_human_review === false && !technicalRequirementBlocksExport(item)).length;
+  if (confirmed === members.length) return "已确认";
+  return confirmed ? `部分确认（${confirmed}/${members.length}）` : "待确认";
+}
+
+function technicalSummaryText(counts) {
+  return `去重后 ${counts.total} 条 · 已确认 ${counts.confirmed} 条 · 待确认 ${counts.pending} 条 · 可输出 ${counts.exportable} 条 · 原始记录 ${counts.original} 条`;
+}
+
+function findTechnicalRequirementRow(root, id) {
+  return Array.from(root.querySelectorAll('.requirement-row[data-kind="technical"]'))
+    .find((row) => technicalRowIds(row).includes(String(id)) || String(row.dataset.requirementId || "") === String(id));
+}
+
+function captureTechnicalRequirementViewState() {
+  return Array.from(document.querySelectorAll('.requirement-row[data-kind="technical"]'), (row) => {
+    const active = row.contains(document.activeElement) ? document.activeElement : null;
+    return { ids: technicalRowIds(row), messageId: row.closest('[data-review-message-id]')?.dataset.reviewMessageId || "",
+      compare: compareOverlay.contains(row), open: Boolean(row.querySelector('[data-role="technical-group-sources"]')?.open),
+      activeRole: active?.dataset.role, selectionStart: active?.selectionStart, selectionEnd: active?.selectionEnd,
+      editingIds: row.technicalEditingIds, editingScope: row.technicalEditingScope, beforeStates: row.technicalEditBeforeStates };
+  });
+}
+
+function restoreTechnicalRequirementViewState(snapshot) {
+  if (!snapshot?.length) return;
+  for (const row of document.querySelectorAll('.requirement-row[data-kind="technical"]')) {
+    const ids = technicalRowIds(row), messageId = row.closest('[data-review-message-id]')?.dataset.reviewMessageId || "";
+    const previous = snapshot.filter((entry) => entry.messageId === messageId && entry.compare === compareOverlay.contains(row) && entry.ids.some((id) => ids.includes(id)));
+    const details = row.querySelector('[data-role="technical-group-sources"]');
+    if (details) details.open = previous.some((entry) => entry.open);
+    const focused = previous.find((entry) => entry.activeRole);
+    if (!focused) continue;
+    if (focused.editingIds) row.technicalEditingIds = focused.editingIds;
+    if (focused.editingScope !== undefined) row.technicalEditingScope = focused.editingScope;
+    if (focused.beforeStates) row.technicalEditBeforeStates = focused.beforeStates;
+    const input = row.querySelector(`[data-role="${focused.activeRole}"]`);
+    input?.focus({ preventScroll: true });
+    if (typeof input?.setSelectionRange === "function" && Number.isInteger(focused.selectionStart)) input.setSelectionRange(focused.selectionStart, focused.selectionEnd);
+  }
+}
+
+function restoreTechnicalRequirementGroup(review) {
+  const undo = state.technicalRequirementUndo;
+  if (!undo || undo.review !== review) return;
+  for (const entry of (undo.entries || [undo]).slice().sort((a, b) => a.index - b.index)) {
+    if (review.technical_requirements.some((item) => item.requirement_id === entry.item.requirement_id)) continue;
+    const index = Math.min(entry.index, review.technical_requirements.length);
+    const restored = structuredClone(entry.item);
+    review.technical_requirements.splice(index, 0, restored);
+    Object.assign(review.manual_confirmations, structuredClone(entry.confirmations || {}));
+    queueReviewAuditEvent({ event_type: "technical_requirement_restored", target_field: technicalRequirementField(restored, index),
+      before_state: { requirement_id: restored.requirement_id, deleted: true }, after_state: technicalRequirementAuditState(restored),
+      metadata: { requirement_id: restored.requirement_id, index, group_requirement_ids: undo.entries?.map((entry) => entry.item.requirement_id) } });
+  }
+  state.technicalRequirementUndo = null;
+  markParameterChangeProposalsStale("技术要求已恢复");
+  updateLatestReviewMessage("已恢复此项对应的全部原始记录和确认信息。");
+}
+
+function flushTechnicalRequirementRefreshes() {
+  const pending = state.technicalRequirementRefreshes;
+  if (!pending?.size) return;
+  const callbacks = [...pending.values()]; pending.clear();
+  callbacks.forEach((refresh) => refresh());
+}
+
+function requestTechnicalRequirementRefresh(row, review, event) {
+  const refresh = () => {
+    if (row.isConnected && state.review === review) updateLatestReviewMessage("已更新此项对应的记录，请核对后确认。");
+  };
+  // A native change occurs during focus transfer. Keep the pressed button alive
+  // until its click completes; keyboard focus transfer settles before the frame.
+  if (!event?.isTrusted) { refresh(); return; }
+  state.technicalRequirementRefreshes ||= new Map();
+  state.technicalRequirementRefreshes.set(row, refresh);
+  if (!state.technicalRequirementPointerDown) requestAnimationFrame(flushTechnicalRequirementRefreshes);
+}
+
+function bindTechnicalRequirementGroups(root, review, messageId) {
+  if (!state.technicalRequirementPointerTracking) {
+    state.technicalRequirementPointerTracking = true;
+    document.addEventListener("pointerdown", (event) => { state.technicalRequirementPointerDown = true; state.technicalRequirementPointerTarget = event.target; }, true);
+    const finishPointer = () => {
+      state.technicalRequirementPointerDown = false;
+      setTimeout(flushTechnicalRequirementRefreshes, 0);
+    };
+    document.addEventListener("pointerup", finishPointer, true);
+    document.addEventListener("pointercancel", finishPointer, true);
+  }
+  root.querySelector('[data-action="undo-technical-requirement-delete"]')?.addEventListener("click", () => {
+    activateReviewContext(messageId); restoreTechnicalRequirementGroup(review);
+  });
+  root.querySelectorAll('.requirement-row[data-kind="technical"]').forEach((row) => {
+    const contentInput = row.querySelector('[data-role="content"]');
+    let beforeStates = null;
+    const beginEdit = () => {
+      if (beforeStates) return;
+      row.technicalEditingIds ||= technicalRowIds(row);
+      const representative = review.technical_requirements.find((item) => item.requirement_id === row.dataset.requirementId);
+      row.technicalEditingScope ??= representative?.application_scope || "";
+      beforeStates = row.technicalEditBeforeStates || new Map(technicalRowMembers(row, review, true).map(({ item }) => [item.requirement_id, technicalRequirementAuditState(item)]));
+      row.technicalEditBeforeStates = beforeStates;
+    };
+    const applyDraft = (value, changedField) => {
+      activateReviewContext(messageId); beginEdit();
+      for (const { item, index } of technicalRowMembers(row, review, true)) {
+        const previousType = item.type;
+        item.original_content ||= item.recognized_content || item.content || "";
+        if (row.technicalEditingScope) item.application_scope = row.technicalEditingScope;
+        if (changedField === "type") {
+          item.content = TechnicalRequirementEquivalence.unlabel(item);
+          item.type = normalizeTechnicalRequirementType(value);
+        }
+        else item.content = value.trim();
+        if (item.type === "surface") applyManualSurfaceNormalization(item, "人工统一编辑当前技术要求");
+        else if (previousType === "surface") clearSurfaceNormalization(item);
+        markTechnicalRequirementEdited(item, technicalRequirementField(item, index), technicalRequirementConfirmationKey(item, index));
+      }
+      syncTechnicalGroupControl(row, review); syncTechnicalRequirementSummary(root, review);
+    };
+    const commitEdit = (changedField, event) => {
+      const ids = [...(row.technicalEditingIds || technicalRowIds(row))];
+      for (const { item, index } of technicalRowMembers(row, review, true)) {
+        const before = beforeStates?.get(item.requirement_id), after = technicalRequirementAuditState(item);
+        if (!before || JSON.stringify(before) === JSON.stringify(after)) continue;
+        queueReviewAuditEvent({ event_type: "technical_requirement_updated", target_field: technicalRequirementField(item, index),
+          before_state: before, after_state: after, metadata: { requirement_id: item.requirement_id, index, changed_field: changedField, group_requirement_ids: ids } });
+      }
+      beforeStates = null; delete row.technicalEditingIds; delete row.technicalEditingScope; delete row.technicalEditBeforeStates;
+      requestTechnicalRequirementRefresh(row, review, event);
+    };
+    contentInput.addEventListener("input", (event) => applyDraft(event.target.value, "content"));
+    contentInput.addEventListener("change", (event) => {
+      if (!beforeStates) applyDraft(event.target.value, "content");
+      commitEdit("content", event);
+    });
+    row.querySelector('[data-role="type"]')?.addEventListener("change", (event) => {
+      applyDraft(event.target.value, "type"); commitEdit("type", event);
+    });
+    row.querySelector('[data-role="confirm"]')?.addEventListener("click", async () => {
+      activateReviewContext(messageId);
+      let members = technicalRequirementGroups(review).find((group) => group.ids.some((id) => technicalRowIds(row).includes(id)))?.members || [];
+      if (!members.length) return;
+      let control = technicalGroupControl(members, review, true);
+      if (control.state === "save_failed") { void flushReviewPersistence(); return; }
+      if (control.state === "saving") {
+        const snapshot = JSON.stringify(members.map(({ item }) => [item.requirement_id, item.content, item.type, item.application_scope]));
+        if (!await flushReviewPersistence() || state.review !== review) return;
+        members = review.technical_requirements.map((item, index) => ({ item, index })).filter(({ item }) => members.some((previous) => previous.item.requirement_id === item.requirement_id));
+        if (snapshot !== JSON.stringify(members.map(({ item }) => [item.requirement_id, item.content, item.type, item.application_scope]))) {
+          updateLatestReviewMessage("保存期间技术要求已变化，请重新核对后确认。"); return;
+        }
+        control = technicalGroupControl(members, review, true);
+      }
+      if (control.disabled) { syncTechnicalGroupControl(row, review); return; }
+      const ids = members.map(({ item }) => item.requirement_id);
+      for (const { item, index } of members) {
+        if (item.need_human_review === false) continue;
+        const before = technicalRequirementAuditState(item), field = technicalRequirementField(item, index);
+        const key = technicalRequirementConfirmationKey(item, index);
+        if (item.type === "surface") applyManualSurfaceNormalization(item, "人工统一确认当前技术要求");
+        confirmParam(item, key);
+        Object.assign(review.manual_confirmations[key], { requirement_id: item.requirement_id, target_field: field, type: item.type });
+        queueReviewAuditEvent({ event_type: "technical_requirement_confirmed", target_field: field,
+          before_state: before, after_state: technicalRequirementAuditState(item), metadata: { requirement_id: item.requirement_id, index,
+            group_requirement_ids: ids, translation_warning_acknowledgement: technicalTranslationWarningAudit(item) } });
+      }
+      markParameterChangeProposalsStale("技术要求确认状态已变化");
+      updateLatestReviewMessage("已确认此项对应的全部记录，生成图中只输出一次。");
+    });
+    row.querySelector('[data-role="delete-technical-requirement"]')?.addEventListener("click", () => {
+      activateReviewContext(messageId);
+      const members = technicalRowMembers(row, review), ids = members.map(({ item }) => item.requirement_id);
+      const entries = members.map(({ item, index }) => {
+        const key = technicalRequirementConfirmationKey(item, index);
+        const confirmations = Object.fromEntries(Object.entries(review.manual_confirmations || {}).filter(([name, value]) =>
+          name === key || name === `technical_${index}` || name === technicalRequirementField(item, index) || value?.requirement_id === item.requirement_id));
+        return { item: structuredClone(item), index, confirmations };
+      });
+      for (const entry of entries) {
+        for (const key of Object.keys(entry.confirmations)) delete review.manual_confirmations[key];
+        state.reviewDraftFields.delete(technicalRequirementField(entry.item, entry.index));
+      }
+      review.technical_requirements = review.technical_requirements.filter((item) => !ids.includes(item.requirement_id));
+      state.technicalRequirementUndo = { review, entries, label: contentInput.value };
+      for (const { item, index } of entries) queueReviewAuditEvent({ event_type: "technical_requirement_deleted", target_field: technicalRequirementField(item, index),
+        before_state: technicalRequirementAuditState(item), after_state: { requirement_id: item.requirement_id, deleted: true },
+        metadata: { requirement_id: item.requirement_id, index, group_requirement_ids: ids } });
+      markParameterChangeProposalsStale("技术要求已删除");
+      updateLatestReviewMessage("已删除此项对应的全部记录，可使用“撤销删除”恢复。");
+    });
+  });
 }
 
 function technicalRequirementsAreDuplicates(left, right) {
-  if (left?.recognition_key && right?.recognition_key) return left.recognition_key === right.recognition_key;
-  return normalizeTechnicalRequirementType(left?.type) === normalizeTechnicalRequirementType(right?.type)
-    && String(left?.content || "").trim().replace(/\s+/g, " ").toLocaleLowerCase() === String(right?.content || "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  return TechnicalRequirementEquivalence.equivalent(left, right);
 }
 
 function isDuplicateTechnicalRequirement(review, target) {
@@ -6274,14 +6523,14 @@ function markTechnicalRequirementEdited(item, technicalField, confirmationField)
 function syncTechnicalRequirementSummary(root, review) {
   const counts = technicalRequirementCounts(review);
   root?.querySelectorAll?.('[data-role="technical-requirement-summary"]').forEach((element) => {
-    element.textContent = `已确认 ${counts.confirmed} 项 · 待确认 ${counts.pending} 项 · 将写入二维图纸 ${counts.confirmed} 项`;
+    element.textContent = technicalSummaryText(counts);
   });
 }
 
 function renderRequirementsHtml(review) {
   configureTechnicalRequirementRecovery();
   ensureTechnicalRequirementIds(review);
-  const requirements = review.technical_requirements || [];
+  const groups = technicalRequirementGroups(review);
   const counts = technicalRequirementCounts(review);
   const undo = state.technicalRequirementUndo?.review === review ? state.technicalRequirementUndo : null;
   return `
@@ -6289,7 +6538,7 @@ function renderRequirementsHtml(review) {
       <div class="block-head technical-requirements-head">
         <h2>技术要求</h2>
         <div>
-          <span data-role="technical-requirement-summary">已确认 ${counts.confirmed} 项 · 待确认 ${counts.pending} 项 · 将写入二维图纸 ${counts.confirmed} 项</span>
+          <span data-role="technical-requirement-summary">${technicalSummaryText(counts)}</span>
           <button type="button" class="secondary-action" data-action="show-technical-requirement-create">+新增技术要求</button>
           <button type="button" class="secondary-action" data-recovery-action="preview"${state.lastJob?.job_id ? "" : " disabled"}>补回遗漏技术要求</button>
         </div>
@@ -6297,7 +6546,7 @@ function renderRequirementsHtml(review) {
       ${globalThis.window?.TechnicalRequirementRecovery?.render(review) || ""}
       ${undo ? `
         <div class="technical-requirement-undo" role="status">
-          <span>已删除“${escapeHtml(String(undo.item?.content || "技术要求"))}”</span>
+          <span>已删除“${escapeHtml(undo.label || undo.item?.content || "技术要求")}”及其对应 ${(undo.entries || [undo]).length} 条记录</span>
           <button type="button" class="secondary-action" data-action="undo-technical-requirement-delete">撤销删除</button>
         </div>
       ` : ""}
@@ -6314,27 +6563,40 @@ function renderRequirementsHtml(review) {
           <button type="button" class="secondary-action" data-action="cancel-technical-requirement-create">取消</button>
         </div>
       </form>
-      ${requirements.length ? `
+      ${groups.length ? `
         <div class="requirement-list">
-          ${requirements.map((item, index) => `
-            <div class="requirement-row" data-kind="technical" data-index="${index}" data-requirement-id="${escapeHtml(item.requirement_id)}">
+          ${groups.map((group) => {
+            const { item, index } = group.representative;
+            const control = technicalGroupControl(group.members, review);
+            return `
+            <div class="requirement-row" data-kind="technical" data-index="${index}" data-requirement-id="${escapeHtml(item.requirement_id)}" data-requirement-ids="${escapeHtml(JSON.stringify(group.ids))}">
               <div class="requirement-editor">
-                ${item.original_number != null && item.original_number !== "" ? `<small class="technical-original-number">原图第 ${escapeHtml(String(item.original_number))} 条</small>` : ""}
+                <div class="technical-group-meta"><small>对应 ${group.members.length} 条原始记录</small><small data-role="technical-group-status">${escapeHtml(technicalGroupStatus(group.members, review))}</small></div>
                 <label>类型
                   <select data-role="type">${technicalRequirementTypeOptionsHtml(item.type)}</select>
                 </label>
                 <label>中文技术要求
-                  <textarea data-role="content">${escapeHtml(item.content || "")}</textarea>
+                  <textarea data-role="content">${escapeHtml(TechnicalRequirementEquivalence.format(item))}</textarea>
                 </label>
-                <div data-role="technical-translation-feedback">${technicalTranslationFeedbackHtml(review, item, index)}</div>
-                ${item.original_content ? `<details class="technical-original"><summary>查看原文${item.source_language && item.source_language !== "unknown" ? `（${escapeHtml(item.source_language)}）` : ""}</summary><p>${escapeHtml(item.original_content)}</p></details>` : ""}
+                <small class="technical-group-reason" data-role="technical-group-reason" role="status"${control.disabled && control.state !== "confirmed" ? "" : " hidden"}>${escapeHtml(control.disabled && control.state !== "confirmed" ? control.reason : "")}</small>
+                ${group.members.map(({ item: member, index: memberIndex }) => `<div data-role="technical-translation-feedback" data-translation-requirement-id="${escapeHtml(member.requirement_id)}">${technicalTranslationFeedbackHtml(review, member, memberIndex)}</div>`).join("")}
+                <details class="technical-original technical-group-sources" data-role="technical-group-sources"><summary>查看识别来源（${group.members.length} 条原始记录）</summary>
+                  ${group.members.map(({ item: member, index: memberIndex }) => `
+                    <div class="technical-source-record" data-source-requirement-id="${escapeHtml(member.requirement_id)}">
+                      <small>原始记录 ${memberIndex + 1} · 第 ${escapeHtml(member.page || 1)} 页 · ${member.need_human_review === false ? "已确认" : "待确认"}</small>
+                      ${member.original_number != null ? `<small class="technical-original-number">原图第 ${escapeHtml(member.original_number)} 条</small>` : ""}
+                      <p>${escapeHtml(member.original_content || member.recognized_content || member.content || "")}</p>
+                      ${member.evidence ? `<p>${escapeHtml(member.evidence)}</p>` : ""}
+                      ${(member.recognition_aliases || []).map((alias) => `<p>其他识别来源 · 第 ${escapeHtml(alias.page || 1)} 页 · ${escapeHtml(sourceValues(alias.source).join("、"))}<br>${escapeHtml(alias.original_content || alias.recognized_content || "")}<br>${escapeHtml(alias.evidence || "")}</p>`).join("")}
+                    </div>`).join("")}
+                </details>
               </div>
               <div class="requirement-actions">
-                ${confirmationButtonHtml(item, { kind: "technical", field: technicalRequirementField(item, index), review })}
-                <button type="button" class="secondary-action requirement-delete-button" data-role="delete-technical-requirement">删除</button>
+                ${technicalGroupButtonHtml(group, review)}
+                <button type="button" class="secondary-action requirement-delete-button" data-role="delete-technical-requirement" title="删除此项对应的 ${group.members.length} 条原始记录">删除${group.members.length > 1 ? `（${group.members.length}条）` : ""}</button>
               </div>
             </div>
-          `).join("")}
+          `; }).join("")}
         </div>
       ` : '<div class="empty-line">尚未添加技术要求；如无标注要求，可保持为空。</div>'}
     </section>
@@ -7227,7 +7489,12 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       need_human_review: true,
     };
     if (isDuplicateTechnicalRequirement(review, item)) {
-      if (error) error.textContent = "已存在相同类型和内容的技术要求。";
+      if (error) error.textContent = "该要求已存在，已定位到对应项。";
+      const existing = review.technical_requirements.find((candidate) => technicalRequirementsAreDuplicates(candidate, item));
+      const existingRow = findTechnicalRequirementRow(root, existing?.requirement_id);
+      existingRow?.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (existingRow) highlightReviewTarget(existingRow);
+      existingRow?.querySelector('[data-role="content"]')?.focus({ preventScroll: true });
       return;
     }
     if (type === "surface") applyManualSurfaceNormalization(item, "人工新增表面处理术语");
@@ -7244,137 +7511,8 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     updateLatestReviewMessage("已新增技术要求，确认后才会写入生图参数包。");
   });
 
-  root.querySelector('[data-action="undo-technical-requirement-delete"]')?.addEventListener("click", () => {
-    activateReviewContext(messageId);
-    const undo = state.technicalRequirementUndo;
-    if (!undo || undo.review !== review) return;
-    if ((review.technical_requirements || []).some((item) => item?.requirement_id === undo.item?.requirement_id)) {
-      state.technicalRequirementUndo = null;
-      updateLatestReviewMessage("该技术要求已经恢复。");
-      return;
-    }
-    const index = Math.min(Math.max(Number(undo.index) || 0, 0), review.technical_requirements.length);
-    review.technical_requirements.splice(index, 0, structuredClone(undo.item));
-    if (undo.confirmation) review.manual_confirmations[undo.confirmationKey] = structuredClone(undo.confirmation);
-    const restored = review.technical_requirements[index];
-    state.technicalRequirementUndo = null;
-    markParameterChangeProposalsStale("技术要求已恢复");
-    queueReviewAuditEvent({
-      event_type: "technical_requirement_restored",
-      target_field: technicalRequirementField(restored, index),
-      before_state: { requirement_id: restored.requirement_id, deleted: true },
-      after_state: technicalRequirementAuditState(restored),
-      metadata: { requirement_id: restored.requirement_id, index },
-    });
-    updateLatestReviewMessage("已撤销删除，技术要求已恢复到原位置。");
-  });
+  bindTechnicalRequirementGroups(root, review, messageId);
 
-  root.querySelectorAll('.requirement-row[data-kind="technical"]').forEach((row) => {
-    const requirementId = String(row.dataset.requirementId || "");
-    const index = review.technical_requirements.findIndex((candidate) => String(candidate?.requirement_id || "") === requirementId);
-    const item = review.technical_requirements[index];
-    if (!item) return;
-    const technicalField = technicalRequirementField(item, index);
-    const confirmationField = technicalRequirementConfirmationKey(item, index);
-    const contentInput = row.querySelector('[data-role="content"]');
-    let contentBeforeState = null;
-    const applyTechnicalDraft = (event) => {
-      activateReviewContext(messageId);
-      contentBeforeState ||= technicalRequirementAuditState(item);
-      item.content = event.target.value.trim();
-      if (item.type === "surface") applyManualSurfaceNormalization(item, "人工修改表面处理术语");
-      markTechnicalRequirementEdited(item, technicalField, confirmationField);
-      syncConfirmationControl(row, item, { kind: "technical", field: technicalField, review });
-      syncTechnicalRequirementSummary(root, review);
-    };
-    contentInput.addEventListener("input", applyTechnicalDraft);
-    contentInput.addEventListener("change", (event) => {
-      if (!contentBeforeState) applyTechnicalDraft(event);
-      const afterState = technicalRequirementAuditState(item);
-      if (JSON.stringify(contentBeforeState) !== JSON.stringify(afterState)) {
-        queueReviewAuditEvent({
-          event_type: "technical_requirement_updated",
-          target_field: technicalField,
-          before_state: contentBeforeState,
-          after_state: afterState,
-          metadata: { requirement_id: item.requirement_id, index },
-        });
-      }
-      contentBeforeState = null;
-      updateLatestReviewMessage();
-    });
-    row.querySelector('[data-role="type"]')?.addEventListener("change", (event) => {
-      activateReviewContext(messageId);
-      const beforeState = technicalRequirementAuditState(item);
-      const previousType = item.type;
-      item.type = normalizeTechnicalRequirementType(event.target.value);
-      if (item.type === "surface") applyManualSurfaceNormalization(item, "人工将技术要求设为表面处理");
-      else if (previousType === "surface") clearSurfaceNormalization(item);
-      markTechnicalRequirementEdited(item, technicalField, confirmationField);
-      queueReviewAuditEvent({
-        event_type: "technical_requirement_updated",
-        target_field: technicalField,
-        before_state: beforeState,
-        after_state: technicalRequirementAuditState(item),
-        metadata: { requirement_id: item.requirement_id, index, changed_field: "type" },
-      });
-      updateLatestReviewMessage();
-    });
-    row.querySelector('[data-role="confirm"]')?.addEventListener("click", () => {
-      activateReviewContext(messageId);
-      const control = confirmationControlState(item, { kind: "technical", field: technicalField, review });
-      if (control.state === "save_failed") { void flushReviewPersistence(); return; }
-      if (control.disabled) return;
-      const beforeState = technicalRequirementAuditState(item);
-      if (item.type === "surface") applyManualSurfaceNormalization(item, "人工确认当前表面处理术语");
-      confirmParam(item, confirmationField);
-      review.manual_confirmations[confirmationField] = {
-        ...(review.manual_confirmations[confirmationField] || {}),
-        requirement_id: item.requirement_id,
-        target_field: technicalField,
-        type: item.type,
-      };
-      markParameterChangeProposalsStale("技术要求确认状态已变化");
-      queueReviewAuditEvent({
-        event_type: "technical_requirement_confirmed",
-        target_field: technicalField,
-        before_state: beforeState,
-        after_state: technicalRequirementAuditState(item),
-        metadata: { requirement_id: item.requirement_id, index, translation_warning_acknowledgement: technicalTranslationWarningAudit(item) },
-      });
-      syncConfirmationControl(row, item, { kind: "technical", field: technicalField, review });
-      syncTechnicalRequirementSummary(root, review);
-      updateLatestReviewMessage("已确认技术要求，将写入下一版生图参数包。");
-    });
-    row.querySelector('[data-role="delete-technical-requirement"]')?.addEventListener("click", () => {
-      activateReviewContext(messageId);
-      const currentIndex = review.technical_requirements.findIndex((candidate) => String(candidate?.requirement_id || "") === requirementId);
-      if (currentIndex < 0) return;
-      const removed = review.technical_requirements[currentIndex];
-      const confirmationKey = technicalRequirementConfirmationKey(removed, currentIndex);
-      const confirmation = review.manual_confirmations?.[confirmationKey]
-        ? structuredClone(review.manual_confirmations[confirmationKey])
-        : null;
-      review.technical_requirements.splice(currentIndex, 1);
-      delete review.manual_confirmations[confirmationKey];
-      state.technicalRequirementUndo = {
-        review,
-        item: structuredClone(removed),
-        index: currentIndex,
-        confirmationKey,
-        confirmation,
-      };
-      markParameterChangeProposalsStale("技术要求已删除");
-      queueReviewAuditEvent({
-        event_type: "technical_requirement_deleted",
-        target_field: technicalRequirementField(removed, currentIndex),
-        before_state: technicalRequirementAuditState(removed),
-        after_state: { requirement_id: removed.requirement_id, deleted: true },
-        metadata: { requirement_id: removed.requirement_id, index: currentIndex },
-      });
-      updateLatestReviewMessage("已删除技术要求；可使用“撤销删除”恢复一次。");
-    });
-  });
 }
 
 function applyStandardizationResult(item) {
@@ -8251,10 +8389,11 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
         ? Math.max(Number(token) - 1, 0)
         : -1;
       const resolvedIndex = technicalIndex >= 0 ? technicalIndex : fallbackIndex;
-      const technicalRow = Array.from(compareOverlay.querySelectorAll('.requirement-row[data-kind="technical"]'))
-        .find((row) => String(row.dataset.requirementId || "") === requestedId)
+      const technicalRow = findTechnicalRequirementRow(compareOverlay, state.review.technical_requirements[resolvedIndex]?.requirement_id || requestedId)
         || compareOverlay.querySelector(`.requirement-row[data-kind="technical"][data-index="${resolvedIndex}"]`);
       if (technicalRow) {
+        const sources = technicalRow.querySelector('[data-role="technical-group-sources"]');
+        if (sources && String(technicalRow.dataset.requirementId) !== requestedId) sources.open = true;
         technicalRow.scrollIntoView({ behavior: "smooth", block: "center" });
         if (options.highlight) highlightReviewTarget(technicalRow);
         const input = technicalRow.querySelector('[data-role="content"]');
@@ -8490,10 +8629,6 @@ function buildSafeConfirmationPlan(review) {
     const label = TECH_LABELS[item.type] || item.type || "技术要求";
     if (!String(item.content || "").trim()) {
       skip("technical", field, label, "技术要求内容为空", { requirement_id: item.requirement_id || null });
-      return;
-    }
-    if (isDuplicateTechnicalRequirement(review, item)) {
-      skip("technical", field, label, "已存在相同类型和内容的技术要求", { requirement_id: item.requirement_id || null });
       return;
     }
     if (item.type === "surface" && item.translation_status !== "translated" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item.normalization_status)) {
@@ -9956,12 +10091,13 @@ function technicalTranslationWarningAudit(item) {
 function refreshTechnicalTranslationControls() {
   if (!state.review) return;
   document.querySelectorAll('.requirement-row[data-kind="technical"][data-requirement-id]').forEach((row) => {
-    const index = state.review.technical_requirements.findIndex((item) => item.requirement_id === row.dataset.requirementId);
-    const item = state.review.technical_requirements[index];
-    if (!item) return;
-    const feedback = row.querySelector('[data-role="technical-translation-feedback"]');
-    if (feedback) feedback.innerHTML = technicalTranslationFeedbackHtml(state.review, item, index);
-    syncConfirmationControl(row, item, { kind: "technical", field: technicalRequirementField(item, index), review: state.review });
+    if (state.technicalRequirementPointerDown && row.contains(state.technicalRequirementPointerTarget)) return;
+    const review = getReviewContext(row.closest('[data-review-message-id]')?.dataset.reviewMessageId)?.review || state.review;
+    for (const { item, index } of technicalRowMembers(row, review)) {
+      const feedback = Array.from(row.querySelectorAll('[data-role="technical-translation-feedback"]')).find((element) => element.dataset.translationRequirementId === item.requirement_id);
+      if (feedback) feedback.innerHTML = technicalTranslationFeedbackHtml(review, item, index);
+    }
+    syncTechnicalGroupControl(row, review);
   });
   bindTechnicalTranslationControls(document);
   syncBulkConfirmationActions(document, state.review);
@@ -9974,7 +10110,7 @@ function bindTechnicalTranslationControls(root, messageId = state.activeReviewMe
     button.dataset.boundTranslation = "true";
     button.addEventListener("click", async () => {
       activateReviewContext(messageId);
-      const id = button.closest('[data-requirement-id]')?.dataset.requirementId;
+      const id = button.closest('[data-translation-requirement-id]')?.dataset.translationRequirementId || button.closest('[data-requirement-id]')?.dataset.requirementId;
       button.disabled = true;
       if (button.dataset.translationAction === "save") { await flushReviewPersistence(); refreshTechnicalTranslationControls(); }
       else if (button.dataset.translationAction === "adopt") await technicalTranslationService()?.adoptCandidate(id, Number(button.dataset.candidateIndex));
@@ -11282,6 +11418,7 @@ function makeGenerationParameterPackage(review = state.review) {
     .map((item) => ({
       type: item.type,
       content: technicalRequirementOutputContent(item),
+      ...(item.application_scope ? { application_scope: item.application_scope } : {}),
       confirmation_source: "human_confirmed",
     }));
   const roughnessRequirement = confirmedSurfaceRoughnessRequirement(review);
@@ -11346,33 +11483,11 @@ function confirmedSurfaceRoughnessRequirement(review) {
 }
 
 function technicalRequirementOutputContent(item) {
-  const content = String(item?.content || "").trim();
-  const number = String(item?.original_number ?? "").trim()
-    || content.match(/^\s*(\d+)\s*[.．、)]\s*(?=[^\d\s])/)?.[1] || "";
-  return /^\d+$/.test(number) ? content.replace(new RegExp(`^\\s*${number}\\s*[.．、)]\\s*(?=[^\\d\\s])`), "") : content;
+  return TechnicalRequirementEquivalence.outputContent(item);
 }
 
 function makeTechnicalRequirementsText(requirements) {
-  const lines = [];
-  (Array.isArray(requirements) ? requirements : []).forEach((item) => {
-    let content = technicalRequirementOutputContent(item);
-    if (!content) return;
-    content = content
-      .replace(/(?:\s*(?:\r\n?|\n)\s*)+/g, "；")
-      .replace(/[\t ]+/g, " ")
-      .replace(/；{2,}/g, "；")
-      .trim();
-    const type = normalizeTechnicalRequirementType(item?.type);
-    if (type === "surface_roughness") {
-      lines.push(`${lines.length + 1}.${content}`);
-      return;
-    }
-    const label = GENERATION_TECHNICAL_REQUIREMENT_LABELS[type] || "其他要求";
-    const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const withoutDuplicateLabel = content.replace(new RegExp(`^${escapedLabel}\\s*[:：]\\s*`), "").trim();
-    lines.push(`${lines.length + 1}.${label}：${withoutDuplicateLabel || content}`);
-  });
-  return lines.join("\n");
+  return TechnicalRequirementEquivalence.formatText(requirements);
 }
 
 function generationDerivedParameters(review) {

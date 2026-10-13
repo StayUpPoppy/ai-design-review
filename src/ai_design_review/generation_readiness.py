@@ -228,11 +228,11 @@ def _append_technical_requirement_state(review: dict[str, Any], pending: list[di
         duplicate = bool(content) and any(technical_requirements_are_duplicates(item, previous) for previous in seen)
         if content:
             seen.append(item)
-        if content and _technical_requirement_is_confirmed(item) and not duplicate:
+        if content and _technical_requirement_is_confirmed(item):
+            if duplicate and warnings is not None:
+                warnings.append(_field_issue(f"technical_requirements.{index}", "等价技术要求保留独立记录，生成图只输出一次。", label=_technical_label(requirement_type)))
             continue
-        if duplicate:
-            reason = f"技术要求“{_technical_label(requirement_type)}”与已有内容重复，请修改或删除重复项。"
-        elif content:
+        if content:
             reason = f"技术要求“{_technical_label(requirement_type)}”尚未人工确认。"
         else:
             reason = f"技术要求“{_technical_label(requirement_type)}”内容为空，请补充内容或删除该项。"
@@ -382,6 +382,7 @@ def _generation_requirement(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": item.get("type"),
         "content": technical_requirement_output_content(item),
+        **({"application_scope": item["application_scope"]} if item.get("application_scope") else {}),
         "confirmation_source": "human_confirmed",
     }
 

@@ -50,11 +50,13 @@ def run():
     assert text.startswith("1.") and "\n2." in text and not text.startswith("技术要求\n")
     assert "STsKBA" in text and "B-1-1.5" in text
     command = build_solidworks_command("1000000099", package, review)
-    assert command["models"][0]["extraProperties"]["技术要求"] == text
+    exported_text = package["solidworks_preview"]["extraProperties"]["技术要求"]
+    assert "STsKBA" in exported_text and "B-1-1.5" in exported_text
+    assert command["models"][0]["extraProperties"]["技术要求"] == exported_text
     frozen = deepcopy(package)
     review["technical_requirements"][0]["content"] = "后续人工修改"
     assert not active_translation_warnings(review["technical_requirements"][0])
-    assert build_solidworks_command("1000000099", frozen, review)["models"][0]["extraProperties"]["技术要求"] == text
+    assert build_solidworks_command("1000000099", frozen, review)["models"][0]["extraProperties"]["技术要求"] == exported_text
 
     originals = ["Force F3=16 N", "Dimension 12.5 mm", "Coating GOST 9389-75", "Wire Б-1-1,5", "Dimensions per 3D"]
     changed = ["力 F2=16 N", "尺寸 13 mm", "镀层 GB/T 9389-75", "钢丝 B-1-1.5", "尺寸按2D"]

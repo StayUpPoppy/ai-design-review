@@ -9,6 +9,7 @@ from copy import deepcopy
 from typing import Any
 
 from .surface_terms import normalize_surface_requirement
+from .technical_requirements import technical_requirements_are_duplicates, technical_requirement_equivalence_key
 from .technical_translation import TRANSLATION_KEYS, requires_translation, assess_translation, translation_warning_fields
 
 TECHNICAL_FIELD_TYPES = {
@@ -50,7 +51,9 @@ def recognition_metadata(item: dict[str, Any], order: int, *, namespace: str = "
 
 def collect_technical_requirements(candidates: list[dict[str, Any]], *, preserve_confirmation_policy: bool = False) -> list[dict[str, Any]]:
     notes: list[dict[str, Any]] = []
-    for index, candidate in enumerate(candidates, start=1):
+    # Prefer the explicit note channel, without changing occurrence-key seeds.
+    ordered = sorted(enumerate(candidates, start=1), key=lambda pair: pair[1].get("recognition_channel") != "technical_requirements")
+    for index, candidate in ordered:
         kind = TECHNICAL_FIELD_TYPES.get(candidate.get("field"))
         if not kind:
             continue
@@ -65,11 +68,24 @@ def collect_technical_requirements(candidates: list[dict[str, Any]], *, preserve
                 "confidence": candidate.get("confidence", 0),
                 "need_human_review": candidate.get("need_human_review", True) if preserve_confirmation_policy else True,
                 "page": candidate.get("page") or 1, "position": deepcopy(candidate.get("position")),
+                "application_scope": candidate.get("application_scope") or "",
+                "recognition_channel": candidate.get("recognition_channel") or "",
+                "recognition_aliases": [],
                 "suggested_region": candidate.get("suggested_region") or "", **metadata,
                 **{key: deepcopy(candidate[key]) for key in TRANSLATION_KEYS if key in candidate}}
         existing = next((note for note in notes if _same_occurrence(note, item)), None)
+        if existing is None and item["recognition_channel"] == "parameters":
+            matches = [note for note in notes if note.get("recognition_channel") == "technical_requirements"
+                       and _same_original(note, item) and _same_recognized_body(note, item)
+                       and not (note.get("position") and item.get("position") and note["position"] != item["position"])]
+            # A repeated note at multiple locations cannot be assigned by wording alone.
+            if len(matches) == 1:
+                existing = matches[0]
         if existing:
             existing["source"] = list(dict.fromkeys([*existing["source"], *source]))
+            if item["recognition_key"] != existing["recognition_key"] and item["recognition_key"] not in _recognition_keys(existing):
+                existing["recognition_aliases"].append({key: deepcopy(item.get(key)) for key in
+                    (*RECOGNITION_KEYS, "original_content", "page", "position", "source", "evidence", "recognition_channel")})
             continue
         if kind == "surface":
             normalized = normalize_surface_requirement(content, enable_llm=None if preserve_confirmation_policy else False)
@@ -94,16 +110,35 @@ def collect_technical_requirements(candidates: list[dict[str, Any]], *, preserve
 
 
 def _same_occurrence(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if not _same_recognized_body(left, right):
+        return False
     if left["recognition_key"] == right["recognition_key"]:
         return True
     # Cross-engine de-duplication requires the same actual location AND original words.
     return bool(left.get("position") and right.get("position")
                 and left.get("page") == right.get("page") and left["position"] == right["position"]
-                and _text(left.get("original_content")) == _text(right.get("original_content")))
+                and _same_original(left, right))
+
+
+def _same_recognized_body(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return technical_requirements_are_duplicates(
+        {**left, "content": left.get("recognized_content") or left.get("content")},
+        {**right, "content": right.get("recognized_content") or right.get("content")},
+    )
+
+
+def _same_original(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return left.get("page") == right.get("page") and technical_requirement_equivalence_key({**left, "content": left.get("original_content")}) == technical_requirement_equivalence_key({**right, "content": right.get("original_content")})
+
+
+def _recognition_keys(item: dict[str, Any]) -> set[str]:
+    return {str(note["recognition_key"]) for note in [item, *(item.get("recognition_aliases") or [])]
+            if isinstance(note, dict) and note.get("recognition_key")}
 
 
 def _wording(item: dict[str, Any]) -> set[str]:
-    return {_text(item.get(key)) for key in ("content", "original_content", "recognized_content", "raw_content") if _text(item.get(key))}
+    return {_text(note.get(key)) for note in [item, *(item.get("recognition_aliases") or [])] if isinstance(note, dict)
+            for key in ("content", "original_content", "recognized_content", "raw_content") if _text(note.get(key))}
 
 
 def recovery_preview(review: dict[str, Any], recognized: list[dict[str, Any]]) -> dict[str, Any]:
@@ -154,7 +189,7 @@ def recovery_preview(review: dict[str, Any], recognized: list[dict[str, Any]]) -
     for item in recognized:
         key = item["recognition_key"]
         words = _wording(item)
-        if any(note.get("recognition_key") == key for note in existing):
+        if any(_recognition_keys(note) & _recognition_keys(item) for note in existing):
             continue
         matching = [note for note in existing if words & _wording(note)]
         if matching:
@@ -164,7 +199,7 @@ def recovery_preview(review: dict[str, Any], recognized: list[dict[str, Any]]) -
                     order_hints.append({"requirement_id": matching[0]["requirement_id"], "page": item["page"],
                                         **{name: item[name] for name in RECOGNITION_KEYS}})
                 continue
-        if any(note.get("recognition_key") == key or words & _wording(note) for note in deleted):
+        if any(_recognition_keys(note) & _recognition_keys(item) or words & _wording(note) for note in deleted):
             continue
         if any(words & _wording(note) for note in edited):
             continue

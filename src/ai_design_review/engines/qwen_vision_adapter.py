@@ -269,7 +269,12 @@ def qwen_payload_to_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
     for field, item in parameters.items():
         if _is_surface_roughness_field(field):
             continue
-        candidates.extend(_parameter_candidate(field, item))
+        parameter_candidates = _parameter_candidate(field, item)
+        for candidate in parameter_candidates:
+            candidate["recognition_channel"] = "parameters"
+            if isinstance(item, dict) and item.get("application_scope"):
+                candidate["application_scope"] = item["application_scope"]
+        candidates.extend(parameter_candidates)
     primary_materials = payload.get("primary_materials") or []
     if isinstance(primary_materials, list):
         for item in primary_materials:
@@ -353,6 +358,9 @@ def qwen_payload_to_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if content in (None, ""):
             continue
         candidate = _candidate(field, content, item, suggested_region="Qwen technical requirement recognition")
+        candidate["recognition_channel"] = "technical_requirements"
+        if item.get("application_scope"):
+            candidate["application_scope"] = item["application_scope"]
         candidate.update({key: item[key] for key in TRANSLATION_KEYS if key in item})
         candidate.update(recognition_metadata(item, source_order))
         candidates.append(candidate)

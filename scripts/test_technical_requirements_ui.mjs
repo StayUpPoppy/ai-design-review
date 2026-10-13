@@ -33,6 +33,7 @@ const context = {
   escapeHtml: (value) => String(value ?? ""),
 };
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(new URL("../frontend/technical-requirement-equivalence.js", import.meta.url), "utf8"), context);
 translationTestHelpers(context);
 vm.runInContext(appSource.slice(helperStart, helperEnd), context);
 
@@ -52,6 +53,8 @@ assert.deepEqual(JSON.parse(JSON.stringify(context.technicalRequirementCounts(re
   total: 2,
   confirmed: 1,
   pending: 1,
+  original: 2,
+  exportable: 1,
 });
 assert.equal(context.isDuplicateTechnicalRequirement(review, {
   type: "surface",
@@ -59,9 +62,33 @@ assert.equal(context.isDuplicateTechnicalRequirement(review, {
 }), true);
 assert.match(context.technicalRequirementTypeOptionsHtml("salt_spray"), /value="salt_spray" selected/);
 
+// Render grouping does not grant confirmation or erase either source record.
+const grouped = { technical_requirements: [
+  { requirement_id: "pending", type: "heat_treatment", content: "300 °C/20 min", need_human_review: true },
+  { requirement_id: "other", type: "salt_spray", content: "720h无红锈", need_human_review: false },
+  { requirement_id: "confirmed", type: "heat_treatment", content: "热处理：300°C/20min", need_human_review: false },
+] };
+const beforeGrouping = JSON.stringify(grouped);
+const groups = context.technicalRequirementGroups(grouped);
+assert.equal(groups.length, 2);
+assert.equal(groups[1].representative.item.requirement_id, "confirmed", "display order follows the first exportable source, as in SW");
+assert.equal(groups[1].confirmed, false);
+assert.equal(context.technicalRequirementCounts(grouped).exportable, 2);
+assert.equal(context.technicalRequirementCounts(grouped).pending, 1);
+assert.equal(JSON.stringify(grouped), beforeGrouping);
+assert.equal(context.technicalRequirementGroups({ technical_requirements: [{content:""}, {content:""}] }).length, 2);
+context.sourceValues = (value) => (Array.isArray(value) ? value : [value]).filter(Boolean);
+vm.runInContext(appSource.slice(appSource.indexOf("function confirmationItemWasEdited"), appSource.indexOf("function renderDerivedParametersHtml")), context);
+assert.equal(context.technicalGroupControl(groups[1].members, grouped).label, "确认其余记录");
+const failed = { ...grouped.technical_requirements[0], translation_status: "failed", translation_input_snapshot: { content: "300 °C/20 min", type: "heat_treatment" } };
+assert.equal(context.technicalGroupControl([{ item: failed, index: 0 }, groups[1].members[1]], grouped).disabled, true, "a failed hidden source blocks whole-group confirmation");
+assert.equal(context.technicalGroupControl([{ item: { type: "other", content: "", need_human_review: true }, index: 0 }], grouped).disabled, true);
+assert.equal(context.technicalGroupControl([{ item: { type: "other", content: "", need_human_review: false }, index: 0 }], grouped).state, "invalid", "an old confirmation flag cannot validate an empty requirement");
+assert.equal(grouped.technical_requirements[0].need_human_review, true);
+
 const editorStart = appSource.indexOf("const createRequirementForm = root.querySelector");
 const editorEnd = appSource.indexOf("function applyStandardizationResult", editorStart);
-const editorSource = appSource.slice(editorStart, editorEnd);
+const editorSource = appSource.slice(appSource.indexOf("function restoreTechnicalRequirementGroup"), appSource.indexOf("function technicalRequirementsAreDuplicates")) + appSource.slice(editorStart, editorEnd);
 assert.match(appSource, /data-action="show-technical-requirement-create"/);
 assert.match(appSource, /data-role="new-technical-type"/);
 assert.match(appSource, /data-role="delete-technical-requirement"/);

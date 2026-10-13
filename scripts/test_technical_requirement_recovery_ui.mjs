@@ -45,6 +45,12 @@ assert.equal(await stale.service.apply(), false);
 assert.equal(stale.review.technical_requirements.length, 1);
 assert.match(stale.service.render(stale.review), /重新预览/);
 
+const aliases = harness();
+aliases.review.technical_requirements[0].recognition_aliases = [{ recognition_key: "key-nine", original_content: "原图同一条目" }];
+await aliases.service.preview();
+assert.equal(await aliases.service.apply(), false, "an alias cannot be reintroduced as a missing requirement");
+assert.equal(aliases.review.technical_requirements.length, 1);
+
 const failure = harness();
 await failure.service.preview();
 failure.hooks.save = async () => false;

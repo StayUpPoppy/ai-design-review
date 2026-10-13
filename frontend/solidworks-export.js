@@ -3,7 +3,6 @@
   const calculatedProperties = { "P'": "theoretical_spring_rate", C: "spring_index", "τ_b": "solid_stress" };
   const lengthUnits = { mm: 1, "毫米": 1, cm: 10, m: 1000, in: 25.4, inch: 25.4, "英寸": 25.4 };
   const forceUnits = { n: 1, "牛": 1, kn: 1000, kgf: 9.80665 };
-  const types = { surface: "表面处理", surface_roughness: "表面粗糙度", hardness: "硬度要求", heat_treatment: "热处理", salt_spray: "盐雾试验", environmental: "环保要求", lifetime: "寿命要求", process: "工艺要求", other: "其他要求" };
   const number = (v) => ["number", "string"].includes(typeof v) && String(v).trim() && Number.isFinite(Number(v)) ? Number(v) : null;
   const rounded = (v, digits = 4) => Number(Number(v).toFixed(digits));
   const textNumber = (v) => String(rounded(v));
@@ -42,61 +41,61 @@
     return `${text}（允差 ${[upper, lower].filter((v) => v != null).map(signed).join("/")} N）`;
   }
   function content(item) {
-    let value = String(item.content || "").trim();
-    const label = String(item.original_number || "").trim() || value.match(/^\s*(\d+)\s*[.．、)]\s*(?=[^\d\s])/)?.[1] || "";
-    if (/^\d+$/.test(label)) value = value.replace(new RegExp(`^\\s*${label}\\s*[.．、)]\\s*(?=[^\\d\\s])`), "");
+    const value = TechnicalRequirementEquivalence.outputContent(item);
     return value.replace(/(?:\s*(?:\r\n?|\n)\s*)+/g, "；").replace(/[\t ]+/g, " ").trim();
   }
   const roughnessLine = (value) => value.replace(/粗糙度\s*[:：]?\s*Ra\s*/, "表面粗糙度：Ra ").replace("表面表面粗糙度", "表面粗糙度").replace(/(?<=\d)\s*[μµ]m/g, " μm").replace(/[。.]+$/, "") + "。";
-  function sentenceKey(value, catalog) {
-    let key = value.trim().replace(/^\d+[.．、)]\s*/, "").replace(/^(?:其他要求|工艺要求)\s*[:：]\s*/, "");
+  function sentenceKey(value, catalog, scope) {
+    let [key, kind] = TechnicalRequirementEquivalence.body(value);
     const material = key.match(/^(?:材质|材料)\s*[:：]?\s*(.+?)\s*[。.]*$/);
     if (material) key = `材料：${CompressionDesignChecks.materialDisplayValue(material[1], catalog)}`;
-    return key.replace(/^(?:材质|材料)/, "材料").replace(/^(?:旋向|绕制方向)/, "绕制方向").replace(/^(?:有效圈数n?|工作圈数)/, "工作圈数").replace(/表面粗糙度/g, "粗糙度").replace(/[。.]+$/, "").replace(/[\s:：]/g, "").toLowerCase();
+    key = key.replace(/^(?:材质|材料)/, "材料").replace(/^(?:旋向|绕制方向)/, "绕制方向").replace(/^(?:有效圈数n?|工作圈数)/, "工作圈数").replace(/表面粗糙度/g, "粗糙度").replace(/^(材料|绕制方向|工作圈数)\s*:\s*/, "$1");
+    return JSON.stringify(TechnicalRequirementEquivalence.key({ type: [null, "other", "process"].includes(kind) ? "other" : kind, content: key, application_scope: scope }));
   }
   function technicalText(packageData, review, catalog = {}) {
     const generation = packageData.generation_parameters || {}, parameters = generation.spring_parameters || {};
     const lines = [], remaining = [], material = parameterValue(parameters.material), direction = handedness(parameterValue(parameters.handedness));
-    if (material != null) lines.push(`材料：${CompressionDesignChecks.materialDisplayValue(material, catalog)}。`);
-    if (direction) lines.push(`绕制方向：${direction}。`);
+    const keys = new Set();
+    const append = (line, scope) => {
+      const key = sentenceKey(line, catalog, scope);
+      if (line && !keys.has(key)) { keys.add(key); lines.push(line); }
+    };
+    if (material != null) append(`材料：${CompressionDesignChecks.materialDisplayValue(material, catalog)}。`);
+    if (direction) append(`绕制方向：${direction}。`);
     const requirements = generation.technical_requirements || [];
     for (const item of requirements) {
       if (!item || typeof item !== "object") continue;
       const body = content(item);
-      if (["surface_roughness", "roughness"].includes(item.type) && body) lines.push(roughnessLine(body));
+      if (["surface_roughness", "roughness"].includes(item.type) && body) append(roughnessLine(body), item.application_scope);
       else remaining.push(item);
     }
     const hb = confirmedSolidHeight(review), points = (generation.load_points || []).filter((p) => p && typeof p === "object");
     const solid = points.filter((p) => solidLabel(p.label)), fb = solid.length === 1 ? number(solid[0].force?.value) : null;
     const fbHeight = solid.length === 1 ? number(solid[0].height?.value) : null, fbText = fb != null && fb >= 0 ? forceText(solid[0]) : null;
-    if (hb != null && fbText != null && fbHeight != null && Math.abs(hb - fbHeight) <= 1e-9) lines.push(`当弹簧压并至高度 Hb = ${textNumber(hb)} mm 时，对应压并载荷 Fb = ${fbText}。`);
+    if (hb != null && fbText != null && fbHeight != null && Math.abs(hb - fbHeight) <= 1e-9) append(`当弹簧压并至高度 Hb = ${textNumber(hb)} mm 时，对应压并载荷 Fb = ${fbText}。`);
     else {
-      if (hb != null) lines.push(`压并高度：Hb = ${textNumber(hb)} mm。`);
-      if (fbText != null) lines.push(`压并载荷：Fb = ${fbText}${hb != null && fbHeight != null ? `（载荷测试高度 ${textNumber(fbHeight)} mm）` : ""}。`);
+      if (hb != null) append(`压并高度：Hb = ${textNumber(hb)} mm。`);
+      if (fbText != null) append(`压并载荷：Fb = ${fbText}${hb != null && fbHeight != null ? `（载荷测试高度 ${textNumber(fbHeight)} mm）` : ""}。`);
     }
     for (const point of points) {
       if (solidLabel(point.label)) continue;
       const height = number(point.height?.value), force = number(point.force?.value), label = String(point.label || "").trim();
       if (height == null || height <= 0 || force == null || force < 0) continue;
       const match = label.match(/^[Ff](\d+)$/);
-      lines.push(match ? `当弹簧工作高度 H${match[1]} = ${textNumber(height)} mm 时，对应工作载荷 ${label} = ${forceText(point)}。` : `载荷点 ${label}：高度 ${textNumber(height)} mm，力值 ${forceText(point)}。`);
+      append(match ? `当弹簧工作高度 H${match[1]} = ${textNumber(height)} mm 时，对应工作载荷 ${label} = ${forceText(point)}。` : `载荷点 ${label}：高度 ${textNumber(height)} mm，力值 ${forceText(point)}。`);
     }
     for (const [label, field] of [["总圈数", "total_coils"], ["工作圈数", "active_coils"]]) {
       const value = parameterValue(parameters[field]);
-      if (value != null) lines.push(`${label}：${value} 圈。`);
+      if (value != null) append(`${label}：${value} 圈。`);
     }
-    const keys = new Set(lines.map((line) => sentenceKey(line, catalog)));
     for (const item of remaining) {
-      const body = content(item), label = types[item.type] || "其他要求";
-      if (!body || keys.has(sentenceKey(body, catalog))) continue;
-      const withoutLabel = body.replace(new RegExp(`^${label}\\s*[:：]\\s*`), "").trim() || body;
-      lines.push(`${label}：${withoutLabel}`);
+      append(TechnicalRequirementEquivalence.format(item), item.application_scope);
     }
     if (!requirements.length) {
       const legacy = String(generation.technical_requirements_text || "").replace(/\r\n?/g, "\n").trim().replace(/^技术要求[:：]?\s*(?:\n|$)/, "");
       for (const line of legacy.split("\n")) {
-        const body = line.replace(/^\s*\d+\s*[.．、)]\s*/, "").trim();
-        if (body && !keys.has(sentenceKey(body, catalog))) lines.push(body);
+        const body = TechnicalRequirementEquivalence.outputContent({ content: line });
+        if (body) append(TechnicalRequirementEquivalence.format({ content: body }));
       }
     }
     return lines.map((line, index) => `${index + 1}.${line}`).join("\n");
