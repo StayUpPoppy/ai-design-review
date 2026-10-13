@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ai_design_review.generation_readiness import build_generation_parameter_package, assess_generation_readiness
 from ai_design_review.generation_schemas import GenerationParameterPackageV2
-from ai_design_review.solidworks import build_solidworks_command
+from ai_design_review.solidworks import build_solidworks_command, build_solidworks_preview
 
 
 def parameter(value, unit=None, **extra):
@@ -92,6 +92,38 @@ def cases():
     add("pitch_invalid", {"pitch": parameter("NaN", "mm")})
     add("material_changed", {"material": {"value": "65Mn"}})
     add("wire_changed", {"wire_diameter": {"value": 2}, "material": {"value": "65Mn"}})
+    for name, updates in {
+        "pending": {"need_human_review": True}, "missing": {"value": None}, "empty": {"value": ""},
+        "zero": {"value": 0}, "negative": {"value": -1}, "nan": {"value": "NaN"},
+        "infinity": {"value": "Infinity"}, "text": {"value": "invalid"}, "boolean": {"value": True},
+        "stale": {"derived_value_stale": True}, "formula_stale": {"formula_recommendation_stale": True},
+        "cycle": {"source": ["formula_calculation"], "source_fields": ["surface_roughness_ra"]},
+        "conflict": {"roughness_conflict": True}, "unsupported_unit": {"unit": "mm"},
+        "hex": {"value": "0x10"}, "underscore": {"value": "1_2"},
+        "micro_alias": {"unit": "µm"}, "ascii_alias": {"unit": "um"}, "legacy_unit": {"unit": None},
+        "changed": {"value": 6.3}, "precise": {"value": 12.345678},
+    }.items():
+        add(f"roughness_{name}", {"surface_roughness_ra": updates})
+    add("roughness_requirements", requirements=[
+        {"type": "other", "content": "两端面表面粗糙度：Ra 12.5 µm。", "need_human_review": False},
+        {"type": "surface_roughness", "content": "Ra 12.5 μm", "application_scope": "两端面", "need_human_review": False},
+        {"type": "surface_roughness", "content": "外圆粗糙度 Ra 12.5μm", "need_human_review": False},
+        {"type": "surface_roughness", "content": "两端面粗糙度 Ra 6.3μm", "need_human_review": False},
+        {"type": "surface_roughness", "content": "两端面粗糙度 Ra ≤ 12.5μm", "need_human_review": False},
+        {"type": "surface_roughness", "content": "两端面粗糙度 Ra 12.5μm，表面镀锌", "need_human_review": False},
+        {"type": "surface_roughness", "content": "两端面粗糙度 Ra 12.5 mm", "need_human_review": False},
+        {"type": "other", "content": "Ｒａ １２.５ µm", "application_scope": "两端面", "need_human_review": False},
+    ])
+    add("roughness_legacy_text")
+    add("roughness_scoped_text", requirements=[{"type": "surface_roughness", "content": "Ra 3.2 μm", "application_scope": "外圆", "need_human_review": False}])
+    matching_note = {"type": "surface_roughness", "content": "两端面粗糙度 Ra 12.5μm", "need_human_review": False}
+    add("roughness_manual_clear", {"surface_roughness_ra": {"value": "", "source": ["human_edited"]}}, requirements=[matching_note])
+    add("roughness_pending_note", {"surface_roughness_ra": {"need_human_review": True}}, requirements=[matching_note])
+    add("roughness_stale_note", {"surface_roughness_ra": {"derived_value_stale": True}}, requirements=[matching_note])
+    add("roughness_legacy_promoted", {"surface_roughness_ra": {"value": None}}, requirements=[matching_note])
+    add("roughness_legacy_scopes", {"surface_roughness_ra": {"value": None}}, requirements=[matching_note, {**matching_note, "content": "外圆粗糙度 Ra 12.5μm"}])
+    add("roughness_all_missing", {"material": {"value": ""}, "surface_roughness_ra": {"value": ""}})
+    add("roughness_only", {"material": {"value": ""}})
     return result
 
 
@@ -99,7 +131,17 @@ def run():
     outputs = []
     for case in cases():
         review = case["review"]
+        original_review = deepcopy(review)
         package = build_generation_parameter_package(review)
+        if case["name"] == "roughness_legacy_text":
+            generation = package["generation_parameters"]
+            generation["technical_requirements"] = []
+            generation["technical_requirements_text"] = (
+                "两端面粗糙度 Ra 12.5 µm。\n外圆粗糙度 Ra 12.5μm。\n"
+                "两端面粗糙度 Ra ≤ 12.5μm。\n"
+                + generation["technical_requirements_text"]
+            )
+            package["solidworks_preview"] = build_solidworks_preview(package, review)
         if case["name"] != "invalid_wire":
             GenerationParameterPackageV2.model_validate(package)
         preview = package["solidworks_preview"]
@@ -110,7 +152,7 @@ def run():
         assert list(preview["modelParameters"]) == ["线径", "中径", "自由高度", "圈数", "有效圈数n", "是否磨平"]
         extra = preview["extraProperties"]
         title = preview["titleBlockProperties"]
-        assert isinstance(title, dict) and set(title) <= {"材料", "重量"}
+        assert isinstance(title, dict) and set(title) <= {"材料", "重量", "表面粗糙度"}
         mass = package["derived_parameters"]["solidworks_design_checks"]["metrics"]["unit_mass"]
         assert mass["unit"] == "kg" and "formula" in mass and "inputs" in mass
         if "重量" in title:
@@ -134,13 +176,40 @@ def run():
         if name == "book_baseline":
             assert extra == {"技术要求": notes, "P'": 2.9314, "C": 14, "τ_b": 451.2669}, extra
             assert "Hb = 6.3 mm" in notes and "Fb =" not in notes
-            assert title == {"材料": "SUS304", "重量": 0.00642403}
+            assert title == {"材料": "SUS304", "重量": 0.00642403, "表面粗糙度": 12.5}
         if name == "material_pending":
-            assert title == {"重量": 0.00642403}, "Valid weight is independent of material text confirmation"
+            assert title == {"重量": 0.00642403, "表面粗糙度": 12.5}, "Valid weight and Ra are independent of material text confirmation"
         if name == "material_empty":
-            assert title == {}
+            assert title == {"表面粗糙度": 12.5}
         if name in {"pitch_missing", "pitch_stale", "pitch_invalid", "invalid_wire", "wire_stale", "non_round"}:
-            assert title == {"材料": "SUS304"}, (name, title)
+            assert title == {"材料": "SUS304", "表面粗糙度": 12.5}, (name, title)
+        if name in {"roughness_manual_clear", "roughness_pending_note", "roughness_stale_note", "roughness_legacy_scopes"}:
+            assert "表面粗糙度" not in title and "两端面表面粗糙度：Ra 12.5 μm" in notes
+            if name == "roughness_legacy_scopes":
+                assert "外圆表面粗糙度：Ra 12.5 μm" in notes and review["spring_parameters"]["surface_roughness_ra"]["value"] is None
+        elif name in {f"roughness_{suffix}" for suffix in ["pending", "missing", "empty", "zero", "negative", "nan", "infinity", "text", "boolean", "stale", "formula_stale", "cycle", "conflict", "unsupported_unit", "all_missing", "hex", "underscore"]}:
+            assert "表面粗糙度" not in title and "粗糙度" not in notes, (name, title, notes)
+        else:
+            expected_ra = review["spring_parameters"]["surface_roughness_ra"]["value"]
+            assert title["表面粗糙度"] == expected_ra and not isinstance(title["表面粗糙度"], bool)
+            assert f"两端面表面粗糙度：Ra {expected_ra} μm。" not in notes
+        if name == "roughness_all_missing":
+            assert title == {}
+        if name == "roughness_only":
+            assert title == {"表面粗糙度": 12.5}
+        if name == "roughness_requirements":
+            assert "外圆表面粗糙度：Ra 12.5 μm" in notes
+            assert "两端面表面粗糙度：Ra 6.3 μm" in notes
+            assert "两端面表面粗糙度：Ra ≤ 12.5 μm" in notes
+            assert "Ra 12.5 μm，表面镀锌" in notes
+            assert "Ra 12.5 mm" in notes and "Ｒａ" not in notes
+            assert len(review["technical_requirements"]) == 13, "Only the equivalent standalone legacy record was promoted"
+            assert review["spring_parameters"]["surface_roughness_ra"]["surface_location"] == "两端面"
+        if name == "roughness_legacy_text":
+            assert "外圆粗糙度 Ra 12.5μm" in notes and "Ra ≤ 12.5μm" in notes
+            assert "两端面粗糙度 Ra 12.5 µm" not in notes
+        if name == "roughness_scoped_text":
+            assert "Ra 3.2 μm（作用范围：外圆）" in notes
         if name in {"hb_pending", "hb_stale", "hb_formula_stale", "hb_cleared", "hb_reference", "hb_unknown", "hb_invalid_range", "hb_cycle"}:
             assert "Hb =" not in notes, (name, notes)
         if name in {"hb_stale", "hb_formula_stale", "hb_cleared", "hb_unknown", "hb_invalid_range", "hb_cycle", "fb_invalid", "fb_ambiguous", "non_round", "c_one", "wire_stale", "no_material", "invalid_wire", "pitch_missing"}:
@@ -180,7 +249,11 @@ def run():
             dumped = GenerationParameterPackageV2.model_validate(legacy).model_dump(mode="json")
             assert "titleBlockProperties" not in dumped["solidworks_preview"]
         assert "titleBlockProperties" not in build_solidworks_command("1000000099", legacy, changed)["models"][0]
-        outputs.append({"name": name, "review": review, "package": package})
+        outputs.append({"name": name, "input_review": original_review, "review": review, "package": package})
+    for value in (float("nan"), float("inf"), float("-inf")):
+        invalid = base_review()
+        invalid["spring_parameters"]["surface_roughness_ra"]["value"] = value
+        assert "表面粗糙度" not in build_generation_parameter_package(invalid)["solidworks_preview"]["titleBlockProperties"]
     return outputs
 
 

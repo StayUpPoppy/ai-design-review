@@ -9,6 +9,7 @@ from .generation_contract import handedness_label
 from .material_catalog import material_catalog_display_value
 from .standardizers.calculation_state import parameter_current, solid_height_kind
 from .standardizers.design_checks import LENGTH_UNITS, calculate_design_checks
+from .surface_roughness import confirmed_surface_roughness, surface_roughness_matches
 from .technical_requirements import format_technical_requirement, strip_technical_requirements_title, technical_requirement_output_content, technical_requirement_body, technical_requirement_equivalence_key
 
 CALCULATED_PROPERTIES = {"P'": "theoretical_spring_rate", "C": "spring_index", "τ_b": "solid_stress"}
@@ -118,6 +119,9 @@ def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str
     number = _number(mass.get("value"))
     if mass.get("status") in {"calculated", "estimated"} and mass.get("unit") == "kg" and number is not None and number > 0:
         title_block["重量"] = _rounded(number, 8)
+    roughness = confirmed_surface_roughness(review)
+    if roughness is not None:
+        title_block["表面粗糙度"] = roughness["value"]
     return {"modelParameters": build_solidworks_model_parameters(parameter_package, review),
             "customProperties": {"旋向": handedness_label(_parameter_value(parameters.get("handedness")))},
             "extraProperties": extra, "titleBlockProperties": title_block}
@@ -128,8 +132,11 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
     parameters = generation.get("spring_parameters") or {}
     lines: list[str] = []
     keys: set[tuple[str, str, str]] = set()
+    roughness = confirmed_surface_roughness(review)
 
     def append(line: str, scope: Any = None) -> None:
+        if surface_roughness_matches({"content": line, "application_scope": scope}, roughness):
+            return
         key = _sentence_key(line, scope)
         if line and key not in keys:
             keys.add(key)
@@ -148,7 +155,7 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
             continue
         content = _content(item)
         if item.get("type") in {"surface_roughness", "roughness"} and content:
-            append(_roughness_line(content), item.get("application_scope"))
+            append(_roughness_line(format_technical_requirement(item)), item.get("application_scope"))
         else:
             remaining.append(item)
     hb = _confirmed_solid_height(review)

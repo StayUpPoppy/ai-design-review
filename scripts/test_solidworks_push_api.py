@@ -240,13 +240,15 @@ def main() -> None:
                 notes = extra["技术要求"]
                 assert notes.count("表面喷丸处理") == 1 and notes.count("热处理：") == 1
                 assert "热处理：热处理要求" not in notes
-                assert notes.startswith("1.材料：60Si2Mn。\n2.绕制方向：左旋。\n3.两端面表面粗糙度：Ra 12.5 μm。\n")
+                assert notes.startswith("1.材料：60Si2Mn。\n2.绕制方向：左旋。\n3.")
+                assert "粗糙度" not in notes
                 for expected in ("Hb = 25 mm", "Fb = 2300 N", "H1 = 38 mm", "F1 = 2000 N", "H2 = 43 mm", "F2 = 2100 N", "表面喷丸处理"):
                     assert expected in notes, notes
                 assert isinstance(extra["P'"], (int, float)) and extra["C"] == round(29 / 3, 4)
                 assert extra["τ_b"] > 0
                 title = model["titleBlockProperties"]
                 assert title["材料"] == "60Si2Mn" and isinstance(title["重量"], (int, float))
+                assert title["表面粗糙度"] == 12.5
                 with repository._session() as session:
                     stored_package = session.get(GenerationJobRecord, job["generation_id"]).parameter_package
                     mass = stored_package["derived_parameters"]["solidworks_design_checks"]["metrics"]["unit_mass"]
@@ -275,7 +277,10 @@ def main() -> None:
                 order2_job = order2_created.json()["generation_job"]
                 order2_payload = submissions[-1]["payload"]
                 order2_notes = order2_payload["models"][0]["extraProperties"]["技术要求"]
-                assert len(order2_notes.splitlines()) == 14, order2_notes
+                assert len(order2_notes.splitlines()) == 13, order2_notes
+                assert order2_payload["models"][0]["titleBlockProperties"]["表面粗糙度"] == 12.5
+                assert "粗糙度" not in order2_notes
+                assert order2_payload["models"][0]["titleBlockProperties"] == order2_preview.json()["parameter_package"]["solidworks_preview"]["titleBlockProperties"]
                 assert order2_payload["models"][0]["extraProperties"] == order2_preview.json()["parameter_package"]["solidworks_preview"]["extraProperties"]
                 assert len(repository.get_review("order2-technical-dedup", owner_user_id=OWNER["user_id"])["review"]["technical_requirements"]) == 9
                 with repository._session() as session:

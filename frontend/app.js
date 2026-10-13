@@ -10877,32 +10877,21 @@ function ensureSurfaceRoughnessParameter(review) {
   }
 
   const legacy = [];
-  const retained = [];
   (review.technical_requirements || []).forEach((item) => {
-    if (normalizeTechnicalRequirementType(item?.type) !== "surface_roughness") {
-      retained.push(item);
-      return;
-    }
-    const mentions = surfaceRoughnessMentions(item?.content);
-    const direct = Number(String(item?.content || "").trim().replace(",", "."));
-    if (!mentions.length && Number.isFinite(direct) && direct > 0) {
-      mentions.push({ value: direct, location: null, evidence: `Ra ${formatCompactNumber(direct)}` });
-    }
-    if (!mentions.length) {
-      retained.push(item);
-      return;
-    }
-    mentions.forEach((mention) => legacy.push({
+    if (normalizeTechnicalRequirementType(item?.type) !== "surface_roughness") return;
+    const mention = SolidWorksExport.standaloneRoughness(item);
+    if (mention == null) return;
+    legacy.push({
       ...mention,
-      evidence: item?.evidence || mention.evidence,
+      item,
+      evidence: item?.evidence || item?.content || "",
       need_human_review: item?.need_human_review !== false,
-    }));
+    });
   });
-  review.technical_requirements = retained;
   const param = review.spring_parameters.surface_roughness_ra;
-  if (legacy.length && (param.value == null || param.value === "")) {
-    const unique = Array.from(new Map(legacy.map((item) => [Number(item.value), item])).values());
-    param.roughness_candidates = unique;
+  if (legacy.length && SolidWorksExport.canPromoteRoughness(param)) {
+    const unique = Array.from(new Map(legacy.map((item) => [JSON.stringify([item.value, item.location]), item])).values());
+    param.roughness_candidates = unique.map(({ item, ...candidate }) => candidate);
     param.evidence = legacy.map((item) => item.evidence).filter(Boolean).join(" | ");
     param.source = Array.from(new Set(["legacy_technical_requirement", ...sourceValues(param.source)]));
     param.need_human_review = !(unique.length === 1 && legacy.every((item) => item.need_human_review === false));
@@ -10915,6 +10904,12 @@ function ensureSurfaceRoughnessParameter(review) {
       param.value = null;
       param.roughness_conflict = true;
     }
+  }
+  if (legacy.length) {
+    const selected = SolidWorksExport.currentRoughness(review);
+    const absorbed = new Set(legacy.filter(({ item }) => SolidWorksExport.roughnessMatches(item, selected)
+      && (param.need_human_review === false || item.need_human_review !== false)).map(({ item }) => item));
+    review.technical_requirements = (review.technical_requirements || []).filter((item) => !absorbed.has(item));
   }
   return review;
 }
@@ -11469,15 +11464,14 @@ function makeGenerationParameterPackage(review = state.review) {
 
 function confirmedSurfaceRoughnessRequirement(review) {
   if (currentSpringType(review) !== "compression_spring") return null;
-  const param = review?.spring_parameters?.surface_roughness_ra;
-  const value = Number(param?.value);
-  if (!param || param.need_human_review !== false || !Number.isFinite(value) || value <= 0) return null;
-  const location = String(param.surface_location || "").trim();
+  const roughness = SolidWorksExport.confirmedRoughness(review);
+  if (roughness == null) return null;
+  const { value, location } = roughness;
   return {
     type: "surface_roughness",
     content: location
-      ? `${location}粗糙度 Ra ${formatCompactNumber(value)}μm`
-      : `表面粗糙度 Ra ${formatCompactNumber(value)}μm`,
+      ? `${location}粗糙度 Ra ${value}μm`
+      : `表面粗糙度 Ra ${value}μm`,
     confirmation_source: "human_confirmed",
   };
 }

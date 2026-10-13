@@ -19,6 +19,50 @@
     if (humanOverride(item) || !sources(item).some((s) => ["formula_calculation", "derived"].includes(s))) return true;
     return (item.source_fields || []).every((parent) => parameters[parent]?.value != null && parameters[parent]?.value !== "" && current(parameters, parent, [...path, field]));
   }
+  const roughnessUnit = (value) => String(value || "μm").trim().toLowerCase().replace(/µ/g, "μ").replace(/um/g, "μm");
+  const roughnessLocation = (value) => {
+    const text = String(value || "").replace(/\s+/g, "");
+    return ({ "两端": "两端面", "外圆表面": "外圆", "内圆表面": "内圆" })[text] ?? text;
+  };
+  const positiveRoughness = (value) => {
+    if (!["number", "string"].includes(typeof value)) return null;
+    const text = String(value).trim().replace(/,/g, ".");
+    if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(text)) return null;
+    const result = number(text);
+    return result != null && result > 0 ? result : null;
+  };
+  function standaloneRoughness(item) {
+    let [body] = TechnicalRequirementEquivalence.body(TechnicalRequirementEquivalence.outputContent(item));
+    const suffix = body.match(/\(作用范围:\s*([^()]+)\)$/), locations = [item.application_scope, suffix?.[1]];
+    if (suffix) body = body.slice(0, suffix.index).trim();
+    const match = body.match(/^(?:(两端面?|[左右]端面|端面|外圆(?:表面)?|内圆(?:表面)?|弹簧表面|全表面|整体)\s*)?(?:(?:表面)?粗糙度(?:要求)?\s*[:=]?\s*(?:Ra\s*[:=]?\s*)?|Ra\s*[:=]?\s*)(\d+(?:\.\d+)?(?:e[+-]?\d+)?)\s*(μm|um)?$/i);
+    let value, unit;
+    if (match) {
+      value = positiveRoughness(match[2]); unit = roughnessUnit(match[3]); locations.push(match[1]);
+    } else if (["surface_roughness", "roughness", "surface_finish", "表面粗糙度"].includes(String(item.type || "").toLowerCase())) {
+      value = positiveRoughness(body); unit = "μm";
+    } else return null;
+    if (value == null || unit !== "μm") return null;
+    const scopes = [...new Set(locations.filter((location) => String(location || "").trim()).map(roughnessLocation))];
+    return scopes.length > 1 ? null : { value, unit, location: scopes[0] || "" };
+  }
+  function roughnessParameter(item) {
+    const value = positiveRoughness(item?.value);
+    return value != null && roughnessUnit(item?.unit) === "μm" ? { value, unit: "μm", location: roughnessLocation(item?.surface_location) } : null;
+  }
+  const canPromoteRoughness = (item) => (item?.value == null || item.value === "") && !humanOverride(item);
+  function currentRoughness(review) {
+    const parameters = review.spring_parameters || {}, item = parameters.surface_roughness_ra;
+    if (!item || item.roughness_conflict || item.formula_recommendation_stale || !current(parameters, "surface_roughness_ra")) return null;
+    return roughnessParameter(item);
+  }
+  function confirmedRoughness(review) {
+    return review.spring_parameters?.surface_roughness_ra?.need_human_review === false ? currentRoughness(review) : null;
+  }
+  function roughnessMatches(item, roughness) {
+    const parsed = standaloneRoughness(item);
+    return roughness != null && parsed != null && parsed.value === roughness.value && parsed.unit === roughness.unit && parsed.location === roughness.location;
+  }
   function confirmedSolidHeight(review) {
     const parameters = review.spring_parameters || {}, item = parameters.solid_height;
     if (!item || item.need_human_review !== false || !current(parameters, "solid_height") || item.formula_recommendation_stale) return null;
@@ -55,8 +99,10 @@
   function technicalText(packageData, review, catalog = {}) {
     const generation = packageData.generation_parameters || {}, parameters = generation.spring_parameters || {};
     const lines = [], remaining = [], material = parameterValue(parameters.material), direction = handedness(parameterValue(parameters.handedness));
+    const roughness = confirmedRoughness(review);
     const keys = new Set();
     const append = (line, scope) => {
+      if (roughnessMatches({ content: line, application_scope: scope }, roughness)) return;
       const key = sentenceKey(line, catalog, scope);
       if (line && !keys.has(key)) { keys.add(key); lines.push(line); }
     };
@@ -66,7 +112,7 @@
     for (const item of requirements) {
       if (!item || typeof item !== "object") continue;
       const body = content(item);
-      if (["surface_roughness", "roughness"].includes(item.type) && body) append(roughnessLine(body), item.application_scope);
+      if (["surface_roughness", "roughness"].includes(item.type) && body) append(roughnessLine(TechnicalRequirementEquivalence.format(item)), item.application_scope);
       else remaining.push(item);
     }
     const hb = confirmedSolidHeight(review), points = (generation.load_points || []).filter((p) => p && typeof p === "object");
@@ -115,6 +161,8 @@
     if (typeof material === "string" && material) titleBlock["材料"] = CompressionDesignChecks.materialDisplayValue(material, catalog);
     const mass = checks.metrics.unit_mass, weight = number(mass?.value);
     if (["calculated", "estimated"].includes(mass?.status) && mass.unit === "kg" && weight != null && weight > 0) titleBlock["重量"] = rounded(weight, 8);
+    const roughness = confirmedRoughness(review);
+    if (roughness != null) titleBlock["表面粗糙度"] = roughness.value;
     return {
       modelParameters: Object.fromEntries([["线径", "wire_diameter"], ["中径", "mean_diameter"], ["自由高度", "free_length"], ["圈数", "total_coils"], ["有效圈数n", "active_coils"], ["是否磨平", "end_grinding"]].map(([label, field]) => [label, parameterValue(parameters[field])])),
       customProperties: { "旋向": handedness(parameterValue(parameters.handedness)) }, extraProperties: extra, titleBlockProperties: titleBlock,
@@ -128,5 +176,5 @@
     return { label: String(point.label || "").trim().replace(/\s+/g, " "), height: { value: rounded(height * hFactor, 3), unit: "mm" },
       force: { value: rounded(force * fFactor, 3), unit: "N", tolerance_upper: tolerance(point.load_tolerance_upper), tolerance_lower: tolerance(point.load_tolerance_lower), ...(percent != null ? { tolerance_percent: number(percent) == null ? null : rounded(percent, 3) } : {}) }, confirmation_source: "human_confirmed" };
   }
-  globalThis.SolidWorksExport = { buildPreview, technicalText, exportLoadPoint };
+  globalThis.SolidWorksExport = { buildPreview, technicalText, exportLoadPoint, standaloneRoughness, confirmedRoughness, roughnessMatches, currentRoughness, canPromoteRoughness };
 })();

@@ -220,8 +220,8 @@ class SolidWorksPreviewV2(BaseModel):
     titleBlockProperties: dict[str, int | float | str] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="标题栏属性：已确认材料纯牌号及单件重量（数字，kg，最多八位小数）。各项缺失时省略键；新预览都缺失时为空对象，旧预览可省略此字段。",
-        examples=[{"材料": "SUS304", "重量": 0.00642403}],
+        description="标题栏属性：已确认材料纯牌号、单件重量（数字，kg，最多八位小数）及已确认有效的表面粗糙度 Ra（数字，μm）。粗糙度对应独立句不再输出到技术要求；其它部位及附加条件保留。各项缺失时省略键；新预览都缺失时为空对象，旧预览可省略此字段。",
+        examples=[{"材料": "SUS304", "重量": 0.00642403, "表面粗糙度": 12.5}],
     )
 
 
