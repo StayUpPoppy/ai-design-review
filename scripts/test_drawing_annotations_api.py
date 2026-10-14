@@ -4,6 +4,7 @@ import copy
 import os
 import sys
 import tempfile
+from unittest.mock import patch
 from pathlib import Path
 
 os.environ["AI_REVIEW_IDENTITY_MODE"] = "mock"
@@ -18,9 +19,10 @@ from ai_design_review.io_utils import write_json  # noqa: E402
 from ai_design_review.review_persistence import ReviewPersistence  # noqa: E402
 from ai_design_review.generation_readiness import build_generation_parameter_package  # noqa: E402
 from ai_design_review.solidworks import build_solidworks_command  # noqa: E402
+from ai_design_review.drawing_annotations import ALGORITHM_VERSION, build_annotations  # noqa: E402
 
 
-def fixture(root: Path, repository: ReviewPersistence, job_id="annotations-demo"):
+def fixture(root: Path, repository: ReviewPersistence, job_id="annotations-demo", *, legacy=False):
     import fitz
 
     job_dir = root / job_id
@@ -65,12 +67,51 @@ def fixture(root: Path, repository: ReviewPersistence, job_id="annotations-demo"
     review = {"drawing_summary": {"drawing_name": "气泡标注演示（测试数据）", "drawing_no": "DEMO-ANNOTATIONS", "spring_type": "compression_spring", "spring_type_label": "压缩弹簧"},
               "spring_parameters": params, "spring_features": {}, "technical_requirements": [], "standardization_results": [], "change_history": [], "balloons": []}
     owner = {"user_id": "annotation-test-user", "username": "annotation-test-user"}
+    if legacy:
+        annotation = build_annotations(review, job_dir, lambda p: api._artifact_url(job_id, p), candidates_payload={"candidates": candidates, "raw_payloads": {}}, allow_ocr=False)
+        annotation.pop("algorithm_version")
+        annotation["annotation_revision"] = 4
+        location = next(a for a in annotation["annotations"] if a["field"] == "wire_diameter")["locations"][0]
+        location.update(source="manual", location_id="legacy-wire", anchor={"x": .15, "y": .25}, bubble={"x": .2, "y": .25})
+        review["drawing_annotations"] = annotation
     write_json(job_dir / "review.json", review)
     write_json(job_dir / "owner.json", owner)
     write_json(job_dir / "candidates.json", {"candidates": candidates, "raw_payloads": {}})
     if repository.configured:
         repository.create_review(job_id, review, artifact_dir=str(job_dir), owner=owner)
     return review
+
+
+def check_upgrade(client, repository, root, job_id, *, race=False, failure=False):
+    original = fixture(root, repository, job_id, legacy=True)
+    before = copy.deepcopy(client.get(f"/api/reviews/{job_id}").json()["spring_parameters"])
+    expected = copy.deepcopy(next(a for a in original["drawing_annotations"]["annotations"] if a["field"] == "wire_diameter")["locations"][0])
+    original_builder = api.build_annotations
+    def builder(*args, **kwargs):
+        if failure:
+            raise RuntimeError("simulated upgrade failure")
+        rebuilt = original_builder(*args, **kwargs)
+        if race:
+            expected["bubble"] = {"x": .4, "y": .35}
+            change = {"annotation_id": "wire_diameter", "location_id": "legacy-wire", "page": 1, "anchor": expected["anchor"], "bubble": expected["bubble"]}
+            repository.save_drawing_annotations(job_id, owner_user_id="annotation-test-user", patch={"source_document_id": original["drawing_annotations"]["source_document_id"], "expected_annotation_revision": 4, "changes": [change]})
+        return rebuilt
+    with patch.object(api, "build_annotations", side_effect=builder) as mock:
+        first = client.get(f"/api/reviews/{job_id}/annotations")
+        assert first.status_code == 200, first.text
+        doc = first.json()
+        assert doc["algorithm_version"] == ALGORITHM_VERSION
+        assert doc["annotation_revision"] == (6 if race else 5)
+        assert client.get(f"/api/reviews/{job_id}/annotations").json() == doc
+        assert mock.call_count == 1, "upgrade/failure is attempted only once for this algorithm"
+    location = next(a for a in doc["annotations"] if a["field"] == "wire_diameter")["locations"][0]
+    assert location == expected, "a concurrent/manual edit must win over automatic rebuild"
+    after = client.get(f"/api/reviews/{job_id}").json()
+    assert after["spring_parameters"] == before
+    if repository.configured:
+        assert repository.get_review(job_id, owner_user_id="annotation-test-user")["revision"] == 1
+    if failure:
+        assert any("升级未完成" in w for w in doc["warnings"])
 
 
 def check(client, repository, job_id):
@@ -117,6 +158,54 @@ def check(client, repository, job_id):
         assert client.patch("/api/reviews/someone-else/annotations", json=body).status_code == 404
 
 
+def check_relocalize(client, repository, root, job_id):
+    fixture(root, repository, job_id)
+    path = f"/api/reviews/{job_id}/annotations"
+    current = client.get(path).json()
+    before = client.get(f"/api/reviews/{job_id}").json()
+    body = {"source_document_id": current["source_document_id"], "expected_annotation_revision": current["annotation_revision"]}
+    builder = api.build_annotations
+    def rebuild(*args, **kwargs):
+        assert kwargs.get("retry_ocr") is True
+        assert args[0]["drawing_annotations"] == current, "retry must use latest positions, including JSON sidecar positions"
+        result = builder(*args, **kwargs, allow_ocr=False)
+        for a in result["annotations"]:
+            for location in a["locations"]:
+                location["bubble"] = {"x": .8, "y": .8}
+        return result
+    with patch.object(api, "build_annotations", side_effect=rebuild) as mock:
+        response = client.post(path + "/relocalize", json=body)
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["annotation_revision"] == current["annotation_revision"] + 1
+        for a in current["annotations"]:
+            if a["locations"]:
+                assert next(b for b in result["annotations"] if b["field"] == a["field"])["locations"] == a["locations"]
+        assert client.post(path + "/relocalize", json=body).status_code == 409
+        assert mock.call_count == 1, "stale requests must fail before OCR"
+    body["expected_annotation_revision"] = result["annotation_revision"]
+    for invalid in ({**body, "changes": []}, {**body, "expected_annotation_revision": True}):
+        assert client.post(path + "/relocalize", json=invalid).status_code == 400
+    assert client.post(path + "/relocalize", json={**body, "source_document_id": "wrong"}).status_code == 409
+    after = client.get(f"/api/reviews/{job_id}").json()
+    before.pop("drawing_annotations", None)
+    after.pop("drawing_annotations", None)
+    assert before == after
+    if repository.configured:
+        def concurrent_rebuild(*args, **kwargs):
+            result = builder(*args, **kwargs, allow_ocr=False)
+            annotation = next(a for a in current["annotations"] if a["field"] == "wire_diameter")
+            location = annotation["locations"][0]
+            change = {"annotation_id": "wire_diameter", "location_id": location["location_id"], "page": 1, "anchor": location["anchor"], "bubble": {"x": .3, "y": .4}}
+            repository.save_drawing_annotations(job_id, owner_user_id="annotation-test-user", patch={**body, "changes": [change]})
+            return result
+        with patch.object(api, "build_annotations", side_effect=concurrent_rebuild):
+            assert client.post(path + "/relocalize", json=body).status_code == 409
+        latest = client.get(path).json()
+        assert next(a for a in latest["annotations"] if a["field"] == "wire_diameter")["locations"][0]["bubble"] == {"x": .3, "y": .4}
+        assert client.post("/api/reviews/someone-else/annotations/relocalize", json=body).status_code == 404
+
+
 def main():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -135,12 +224,18 @@ def main():
                 return
             with TestClient(api.app) as client:
                 check(client, repository, "annotations-demo")
+                check_upgrade(client, repository, api.API_RUN_ROOT, "legacy-db", race=True)
+                check_upgrade(client, repository, api.API_RUN_ROOT, "failed-db", failure=True)
+                check_relocalize(client, repository, api.API_RUN_ROOT, "relocalize-db")
             repository.dispose()
             repository = ReviewPersistence("")
             api.REVIEW_PERSISTENCE = repository
             fixture(api.API_RUN_ROOT, repository, "local-annotations")
             with TestClient(api.app) as client:
                 check(client, repository, "local-annotations")
+                check_upgrade(client, repository, api.API_RUN_ROOT, "legacy-json")
+                check_upgrade(client, repository, api.API_RUN_ROOT, "failed-json", failure=True)
+                check_relocalize(client, repository, api.API_RUN_ROOT, "relocalize-json")
             print("drawing annotation API tests passed: permissions, independent revisions, SW isolation, JSON fallback")
         finally:
             api.REVIEW_PERSISTENCE, api.API_RUN_ROOT = old_repository, old_root

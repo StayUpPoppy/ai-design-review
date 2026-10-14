@@ -300,10 +300,10 @@ class ReviewPersistence:
 
     def save_drawing_annotations(
         self, job_id: str, *, owner_user_id: str, initial: dict[str, Any] | None = None,
-        patch: dict[str, Any] | None = None,
+        patch: dict[str, Any] | None = None, upgrade: bool = False, relocalize: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Row-locked metadata merge; never run calculations or bump review revision."""
-        from .drawing_annotations import apply_annotation_patch
+        from .drawing_annotations import apply_annotation_patch, merge_annotation_upgrade, validate_annotation_revision
 
         with self._session() as session:
             try:
@@ -315,6 +315,11 @@ class ReviewPersistence:
                     if initial is None:
                         raise ValueError("原图标注尚未初始化。")
                     current = copy.deepcopy(initial)
+                elif relocalize is not None and initial is not None:
+                    validate_annotation_revision(current, relocalize)
+                    current = merge_annotation_upgrade(current, initial, force=True)
+                elif upgrade and initial is not None:
+                    current = merge_annotation_upgrade(current, initial)
                 result = apply_annotation_patch(current, patch) if patch is not None else current
                 snapshot = copy.deepcopy(record.review_snapshot)
                 snapshot["drawing_annotations"] = copy.deepcopy(result)

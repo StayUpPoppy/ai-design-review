@@ -70,6 +70,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): _operation("审图管理", "翻译或核验技术要求中文译文", "校验订单归属、稳定ID及已保存文本快照，逐条保护工程信息。中文直接显示，工程差异以translation_warnings提示，允许单项或批量确认；真实外文和无效响应仍失败。mode=translate调用现有Qwen；mode=revalidate只核验已有译文，不调用模型。返回安全自动恢复或待用户选择的候选；不保存、不代替人工确认，客户端通过现有串行保存持久化。"),
     ("GET", "/api/reviews/{job_id}/annotations"): _operation("审图管理", "获取原图关键参数气泡标注", "返回原图页面清单、稳定参数编号、定位依据和独立标注版本。历史订单按已有原图补建定位，不重新调用Qwen或RAG。"),
     ("PATCH", "/api/reviews/{job_id}/annotations"): _operation("审图管理", "独立保存原图标注位置", "仅调整原图定位点和气泡位置，不改变参数、审图修订号或SW生图状态。标注版本冲突返回409并附带服务器位置。"),
+    ("POST", "/api/reviews/{job_id}/annotations/relocalize"): _operation("审图管理", "重新补定位未定位的原图参数", "使用本地放大/旋转OCR重试缺项及失败区域，保留已可靠定位及人工位置。原图或独立标注版本冲突返回409，不修改工程参数。"),
     ("GET", "/"): _operation("系统状态", "查看 API 服务入口", "返回服务名称、健康检查地址和增强接口文档地址，不执行任何业务操作。"),
     ("GET", "/api/health"): _operation("系统状态", "检查服务运行状态", "返回数据库、识别队列、OCR、标准化、生图队列和模拟模板等运行状态；用于部署验收和故障诊断。"),
     ("GET", "/api/session"): _operation("会话与示例", "获取当前 ERP 用户", "解析当前请求携带的 ERP 身份 Cookie，并返回脱敏后的用户与组织信息；本地 mock 模式返回配置的模拟身份。"),
@@ -824,19 +825,25 @@ class AnnotationPositionChange(BaseModel):
     bubble: AnnotationPoint = Field(description="编号气泡中心位置。")
 
 
-class SaveDrawingAnnotationsRequest(BaseModel):
+class RelocalizeDrawingAnnotationsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_document_id: str = Field(description="原图及预览页面标识，防止把旧位置写入新原图。")
     expected_annotation_revision: int = Field(ge=1, description="当前标注独立版本，与审图修订号无关。")
+
+
+class SaveDrawingAnnotationsRequest(RelocalizeDrawingAnnotationsRequest):
     changes: list[AnnotationPositionChange] = Field(min_length=1, max_length=60, description="需要保存的位置调整。")
 
 
 class DrawingAnnotationsResponse(BaseModel):
     schema_version: str = Field(description="原图标注格式版本original_annotations/v1。")
+    algorithm_version: str | None = Field(default=None, description="定位算法版本；旧订单首次读取时升级自动位置，保留人工位置。")
     source_document_id: str = Field(description="原图及预览页面标识。")
     annotation_revision: int = Field(description="独立标注版本，不影响生图参数修订。")
     pages: list[dict[str, Any]] = Field(description="原图实际页码、图片地址、宽度和高度。")
     annotations: list[dict[str, Any]] = Field(description="15个主参数的编号、原始识别值、位置及未定位原因；空模板项不展示。")
+    text_obstacles: list[dict[str, Any]] = Field(default_factory=list, description="原图文字框的页码和相对坐标，供前端气泡避让，不参与参数计算。")
+    diagnostics: list[dict[str, Any]] = Field(default_factory=list, description="可选定位诊断：字段、证据值、当前值、原图页码/坐标、差异原因及补定位状态。参数值不因此自动更新。")
     warnings: list[str] = Field(default_factory=list, description="不阻断审图的定位提示。")
 
 
@@ -908,7 +915,7 @@ class ApiErrorResponse(BaseModel):
 DOCUMENTATION_MODELS: tuple[type[BaseModel], ...] = (
     TechnicalRecoveryRequest, TechnicalRecoveryItem, TechnicalRecoveryResponse,
     TechnicalTranslationSnapshot, TechnicalTranslationItemRequest, TechnicalTranslationRequest, TechnicalTranslationResult, TechnicalTranslationResponse,
-    AnnotationPoint, AnnotationPositionChange, SaveDrawingAnnotationsRequest, DrawingAnnotationsResponse,
+    AnnotationPoint, AnnotationPositionChange, RelocalizeDrawingAnnotationsRequest, SaveDrawingAnnotationsRequest, DrawingAnnotationsResponse,
     ReviewParameterValue,
     DrawingSummaryDocument,
     ReviewLoadPointDocument,
@@ -949,6 +956,7 @@ REQUEST_MODELS: dict[tuple[str, str], type[BaseModel]] = {
     ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): TechnicalRecoveryRequest,
     ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): TechnicalTranslationRequest,
     ("PATCH", "/api/reviews/{job_id}/annotations"): SaveDrawingAnnotationsRequest,
+    ("POST", "/api/reviews/{job_id}/annotations/relocalize"): RelocalizeDrawingAnnotationsRequest,
     ("POST", "/api/reviews/standardize"): StandardizePayloadRequest,
     ("POST", "/api/reviews/reasonableness"): ReasonablenessRequest,
     ("POST", "/api/reviews/{job_id}/standardize"): ExistingStandardizeRequest,
@@ -965,6 +973,7 @@ RESPONSE_MODELS: dict[tuple[str, str], tuple[str, type[BaseModel]]] = {
     ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): ("200", TechnicalTranslationResponse),
     ("GET", "/api/reviews/{job_id}/annotations"): ("200", DrawingAnnotationsResponse),
     ("PATCH", "/api/reviews/{job_id}/annotations"): ("200", DrawingAnnotationsResponse),
+    ("POST", "/api/reviews/{job_id}/annotations/relocalize"): ("200", DrawingAnnotationsResponse),
     ("POST", "/api/reviews"): ("202", ReviewCreateResponse),
     ("GET", "/api/reviews"): ("200", ReviewListResponse),
     ("GET", "/api/reviews/{job_id}"): ("200", ReviewDocument),

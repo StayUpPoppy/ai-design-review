@@ -15,6 +15,11 @@ from ..end_conditions import normalize_end_grinding, normalize_end_type
 from .base import RecognitionEngine
 from ..io_utils import project_path, read_json, write_json
 from ..preprocessing import IMAGE_EXTENSIONS, render_pdf_with_pdftoppm
+from ..dimension_text import dimension_number
+
+
+def unsafe_vertical_dimension_candidate(candidate: dict[str, Any]) -> bool:
+    return candidate.get("field") == "outer_diameter" and "vertical dimension candidate" in str(candidate.get("evidence") or "")
 
 
 class OcrExtractionError(RuntimeError):
@@ -952,24 +957,9 @@ def _outer_diameter_vertical_cluster(blocks: list[dict[str, Any]]) -> tuple[floa
     if has_one_sided_tolerance:
         return None
 
-    # A tolerance can be missed by OCR. Keep a low-confidence fallback based
-    # on a rightmost multi-character vertical number cluster, never on a
-    # hard-coded value or a single number near a surface-finish symbol.
-    fallback = [
-        item
-        for item in _vertical_number_clusters(blocks)
-        if len(item[1]) >= 2
-    ]
-    if fallback:
-        value, fragments, anchor = max(
-            fallback,
-            key=lambda item: (
-                _position_x(item[2]),
-                len(item[1]),
-            ),
-        )
-        evidence = f"vertical dimension candidate {''.join(str(item.get('text', '')).strip() for item in fragments)}"
-        return value, None, evidence, anchor
+    # Rightmost numbers and numeric ranges do not establish an outer diameter.
+    # Missing tolerance/role evidence must remain missing until a rotated local
+    # reading or an explicit dimension/table label supplies it.
     return None
 
 
@@ -987,6 +977,14 @@ def _vertical_number_clusters(blocks: list[dict[str, Any]]) -> list[tuple[float,
         raw_value = str(block.get("text", "")).strip()
         if not re.fullmatch(r"\d+(?:\.\d+)?", raw_value):
             continue
+        position = block.get("position") or {}
+        if len(raw_value) == 1 and any(
+            other is not block and len(str(other.get("text", "")).strip()) == 1 and
+            abs(_position_x(other) - _position_x(block)) <= max(2, float(position.get("width") or 0) * .45) and
+            abs(_position_y(other) - _position_y(block)) <= max(4, float(position.get("height") or 0) * 1.65)
+            for other in fragments
+        ):
+            continue  # A glyph from an unread run is not a whole dimension.
         value = float(raw_value)
         if not 4 <= value <= 200:
             continue
@@ -999,11 +997,22 @@ def _vertical_number_clusters(blocks: list[dict[str, Any]]) -> list[tuple[float,
         group = [
             item
             for item in fragments
-            if abs(_position_x(item) - float(seed_position["x"])) <= 48
-            and abs(_position_y(item) - float(seed_position["y"])) <= 220
+            if abs(_position_x(item) - float(seed_position["x"])) <= max(2, float(seed_position.get("width") or 0) * .35)
+            and abs(_position_y(item) - float(seed_position["y"])) <= max(4, float(seed_position.get("height") or 0) * 5)
+            and .7 <= float((item.get("position") or {}).get("width") or 0) / max(1, float(seed_position.get("width") or 0)) <= 1.4
         ]
         group.sort(key=_position_y)
-        raw_value = "".join(str(item.get("text", "")).strip() for item in group).strip(".")
+        # Do not join tolerance tokens such as .02 to nominal dimensions.
+        if len(group) < 2 or any(len(str(item.get("text", "")).strip()) != 1 for item in group):
+            continue
+        if any(_position_y(b) - _position_y(a) > max(float((a.get("position") or {}).get("height") or 0), float((b.get("position") or {}).get("height") or 0)) * 1.65 for a, b in zip(group, group[1:])):
+            continue
+        direction = seed.get("reading_direction")
+        if direction not in {"top_to_bottom", "bottom_to_top"}:
+            continue
+        if direction == "bottom_to_top":
+            group.reverse()
+        raw_value = "".join(str(item.get("text", "")).strip() for item in group)
         if not re.fullmatch(r"\d+(?:\.\d+)?", raw_value):
             continue
         value = float(raw_value)
@@ -1134,10 +1143,9 @@ def _distance(left: dict[str, Any], right: dict[str, Any]) -> float:
 
 
 def _number_from_text(text: str) -> float | None:
-    match = _search(r"^[ΦØ]?\s*([-−]?\d+(?:\.\d+)?)\s*(?:mm)?$", text.strip())
-    if not match:
+    if re.search(r"Ra|粗糙|μm|µm", text, re.I):
         return None
-    return float(match.group(1).replace("−", "-"))
+    return dimension_number(text.replace("−", "-"))
 
 
 def _slice_text(text: str, start: int, end: int) -> str:

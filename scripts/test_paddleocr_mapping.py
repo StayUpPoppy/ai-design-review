@@ -75,10 +75,7 @@ def main() -> None:
         for candidate in vertical_candidates
         if candidate["field"] != "load_point"
     }
-    assert vertical_by_field["outer_diameter"]["value"] == 25
-    assert vertical_by_field["outer_diameter"].get("tolerance_upper") is None
-    assert vertical_by_field["outer_diameter"].get("tolerance_lower") is None
-    assert "vertical dimension candidate 25" in vertical_by_field["outer_diameter"]["evidence"]
+    assert "outer_diameter" not in vertical_by_field, "rightmost glyphs without direction or role evidence must remain unresolved"
 
     uqd04_payload = {
         "texts": [
@@ -94,6 +91,11 @@ def main() -> None:
             _block("5.力值要求: H1压缩到21.15mm/F1=16N±10% H2压缩到9.668mm/F2=35N±10%", 100, 580),
         ]
     }
+    # A trustworthy supplied reading direction may reconstruct adjacent glyphs;
+    # ordinary OCR with no direction is handled by rotated local OCR instead.
+    for item in uqd04_payload["texts"]:
+        if item["position"]["x"] == 1609:
+            item["reading_direction"] = "top_to_bottom"
     uqd04_candidates = ocr_payload_to_candidates(uqd04_payload)
     uqd04_by_field = {
         candidate["field"]: candidate

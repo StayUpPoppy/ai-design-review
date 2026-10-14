@@ -1341,6 +1341,15 @@ async def run_recognition_execution(
         )
 
     _report_recognition_progress(progress_callback, "building_review", 88)
+    from .drawing_annotations import recover_pdf_dimension_candidates
+    from .spring_templates import classify_spring_type
+    try:
+        if classify_spring_type(candidates, uploaded_file_info)["spring_type"] == "compression_spring":
+            candidates = recover_pdf_dimension_candidates(drawing_path, candidates)
+            if any(c.get("source") == "pdf_text_dimension_recovery" for c in candidates):
+                candidate_sources.append("pdf_text_dimension_recovery")
+    except Exception:
+        LOGGER.exception("PDF dimension evidence recovery failed for %s", job_id)
     rules = read_json(project_path("config", "factory_rules.json"))
     review = DrawingReviewWorkflow(rules).run(str(drawing_path), candidates, run_standardization=False)
     apply_generation_defaults(review)
@@ -2147,20 +2156,34 @@ async def translate_technical_requirements(job_id: str, payload: dict[str, Any] 
 
 
 def _load_drawing_annotations(job_id: str, identity: IdentityContext) -> dict[str, Any]:
+    from .drawing_annotations import ALGORITHM_VERSION, failed_annotation_upgrade, merge_annotation_upgrade
+
     job_dir = _job_dir(job_id)
     review, _ = _load_persisted_review(job_id, job_dir / "review.json", identity)
-    if REVIEW_PERSISTENCE.configured and isinstance(review.get("drawing_annotations"), dict):
-        return review["drawing_annotations"]
-    if not REVIEW_PERSISTENCE.configured:
-        with annotation_file_lock(job_dir):
-            path = job_dir / "annotations.json"
-            if path.exists():
-                return read_json(path)
-            document = review.get("drawing_annotations") or build_annotations(review, job_dir, lambda relative: _artifact_url(job_id, relative))
+    current = review.get("drawing_annotations")
+    if REVIEW_PERSISTENCE.configured and isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION:
+        return current
+    # Serialize local OCR/cache work, but do not hold a database row lock while
+    # recognizing. The final database merge reads the newest manual locations.
+    with annotation_file_lock(job_dir):
+        path = job_dir / "annotations.json"
+        if not REVIEW_PERSISTENCE.configured and path.exists():
+            current = read_json(path)
+        if isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION:
+            return current
+        try:
+            document = build_annotations(review, job_dir, lambda relative: _artifact_url(job_id, relative))
+        except Exception:
+            if not isinstance(current, dict):
+                raise
+            LOGGER.exception("Original annotation upgrade failed for %s", job_id)
+            document = failed_annotation_upgrade(current)
+        if not REVIEW_PERSISTENCE.configured:
+            if isinstance(current, dict):
+                document = merge_annotation_upgrade(current, document)
             atomic_annotation_write(path, document)
             return document
-    document = build_annotations(review, job_dir, lambda relative: _artifact_url(job_id, relative))
-    return REVIEW_PERSISTENCE.save_drawing_annotations(job_id, owner_user_id=identity.user_id, initial=document)
+    return REVIEW_PERSISTENCE.save_drawing_annotations(job_id, owner_user_id=identity.user_id, initial=document, upgrade=True)
 
 
 @app.get("/api/reviews/{job_id}/annotations", tags=["审图管理"], summary="获取原图关键参数气泡标注")
@@ -2185,6 +2208,40 @@ def save_drawing_annotations(job_id: str, body: dict[str, Any] = Body(...), iden
         with annotation_file_lock(job_dir):
             path = job_dir / "annotations.json"
             result = apply_annotation_patch(read_json(path), body)
+            atomic_annotation_write(path, result)
+            return result
+    except AnnotationConflictError as exc:
+        raise HTTPException(status_code=409, detail={"message": str(exc), "annotations": exc.current}) from exc
+    except ReviewAccessError as exc:
+        raise HTTPException(status_code=404, detail="Review not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PersistenceError as exc:
+        raise _persistence_http_error(exc) from exc
+
+
+@app.post("/api/reviews/{job_id}/annotations/relocalize", tags=["审图管理"], summary="重新补定位未定位的原图参数")
+def relocalize_drawing_annotations(job_id: str, body: dict[str, Any] = Body(...), identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    from .drawing_annotations import validate_annotation_revision, merge_annotation_upgrade
+
+    try:
+        if set(body) != {"source_document_id", "expected_annotation_revision"}:
+            raise ValueError("补定位仅接受原图标识和预期标注修订号。")
+        current = _load_drawing_annotations(job_id, identity)
+        validate_annotation_revision(current, body)
+        job_dir = _job_dir(job_id)
+        with annotation_file_lock(job_dir):
+            review, _ = _load_persisted_review(job_id, job_dir / "review.json", identity)
+            latest = review.get("drawing_annotations") if REVIEW_PERSISTENCE.configured else read_json(job_dir / "annotations.json")
+            validate_annotation_revision(latest or current, body)
+            review = {**review, "drawing_annotations": latest or current}
+            rebuilt = build_annotations(review, job_dir, lambda p: _artifact_url(job_id, p), retry_ocr=True)
+            if REVIEW_PERSISTENCE.configured:
+                return REVIEW_PERSISTENCE.save_drawing_annotations(job_id, owner_user_id=identity.user_id, initial=rebuilt, relocalize=body)
+            path = job_dir / "annotations.json"
+            current = read_json(path)
+            validate_annotation_revision(current, body)
+            result = merge_annotation_upgrade(current, rebuilt, force=True)
             atomic_annotation_write(path, result)
             return result
     except AnnotationConflictError as exc:

@@ -78,7 +78,7 @@ def main():
         assert .83 < texts[0]["position"]["x"] < .9
         assert .09 < texts[0]["position"]["y"] < .11
         assert sorted([Path("page-10.png"), Path("page-2.png")], key=page_sort_key)[0].name == "page-2.png"
-        reuse = ocr_blocks({"ocr": {"raw_pages": [{"page": 1, "image_path": str(root / "pages" / "page-1.png"), "texts": [{"text": "wire diameter 2", "position": {"x": 200, "y": 160, "width": 100, "height": 20, "coordinate_type": "pixel"}}]}]}}, [{"page": 1}])
+        reuse = ocr_blocks({"ocr": {"raw_pages": [{"page": 1, "image_path": str(root / "pages" / "page-1.png"), "texts": [{"text": "wire diameter 2", "position": {"x": 200, "y": 160, "width": 100, "height": 20, "coordinate_type": "pixel", "origin": "top_left"}}]}]}}, [{"page": 1}])
         assert reuse[0]["position"]["x"] == .2
         document = build_annotations(review(), root, lambda p: f"/api/demo/{p.as_posix()}", candidates_payload={"candidates": [], "raw_payloads": {}}, allow_ocr=False)
         assert [p["page"] for p in document["pages"]] == [1, 2, 10]

@@ -30,6 +30,7 @@ EXPECTED_OPERATION_KEYS = {
     ("POST", "/api/reviews/{job_id}/technical-requirements/translate"),
     ("GET", "/api/reviews/{job_id}/annotations"),
     ("PATCH", "/api/reviews/{job_id}/annotations"),
+    ("POST", "/api/reviews/{job_id}/annotations/relocalize"),
     ("GET", "/"),
     ("GET", "/api/health"),
     ("GET", "/api/session"),
@@ -87,6 +88,7 @@ EXPECTED_OPERATION_IDS = {
     "translate_technical_requirements_api_reviews__job_id__technical_requirements_translate_post",
     "get_drawing_annotations_api_reviews__job_id__annotations_get",
     "save_drawing_annotations_api_reviews__job_id__annotations_patch",
+    "relocalize_drawing_annotations_api_reviews__job_id__annotations_relocalize_post",
     "approve_generation_job_api_generation_jobs__generation_id__approve_post",
     "apply_review_parameter_change_proposal_api_reviews__job_id__parameter_change_proposals__proposal_id__apply_post",
     "assess_review_reasonableness_api_reviews_reasonableness_post",
@@ -186,7 +188,7 @@ def main() -> None:
                 operations[key] = operation
 
     assert set(operations) == EXPECTED_OPERATION_KEYS
-    assert len(operations) == 53
+    assert len(operations) == 54
     assert {operation["operationId"] for operation in operations.values()} == EXPECTED_OPERATION_IDS
 
     for key, operation in operations.items():

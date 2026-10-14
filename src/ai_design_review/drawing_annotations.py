@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
+from .dimension_text import dimension_text, dimension_number, numeric_identity, safe_glyph_run
+
 FIELDS = (
     "material", "standard_no", "accuracy_grade", "wire_diameter", "outer_diameter",
     "inner_diameter", "mean_diameter", "free_length", "solid_height", "total_coils",
@@ -28,9 +30,11 @@ PATTERNS = (
     r"中径|mean|dm", r"自由长度|自由高度|总长|轴向.*长|free|h0|h₀|l0|l₀",
     r"压并|并紧高度|solid|hb", r"总圈|total|n1", r"有效圈|active|(?<![a-z])n(?![a-z0-9])",
     r"粗糙|ra|[▽√]|surface", r"旋向|左旋|右旋|hand|left|right",
-    r"端部|端圈|并紧|闭口|开口|end", r"磨平|磨削|不磨|grind|ground",
+    r"端部|端圈|并紧|闭口|开口|end", r"磨平|磨削|研磨|环磨|不磨|grind|ground",
 )
 RECOGNIZED_SOURCES = ("qwen", "ocr", "werk24", "geometry", "dimension_role", "pdf_text")
+ALGORITHM_VERSION = "original_annotation_locator/v3"
+AUTOMATIC_SOURCES = {"ocr", "pdf_text", "candidate", "local_ocr"}
 
 
 def page_sort_key(path: Path) -> tuple[int, str]:
@@ -65,19 +69,28 @@ def _recognized(item: dict[str, Any]) -> bool:
     return any(any(marker in str(part).lower() for marker in RECOGNIZED_SOURCES) for part in sources)
 
 
-def _rect(position: Any, width: float, height: float) -> dict[str, float] | None:
+def _rect(position: Any, width: float, height: float, *, center: bool = False) -> dict[str, float] | None:
     if not isinstance(position, dict):
         return None
     try:
-        x, y, w, h = (float(position[key]) for key in ("x", "y", "width", "height"))
+        polygon = position.get("polygon")
+        if polygon:
+            xs, ys = zip(*[(float(p[0]), float(p[1])) for p in polygon])
+            if not all(math.isfinite(v) for v in (*xs, *ys)):
+                return None
+            x, y, w, h = min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
+        else:
+            x, y, w, h = (float(position[key]) for key in ("x", "y", "width", "height"))
+            if position.get("origin") == "center" or center and position.get("origin") != "top_left":
+                x, y = x - w / 2, y - h / 2
         if not all(math.isfinite(v) for v in (x, y, w, h)) or w <= 0 or h <= 0:
             return None
         if position.get("coordinate_type") not in {"normalized", "relative"}:
             x, w, y, h = x / width, w / width, y / height, h / height
-        if x < 0 or y < 0 or x + w > 1.01 or y + h > 1.01:
+        if x < 0 or y < 0 or x >= 1 or y >= 1 or x + w > 1.01 or y + h > 1.01:
             return None
         return {"x": x, "y": y, "width": min(w, 1 - x), "height": min(h, 1 - y)}
-    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+    except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError):
         return None
 
 
@@ -118,12 +131,25 @@ def pdf_blocks(source: Path, page_limit: int) -> list[dict[str, Any]]:
                 position = _rect({"x": x0, "y": y0, "width": max(p[0] for p in corners) - x0,
                                   "height": max(p[1] for p in corners) - y0}, width, height)
                 if position:
-                    blocks.append({"page": index + 1, "text": " ".join(w[4] for w in words),
-                                   "position": position, "source": "pdf_text"})
+                    tokens = []
+                    for word in words:
+                        token = fitz.Rect(word[:4])
+                        token = token + (crop_offset.x, crop_offset.y, crop_offset.x, crop_offset.y)
+                        if rotation:
+                            matrix = {90: fitz.Matrix(0, 1, -1, 0, media.height, 0),
+                                      180: fitz.Matrix(-1, 0, 0, -1, media.width, media.height),
+                                      270: fitz.Matrix(0, -1, 1, 0, 0, media.width)}[rotation]
+                            token = token * matrix
+                        box = _rect({"x": token.x0, "y": token.y0, "width": token.width, "height": token.height}, width, height)
+                        if box:
+                            tokens.append({"text": word[4], "position": box})
+                    text = " ".join(w[4] for w in words)
+                    blocks.append({"page": index + 1, "text": text, "position": position, "tokens": tokens, "source": "pdf_text",
+                                   "numeric_join_unsafe": dimension_text(text) != text and not safe_glyph_run(tokens)})
     return blocks
 
 
-def ocr_blocks(raw_payloads: dict[str, Any], pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def ocr_blocks(raw_payloads: dict[str, Any], pages: list[dict[str, Any]], *, unavailable_pages: set[int] | None = None) -> list[dict[str, Any]]:
     """Reuse only OCR with known image dimensions; never assume its DPI matches."""
     from PIL import Image
 
@@ -138,13 +164,26 @@ def ocr_blocks(raw_payloads: dict[str, Any], pages: list[dict[str, Any]]) -> lis
             try:
                 with Image.open(raw_page["image_path"]) as image:
                     width, height = image.size
+                    # Legacy JPEG OCR may have auto-rotated its pixels. Without
+                    # an explicit frame it cannot safely be reused.
+                    if image.getexif().get(274, 1) != 1 and raw_page.get("coordinate_space") != "display":
+                        if unavailable_pages is not None:
+                            unavailable_pages.add(raw_page["page"])
+                        continue
+                if raw_page.get("coordinate_space") == "display":
+                    from PIL import ImageOps
+                    with Image.open(raw_page["image_path"]) as image:
+                        width, height = ImageOps.exif_transpose(image).size
             except (KeyError, OSError, TypeError):
+                if unavailable_pages is not None:
+                    unavailable_pages.add(raw_page["page"])
                 continue
             for item in raw_page.get("texts", []) or []:
-                position = _rect(item.get("position"), width, height)
+                position = _rect(item.get("position"), width, height, center=True)
                 if position:
                     blocks.append({"page": raw_page["page"], "text": item.get("text", ""),
-                                   "position": position, "source": "ocr"})
+                                   "position": position, "source": "ocr", "raw_position": item.get("position"),
+                                   "input_size": [width, height], "image_path": raw_page["image_path"]})
     return blocks
 
 
@@ -153,20 +192,99 @@ def _value_matches(value: Any, text: str, field: str) -> bool:
         return False
     if field == "handedness":
         value = {"right": "右旋", "left": "左旋"}.get(str(value), str(value))
+        text = {"right": "右旋", "left": "左旋"}.get(str(text), str(text))
     if field == "end_grinding":
-        return bool(re.search(r"不磨|未磨" if "不磨" in str(value) else r"磨平|磨削|ground", text, re.I))
+        negative = bool(re.search(r"不磨|未磨|不研磨|unground|not\s+ground", text, re.I))
+        expected_negative = bool(re.search(r"不磨|未磨|unground", str(value), re.I))
+        return negative if expected_negative else not negative and bool(re.search(r"磨平|(?:磨削|研磨|环磨)(?!粉尘|粉|液|膏|屑)|ground", text, re.I))
     if field == "end_type":
-        return bool(re.search(r"不并紧|开口" if "不并紧" in str(value) else r"(?<!不)并紧|闭口", text))
+        negative = bool(re.search(r"不并紧|开口|open", text, re.I))
+        return negative if re.search(r"不并紧|开口|open", str(value), re.I) else not negative and bool(re.search(r"并紧|闭口|closed", text, re.I))
+    if field == "material":
+        from .material_catalog import match_material_catalog, material_catalog_matches
+        entry = match_material_catalog(value)
+        return any(e["id"] == entry["id"] for e in material_catalog_matches(text)) if entry else _normal(value) in _normal(text)
     try:
         number = float(value)
         if not math.isfinite(number):
             return False
         # Digits in dimension identifiers (D2, H0, n1) are not their values.
         # Ra commonly touches the number in OCR; separate that known prefix.
-        numeric_text = re.sub(r"\bRa(?=\d)", "Ra ", text, flags=re.I)
+        numeric_text = re.sub(r"\bRa(?=\d)", "Ra ", dimension_text(text).rstrip("。.;；"), flags=re.I)
         return any(abs(float(match) - number) < 1e-8 for match in re.findall(r"(?<![a-zA-Z\d_.])-?\d+(?:\.\d+)?(?![\d.])", numeric_text))
     except (TypeError, ValueError):
         return _normal(value) in _normal(text)
+
+
+def _overlap(a: dict[str, float], b: dict[str, float]) -> float:
+    intersection = max(0, min(a["x"] + a["width"], b["x"] + b["width"]) - max(a["x"], b["x"])) * max(0, min(a["y"] + a["height"], b["y"] + b["height"]) - max(a["y"], b["y"]))
+    return intersection / max(1e-12, min(a["width"] * a["height"], b["width"] * b["height"]))
+
+
+def _same_text_box(a: dict[str, float] | None, b: dict[str, float] | None) -> bool:
+    if not a or not b:
+        return False
+    return _overlap(a, b) > .65 or (
+        _overlap(a, b) > .4 and
+        abs(a["x"] + a["width"] / 2 - b["x"] - b["width"] / 2) < max(a["width"], b["width"]) * .35 and
+        abs(a["y"] + a["height"] / 2 - b["y"] - b["height"] / 2) < max(a["height"], b["height"]) * .35)
+
+
+def _identity(field: str, text: str) -> bool:
+    # Labels used for table pairing must establish the actual dimension role.
+    if field == "end_grinding":
+        return _value_matches("两端磨削", text, field) or _value_matches("两端不磨削", text, field)
+    strict = {"wire_diameter": r"线径|钢丝直径|wire\s*(?:diameter|dia)",
+              "outer_diameter": r"外径|外圆|outer|\bOD\b|\bDo\b",
+              "inner_diameter": r"内径|inner|\bDi\b", "mean_diameter": r"中径|mean|\bDm\b"}
+    return bool(re.search(strict.get(field, PATTERNS[FIELDS.index(field)]), text, re.I))
+
+
+def _row_label(field: str, block: dict[str, Any], blocks: list[dict[str, Any]]) -> bool:
+    box = block["position"]
+    cy = box["y"] + box["height"] / 2
+    labels = []
+    for label in blocks:
+        if label["page"] != block["page"] or label is block or not _identity(field, label["text"]):
+            continue
+        other = label["position"]
+        gap = box["x"] - other["x"] - other["width"]
+        if -.005 <= gap <= .18 and abs(cy - other["y"] - other["height"] / 2) <= max(.003, min(box["height"], other["height"]) * .6):
+            labels.append((gap, label))
+    if not labels:
+        return False
+    # Do not jump over another value/cell while joining a label and a number.
+    label = min(labels, key=lambda p: p[0])[1]["position"]
+    return not any(b is not block and b["page"] == block["page"] and
+                   label["x"] + label["width"] + .003 < b["position"]["x"] < box["x"] - .003 and
+                   abs(cy - b["position"]["y"] - b["position"]["height"] / 2) < .004 for b in blocks)
+
+
+def _position_supported(candidate: dict[str, Any], block: dict[str, Any]) -> bool:
+    if candidate.get("page", 1) != block["page"] or not block.get("input_size"):
+        return False
+    position = _rect(candidate.get("position"), *block["input_size"], center=True)
+    return bool(position and _overlap(position, block["position"]) > .8)
+
+
+def _bare_number(text: str) -> bool:
+    return dimension_number(text) is not None
+
+
+def _unique_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for block in sorted(blocks, key=lambda b: (b["page"], round(b["position"]["y"], 5), round(b["position"]["x"], 5), b["text"])):
+        prior = next((b for b in result if not b.get("numeric_join_unsafe") and not block.get("numeric_join_unsafe") and b["page"] == block["page"] and numeric_identity(b["text"]) == numeric_identity(block["text"]) and _same_text_box(b["position"], block["position"])), None)
+        if prior is None:
+            result.append(copy.deepcopy(block))
+        else:
+            aliases = prior.setdefault("recognition_aliases", [])
+            evidence = {k: block[k] for k in ("text", "source", "position", "tokens") if k in block}
+            if evidence not in aliases:
+                aliases.append(evidence)
+            if not prior.get("tokens") and block.get("tokens"):
+                prior["tokens"] = copy.deepcopy(block["tokens"])
+    return result
 
 
 def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -180,7 +298,7 @@ def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], bloc
         roughness_conflict = field == "surface_roughness_ra" and bool(param.get("roughness_conflict"))
         originals = [c for c in candidates if c.get("field") == field and _recognized(c) and c.get("value") not in (None, "")]
         if not edited:
-            matching = [c for c in originals if c.get("value") == param.get("value")]
+            matching = [c for c in originals if _value_matches(c.get("value"), str(param.get("value")), field)]
             originals = matching or originals
         original = max(originals, key=lambda c: float(c.get("confidence") or 0), default=None)
         if original is None and _recognized(param) and not edited and not any("formula" in str(s) for s in sources):
@@ -190,46 +308,178 @@ def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], bloc
         empty = not original and param.get("value") in (None, "") and not param.get("evidence")
         value = original.get("value") if original else None
         evidence = str((original or {}).get("evidence") or "")
+        evidence_pages = {c["page"] for c in originals if c.get("page") is not None}
+        recovery_blocks = [b for b in blocks if not evidence_pages or b["page"] in evidence_pages]
+        recovered = _nominal_outer_evidence(recovery_blocks) if field == "outer_diameter" else None
+        # A complete nominal dimension plus its separate tolerance can recover
+        # a legacy concatenation. Do not move an unrelated, already valid value.
+        suspect = not original or "vertical dimension candidate" in evidence or re.search(r"vertical dimension [\d.]*\.[\d.]*\.", evidence)
+        if recovered and suspect:
+            value, recovered_block = recovered
+            original = {"value": value, "source": recovered_block["source"], "page": recovered_block["page"], "evidence": recovered_block["text"]}
+            evidence = recovered_block["text"]
         matches = []
+        pages = {c["page"] for c in originals if c.get("page") is not None}
+        if not pages and (original or {}).get("page") is not None:
+            pages.add(original["page"])
         for block in blocks:
             text = block["text"]
-            if not original or not _value_matches(value, text, field):
+            if block.get("numeric_join_unsafe"):
+                continue
+            if not original or pages and block["page"] not in pages or not _value_matches(value, text, field):
                 continue
             # Surface symbols cannot establish dimensional identity.
             if field in {"wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length"} and re.search(r"粗糙|\bra\b|▽|√", text, re.I):
                 continue
-            direct = bool(re.search(PATTERNS[index], text, re.I))
-            supported = bool(re.search(PATTERNS[index], evidence, re.I))
-            if direct or supported or field in {"material", "standard_no", "handedness"}:
-                matches.append((4 if direct else 2, block))
-        # Explicit textual identity wins. Bare numbers need a unique field-specific
-        # evidence match; repeated ambiguous dimensions remain unplaced.
-        best = max((score for score, _ in matches), default=0)
-        winners = [block for score, block in matches if score == best]
-        unique = {}
+            direct = _identity(field, text)
+            row = _row_label(field, block, blocks)
+            placed = any(_position_supported(c, block) for c in originals if c.get("value") == value)
+            # A known candidate position is accepted only with compatible text.
+            score = 8 if placed else 7 if direct else 6 if row else 0
+            if field in {"material", "standard_no", "handedness"}:
+                score = max(score, 7)
+            if not score and _bare_number(text):
+                score = 2
+            if not score and field == "surface_roughness_ra" and re.fullmatch(r"[\\/√▽]\s*\d+(?:\.\d+)?", dimension_text(text)):
+                # OCR can retain one stroke of the finish symbol. The complete
+                # numeric value must still agree with the roughness candidate.
+                score = 6
+            # A leading zero is not globally interpreted as a diameter symbol.
+            if field == "wire_diameter" and re.match(r"^0\d", text.strip()) and not (row or placed or re.search(r"线径|wire|[φΦϕøØ⌀]", evidence, re.I)):
+                score = 0
+            if score:
+                matches.append((score, block))
+        strong = [block for score, block in matches if score >= 6]
+        winners = _unique_blocks(strong or [block for score, block in matches if score == 2])
+        distinct = []
         for block in winners:
-            pos = block["position"]
-            key = (block["page"], round(pos["x"], 3), round(pos["y"], 3))
-            unique.setdefault(key, block)
-        winners = list(unique.values())
-        if len(winners) > 1 and field != "surface_roughness_ra":
+            # OCR on a crop may read the same glyph more accurately (02 -> 2).
+            # Both already match this field's value; they are one location.
+            if not any(b["page"] == block["page"] and _same_text_box(b["position"], block["position"]) for b in distinct):
+                distinct.append(block)
+        winners = distinct
+        ambiguous = not strong and len(winners) > 1 and field != "surface_roughness_ra"
+        if ambiguous:
             winners = []
         locations = []
-        for n, block in enumerate(winners):
+        for block in winners:
             box = block["position"]
-            locations.append({"location_id": f"{field}-{n + 1}", "page": block["page"], "bbox": box,
+            tokens = [t for t in block.get("tokens", []) if _value_matches(value, t["text"], field)]
+            if len(tokens) == 1 and dimension_number(block["text"]) == value and len(block.get("tokens", [])) > 1:
+                tokens = []  # A single digit is not the complete split dimension.
+            if len(tokens) == 1:
+                box = tokens[0]["position"]
+            key = json.dumps([block["page"], box, block["text"]], sort_keys=True)
+            identifier = hashlib.sha256(key.encode()).hexdigest()[:12]
+            locations.append({"location_id": f"{field}-{identifier}", "page": block["page"], "bbox": box,
                               "anchor": {"x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2},
                               "bubble": {"x": min(.98, box["x"] + box["width"] + .025), "y": max(.02, box["y"] - .025)},
                               "source": block["source"], "evidence": block["text"]})
+        reason = "粗糙度存在不同候选，请先核对并人工定位" if roughness_conflict else "多个原图位置存在歧义，请核对后定位" if ambiguous else "OCR未读出对应标注或缺少可靠位置" if original else "此值没有原图直接标注，可人工定位"
         annotations.append({"annotation_id": field, "field": field, "number": index + 1, "label": LABELS[index],
-                            "original_value": value, "evidence": evidence, "locations": locations,
+                            "original_value": value, "evidence": evidence, "evidence_pages": sorted(pages or {(original or {}).get("page") or 1}), "locations": locations,
                             "status": "located" if locations else "empty" if empty else "unlocated",
-                            "reason": "" if locations else ("粗糙度存在不同候选，请先核对并人工定位" if roughness_conflict else "未找到可靠原图位置" if original else "此值没有原图直接标注，可人工定位")})
+                            "reason": "" if locations else reason})
     return annotations
 
 
+def _nominal_outer_evidence(blocks: list[dict[str, Any]]) -> tuple[float, dict[str, Any]] | None:
+    """Recover a vertical nominal size with a distinct, nearby tolerance lane.
+
+    This is evidence recovery, not a diameter inferred from spring equations.
+    Multiple nominal values stay ambiguous. A bare diameter symbol is never
+    sufficient to assign an outer/inner/wire role.
+    """
+    choices = []
+    for block in blocks:
+        if block.get("numeric_join_unsafe"):
+            continue
+        value = dimension_number(block["text"])
+        box = block["position"]
+        if value is None or value <= 0 or not (box["height"] > box["width"] * .8 or block.get("reading_angle") in {90, 270}):
+            continue
+        if re.search(r"Ra|粗糙|▽|√", block["text"], re.I):
+            continue
+        for tolerance in blocks:
+            lower = dimension_number(tolerance["text"])
+            other = tolerance["position"]
+            if tolerance["page"] != block["page"] or lower is None or lower >= 0:
+                continue
+            if abs(other["x"] - box["x"]) < max(.015, box["width"] * .65) and abs(other["y"] - box["y"]) < max(.065, box["height"] * 2):
+                choices.append((value, {**block, "nominal_tolerance_lower": lower}))
+                break
+    # A digit OCR box contained by a complete PDF dimension is a fragment of
+    # that same measurement, not a second competing nominal value.
+    choices = [(value, block) for value, block in choices if not any(
+        other is not block and other["page"] == block["page"] and "." in dimension_text(other["text"]) and
+        _overlap(block["position"], other["position"]) > .7 and
+        other["position"]["width"] * other["position"]["height"] > block["position"]["width"] * block["position"]["height"] * 1.5
+        for _, other in choices)]
+    pdf_choices = [(value, block) for value, block in choices if block["source"] == "pdf_text" or any(a.get("source") == "pdf_text" and dimension_number(a.get("text")) == value for a in block.get("recognition_aliases", []))]
+    choices = pdf_choices or choices
+    values = {value for value, _ in choices}
+    return choices[0] if len(values) == 1 else None
+
+
+def recover_pdf_dimension_candidates(source: Path, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """New-upload recovery only; annotation GET never applies these values."""
+    if source.suffix.lower() != ".pdf":
+        return candidates
+    from .engines.ocr_adapter import unsafe_vertical_dimension_candidate
+    current = [c for c in candidates if not unsafe_vertical_dimension_candidate(c)]
+    if any(c.get("field") == "outer_diameter" and c.get("value") not in (None, "") for c in current):
+        return current
+    recovered = _nominal_outer_evidence(pdf_blocks(source, max(1, int(os.getenv("QWEN_MAX_PAGES", "3")))))
+    if recovered:
+        value, block = recovered
+        current.append({"field": "outer_diameter", "value": value, "unit": "mm", "page": block["page"],
+                        "source": "pdf_text_dimension_recovery", "confidence": .94,
+                        "tolerance_upper": 0, "tolerance_lower": block["nominal_tolerance_lower"],
+                        "evidence": f"vertical dimension {dimension_text(block['text'])} / separate nominal and tolerance PDF text",
+                        "position": {**block["position"], "coordinate_type": "normalized", "origin": "top_left"}})
+    return current
+
+
+def _annotation_diagnostics(review: dict[str, Any], annotations: list[dict[str, Any]], states: dict[str, Any]) -> list[dict[str, Any]]:
+    diagnostics = []
+    params = review.get("spring_parameters") or {}
+    for item in annotations:
+        field = item["field"]
+        current = (params.get(field) or {}).get("value")
+        value = item["original_value"]
+        if item["status"] == "empty" and current in (None, ""):
+            continue
+        mismatch = value is not None and current not in (None, "") and not _value_matches(value, str(current), field)
+        role_conflict = False
+        if field == "outer_diameter" and value is not None:
+            try:
+                inner = float((params.get("inner_diameter") or {})["value"])
+                wire = float((params.get("wire_diameter") or {})["value"])
+                # Only compare independent drawing values, not dimensions
+                # previously completed from this same outer diameter.
+                independent = all(not any("formula" in s for s in (params[f].get("source") or [])) for f in ("inner_diameter", "wire_diameter"))
+                role_conflict = independent and abs(float(value) - inner - 2 * wire) > .0001
+            except (KeyError, TypeError, ValueError):
+                pass
+        if mismatch or role_conflict or not item["locations"]:
+            reason = f"原图证据值 {value} 与当前参数 {current} 不一致，请核对后修改并重新确认。" if mismatch else "图中直径标注与内径、线径关系不一致，请核对尺寸角色；参数未自动修改。" if role_conflict else item["reason"]
+            diagnostics.append({"field": field, "evidence_value": value, "current_value": current,
+                                "evidence": item["evidence"], "pages": item.get("evidence_pages", []),
+                                "kind": "value_mismatch" if mismatch else "role_conflict" if role_conflict else "unlocated",
+                                "reason": reason, "locations": [{"page": l["page"], "bbox": l["bbox"], "evidence": l["evidence"], "source": l["source"]} for l in item["locations"]],
+                                "localization_status": "located" if item["locations"] else states.get(field, "not_run")})
+    return diagnostics
+
+
+def _local_ocr_blocks(job_dir: Path, pages: list[dict[str, Any]], document_id: str,
+                      review: dict[str, Any], candidates: list[dict[str, Any]], existing: list[dict[str, Any]],
+                      *, retry: bool = False):
+    from .annotation_ocr import local_ocr_blocks
+    return local_ocr_blocks(job_dir, pages, document_id, review, candidates, existing, retry=retry)
+
+
 def build_annotations(review: dict[str, Any], job_dir: Path, url_for: Callable[[Path], str],
-                      *, candidates_payload: dict[str, Any] | None = None, allow_ocr: bool = True) -> dict[str, Any]:
+                      *, candidates_payload: dict[str, Any] | None = None, allow_ocr: bool = True, retry_ocr: bool = False) -> dict[str, Any]:
     pages = preview_manifest(job_dir, url_for)
     sources = sorted((job_dir / "inputs").glob("*"))
     source = next((p for p in sources if p.suffix.lower() in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}), None)
@@ -239,7 +489,7 @@ def build_annotations(review: dict[str, Any], job_dir: Path, url_for: Callable[[
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
     digest.update(json.dumps([(p["page"], p["width"], p["height"], p["image_url"]) for p in pages]).encode())
-    document = {"schema_version": "original_annotations/v1", "source_document_id": digest.hexdigest(),
+    document = {"schema_version": "original_annotations/v1", "algorithm_version": ALGORITHM_VERSION, "source_document_id": digest.hexdigest(),
                 "annotation_revision": 1, "pages": pages, "annotations": [], "warnings": []}
     if review.get("drawing_summary", {}).get("spring_type") != "compression_spring":
         return document
@@ -256,31 +506,106 @@ def build_annotations(review: dict[str, Any], job_dir: Path, url_for: Callable[[
             blocks.extend(pdf_blocks(source, limit))
         except Exception:
             document["warnings"].append("PDF文本定位不可用，尝试OCR或人工定位。")
-    blocks.extend(ocr_blocks(payload.get("raw_payloads") or {}, eligible))
+    unavailable_pages: set[int] = set()
+    blocks.extend(ocr_blocks(payload.get("raw_payloads") or {}, eligible, unavailable_pages=unavailable_pages))
     document["annotations"] = locate_fields(review, candidates, blocks)
     missing = any(a["status"] == "unlocated" and a["original_value"] is not None for a in document["annotations"])
-    if allow_ocr and missing and eligible and not any(b["source"] == "ocr" for b in blocks):
+    states = {}
+    if allow_ocr and missing and eligible:
         try:
-            from .engines.ocr_providers import RapidOcrProvider
-            # Reuse canonical PNGs; their coordinates belong to the displayed pages.
-            paths = sorted([p for p in (job_dir / "pages").glob("*") if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}], key=page_sort_key)[:len(eligible)]
-            raw_pages = RapidOcrProvider().recognize(paths, {})
-            blocks.extend(ocr_blocks({"local": {"raw_pages": raw_pages}}, eligible))
+            local, warnings, states = _local_ocr_blocks(job_dir, eligible, document["source_document_id"], review, candidates, blocks, retry=retry_ocr)
+            blocks = _unique_blocks(blocks + local)
+            document["warnings"].extend(warnings)
             document["annotations"] = locate_fields(review, candidates, blocks)
         except Exception:
             document["warnings"].append("本地OCR定位不可用，可使用调整标注人工定位。")
-    # Spread labels sharing one requirement text box without moving their anchors.
-    occupied: dict[int, list[dict[str, float]]] = {}
+    # Screen-space layout belongs to the SVG viewer: a fixed normalized gap is
+    # neither readable on small panels nor meaningful across aspect ratios.
+    document["text_obstacles"] = [{"page": b["page"], "bbox": b["position"]} for b in _unique_blocks(blocks)]
     for annotation in document["annotations"]:
-        for location in annotation["locations"]:
-            points = occupied.setdefault(location["page"], [])
-            bubble = location["bubble"]
-            for _ in range(20):
-                if all(math.hypot(bubble["x"] - p["x"], bubble["y"] - p["y"]) >= .045 for p in points):
-                    break
-                bubble["y"] = bubble["y"] + .045 if bubble["y"] < .93 else .03
-            points.append(dict(bubble))
+        relevant = {c.get("page", 1) for c in candidates if c.get("field") == annotation["field"]} or {1}
+        if annotation["status"] == "unlocated" and annotation["original_value"] is not None and "歧义" not in annotation["reason"] and relevant & unavailable_pages:
+            if not any(b["page"] in relevant and b["source"] in {"ocr", "local_ocr"} for b in blocks):
+                annotation["reason"] = "来源坐标不可用，且本地OCR未完成，可人工定位"
+    previous = review.get("drawing_annotations") or {}
+    if retry_ocr and previous.get("source_document_id") == document["source_document_id"]:
+        by_field = {a["field"]: a for a in previous.get("annotations", [])}
+        for index, annotation in enumerate(document["annotations"]):
+            prior = by_field.get(annotation["field"], {})
+            automatic = [l for l in prior.get("locations", []) if l.get("source") in AUTOMATIC_SOURCES]
+            # Preserve a reliable field's evidence metadata as well as its
+            # coordinates. Legacy metadata contradicting its own saved glyphs
+            # is rebuilt instead (parameters themselves are never changed).
+            if automatic and all(_value_matches(prior.get("original_value"), l.get("evidence", ""), annotation["field"]) for l in automatic):
+                document["annotations"][index] = copy.deepcopy(prior)
+    document["diagnostics"] = _annotation_diagnostics(review, document["annotations"], states)
     return document
+
+
+def merge_annotation_upgrade(current: dict[str, Any], rebuilt: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
+    """Merge while holding the persistence lock, including edits made during OCR."""
+    if not force and current.get("algorithm_version") == ALGORITHM_VERSION:
+        return current
+    if current.get("source_document_id") != rebuilt.get("source_document_id"):
+        failed = copy.deepcopy(current)
+        failed["algorithm_version"] = ALGORITHM_VERSION
+        failed.setdefault("warnings", []).append("原图或预览标识发生变化，已保留旧位置，请核对后人工定位。")
+        failed["annotation_revision"] = current.get("annotation_revision", 1) + 1
+        return failed
+    result = copy.deepcopy(rebuilt)
+    old = {a["annotation_id"]: a for a in current.get("annotations", [])}
+    for annotation in result.get("annotations", []):
+        previous = old.get(annotation["annotation_id"], {})
+        if force and previous.get("locations"):
+            annotation.update({k: copy.deepcopy(previous[k]) for k in ("locations", "status", "reason")})
+            continue
+        available = list(annotation["locations"])
+        for location in previous.get("locations", []):
+            if location.get("source") not in AUTOMATIC_SOURCES:
+                continue
+            same_page = [l for l in available if l["page"] == location["page"]]
+            if same_page:
+                closest = min(same_page, key=lambda l: math.hypot(l["anchor"]["x"] - location["anchor"]["x"], l["anchor"]["y"] - location["anchor"]["y"]))
+                closest["location_id"] = location["location_id"]
+                available.remove(closest)
+        protected = [l for l in previous.get("locations", []) if l.get("source") not in AUTOMATIC_SOURCES]
+        if protected:
+            remaining = annotation["locations"]
+            if any(l.get("source") != "manual" for l in protected):
+                remaining = []
+            else:
+                remaining = list(remaining)
+                for location in protected:
+                    same_page = [l for l in remaining if l["page"] == location["page"]]
+                    if same_page:
+                        nearest = min(same_page, key=lambda l: -_overlap(l["bbox"], location["bbox"]) if l.get("bbox") and location.get("bbox") else math.hypot(l["anchor"]["x"] - location["anchor"]["x"], l["anchor"]["y"] - location["anchor"]["y"]))
+                        remaining.remove(nearest)
+            annotation["locations"] = copy.deepcopy(protected) + remaining
+            annotation["status"] = "located"
+            annotation["reason"] = ""
+            if any(l.get("source") != "manual" for l in protected):
+                annotation["reason"] = "旧位置来源不明，已保留，请核对。"
+    result["annotation_revision"] = current.get("annotation_revision", 1) + 1
+    for annotation in result.get("annotations", []):
+        distinct = []
+        for location in annotation["locations"]:
+            if location.get("source") in AUTOMATIC_SOURCES and any(
+                prior.get("source") in AUTOMATIC_SOURCES and prior["page"] == location["page"] and _same_text_box(prior.get("bbox"), location.get("bbox"))
+                for prior in distinct
+            ):
+                continue
+            distinct.append(location)
+        annotation["locations"] = distinct
+    _prune_resolved_diagnostics(result)
+    return result
+
+
+def failed_annotation_upgrade(current: dict[str, Any]) -> dict[str, Any]:
+    result = copy.deepcopy(current)
+    result["algorithm_version"] = ALGORITHM_VERSION
+    result["annotation_revision"] = current.get("annotation_revision", 1) + 1
+    result.setdefault("warnings", []).append("自动定位升级未完成，已保留旧结果；本版本不自动重复尝试，可人工定位。")
+    return result
 
 
 class AnnotationConflictError(ValueError):
@@ -289,7 +614,7 @@ class AnnotationConflictError(ValueError):
         self.current = current
 
 
-def apply_annotation_patch(document: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+def validate_annotation_revision(document: dict[str, Any], body: dict[str, Any]) -> None:
     if body.get("source_document_id") != document["source_document_id"]:
         raise AnnotationConflictError(document)
     revision = body.get("expected_annotation_revision")
@@ -297,6 +622,16 @@ def apply_annotation_patch(document: dict[str, Any], body: dict[str, Any]) -> di
         raise ValueError("expected_annotation_revision 必须为正整数。")
     if revision != document["annotation_revision"]:
         raise AnnotationConflictError(document)
+
+
+def _prune_resolved_diagnostics(document: dict[str, Any]) -> None:
+    located = {a["field"] for a in document["annotations"] if a["locations"]}
+    if "diagnostics" in document:
+        document["diagnostics"] = [d for d in document["diagnostics"] if d["kind"] != "unlocated" or d["field"] not in located]
+
+
+def apply_annotation_patch(document: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    validate_annotation_revision(document, body)
     changes = body.get("changes")
     if not isinstance(changes, list) or not changes or len(changes) > 60:
         raise ValueError("changes 必须包含1至60个位置修改。")
@@ -339,6 +674,7 @@ def apply_annotation_patch(document: dict[str, Any], body: dict[str, Any]) -> di
         location.update({"page": page, "source": "manual"})
         annotation.update({"status": "located", "reason": ""})
     result["annotation_revision"] += 1
+    _prune_resolved_diagnostics(result)
     return result
 
 

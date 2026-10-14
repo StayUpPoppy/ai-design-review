@@ -73,6 +73,8 @@ class DrawingReviewWorkflow:
         *,
         run_standardization: bool = True,
     ) -> dict[str, Any]:
+        from .engines.ocr_adapter import unsafe_vertical_dimension_candidate
+        candidates = [c for c in candidates if not unsafe_vertical_dimension_candidate(c)]
         file_info = probe_file(file_path) if file_path else {"path": None, "kind": "unknown", "is_scanned_like": None}
         candidates = [*_file_text_candidates(file_info), *candidates]
         dimension_evidence = _dimension_evidence(candidates)

@@ -3036,6 +3036,10 @@ textarea {
   padding: 0;
 }
 
+.annotation-layout-warning:empty {
+  display: none;
+}
+
 .annotation-info p {
   margin: 4px 0;
 }
@@ -3046,6 +3050,16 @@ textarea {
 
 .annotation-error {
   color: #9b3b19;
+}
+
+.annotation-diagnostics {
+  margin: 6px 0;
+  padding-inline-start: 18px;
+  color: #9b3b19;
+}
+
+.annotation-diagnostics li {
+  padding-block: 3px;
 }
 
 .annotation-unlocated summary {

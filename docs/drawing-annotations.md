@@ -22,7 +22,13 @@
 
 ## 定位与范围
 
-先读取PDF文本，并复用具有已知图像尺寸的OCR坐标；仍有待定位原图识别值且没有可用OCR块时，尝试本地OCR。OCR仅补充证据位置，不覆盖人工参数。数值还需与字段身份或原始识别证据匹配；重复且无法区分的尺寸保持未定位。粗糙度可在多个位置显示同号气泡，存在不同候选的粗糙度保持未定位。
+先读取PDF文本，并复用具有已知输入图像尺寸和方向的OCR坐标。多边形优先还原文字框；只有中心坐标时先转换为左上角。显示坐标包含EXIF旋转与镜像，方向不明的旧OCR坐标不直接复用。原文件及预览地址不改写。
+
+定位依次使用可追溯的字段候选位置、同一文字行/相邻表格单元中的名称与数值，以及原字段候选支持的页面内唯一数字。材料使用目录牌号匹配；端面研磨与研磨粉尘、并紧与不并紧分别判断。多个明确等价的原图位置可显示同号气泡，存在歧义时保留未定位状态。公式、默认值没有直接原图依据时不虚构位置。
+
+仍有缺项时，按显示方向规范化图像后执行一次本地整页补定位及每页最多一轮局部放大/旋转OCR（每轮最多12个裁剪输入，含旋转版本），结果与失败状态写入`annotation_ocr_v3.json`缓存。缓存包含原图标识和算法版本，后续读取不重复识别；不调用Qwen或其他云端服务。局部图像保存在`annotation_ocr_pages/`，只用于定位，不修改参数或原始识别文件。
+
+SVG气泡沿用15px半径，按实际屏幕像素进行有界、确定性的两轮避让：先避免气泡重叠，再避开文字框、减少引线交叉并控制长度。缩放或容器尺寸变化后重新布局自动气泡，平移复用布局；人工位置固定。自动避让结果只用于当前视图，不自动写回位置。空间不足时保留气泡并提示放大或人工调整。
 
 自动证据定位页数沿用`QWEN_MAX_PAGES`（默认3页）；其余预览页仍可切换查看和人工标注。历史订单首次打开时依据原图与已保存候选补建，不重跑Qwen/RAG。PDF预览使用Poppler的MediaBox，PDF文本坐标转换包含裁剪偏移及页面旋转；OCR坐标按其来源图像尺寸归一化。
 
@@ -33,6 +39,20 @@
 `GET/PATCH /api/reviews/{job_id}/annotations`沿用订单权限。GET返回`source_document_id`、独立的`annotation_revision`、预览页清单、固定编号标注及定位警告。PATCH仅接受`source_document_id`、`expected_annotation_revision`、`changes`；每项修改包含`annotation_id`、`location_id`、`page`、`anchor`、`bubble`，坐标均为0至1的有限数值。参数值等额外字段被拒绝。成功返回完整标注文档并增加标注版本；原图或标注版本不匹配返回409及服务器当前文档。
 
 数据库模式只更新现有审图JSON中的`drawing_annotations`，使用行锁合并；正常参数保存同样保留服务器最新标注。无数据库模式独立保存`annotations.json`，使用跨进程锁与原子替换。标注写入不增加审图修订，不改变参数/确认状态、建议有效性、冻结参数包或SW任务。
+
+响应新增可选`algorithm_version`（当前`original_annotation_locator/v3`）及`text_obstacles`（页码、归一化文字框）。现有15项编号和GET/PATCH请求格式不变。旧订单首次GET时重建自动位置、增加独立标注版本；保留人工位置及ID，未知来源位置保留并提示核对。重建在数据库行锁外进行，最终在锁内合并最新人工修改；文件模式使用现有文件锁。升级失败保留旧结果和提示，并记录本版本已尝试，不反复自动重试。算法更新不改变`source_document_id`，原图本身变化时不套用旧人工位置。
+
+## v3 数字证据与补定位
+
+PDF 同一文字行内的拆分数字使用与 OCR 匹配、去重相同的解析规则；PDF 字形须沿同一方向相邻，不跨单元、公差列或文字行拼接。重叠结果保存来源别名及片段坐标。竖排尺寸正文与上下偏差分别处理，不把右侧数字或落入数值范围作为外径依据；无方向的碎片及无角色依据的 φ 标注不直接生成外径参数。
+
+缺失外径、自由长度及粗糙度可以独立触发本地放大和 0/90/270 度识别。候选区域按文字、竖排框及连接的图形内容生成，不依赖外径和自由长度同时已定位。每页最多12个裁剪输入，结果按原图、算法版本、区域及旋转角缓存。只有实际执行的区域才记录完成；空区域保持未执行，失败和完成未匹配分别记录。正常读取不重复运行。
+
+新增 `POST /api/reviews/{job_id}/annotations/relocalize`，仅提交 `source_document_id` 和 `expected_annotation_revision`。操作沿用订单权限及独立标注版本，只重试缺项/失败任务，保留已有可靠位置。版本变化（包括 OCR 执行期间发生的人工修改）返回409和最新标注；失败保留原位置并允许用户重试。补定位过程中浏览器暂停位置编辑，先完成待保存位置；切换订单后旧响应不重绘新订单。
+
+响应可选 `diagnostics` 包含字段、`evidence_value`、`current_value`、原文、页码/证据坐标、原因及 `localization_status`（`not_run`、`failed`、`completed_unmatched`、`located`）。证据与当前参数不一致时直接显示差异，现有参数、确认记录和计算结果不自动更新。独立内径/线径与图中直径存在关系冲突时显示角色核对提示。原始候选及冻结 SW 请求保留。新上传 PDF 在融合前可采用完整名义尺寸及独立公差证据，旧记录读取不会因此改值。
+
+本地真实验收命令：`python scripts/test_drawing_annotations_v3.py --real` 和 `node scripts/test_drawing_annotations_browser.mjs --v3`。五份图纸、识别结果、缓存和截图保存在 Git 忽略的 `outputs/annotation-v3-qa/`；不调用云端模型或真实 SW。
 
 ## 部署与验证
 
@@ -50,9 +70,12 @@ docker compose up -d --build --force-recreate api worker
 python scripts/test_drawing_annotations.py
 python scripts/test_drawing_annotations_api.py
 node scripts/test_drawing_annotations_ui.mjs
+python scripts/test_drawing_annotations_v2.py
+python scripts/test_drawing_annotations_v3.py
+node scripts/test_drawing_annotations_browser.mjs
 ```
 
-覆盖定位与坐标校验、独立版本/权限、参数保存保留标注、保存前后生图参数包及SW指令等价、加载失败/离线重试/409/串行保存，以及编号2到标准号参数行的导航。API持久化回归使用SQLite测试库和JSON模式；未执行真实Qwen服务或外部SolidWorks程序联调。独立导航复查的唯一实质问题（编号2误跳标准化区）已修复，结论为`ship`，该结论只覆盖此次导航修复。
+覆盖定位与坐标校验、EXIF八种方向、OCR中心/多边形、表格行关系、重复数值、否定条件、本地识别缓存，以及旧订单升级、并发人工修改保护和失败不重复执行。API持久化回归使用SQLite测试库和JSON模式，并验证参数、生图参数包及SW指令不变。浏览器使用真实鼠标输入验证缩放、平移、跳转、离线重试、保存重开及窄面板。带`--real`运行浏览器脚本可使用`outputs/annotation-qa/`中的两份本地验收结果；默认使用明确标注的合成测试数据。此流程不执行真实Qwen或SW外部调用。
 
 桌面与移动端检查使用明确标为测试数据的合成图纸；截图位于被Git忽略的`.impeccable/review/`。本次新增视觉内容为运行时原图与SVG标注，没有新增随产品发布的栅格插图。
 
