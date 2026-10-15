@@ -49,6 +49,16 @@ for (const value of [NaN, Infinity, -Infinity, -1, 0]) {
   assert.equal(context.SolidWorksExport.buildPreview(structuredClone(base.package), base.review, catalog).titleBlockProperties["重量"], undefined);
 }
 context.CompressionDesignChecks.calculate = originalCalculate;
+// Rebuilding a preview against newer inputs must not reuse a stale end template.
+for (const [field, updates] of [
+  ["end_type", { value: "两端不并紧" }], ["end_grinding", { value: "invalid" }],
+  ["end_type", { need_human_review: true }], ["end_grinding", { derived_value_stale: true }],
+]) {
+  const changed = structuredClone(base.review);
+  Object.assign(changed.spring_parameters[field], updates);
+  const rebuilt = context.SolidWorksExport.buildPreview(structuredClone(base.package), changed, catalog);
+  assert.ok(!rebuilt.extraProperties["技术要求"].startsWith("1.两端"), `new snapshot ${field} does not reuse frozen end state`);
+}
 for (const value of [NaN, Infinity, -Infinity, 0, -1, true, "0x10", "1_2"]) {
   const invalid = structuredClone(base.review);
   invalid.spring_parameters.surface_roughness_ra.value = value;

@@ -338,10 +338,32 @@ def main() -> None:
                         event_type="generation_preview_failed",
                     ).all()
                     assert len(preview_events) == 1
+                blocked_selection = client.post(f"/api/generation-jobs/{preview_failure_id}/approve")
+                assert blocked_selection.status_code == 409, blocked_selection.text
+                assert blocked_selection.json()["detail"]["code"] == "final_generation_already_selected"
+                assert blocked_selection.json()["detail"]["current_final_generation_id"] == generation_id
+                before_cancel = client.get(f"/api/generation-jobs/{generation_id}").json()["generation_job"]
+                cancelled_final = client.post(f"/api/generation-jobs/{generation_id}/unapprove")
+                assert cancelled_final.status_code == 200, cancelled_final.text
+                cleared = cancelled_final.json()["generation_job"]
+                assert not cleared["is_final"] and cleared["approved_by"] is None and cleared["approved_at"] is None
+                for field in ("status", "parameter_hash", "artifacts", "review_revision"):
+                    assert cleared[field] == before_cancel[field], field
+                assert client.post(f"/api/generation-jobs/{generation_id}/unapprove").status_code == 200
+                with repository._session() as session:
+                    events = session.query(GenerationEventRecord).filter_by(generation_id=generation_id, event_type="generation_unapproved").all()
+                    assert len(events) == 1
+                    assert events[0].payload["previous_approved_by"]["user_id"] == OWNER_A["user_id"]
+                    assert events[0].payload["previous_approved_at"] and events[0].payload["cancelled_at"]
                 newer_selected = client.post(f"/api/generation-jobs/{preview_failure_id}/approve")
                 assert newer_selected.status_code == 200, newer_selected.text
                 assert newer_selected.json()["generation_job"]["is_final"] is True
                 assert client.get(f"/api/generation-jobs/{generation_id}").json()["generation_job"]["is_final"] is False
+                assert client.post(f"/api/generation-jobs/{generation_id}/unapprove").status_code == 200
+                assert client.get(f"/api/generation-jobs/{preview_failure_id}").json()["generation_job"]["is_final"] is True
+                set_mock_user("generation-user-b")
+                assert client.post(f"/api/generation-jobs/{preview_failure_id}/unapprove").status_code == 404
+                set_mock_user(OWNER_A["user_id"])
 
                 updated_review = ready_review(wire=2.5, free_length=65.0)
                 saved = repository.save_review(
@@ -353,6 +375,8 @@ def main() -> None:
                 assert saved["revision"] == 2
                 stale = client.get(f"/api/generation-jobs/{generation_id}")
                 assert stale.status_code == 200 and stale.json()["generation_job"]["is_stale"] is True
+                assert client.post(f"/api/generation-jobs/{generation_id}/approve").status_code == 409
+                assert client.post(f"/api/generation-jobs/{preview_failure_id}/unapprove").status_code == 200
                 selected_history = client.post(f"/api/generation-jobs/{generation_id}/approve")
                 assert selected_history.status_code == 200, selected_history.text
                 assert selected_history.json()["generation_job"]["is_final"] is True

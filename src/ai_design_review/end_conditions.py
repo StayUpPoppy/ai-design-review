@@ -36,7 +36,7 @@ def normalize_end_type(value: Any) -> str | None:
     lowered = text.lower().replace("-", "_").replace(" ", "")
     if lowered in {"not_tight", "nottight", "open", "open_end"}:
         return END_TYPE_NOT_TIGHT
-    if lowered in {"tight", "closed", "closed_end"}:
+    if lowered in {"tight", "closed", "closed_end", "closed_and_ground"}:
         return END_TYPE_TIGHT
     # Check the negative wording first because it contains the positive token.
     if any(token in text for token in ("不并紧", "开口", "开放", "不闭口")):

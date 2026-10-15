@@ -94,7 +94,8 @@ try {
   assert.ok((await panel.locator(`.compression-work-stress[data-load-point-id="${addedId}"] [data-role="design-check-basis"]`).textContent()).includes("估算"));
   assert.equal(await load(addedId,"force").inputValue(),"");
   await load(addedId,"rename-load-point").click();
-  await load(addedId,"label").fill("F4-new");await load(addedId,"label").dispatchEvent("change");
+  await load(addedId,"label").fill("F4-new");await load(addedId,"save-load-label").click();
+  await load(addedId,"rename-editor").waitFor({state:"hidden"});
   assert.ok((await panel.locator(`.compression-work-stress[data-load-point-id="${addedId}"]`).innerText()).includes("F4-new"));
   await load(addedId,"delete-load-point").click();
   assert.equal(await panel.locator(`.compression-work-stress[data-load-point-id="${addedId}"]`).count(),0);
@@ -146,9 +147,10 @@ try {
   assert.equal(await metric("solid_stress").innerText(),"161.6744 MPa");
   assert.equal(await metric("unit_mass").innerText(),"0.00959808 kg");
   await edit("total_coils","6.5");
-  assert.equal(await input("support_coils").inputValue(),"1.25");
-  assert.equal(await input("pitch").inputValue(),"3.85");
+  assert.equal(await input("support_coils").inputValue(),"1", "Wait for both count confirmations before replacing support");
+  assert.equal(await metric("unit_mass").innerText(),"--");
   assert.equal(await input("total_coils").evaluate((el)=>document.activeElement===el),true);
+  assert.equal(await panel.locator('[data-kind="param"][data-field="total_coils"] [data-role="confirm"]').isDisabled(),true, "Existing count validation remains in force");
   await edit("total_coils","6");
   await flush();await page.reload();await reopen();
   assert.equal(await input("support_coils").inputValue(),"1");

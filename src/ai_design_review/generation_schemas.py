@@ -213,10 +213,10 @@ class SolidWorksPreviewV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     modelParameters: dict[str, int | float | str | None] = Field(
-        description="六个 SolidWorks 建模字段：线径、中径、自由高度、圈数、有效圈数n、是否磨平；不含 TaskId。"
+        description="SolidWorks 建模字段：线径、中径、自由高度、圈数、是否磨平、是否并紧；是否并紧为0时省略有效圈数n，否则保留该键。内部有效圈数及确认规则不变；不含 TaskId。"
     )
     customProperties: dict[str, str | None] = Field(default_factory=dict, description="旋向等模型属性；旧预览可省略。")
-    extraProperties: dict[str, int | float | str] = Field(default_factory=dict, description="技术要求多行文本及可用的 P'（N/mm）、C、τ_b（MPa）；缺项省略键名。")
+    extraProperties: dict[str, int | float | str] = Field(default_factory=dict, description="技术要求多行文本（已确认有效的端部状态排第一条，仅并紧且磨平时追加每端磨270°；不新增审图编辑条目；不并紧时省略自动有效圈数行，其余状态使用有效圈数名称，原图和人工圈数要求保留）及可用的 P'（N/mm）、C、τ_b（MPa）；缺项省略键名。")
     titleBlockProperties: dict[str, int | float | str] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -255,7 +255,7 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
                 "technical_requirements_text": "1.其他要求：两端磨平，表面镀锌。",
             },
             "derived_parameters": {},
-            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10, "有效圈数n": 8, "是否磨平": 1}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.材料：65Mn。\n2.绕制方向：右旋。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn"}},
+            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10, "有效圈数n": 8, "是否磨平": 1, "是否并紧": 1}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.两端并紧磨平，每端磨270°。\n2.材料：65Mn。\n3.绕制方向：右旋。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn"}},
         }]},
     )
 

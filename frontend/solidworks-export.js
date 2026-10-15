@@ -84,6 +84,38 @@
     const signed = (v) => `${v > 0 ? "+" : ""}${textNumber(v)}`;
     return `${text}（允差 ${[upper, lower].filter((v) => v != null).map(signed).join("/")} N）`;
   }
+  function endConditionValue(field, value) {
+    // Mirror generation_contract normalization, including legacy Chinese values.
+    if (typeof value === "boolean") return Number(value);
+    if (typeof value === "number" && [0, 1].includes(value)) return value;
+    const text = String(value ?? "").trim(), key = text.toLowerCase().replace(/-/g, "_").replace(/ /g, "");
+    if (["0", "1"].includes(text)) return Number(text);
+    if (field === "end_grinding") {
+      if (["not_ground", "notground", "unground", "no", "false"].includes(key) || /不磨|未磨/.test(text)) return 0;
+      if (["ground", "grounded", "yes", "true", "closed_and_ground"].includes(key) || /磨/.test(text)) return 1;
+    } else {
+      if (["closed_and_ground", "closed_and_unground", "closed_ground"].includes(key)) return 1;
+      if (["not_tight", "nottight", "open", "open_end"].includes(key) || /不并紧|开口|开放|不闭口/.test(text)) return 0;
+      if (["tight", "closed", "closed_end"].includes(key) || /两端并紧|双并紧|并紧|双闭口|闭口|闭合|压紧/.test(text)) return 1;
+    }
+    return null;
+  }
+  function confirmedEndNote(exported, review) {
+    const parameters = review.spring_parameters || {}, values = [];
+    for (const field of ["end_coils_closed", "end_grinding"]) {
+      let sourceField = field;
+      if (field === "end_coils_closed" && (!parameters[field] || parameters[field].value == null || parameters[field].value === "")) sourceField = "end_type";
+      const item = parameters[sourceField], output = exported[field];
+      if (!item || item.need_human_review !== false || item.formula_recommendation_stale || !current(parameters, sourceField) || !output) return null;
+      const value = endConditionValue(field, item.value);
+      if (value == null || value !== endConditionValue(field, output.value)) return null;
+      values.push(value);
+    }
+    return {
+      "1,1": "两端并紧磨平，每端磨270°。", "1,0": "两端并紧，不磨平。",
+      "0,1": "两端不并紧，端面磨平。", "0,0": "两端不并紧，不磨平。",
+    }[values.join(",")];
+  }
   function content(item) {
     const value = TechnicalRequirementEquivalence.outputContent(item);
     return value.replace(/(?:\s*(?:\r\n?|\n)\s*)+/g, "；").replace(/[\t ]+/g, " ").trim();
@@ -106,6 +138,8 @@
       const key = sentenceKey(line, catalog, scope);
       if (line && !keys.has(key)) { keys.add(key); lines.push(line); }
     };
+    const endNote = confirmedEndNote(parameters, review);
+    if (endNote) append(endNote);
     if (material != null) append(`材料：${CompressionDesignChecks.materialDisplayValue(material, catalog)}。`);
     if (direction) append(`绕制方向：${direction}。`);
     const requirements = generation.technical_requirements || [];
@@ -130,7 +164,8 @@
       const match = label.match(/^[Ff](\d+)$/);
       append(match ? `当弹簧工作高度 H${match[1]} = ${textNumber(height)} mm 时，对应工作载荷 ${label} = ${forceText(point)}。` : `载荷点 ${label}：高度 ${textNumber(height)} mm，力值 ${forceText(point)}。`);
     }
-    for (const [label, field] of [["总圈数", "total_coils"], ["工作圈数", "active_coils"]]) {
+    for (const [label, field] of [["总圈数", "total_coils"], ["有效圈数", "active_coils"]]) {
+      if (field === "active_coils" && parameterValue(parameters.end_coils_closed) === 0) continue;
       const value = parameterValue(parameters[field]);
       if (value != null) append(`${label}：${value} 圈。`);
     }
@@ -163,8 +198,10 @@
     if (["calculated", "estimated"].includes(mass?.status) && mass.unit === "kg" && weight != null && weight > 0) titleBlock["重量"] = rounded(weight, 8);
     const roughness = confirmedRoughness(review);
     if (roughness != null) titleBlock["表面粗糙度"] = roughness.value;
+    const modelParameters = Object.fromEntries([["线径", "wire_diameter"], ["中径", "mean_diameter"], ["自由高度", "free_length"], ["圈数", "total_coils"], ["有效圈数n", "active_coils"], ["是否磨平", "end_grinding"], ["是否并紧", "end_coils_closed"]].map(([label, field]) => [label, parameterValue(parameters[field])]));
+    if (modelParameters["是否并紧"] === 0) delete modelParameters["有效圈数n"];
     return {
-      modelParameters: Object.fromEntries([["线径", "wire_diameter"], ["中径", "mean_diameter"], ["自由高度", "free_length"], ["圈数", "total_coils"], ["有效圈数n", "active_coils"], ["是否磨平", "end_grinding"]].map(([label, field]) => [label, parameterValue(parameters[field])])),
+      modelParameters,
       customProperties: { "旋向": handedness(parameterValue(parameters.handedness)) }, extraProperties: extra, titleBlockProperties: titleBlock,
     };
   }

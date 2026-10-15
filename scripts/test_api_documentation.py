@@ -71,6 +71,7 @@ EXPECTED_OPERATION_KEYS = {
     ("POST", "/api/generation-jobs/{generation_id}/preview/retry"),
     ("POST", "/api/generation-jobs/{generation_id}/retry"),
     ("POST", "/api/generation-jobs/{generation_id}/approve"),
+    ("POST", "/api/generation-jobs/{generation_id}/unapprove"),
     ("GET", "/api/generation-jobs/{generation_id}/artifacts"),
     ("GET", "/api/generation-jobs/{generation_id}/artifacts/{artifact_id}"),
     ("POST", "/api/generation-worker/jobs/claim"),
@@ -90,6 +91,7 @@ EXPECTED_OPERATION_IDS = {
     "save_drawing_annotations_api_reviews__job_id__annotations_patch",
     "relocalize_drawing_annotations_api_reviews__job_id__annotations_relocalize_post",
     "approve_generation_job_api_generation_jobs__generation_id__approve_post",
+    "unapprove_generation_job_api_generation_jobs__generation_id__unapprove_post",
     "apply_review_parameter_change_proposal_api_reviews__job_id__parameter_change_proposals__proposal_id__apply_post",
     "assess_review_reasonableness_api_reviews_reasonableness_post",
     "cancel_generation_job_api_generation_jobs__generation_id__cancel_post",
@@ -188,7 +190,7 @@ def main() -> None:
                 operations[key] = operation
 
     assert set(operations) == EXPECTED_OPERATION_KEYS
-    assert len(operations) == 54
+    assert len(operations) == 55
     assert {operation["operationId"] for operation in operations.values()} == EXPECTED_OPERATION_IDS
 
     for key, operation in operations.items():
@@ -250,6 +252,9 @@ def main() -> None:
     frozen_inputs_v2 = schema["components"]["schemas"]["CompressionSpringGenerationInputsV2"]
     assert set(frozen_inputs_v2["required"]) == frozen_fields
     assert frozen_inputs_v2["properties"]["material"]["anyOf"][0]["$ref"].endswith("GenerationMaterialParameter")
+    sw_preview_schema = schema["components"]["schemas"]["SolidWorksPreviewV2"]["properties"]
+    assert "是否并紧为0时省略有效圈数n" in sw_preview_schema["modelParameters"]["description"]
+    assert "仅并紧且磨平时追加每端磨270°" in sw_preview_schema["extraProperties"]["description"]
     claim_response = operations[("POST", "/api/generation-worker/jobs/claim")]["responses"]["200"]
     assert claim_response["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/GenerationWorkerClaimResponse"

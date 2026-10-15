@@ -47,7 +47,7 @@ from .engines.werk24_adapter import Werk24Engine
 from .identity import IdentityContext, IdentityError, resolve_request_identity
 from .io_utils import project_path, read_json, write_json
 from .generation_contract import apply_generation_defaults
-from .generation_persistence import GenerationStore, SolidWorksTaskCancelledError
+from .generation_persistence import FinalGenerationAlreadySelectedError, GenerationStore, SolidWorksTaskCancelledError
 from .generation_readiness import assess_generation_readiness, build_generation_parameter_package
 from .generation_schemas import (
     GenerationArtifactListResponse,
@@ -793,6 +793,21 @@ def approve_generation_job(
     except PersistenceError as exc:
         raise _generation_http_error(exc) from exc
     return {"generation_job": _generation_job_response(job or existing)}
+
+
+@app.post("/api/generation-jobs/{generation_id}/unapprove", response_model=GenerationJobResponse, tags=["Generation"])
+def unapprove_generation_job(
+    generation_id: str,
+    identity: IdentityContext = Depends(require_identity),
+) -> dict[str, Any]:
+    _require_generation_database()
+    try:
+        job = GenerationStore(REVIEW_PERSISTENCE).unapprove_job(generation_id, owner=identity.as_owner_dict())
+    except PersistenceError as exc:
+        raise _generation_http_error(exc) from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail="Generation job not found.")
+    return {"generation_job": _generation_job_response(job)}
 
 
 @app.get("/api/generation-jobs/{generation_id}/artifacts", response_model=GenerationArtifactListResponse, tags=["Generation"])
@@ -3299,6 +3314,9 @@ def _update_generation_worker_job(
 
 def _generation_http_error(exc: PersistenceError) -> HTTPException:
     message = str(exc)
+    if isinstance(exc, FinalGenerationAlreadySelectedError):
+        return HTTPException(status_code=409, detail={"code": "final_generation_already_selected",
+            "current_final_generation_id": exc.current_final_generation_id, "message": message})
     if "PostgreSQL is required" in message:
         return HTTPException(status_code=503, detail={"code": "generation_queue_not_configured", "message": message})
     if "not found" in message.lower():

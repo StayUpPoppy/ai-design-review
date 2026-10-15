@@ -118,6 +118,25 @@ async function testSaveAcknowledgementDoesNotReplaceNewerInput() {
   assert.equal(await context.persistReviewChanges(), false);
   assert.equal(context.state.pendingReviewAuditEvents.length, 1);
   assert.equal(context.state.reviewPersistenceFailedFields.free_length, "network offline");
+
+  // Late save success or failure belongs to its original order, not the newly opened review.
+  for (const failed of [false, true]) {
+    context.state.lastJob = { job_id: "review-1", review_revision: 2 };
+    context.state.pendingReviewAuditEvents = [confirmation];
+    context.apiFetch = () => new Promise((resolve) => { finishRequest = resolve; });
+    const oldSave = context.persistReviewChanges();
+    const nextReview = { spring_parameters: { load_points: [{ load_point_id: "next", label: "F7" }] }, change_history: [] };
+    context.state.review = nextReview;
+    context.state.lastJob = { job_id: "review-2", review_revision: 9 };
+    context.state.pendingReviewAuditEvents = [];
+    context.state.reviewPersistenceFailedFields = {};
+    finishRequest({ ok: !failed, async json() { return failed ? { detail: "old save failed" } : { review_revision: 3, events: [confirmation] }; } });
+    assert.equal(await oldSave, false);
+    assert.equal(context.state.lastJob.review_revision, 9);
+    assert.equal(context.state.review, nextReview);
+    assert.equal(context.state.pendingReviewAuditEvents.length, 0);
+    assert.deepEqual(context.state.reviewPersistenceFailedFields, {});
+  }
 }
 
 async function testRevisionConflictKeepsUnrelatedServerChanges() {

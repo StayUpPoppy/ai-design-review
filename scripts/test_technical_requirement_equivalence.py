@@ -90,7 +90,7 @@ def run():
     package = build_generation_parameter_package(review)
     GenerationParameterPackageV2.model_validate(package)
     text = package["solidworks_preview"]["extraProperties"]["技术要求"]
-    assert len(text.splitlines()) == 13, text
+    assert len(text.splitlines()) == 14, text
     assert package["solidworks_preview"]["titleBlockProperties"]["表面粗糙度"] == 12.5
     assert "粗糙度" not in text
     assert len(review["technical_requirements"]) == 9 and len(package["generation_parameters"]["technical_requirements"]) == 10
@@ -120,4 +120,4 @@ if __name__ == "__main__":
     if "--json" in sys.argv:
         print(json.dumps(result, ensure_ascii=True))
     else:
-        print(f"PASS: {len(result['pairs'])} safe equivalence fixtures, order2 13 notes + title-block Ra, aliases, confirmation and frozen requests")
+        print(f"PASS: {len(result['pairs'])} safe equivalence fixtures, order2 14 notes + title-block Ra, aliases, confirmation and frozen requests")

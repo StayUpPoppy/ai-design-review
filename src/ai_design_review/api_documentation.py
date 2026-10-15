@@ -96,7 +96,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/apply"): _operation("标准化与合理性", "应用完整参数修改方案", "按方案版本和审图修订执行乐观锁校验，重新求解全部关联参数并原子写入。ready 或 warning 方案可以应用；过期、缺信息或存在冲突时返回409。"),
     ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/discard"): _operation("标准化与合理性", "放弃参数修改方案", "关闭尚未应用的方案草稿并保存审计事件，不修改正式参数；已应用或版本已变化时返回409。"),
     ("GET", "/api/reviews/{job_id}/generation-readiness"): _operation("生图准备", "检查审图是否可以生图", "由服务端根据当前审图修订重新计算缺失字段、待确认字段、警告和参数矛盾，是前端启用“生成图纸”的唯一可信依据。标准化为可选功能；未标准化、标准未确认或标准化结果过期只产生警告，不阻止按当前人工确认参数生图。"),
-    ("GET", "/api/reviews/{job_id}/generation-package"): _operation("生图准备", "获取 SolidWorks 生图参数包", "仅 ready 或 ready_with_warnings 状态返回冻结的 spring_generation_parameters/v2 参数快照。spring_parameters 包含线径、中径、自由长度、总圈数、有效圈数、旋向、两端磨削和端圈压并八个必填字段，以及可选的已确认材料字段 material；solidworks_preview.modelParameters 展示实际发送给 SolidWorks 的建模字段映射（不含尚未创建的 TaskId），其中有效圈数n为已确认有效圈数，是否磨平为整数 1 或 0。solidworks_preview.titleBlockProperties 展示标题栏已确认材料纯牌号、单件重量（数字、kg、最多八位小数）及表面粗糙度 Ra（数字、μm）；对应独立粗糙度技术要求句移除，其它部位和附加条件保留，缺失键独立省略，都缺失时为空对象；材料继续保留在技术要求中。SolidWorks 根据中径和线径计算外径、内径。材料缺失或待确认时仍可生成，但参数包省略 material 并在就绪状态中给出警告。未执行标准化时 standard_context 保持空值，参数包仍可用于生图；其他未就绪状态返回 409 和具体原因。"),
+    ("GET", "/api/reviews/{job_id}/generation-package"): _operation("生图准备", "获取 SolidWorks 生图参数包", "仅 ready 或 ready_with_warnings 状态返回冻结的 spring_generation_parameters/v2 参数快照。spring_parameters 包含线径、中径、自由长度、总圈数、有效圈数、旋向、两端磨削和端圈压并八个必填字段，以及可选的已确认材料字段 material；solidworks_preview.modelParameters 展示实际发送给 SolidWorks 的建模字段映射（不含尚未创建的 TaskId），其中有效圈数n为已确认有效圈数，但是否并紧为0时直接省略该建模键；内部有效圈数及确认要求保留；技术要求在不并紧时不自动生成圈数行，并紧时自动使用“有效圈数”名称。原图或人工填写的圈数要求按现有确认和去重规则保留。是否磨平和其后的是否并紧均为整数 1 或 0；是否并紧的 1 表示两端并紧，0 表示两端不并紧。solidworks_preview.titleBlockProperties 展示标题栏已确认材料纯牌号、单件重量（数字、kg、最多八位小数）及表面粗糙度 Ra（数字、μm）；对应独立粗糙度技术要求句移除，其它部位和附加条件保留，缺失键独立省略，都缺失时为空对象；材料继续保留在技术要求中。技术要求首条按最终已确认且有效的端部状态生成，仅并紧且磨平时追加“每端磨270°”；不并紧且磨平时输出“两端不并紧，端面磨平。”；不写入审图技术要求编辑列表。SolidWorks 根据中径和线径计算外径、内径。材料缺失或待确认时仍可生成，但参数包省略 material 并在就绪状态中给出警告。未执行标准化时 standard_context 保持空值，参数包仍可用于生图；其他未就绪状态返回 409 和具体原因。"),
     ("POST", "/api/reviews/{job_id}/generation-template-match"): _operation("生图准备", "匹配 SolidWorks 生图模板", "根据图纸类型、必填字段、匹配规则和优先级返回模板候选；可指定 template_code，也可由后端自动选择。"),
     ("GET", "/api/generation-templates"): _operation("模板查询", "查询启用的生图模板", "返回当前启用的模板及匹配规则、参数映射和 Worker 能力要求；不返回已禁用版本。"),
     ("GET", "/api/generation-templates/{template_code}/versions"): _operation("模板查询", "查询模板的启用版本", "返回指定 template_code 当前所有启用版本；模板代码可包含斜杠。"),
@@ -106,7 +106,8 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/generation-jobs/{generation_id}/cancel"): _operation("生图任务", "取消生图任务", "取消排队中或正在处理的任务并立即标记为 cancelled。真实SolidWorks任务会在下一次状态回调收到 HTTP 409 和根级 {\"TaskId\":任务号,\"code\":409}，据此停止后续步骤并释放资源。"),
     ("POST", "/api/generation-jobs/{generation_id}/preview/retry"): _operation("生图任务", "重新生成 PDF 对比预览", "对当前用户已完成、有 PDF 但没有 PNG 的任务重新渲染首页预览。预览失败不改变主任务 completed 状态；已存在 PNG 时幂等返回当前任务。"),
     ("POST", "/api/generation-jobs/{generation_id}/retry"): _operation("生图任务", "重试失败的兼容 Worker 任务", "仅用于 Mock 和历史兼容 Worker 任务：使用原有参数快照和模板重新排队，清除旧失败产物并增加尝试次数。真实 SolidWorks 推送任务必须重新创建，以分配新的十位 TaskId。"),
-    ("POST", "/api/generation-jobs/{generation_id}/approve"): _operation("生图任务", "设为最终生图版本", "允许从该审图单任一已完成的历史生图任务中选定最终版本，不要求与当前审图修订一致；以所选任务创建时冻结的参数包和产物为准，不修改当前审图参数。同一审图单只保留一个最终版本，重复确认已选版本幂等返回。模拟任务会保留 is_mock 标识。"),
+    ("POST", "/api/generation-jobs/{generation_id}/approve"): _operation("生图任务", "设为最终生图版本", "允许从该审图单任一已完成的历史生图任务中选定最终版本，不要求与当前审图修订一致；以所选任务创建时冻结的参数包和产物为准，不修改当前审图参数。同一审图单最多一个最终版本；已有其他最终版本时返回409及final_generation_already_selected、current_final_generation_id，必须先取消原选择。重复确认已选版本幂等返回。模拟任务会保留 is_mock 标识。"),
+    ("POST", "/api/generation-jobs/{generation_id}/unapprove"): _operation("生图任务", "取消设为最终生图版本", "仅清除目标任务的最终标记及确认人、时间，记录取消审计，保留完成状态、图纸、冻结参数和审图修订。重复取消幂等返回；目标不再是最终版本时不影响其他版本。需要当前用户拥有该任务。取消后允许暂时没有最终版本，并可选择其他已完成版本；不影响继续生图或SW回调。"),
     ("GET", "/api/generation-jobs/{generation_id}/artifacts"): _operation("生成产物", "查询生图任务产物", "列出任务上传的 PNG、PDF、模型、清单和日志文件，包含大小、MIME、SHA-256 和模拟标识。"),
     ("GET", "/api/generation-jobs/{generation_id}/artifacts/{artifact_id}"): _operation("生成产物", "预览或下载生图任务产物", "按 artifact_id 获取指定任务的生成文件，并校验当前 ERP 用户的数据权限和安全路径。PDF 可使用 inline=1 在浏览器内预览；默认仍作为附件下载。"),
     ("POST", "/api/admin/generation-templates"): _operation("模板管理", "注册生图模板", "使用管理员 Bearer Key 创建首个模板版本。template_code 与 version 组合必须唯一，模板内容创建后不可直接修改。"),
@@ -149,6 +150,13 @@ class ReviewParameterValue(BaseModel):
     evidence: str | None = Field(default=None, description="支持该参数值的图纸文字或计算依据。")
     confidence: float | None = Field(default=None, ge=0, le=1, description="识别置信度，范围为 0 至 1。")
     need_human_review: bool | None = Field(default=None, description="是否仍需人工核对。")
+
+
+class ReviewSupportCoilsValue(ReviewParameterValue):
+    support_coils_origin: Literal["drawing_single_end", "drawing_total", "inferred", "unknown"] | None = Field(default=None, description="原识别依据的单端/两端合计/推算/未知分类，保留追溯，不代表确认。")
+    support_coils_original: dict[str, Any] | None = Field(default=None, description="原识别值、原文、来源、页码和坐标；自动纠正后保留。")
+    support_coils_adjustment: dict[str, Any] | None = Field(default=None, description="公式重算前后值、输入与被撤销的确认；前端通过现有保存队列记录审计，GET不写存储。")
+    support_coils_conflict: str | None = Field(default=None, description="明确原图值或人工值与单端公式冲突的原因，不静默覆盖。")
 
 
 class ReviewMaterialValue(ReviewParameterValue):
@@ -229,6 +237,7 @@ class SpringParametersDocument(BaseModel):
     solid_height: ReviewParameterValue | None = Field(default=None, description="压并高度。")
     total_coils: ReviewParameterValue | None = Field(default=None, description="总圈数。")
     active_coils: ReviewParameterValue | None = Field(default=None, description="有效圈数。")
+    support_coils: ReviewSupportCoilsValue | None = Field(default=None, description="单端支承圈数；自动值统一为(总圈数－有效圈数)/2，人工改圈数后两项均确认时重算，结果仍待单独确认。")
     surface_roughness_ra: ReviewParameterValue | None = Field(
         default=None,
         description="表面粗糙度Ra，内部单位μm；当前有效且人工确认后，以数字写入SolidWorks titleBlockProperties.表面粗糙度。对应独立技术要求句移除，其它部位和额外工程条件保留。",
@@ -290,6 +299,9 @@ class TechnicalRequirementDocument(BaseModel):
 
 class ReasonablenessSuggestion(BaseModel):
     model_config = ConfigDict(extra="allow")
+
+    suggestion_kind: Literal["formula_candidate"] | None = Field(default=None, description="新公式候选；应用后仍须人工重新确认。旧建议可省略。")
+    formula_candidate: dict[str, Any] | None = Field(default=None, description="重新计算的公式、实际 inputs、source_fields、unit、value 和 purpose（名义压并高度与上限参考分开）；服务端复算，不信任缓存。")
 
     suggestion_id: str = Field(description="由来源、目标、建议内容和依赖令牌生成的稳定建议标识。")
     source: Literal["formula", "standardization"] = Field(description="建议来源：确定性公式或标准化规则。")

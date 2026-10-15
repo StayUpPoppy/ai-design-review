@@ -133,6 +133,7 @@ const lifecycle = {
   invalidateStandardizationResults() { return 0; },
   scheduleAutomaticStandardization() {},
   normalizeAccuracyGrade(value) { return String(value || ""); },
+  normalizeLoadPointLabel(value) { return String(value || "").trim().replace(/\s+/g, " "); },
 };
 vm.createContext(lifecycle);
 vm.runInContext(appSource.slice(lifecycleStart, lifecycleEnd), lifecycle);
@@ -158,6 +159,25 @@ lifecycle.confirmParam(editable, "wire_diameter");
 assert.equal(editable.need_human_review, false);
 assert.equal(editable.confirmation_snapshot.value, 3.4);
 assert.equal(lifecycle.state.review.manual_confirmations.wire_diameter.confirmed, true);
+
+const legacyLoad = { load_point_id: "one", label: "F1", height: 21.15, force: 16, need_human_review: false,
+  confirmation_snapshot: { kind: "load_point", height: 21.15, force: 16 } };
+lifecycle.rememberConfirmedSnapshot(legacyLoad);
+assert.equal(legacyLoad.confirmation_snapshot.label, "F1", "Confirmed legacy points establish a complete baseline before editing");
+legacyLoad.label = "F3";
+assert.equal(lifecycle.confirmationSnapshotMatches(legacyLoad), false);
+legacyLoad.label = "F1";
+assert.equal(lifecycle.confirmationSnapshotMatches(legacyLoad), true);
+legacyLoad.height_unit = "cm";
+assert.equal(lifecycle.confirmationSnapshotMatches(legacyLoad), false);
+legacyLoad.height_unit = "mm";
+legacyLoad.force_unit = "kN";
+assert.equal(lifecycle.confirmationSnapshotMatches(legacyLoad), false);
+const pendingLegacy = { label: "F1", height: 21.15, force: 16, need_human_review: true,
+  confirmation_snapshot: { kind: "load_point", height: 21.15, force: 16 } };
+lifecycle.rememberConfirmedSnapshot(pendingLegacy);
+assert.equal(Object.hasOwn(pendingLegacy.confirmation_snapshot, "label"), false);
+assert.equal(lifecycle.confirmationSnapshotMatches(pendingLegacy), false, "Incomplete legacy snapshots never restore pending confirmation");
 
 const solid = {
   value: 32.025,

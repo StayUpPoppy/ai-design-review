@@ -72,8 +72,9 @@ try {
   const formulas = checks.locator('[data-design-disclosure="formulas"]');
   const edit = async (field, text) => { await input(field).fill(text); await input(field).dispatchEvent("change"); };
   const flush = async () => assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
-  assert.equal(await basis.getAttribute("open"), "");
+  assert.equal(await basis.getAttribute("open"), null, "Calculation basis is collapsed on first open");
   assert.equal(await formulas.getAttribute("open"), null);
+  await basis.locator(":scope > summary").click();
   assert.equal(await value("theoretical_spring_rate").innerText(), "--");
   assert.equal(await checks.locator('[data-role="design-check-unit"][data-metric="theoretical_spring_rate"]').innerText(), "N/mm");
   await formulas.locator(":scope > summary").click();
@@ -126,7 +127,8 @@ try {
   const addedRow = checks.locator(`.compression-work-stress[data-load-point-id="${added}"]`);
   assert.equal(await addedRow.locator('[data-role="design-check-basis"]').textContent(), "估算载荷");
   await load(added, "rename-load-point").click();
-  await load(added, "label").fill("F3-new"); await load(added, "label").dispatchEvent("change");
+  await load(added, "label").fill("F3-new"); await load(added, "save-load-label").click();
+  await load(added, "rename-editor").waitFor({ state: "hidden" });
   assert.match(await addedRow.innerText(), /F3-new/);
   await load(added, "delete-load-point").click();
   assert.equal(await addedRow.count(), 0);
@@ -135,6 +137,9 @@ try {
   await flush(); await page.reload(); await reopen();
   await page.waitForFunction(() => state.materialCatalog.status === "ready");
   for (const [metric, result] of Object.entries(expected)) assert.equal(await value(metric).innerText(), result);
+
+  assert.equal(await basis.getAttribute("open"), null, "Browser refresh resets basis to collapsed");
+  await basis.locator(":scope > summary").click();
 
   // Provided zero solid force remains valid and does not invent a height basis.
   await page.evaluate(() => {

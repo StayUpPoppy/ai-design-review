@@ -9,6 +9,7 @@ from .standardizers.coil_counts import COMPANY_ACTIVE_COIL_RULE, derive_active_c
 from .standardizers.compression import calculate_compression_solid_height, derive_compression_parameters
 from .standardizers.diameters import calculate_compression_diameter_completion
 from .standardizers.stiffness import calculate_compression_spring_rate
+from .formula_candidates import candidate_snapshots
 
 
 FORMULA_RULES = {
@@ -32,6 +33,7 @@ def build_parameter_suggestions(
     parameters = review.get("spring_parameters") or {}
     revision = based_on_revision if based_on_revision is not None else _integer(review.get("review_revision"))
     suggestions = [
+        *_candidate_suggestions(review, revision),
         *_formula_suggestions(parameters, review.get("spring_features") or {}, revision),
         *_standardization_suggestions(
             parameters,
@@ -44,6 +46,31 @@ def build_parameter_suggestions(
     suggestions = _deduplicate_suggestions(suggestions)
     _mark_conflicts(suggestions)
     return suggestions
+
+
+def _candidate_suggestions(review: dict[str, Any], revision: int | None) -> list[dict[str, Any]]:
+    parameters = review.get("spring_parameters") or {}
+    result = []
+    for field, calculation in candidate_snapshots(review).items():
+        item = _suggestion(parameters, source="formula", target_field=field,
+                           suggested_value=calculation["value"], unit=calculation["unit"],
+                           rule_id=f"FORMULA-CANDIDATE-{field}-{calculation['purpose']}",
+                           basis=calculation["basis"], source_fields=calculation["source_fields"],
+                           based_on_revision=revision)
+        identity = {key: calculation[key] for key in ("value", "unit", "formula", "inputs", "purpose")}
+        identity = _parameter_numbers(identity)
+        item.update(suggestion_kind="formula_candidate", formula_candidate=calculation, status="available",
+                    suggestion_id=f"formula_candidate:{field}:{dependency_token(identity)}")
+        result.append(item)
+    return result
+
+
+def _parameter_numbers(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _parameter_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_parameter_numbers(item) for item in value]
+    return int(value) if isinstance(value, float) and value.is_integer() else value
 
 
 def dependency_snapshot(parameters: dict[str, Any], fields: list[str]) -> dict[str, Any]:
@@ -192,6 +219,7 @@ def _standardization_suggestions(
             based_on_revision=revision,
             status=status,
             result_index=index,
+            metadata=metadata,
             application_mode="none" if metadata.get("value_kind") == "reference_limit" or result.get("rule_id") == "GBT1239.2-SOLID" else None,
         ))
     return suggestions
@@ -240,6 +268,7 @@ def _suggestion(
     status: str | None = None,
     result_index: int | None = None,
     application_mode: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     current = _target_state(parameters, target_field)
     has_value = suggested_value is not None
@@ -267,6 +296,7 @@ def _suggestion(
         resolved_status = "informational"
     return {
         "suggestion_id": suggestion_id,
+        "metadata": deepcopy(metadata or {}),
         "source": source,
         "target_field": target_field,
         "current_value": current.get("value"),
@@ -365,13 +395,14 @@ def _deduplicate_suggestions(suggestions: list[dict[str, Any]]) -> list[dict[str
     selected: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for item in suggestions:
-        signature = json.dumps({
+        signature = json.dumps(_parameter_numbers({
             "target_field": item.get("target_field"),
             "suggested_value": item.get("suggested_value"),
             "suggested_tolerance_upper": item.get("suggested_tolerance_upper"),
             "suggested_tolerance_lower": item.get("suggested_tolerance_lower"),
             "application_mode": item.get("application_mode"),
-        }, ensure_ascii=False, sort_keys=True, default=str)
+            "purpose": ((item.get("formula_candidate") or {}).get("purpose") or (item.get("metadata") or {}).get("value_kind") or ("reference_limit" if item.get("rule_id") in {"FORMULA-SOLID-HEIGHT", "GBT1239.2-SOLID"} else "nominal_estimate")) if item.get("target_field") == "solid_height" else None,
+        }), ensure_ascii=False, sort_keys=True, default=str)
         existing = selected.get(signature)
         if existing is None:
             selected[signature] = item

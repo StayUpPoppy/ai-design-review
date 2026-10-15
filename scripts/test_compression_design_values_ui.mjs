@@ -9,7 +9,7 @@ const context = vm.createContext({});
 vm.runInContext(fs.readFileSync("frontend/compression-design-checks.js", "utf8"), context);
 const engine = context.CompressionDesignChecks;
 const python = process.env.DESIGN_TEST_PYTHON || "C:/Users/29580/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe";
-const serverResults = JSON.parse(execFileSync(python, ["scripts/test_compression_design_values.py", "--json"], { encoding: "utf8" }));
+const serverResults = JSON.parse(execFileSync(python, ["scripts/test_compression_design_values.py", "--json"], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }));
 function compare(actual, expected, path) {
   if (typeof expected === "number") assert.ok(typeof actual === "number" && Math.abs(actual-expected) <= 1e-10 * Math.max(1,Math.abs(expected)), `${path}: ${actual} != ${expected}`);
   else if (expected && typeof expected === "object") {

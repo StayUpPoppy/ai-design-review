@@ -72,7 +72,7 @@
     const text = String(value || "");
     const key = text.toLowerCase().replaceAll("-", "_").replaceAll(" ", "");
     if (["not_tight", "nottight", "open", "open_end"].includes(key) || /不并紧|开口|开放|不闭口/.test(text)) return "两端不并紧";
-    if (["tight", "closed", "closed_end"].includes(key) || /两端并紧|双并紧|并紧|双闭口|闭口|闭合|压紧/.test(text)) return "两端并紧";
+    if (["tight", "closed", "closed_end", "closed_and_ground"].includes(key) || /两端并紧|双并紧|并紧|双闭口|闭口|闭合|压紧/.test(text)) return "两端并紧";
     return null;
   }
   function activeCalculation(params) {
@@ -183,11 +183,12 @@
     if (origin.some((s) => ["formula_calculation", "derived", "parameter_change_proposal_derived"].includes(s)) && !parents.length) return false;
     return parents.every((s) => !["support_coils", "total_coils", "active_coils"].includes(s) && independentCoilSource(params, s, [...path, field]));
   }
-  function calculateSupportCoils(params) {
+  function calculateSupportCoils(params, review = {}) {
     const notes = {}, total = input(params, "total_coils", notes), active = input(params, "active_coils", notes);
     const end = endType(raw(params.end_type));
     let value = null, reason = "";
-    if (end !== "两端并紧") reason = "需明确两端并紧结构，才能由圈数推导单端支承圈数";
+    if (asymmetricSupport(params, review)) reason = "原图明确两端支承结构不对称，不能按两端均分，请人工核对";
+    else if (end !== "两端并紧") reason = "需明确两端并紧结构，才能由圈数推导单端支承圈数";
     else if (!["total_coils", "active_coils"].every((f) => independentCoilSource(params, f))) reason = "需要独立的总圈数和有效圈数；不能反推公司默认值或形成循环依赖";
     else if (total != null && active != null) {
       value = (total - active) / 2;
@@ -196,27 +197,83 @@
     return result(value, "turns", "单端支承圈数 = (n1 - n) / 2", SUPPORT_FIELDS,
       { total_coils: total, active_coils: active, end_type: end, notes }, { reason, basis: "由独立总圈数和有效圈数推导；待人工确认" });
   }
+  const SUPPORT_SNAPSHOT_KEYS = ["value", "unit", "need_human_review", "source", "evidence", "page", "position", "tolerance_upper", "tolerance_lower", "confirmation_snapshot"];
+  const copy = (v) => JSON.parse(JSON.stringify(v));
+  const supportSnapshot = (item, keys = SUPPORT_SNAPSHOT_KEYS) => Object.fromEntries(keys.filter((k) => k in item).map((k) => [k, copy(item[k])]));
+  const recognizedSupport = (item) => sources(item).some((s) => /qwen|ocr|vision|drawing|werk24|pdf_text|cad|dxf|dwg|paddle|azure/.test(s));
+  function supportOrigin(item) {
+    const text = String(item?.evidence || "");
+    if (/计算|推算|推导|相减|差值|默认|假设|derived|calculated|(?:总圈|total).*(?:有效|active).*[=＝]/i.test(text)) return "inferred";
+    if (/(?:两端|双端|左右两端).{0,8}(?:合计|共|总)|总支承圈数|支承圈数合计|total\s+support/i.test(text)) return "drawing_total";
+    if (/单端|每端|各端|两端各|每一端|per\s*end|each\s*end/i.test(text)
+      && (/支承|支撑|support/i.test(text) || /(?:单端|每端|各端|两端各|每一端)\s*[:：]?\s*\d+(?:\.\d+)?\s*圈/.test(text))) return "drawing_single_end";
+    return "unknown";
+  }
+  function asymmetricSupport(params, review = {}) {
+    if (params.support_coils?.support_coils_symmetry === "asymmetric") return true;
+    const texts = [params.support_coils?.evidence, params.end_type?.evidence, ...(review.technical_requirements || []).map((t) => t.content)].filter(Boolean).map(String);
+    return texts.some((text) => {
+      if (/两端.{0,12}(?:不对称|非对称|支承圈数不同)|左右端.{0,8}(?:不同|不等)|asymmetric\s+(?:end|support)/i.test(text)) return true;
+      const m = text.match(/左端(?:支承)?(?:圈数)?\s*[:：]?\s*(\d+(?:\.\d+)?)\s*圈.{0,12}右端(?:支承)?(?:圈数)?\s*[:：]?\s*(\d+(?:\.\d+)?)\s*圈/);
+      return Boolean(m && Number(m[1]) !== Number(m[2]));
+    });
+  }
+  function prepareSupportCoils(review) {
+    const item = review.spring_parameters?.support_coils;
+    if (!item || typeof item !== "object") return;
+    if (recognizedSupport(item) && !humanOverride(item) && !item.formula_calculation_kind) {
+      item.support_coils_origin = supportOrigin(item);
+      if (!item.support_coils_original && !empty(item.value)) item.support_coils_original = supportSnapshot(item);
+      if (item.support_coils_origin !== "drawing_single_end" && item.need_human_review !== false) item.derived_value_stale = true;
+    }
+  }
   function applySupportCoils(review) {
+    prepareSupportCoils(review);
     const params = review.spring_parameters || {}, old = params.support_coils;
     const item = old && typeof old === "object" ? old : { value: old };
-    const formula = item.formula_calculation_kind === "support_coils", calculation = calculateSupportCoils(params);
-    if (humanOverride(item)) {
+    const formula = item.formula_calculation_kind === "support_coils", c = calculateSupportCoils(params, review);
+    const origin = item.support_coils_origin || supportOrigin(item);
+    const automatic = formula || recognizedSupport(item) && origin !== "drawing_single_end";
+    const protectedValue = humanOverride(item) || origin === "drawing_single_end" || !automatic && !empty(item.value);
+    const value = number(c.value), changedInputs = !sameInputs(item.formula_calculation_inputs || item.support_coils_input_baseline, c.inputs);
+    const roots = [params.total_coils || {}, params.active_coils || {}];
+    const waiting = roots.some((p) => humanOverride(p) && p.need_human_review !== false);
+    const confirmed = roots.every((p) => p.need_human_review === false);
+    const edited = roots.some(humanOverride) || item.support_coils_recompute_pending === true;
+    item.support_coils_input_baseline ??= copy(c.inputs);
+    delete item.support_coils_conflict; delete item.support_coils_waiting_confirmation; delete item.support_coils_notice;
+    if (protectedValue) {
       if (formula) { delete item.derived_value_stale; delete item.formula_recommendation_stale; }
+      if (value != null && number(item.value) != null && Math.abs(Number(item.value) - value) > 1e-9) {
+        item.support_coils_conflict = "当前单端支承圈数与 (总圈数－有效圈数)/2 不一致，请核对原图或人工值";
+        item.formula_recalculation_candidate = copy(c); item.support_coils_waiting_confirmation = waiting;
+      } else { delete item.formula_recalculation_candidate; if (value == null) item.support_coils_notice = c.reason || "缺少有效计算依据"; }
       return;
     }
-    if (formula && item.need_human_review === false) {
-      preserveCandidate(item, calculation);
+    if (waiting) {
+      Object.assign(item, { derived_value_stale: true, formula_recommendation_stale: true, formula_recalculation_candidate: copy(c),
+        support_coils_recompute_pending: true, support_coils_waiting_confirmation: true, formula_calculation_reason: "总圈数和有效圈数当前值均确认后，将自动重算单端支承圈数" });
       return;
     }
-    if (item.need_human_review === false || !formula && !empty(item.value)) return;
-    if (calculation.value == null && !formula) return;
+    if (item.need_human_review === false && (value == null || !changedInputs || !(confirmed && edited))) { preserveCandidate(item, c); return; }
+    if (value == null) {
+      if (automatic) Object.assign(item, { derived_value_stale: true, formula_recommendation_stale: true, formula_recalculation_candidate: copy(c), formula_calculation_reason: c.reason || "缺少有效计算依据" });
+      else item.support_coils_notice = c.reason || "缺少有效计算依据";
+      return;
+    }
     const target = old && typeof old === "object" ? old : (params.support_coils = {});
-    const value = calculation.value == null ? null : Number(calculation.value.toFixed(4));
-    Object.assign(target, { field: "support_coils", value, unit: "turns", source: ["formula_calculation"], need_human_review: true,
-      confidence: 0.88, formula: calculation.formula, evidence: calculation.basis, source_fields: [...SUPPORT_FIELDS],
-      formula_calculation_kind: "support_coils", formula_calculation_status: calculation.status,
-      formula_calculation_inputs: calculation.inputs, formula_calculation_reason: calculation.reason,
-      derived_value_stale: value == null, formula_recommendation_stale: false });
+    const before = supportSnapshot(target, [...SUPPORT_SNAPSHOT_KEYS, "formula_calculation_inputs"]);
+    const changed = number(target.value) !== Number(value.toFixed(4)) || changedInputs || !formula;
+    Object.assign(target, { field: "support_coils", value: Number(value.toFixed(4)), unit: "turns", source: ["formula_calculation"], need_human_review: true,
+      confidence: 0.88, formula: c.formula, evidence: c.basis, source_fields: c.source_fields, formula_calculation_kind: "support_coils",
+      formula_calculation_status: c.status, formula_calculation_inputs: copy(c.inputs), support_coils_input_baseline: copy(c.inputs), derived_value_stale: false, formula_recommendation_stale: false });
+    if (changed) {
+      const previous = review.manual_confirmations?.support_coils ?? null;
+      delete review.manual_confirmations?.support_coils; delete target.confirmation_snapshot;
+      target.support_coils_adjustment = { before, after: { value: target.value, unit: "turns", inputs: copy(c.inputs) }, previous_confirmation: copy(previous),
+        reason: confirmed && edited ? "confirmed_coil_inputs_changed" : "support_coils_formula_reconciliation", audit_recorded: false };
+    }
+    ["formula_recalculation_candidate", "formula_calculation_reason", "support_coils_recompute_pending", "support_coils_waiting_confirmation"].forEach((k) => delete target[k]);
   }
   function geometry(c) {
     const options = c.end_grinding === "两端磨削" ? [[1.5, 1], [2, 1.5], [2.5, 2]] : c.end_grinding === "两端不磨削" ? [[2, 3], [2.5, 3.5]] : [];
@@ -258,6 +315,7 @@
   }
   function applyPitch(review) {
     const params = review.spring_parameters || {}, old = params.pitch;
+    applySupportCoils(review);
     applyActiveCoils(review);
     applySupportCoils(review);
     applyNominalHeight(review);
@@ -298,6 +356,7 @@
   function applyNominalHeight(review) {
     const params = review.spring_parameters || {}, old = params.solid_height, kind = solidHeightKind(old);
     if (["input_height", "unknown"].includes(kind)) return;
+    if (kind === "reference_limit" && old.formula_purpose_preserved) { applyReferenceHeight(review); return; }
     const calculation = calculateNominalHeight(params, review.spring_features || {});
     if (kind === "nominal_estimate" && old.need_human_review === false) { preserveCandidate(old, calculation); return; }
     const target = old && typeof old === "object" ? old : (params.solid_height = {});
@@ -443,5 +502,5 @@
     delete item.formula_calculation_reason;
     return true;
   }
-  globalThis.CompressionDesignChecks = { calculate, calculatePitch, calculateSupportCoils, calculateReferenceHeight, calculateNominalHeight, activeCalculation, solidHeightKind, applyReferenceHeight, applyNominalHeight, applyCandidate, applyPitch, materialEntry, materialDisplayValue };
+  globalThis.CompressionDesignChecks = { calculate, calculatePitch, calculateSupportCoils, applySupportCoils, prepareSupportCoils, supportOrigin, calculateReferenceHeight, calculateNominalHeight, activeCalculation, solidHeightKind, applyReferenceHeight, applyNominalHeight, applyCandidate, applyPitch, materialEntry, materialDisplayValue };
 })();

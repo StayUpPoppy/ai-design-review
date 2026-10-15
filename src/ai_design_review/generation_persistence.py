@@ -7,13 +7,19 @@ from typing import Any
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from .review_persistence import Base, PersistenceError, ReviewPersistence
+from .review_persistence import Base, PersistenceError, ReviewPersistence, ReviewRecord
 
 
 class SolidWorksTaskCancelledError(PersistenceError):
     """Raised when a SolidWorks callback reaches a user-cancelled task."""
+
+
+class FinalGenerationAlreadySelectedError(PersistenceError):
+    def __init__(self, generation_id: str) -> None:
+        super().__init__("请先取消当前最终版本，再选择其他版本。")
+        self.current_final_generation_id = generation_id
 
 
 SOLIDWORKS_STAGE_ERRORS: dict[str, tuple[str, str]] = {
@@ -1096,24 +1102,44 @@ class GenerationStore:
     def retry_job(self, generation_id: str, *, owner_user_id: str) -> dict[str, Any] | None:
         return self._set_user_status(generation_id, owner_user_id=owner_user_id, action="retry")
 
+    @staticmethod
+    def _lock_final_selection_job(session: Session, generation_id: str, owner_user_id: str) -> GenerationJobRecord | None:
+        # Lock the parent before any task row: concurrent selections for the same
+        # review serialize even when there is no final task to lock yet.
+        review_id = session.execute(select(GenerationJobRecord.review_job_id).where(
+            GenerationJobRecord.generation_id == generation_id,
+            GenerationJobRecord.owner_erp_user_id == owner_user_id,
+        )).scalar_one_or_none()
+        if review_id is None:
+            return None
+        parent = session.execute(select(ReviewRecord.job_id).where(
+            ReviewRecord.job_id == review_id, ReviewRecord.owner_erp_user_id == owner_user_id,
+        ).with_for_update()).scalar_one_or_none()
+        if parent is None:
+            return None
+        return session.execute(select(GenerationJobRecord).where(
+            GenerationJobRecord.generation_id == generation_id,
+            GenerationJobRecord.owner_erp_user_id == owner_user_id,
+        ).with_for_update()).scalar_one_or_none()
+
     def approve_job(self, generation_id: str, *, owner: dict[str, Any], current_revision: int) -> dict[str, Any] | None:
         self._require_database()
         now = _utcnow()
         with self.repository._session() as session:
             try:
-                record = session.execute(select(GenerationJobRecord).where(GenerationJobRecord.generation_id == generation_id).with_for_update()).scalar_one_or_none()
-                if record is None or record.owner_erp_user_id != owner["user_id"]:
+                record = self._lock_final_selection_job(session, generation_id, owner["user_id"])
+                if record is None:
                     return None
                 if record.status != "completed":
                     raise PersistenceError("Only a completed generation can be approved.")
                 if record.is_final:
                     return self._job(session, record)
-                siblings = session.execute(select(GenerationJobRecord).where(GenerationJobRecord.review_job_id == record.review_job_id, GenerationJobRecord.is_final.is_(True)).with_for_update()).scalars()
-                for sibling in siblings:
-                    sibling.is_final = False
-                    sibling.approved_by = None
-                    sibling.approved_at = None
-                session.flush()
+                selected = session.execute(select(GenerationJobRecord.generation_id).where(
+                    GenerationJobRecord.review_job_id == record.review_job_id,
+                    GenerationJobRecord.is_final.is_(True),
+                )).scalar_one_or_none()
+                if selected is not None:
+                    raise FinalGenerationAlreadySelectedError(selected)
                 record.is_final = True
                 record.approved_by = copy.deepcopy(owner)
                 record.approved_at = now
@@ -1130,6 +1156,32 @@ class GenerationStore:
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise PersistenceError(f"Unable to approve generation job: {exc}") from exc
+
+    def unapprove_job(self, generation_id: str, *, owner: dict[str, Any]) -> dict[str, Any] | None:
+        self._require_database()
+        now = _utcnow()
+        with self.repository._session() as session:
+            try:
+                record = self._lock_final_selection_job(session, generation_id, owner["user_id"])
+                if record is None:
+                    return None
+                if not record.is_final:
+                    return self._job(session, record)
+                previous = {"previous_approved_by": copy.deepcopy(record.approved_by),
+                            "previous_approved_at": record.approved_at.isoformat() if record.approved_at else None}
+                record.is_final = False
+                record.approved_by = None
+                record.approved_at = None
+                record.updated_at = now
+                self._event(session, record, "generation_unapproved", "user", {
+                    **previous, "cancelled_by": copy.deepcopy(owner), "cancelled_at": now.isoformat(),
+                    "review_revision": record.review_revision,
+                })
+                session.commit()
+                return self._job(session, record)
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise PersistenceError(f"Unable to unapprove generation job: {exc}") from exc
 
     def list_artifacts(self, generation_id: str, *, owner_user_id: str | None = None) -> list[dict[str, Any]]:
         if not self.configured:

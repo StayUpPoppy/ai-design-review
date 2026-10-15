@@ -5,6 +5,7 @@ from math import isfinite
 from typing import Any
 
 from .technical_translation import TRANSLATION_KEYS
+from .standardizers.support_coils import classify_support_candidate
 from .technical_requirement_recognition import TECHNICAL_FIELD_TYPES, collect_technical_requirements
 
 
@@ -60,6 +61,7 @@ def fuse_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     conflicts: list[dict[str, Any]] = []
 
     for candidate in candidates:
+        candidate = classify_support_candidate(candidate)
         field = candidate.get("field")
         if not field:
             continue
@@ -70,7 +72,7 @@ def fuse_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
 
     fields: dict[str, dict[str, Any]] = {}
     for field, items in grouped.items():
-        ordered = sorted(items, key=_candidate_score, reverse=True)
+        ordered = sorted(items, key=lambda item: (item.get("support_coils_origin") == "drawing_single_end", _candidate_score(item)), reverse=True) if field == "support_coils" else sorted(items, key=_candidate_score, reverse=True)
         selected = _merge_field(field, ordered)
         fields[field] = selected
         conflict = _detect_conflict(field, ordered) if field not in TECHNICAL_FIELD_TYPES else None
@@ -132,6 +134,12 @@ def _merge_field(field: str, ordered: list[dict[str, Any]]) -> dict[str, Any]:
     for key in (*NORMALIZATION_KEYS, *TRANSLATION_KEYS):
         if key in best:
             merged[key] = best[key]
+    if field == "support_coils":
+        for key in ("support_coils_origin", "support_coils_original"):
+            if key in best:
+                merged[key] = best[key]
+        # Keep the selected evidence separate from other engines' arithmetic.
+        merged["evidence"] = best.get("evidence") or ""
     if field == "surface_roughness_ra":
         candidates = _surface_roughness_candidates(ordered)
         merged["roughness_candidates"] = candidates

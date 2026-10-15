@@ -2189,6 +2189,15 @@ button:disabled {
 @media (max-width: 520px) { .compression-design-check { padding: 12px; } }
 .load-point-rename { padding: 2px 0; border: 0; background: transparent; color: #52637a; font-size: 10px; cursor: pointer; }
 .load-point [data-role="label"] { width: 100%; min-width: 0; }
+.load-point-rename-editor { margin-top: 4px; }
+.load-point-rename-editor[hidden], .load-point-rename[hidden] { display: none; }
+.load-point-rename-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.load-point-rename-actions button { min-height: 28px; padding: 4px 8px; font-size: 12px; }
+.load-point-rename-status { display: block; margin-top: 4px; font-size: 11px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+.load-point-rename-status:empty { display: none; }
+.load-point-rename-status.failed { color: #a53327; }
+.load-point [data-role="label"][aria-invalid="true"] { border-color: #a53327; }
+
 
 .data-row > div {
   min-width: 0;
@@ -4743,6 +4752,13 @@ textarea {
 .generation-version-actions {
   flex-wrap: wrap;
   margin-top: 11px;
+}
+
+.generation-version-actions button:disabled,
+.generation-package-actions .primary-action:disabled {
+  background: #f1f5f9;
+  border-color: #dbe3ec;
+  color: #64748b;
 }
 
 .generation-version-actions .button-link {

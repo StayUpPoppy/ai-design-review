@@ -19,7 +19,7 @@ from .standardizers.coil_counts import apply_company_simple_active_coils
 from .standardizers.compression import apply_formula_compression_solid_height
 from .standardizers.diameters import apply_formula_compression_diameter_completion
 from .standardizers.stiffness import apply_formula_compression_spring_rate
-from .standardizers.design_checks import refresh_design_checks
+from .standardizers.design_checks import refresh_design_checks, apply_formula_support_coils
 from .spring_templates import (
     classify_spring_type,
     field_default_unit,
@@ -96,6 +96,8 @@ class DrawingReviewWorkflow:
         self._apply_company_default_accuracy(spring_parameters, spring_type)
         if spring_type == "compression_spring":
             apply_formula_compression_diameter_completion(spring_parameters)
+        if spring_type == "compression_spring":
+            apply_formula_support_coils({"spring_parameters": spring_parameters, "technical_requirements": technical_requirements})
         apply_company_simple_active_coils(spring_type, spring_parameters)
         spring_features = self._build_spring_features(fused["fields"], spring_type)
         if spring_type == "compression_spring":
@@ -312,6 +314,8 @@ class DrawingReviewWorkflow:
             ):
                 if key in item:
                     result[key] = item[key]
+        if field == "support_coils":
+            result.update({key: item[key] for key in ("support_coils_origin", "support_coils_original") if key in item})
         if field == "surface_roughness_ra":
             result.update(
                 {

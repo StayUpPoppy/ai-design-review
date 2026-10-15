@@ -13,6 +13,7 @@ from .coil_counts import apply_company_simple_active_coils
 from .coil_counts import derive_active_coils
 from .compression import calculate_compression_solid_height
 from .calculation_state import solid_height_kind, preserve_candidate
+from .support_coils import prepare_support, reconcile_support, asymmetric_support
 
 VERSION = "compression-design-v2"
 PITCH_FIELDS = ["free_length", "wire_diameter", "active_coils", "total_coils", "support_coils", "end_type", "end_grinding", "pitch_type"]
@@ -163,13 +164,15 @@ def _independent_coil_source(parameters: dict[str, Any], field: str, path: tuple
     return all(source not in {"support_coils", "total_coils", "active_coils"} and _independent_coil_source(parameters, source, (*path, field)) for source in parents)
 
 
-def calculate_support_coils(parameters: dict[str, Any]) -> dict[str, Any]:
+def calculate_support_coils(parameters: dict[str, Any], review: dict[str, Any] | None = None) -> dict[str, Any]:
     notes: dict[str, str] = {}
     total = _input(parameters, "total_coils", notes)
     active = _input(parameters, "active_coils", notes)
     end = normalize_end_type(_raw(parameters.get("end_type")))
     value, reason = None, ""
-    if end != "两端并紧":
+    if asymmetric_support(review or {"spring_parameters": parameters}):
+        reason = "原图明确两端支承结构不对称，不能按两端均分，请人工核对"
+    elif end != "两端并紧":
         reason = "需明确两端并紧结构，才能由圈数推导单端支承圈数"
     elif not all(_independent_coil_source(parameters, f) for f in ("total_coils", "active_coils")):
         reason = "需要独立的总圈数和有效圈数；不能反推公司默认值或形成循环依赖"
@@ -182,32 +185,8 @@ def calculate_support_coils(parameters: dict[str, Any]) -> dict[str, Any]:
 
 
 def apply_formula_support_coils(review: dict[str, Any]) -> None:
-    parameters = review.get("spring_parameters") or {}
-    old = parameters.get("support_coils")
-    item = old if isinstance(old, dict) else {"value": old}
-    formula = item.get("formula_calculation_kind") == "support_coils"
-    calculated = calculate_support_coils(parameters)
-    if _human_override(item):
-        if formula:
-            item.pop("derived_value_stale", None)
-            item.pop("formula_recommendation_stale", None)
-        return
-    if formula and item.get("need_human_review") is False:
-        preserve_candidate(item, calculated)
-        return
-    if item.get("need_human_review") is False or not formula and not _empty(item.get("value")):
-        return
-    if calculated["value"] is None and not formula:
-        return
-    target = old if isinstance(old, dict) else parameters.setdefault("support_coils", {})
-    if not isinstance(target, dict):
-        target = parameters["support_coils"] = {}
-    value = round(calculated["value"], 4) if calculated["value"] is not None else None
-    target.update({"field": "support_coils", "value": value, "unit": "turns", "source": ["formula_calculation"], "need_human_review": True,
-                   "confidence": 0.88, "formula": calculated["formula"], "evidence": calculated["basis"], "source_fields": SUPPORT_FIELDS,
-                   "formula_calculation_kind": "support_coils", "formula_calculation_status": calculated["status"],
-                   "formula_calculation_inputs": calculated["inputs"], "formula_calculation_reason": calculated["reason"],
-                   "derived_value_stale": value is None, "formula_recommendation_stale": False})
+    prepare_support(review)
+    reconcile_support(review, calculate_support_coils(review.get("spring_parameters") or {}, review))
 
 
 def _geometry(c: dict[str, Any]) -> dict[str, Any]:
@@ -283,6 +262,18 @@ def apply_formula_nominal_solid_height(review: dict[str, Any]) -> None:
     old = parameters.get("solid_height")
     kind = solid_height_kind(old)
     if kind in {"input_height", "unknown"}:
+        return
+    if kind == "reference_limit" and old.get("formula_purpose_preserved"):
+        calculation = calculate_compression_solid_height(parameters)
+        if old.get("need_human_review") is False:
+            preserve_candidate(old, calculation)
+        else:
+            old.update(value=calculation.get("value"), formula=calculation.get("formula"),
+                       formula_calculation_inputs=calculation.get("inputs") or {},
+                       source_fields=calculation.get("source_fields") or [], evidence=calculation.get("basis"),
+                       derived_value_stale=calculation.get("value") is None,
+                       formula_recommendation_stale=False)
+            old.pop("formula_recalculation_candidate", None)
         return
     calculation = calculate_nominal_solid_height(parameters, review.get("spring_features") or {})
     if kind == "nominal_estimate" and old.get("need_human_review") is False:
@@ -472,6 +463,7 @@ def refresh_design_checks(review: dict[str, Any]) -> None:
         review.pop("design_checks", None)
         return
     parameters = review.get("spring_parameters") or {}
+    apply_formula_support_coils(review)
     apply_company_simple_active_coils("compression_spring", parameters)
     apply_formula_support_coils(review)
     apply_formula_nominal_solid_height(review)

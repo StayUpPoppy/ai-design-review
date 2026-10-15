@@ -68,6 +68,7 @@ const state = {
   materialCatalog: { status: "idle", items: [], version: "", source: "", error: "", apiBaseUrl: "" },
   technicalRequirementUndo: null,
   loadPointUndo: null,
+  loadPointLabelDrafts: new Map(),
 };
 let materialCatalogPromise = null;
 let materialCatalogRequestSerial = 0;
@@ -1164,6 +1165,13 @@ function refreshParameterPersistenceControls(fields = null) {
     const param = state.review.spring_parameters?.[field];
     if (param) syncConfirmationControl(row, param, { kind: "parameter", field, review: state.review });
   });
+  document.querySelectorAll('[data-kind="load_point"][data-load-point-id]').forEach((row) => {
+    const point = state.review.spring_parameters?.load_points?.find((item) => item.load_point_id === row.dataset.loadPointId);
+    if (!point) return;
+    syncConfirmationControl(row, point, { kind: "load_point", field: loadPointField(point), review: state.review });
+    syncLoadPointRenameControls(row, point);
+  });
+  refreshLoadPointSummaries();
   refreshReasonablenessSuggestionControls(fields);
   refreshTechnicalTranslationControls();
 }
@@ -1224,6 +1232,7 @@ async function persistReviewChanges(options = {}) {
           body: JSON.stringify({ review: reviewSnapshot, expected_revision: expectedRevision, events }),
         });
         const payload = await response.json();
+        if (state.lastJob?.job_id !== jobId) return false;
         if (response.status === 409 && attempt === 0) {
           const reconciled = await reconcileParameterRevisionConflict(jobId, events);
           if (!reconciled) throw new Error("服务器版本已变化；本地参数仍保留，请处理保存冲突后重试。");
@@ -1256,6 +1265,7 @@ async function persistReviewChanges(options = {}) {
       }
       throw new Error("服务器版本再次变化；本地参数仍保留，请重试保存。");
     } catch (error) {
+      if (state.lastJob?.job_id !== jobId) return false;
       state.pendingReviewAuditEvents.unshift(...events);
       events.forEach((event) => {
         if (event.target_field) state.reviewPersistenceFailedFields[event.target_field] = error.message || "保存失败";
@@ -1281,6 +1291,7 @@ async function persistReviewChanges(options = {}) {
 }
 
 function parameterConflictFingerprint(item) {
+  if (item && (item.load_point_id || Object.hasOwn(item, "height") || Object.hasOwn(item, "force"))) return JSON.stringify(loadPointAuditState(item));
   if (item && Object.hasOwn(item, "content")) return JSON.stringify({ content: item.content, type: item.type, need_human_review: item.need_human_review });
   return JSON.stringify({
     value: item?.value ?? null,
@@ -1292,6 +1303,7 @@ function parameterConflictFingerprint(item) {
 
 function parameterConflictValue(item, field = "") {
   if (!item) return "未填写";
+  if (field.startsWith("load_points.")) return `${item.label || "未编号"}：高度 ${item.height ?? "未填写"} ${item.height_unit || "mm"}，力值 ${item.force ?? "未填写"} ${item.force_unit || "N"}`;
   if (field.startsWith("technical_requirements.")) return String(item.content || "未填写");
   const value = item.value == null || item.value === ""
     ? "未填写"
@@ -1340,35 +1352,54 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
   const revision = Number(payload.review_revision);
   if (!Number.isInteger(revision) || revision < 1) return null;
   const local = state.review;
+  const localEditSerial = state.reviewEditSerial;
   const queued = state.pendingReviewAuditEvents;
   const allEvents = [...inFlightEvents, ...queued];
+  const pointIdForEvent = (event) => event?.metadata?.load_point_id || event?.after_state?.load_point_id || event?.before_state?.load_point_id;
+  const pointFields = new Map(allEvents.filter((event) => event.target_field?.startsWith("load_points.") && pointIdForEvent(event))
+    .map((event) => [event.target_field, `load_points.@${pointIdForEvent(event)}`]));
+  const eventField = (event) => event.target_field?.startsWith("load_points.") && pointIdForEvent(event)
+    ? `load_points.@${pointIdForEvent(event)}` : event.target_field;
+  const loadId = (field) => field?.startsWith("load_points.@") ? field.slice("load_points.@".length) : null;
   const fields = Array.from(new Set([
-    ...allEvents.map((event) => event.target_field),
-    ...state.reviewDraftFields,
+    ...allEvents.map(eventField),
+    ...Array.from(state.reviewDraftFields, (field) => pointFields.get(field) || field),
   ]));
   const technicalId = (field) => field?.startsWith("technical_requirements.") ? field.slice("technical_requirements.".length) : null;
-  const fieldItem = (review, field) => technicalId(field)
-    ? review.technical_requirements?.find((item) => item.requirement_id === technicalId(field)) : review.spring_parameters?.[field];
-  if (!fields.length || fields.some((field) => !field || (!technicalId(field) && (field.includes(".") || !local?.spring_parameters?.[field])))) {
+  const fieldItem = (review, field) => loadId(field)
+    ? review.spring_parameters?.load_points?.find((item) => item.load_point_id === loadId(field))
+    : technicalId(field) ? review.technical_requirements?.find((item) => item.requirement_id === technicalId(field)) : review.spring_parameters?.[field];
+  if (!fields.length || fields.some((field) => !field || (!loadId(field) && !technicalId(field) && (field.includes(".") || !local?.spring_parameters?.[field])))) {
     return null;
   }
   const server = normalizeReview(payload);
   const chosenServer = new Set();
   for (const field of fields) {
-    const firstEvent = allEvents.find((event) => event.target_field === field);
+    const firstEvent = allEvents.find((event) => eventField(event) === field);
     const serverItem = fieldItem(server, field);
     const localItem = fieldItem(local, field);
     const beforeState = firstEvent?.before_state || localItem?.confirmation_snapshot;
     if ((!beforeState || parameterConflictFingerprint(serverItem) !== parameterConflictFingerprint(beforeState))
       && parameterConflictFingerprint(serverItem) !== parameterConflictFingerprint(localItem)) {
       const choice = await chooseParameterConflict(field, serverItem, localItem);
-      if (!choice) return null;
+      if (!choice || state.lastJob?.job_id !== jobId || state.reviewEditSerial !== localEditSerial) return null;
       if (choice === "server") chosenServer.add(field);
     }
   }
   const merged = normalizeReview(server);
   for (const field of fields) {
     if (chosenServer.has(field)) continue;
+    if (loadId(field)) {
+      const item = fieldItem(local, field);
+      const points = merged.spring_parameters.load_points ||= [];
+      const index = points.findIndex((point) => point.load_point_id === loadId(field));
+      if (index >= 0) points.splice(index, 1);
+      if (item) points.splice(index < 0 ? points.length : index, 0, structuredClone(item));
+      const key = loadPointConfirmationKey({ load_point_id: loadId(field) });
+      delete merged.manual_confirmations[key];
+      if (local.manual_confirmations?.[key]) merged.manual_confirmations[key] = structuredClone(local.manual_confirmations[key]);
+      continue;
+    }
     if (technicalId(field)) {
       const item = fieldItem(local, field);
       const index = merged.technical_requirements.findIndex((row) => row.requirement_id === technicalId(field));
@@ -1386,8 +1417,19 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
       delete merged.manual_confirmations[field];
     }
   }
-  const keepEvent = (event) => !chosenServer.has(event.target_field);
-  chosenServer.forEach((field) => state.reviewDraftFields.delete(field));
+  // Another editor may have assigned this label to a different stable point.
+  const changedPointIds = new Set(fields.map(loadId).filter(Boolean));
+  for (const point of merged.spring_parameters?.load_points || []) {
+    if (!changedPointIds.has(point.load_point_id)) continue;
+    if (isDuplicateLoadPointLabel(merged, point.label, point.load_point_id)) {
+      throw new Error(`编号“${point.label}”与服务器上的其他载荷点重复，请修改编号后重试保存。`);
+    }
+  }
+  if (state.lastJob?.job_id !== jobId) return null;
+  const keepEvent = (event) => !chosenServer.has(eventField(event));
+  Array.from(state.reviewDraftFields).forEach((field) => {
+    if (chosenServer.has(pointFields.get(field) || field)) state.reviewDraftFields.delete(field);
+  });
   const remainingInFlight = inFlightEvents.filter(keepEvent);
   state.pendingReviewAuditEvents = queued.filter(keepEvent);
   const unsaved = [...remainingInFlight, ...state.pendingReviewAuditEvents];
@@ -1568,7 +1610,13 @@ function syncParameterReasonablenessSurfaces(messageId = state.activeReviewMessa
   });
   document.querySelectorAll('[data-kind="parameter-reasonableness"]').forEach((node) => {
     const html = renderParameterReasonablenessHtml(state.review);
-    if (html) node.outerHTML = html;
+    if (html) {
+      const open = [...node.querySelectorAll("details")].map((d) => d.open);
+      const holder = document.createElement("div"); holder.innerHTML = html;
+      const next = holder.firstElementChild;
+      next.querySelectorAll("details").forEach((d, i) => { if (i < open.length) d.open = open[i]; });
+      node.replaceWith(next);
+    }
   });
   document.querySelectorAll('[data-kind="param"]').forEach((row) => {
     const severity = reasonablenessSeverityForField(state.review, row.dataset.field);
@@ -1719,7 +1767,7 @@ function bindReasonablenessSuggestionControls(root, messageId = state.activeRevi
         },
       });
       const saved = await recordReasonablenessSuggestionApplications(applied, messageId);
-      if (saved) updateLatestReviewMessage(reasonablenessBatchResultMessage(preflight, applied.count));
+      if (saved) updateLatestReviewMessage(reasonablenessBatchResultMessage(preflight, applied.count, applied.applied_items.filter((i) => i.suggestion_kind === "formula_candidate").length));
     });
   });
   root.querySelectorAll('[data-action="refresh-stale-standardization-suggestions"]').forEach((button) => {
@@ -1758,13 +1806,13 @@ function bindReasonablenessSuggestionControls(root, messageId = state.activeRevi
         scheduleParameterReasonablenessRefresh(messageId);
         refreshReviewSurfaces();
       }
-      updateLatestReviewMessage(reverted ? `已撤销上次应用的 ${reverted.applied_count} 项建议。` : "没有可撤销的建议应用记录。");
+      updateLatestReviewMessage(reverted ? `已撤销上次应用的 ${reverted.applied_count} 项建议。` : state.suggestionUndoConflict || "没有可撤销的建议应用记录。");
     });
   });
 }
 
 function findReasonablenessSuggestion(suggestionId, review = state.review) {
-  return (review?.parameter_reasonableness?.suggestions || []).find((item) => {
+  return reasonablenessSuggestions(review).find((item) => {
     return String(item?.suggestion_id || "") === String(suggestionId || "");
   }) || null;
 }
@@ -1819,6 +1867,12 @@ function applyReasonablenessSuggestions(items, options = {}) {
   state.reviewEditSerial += 1;
 
   markStandardizationResultsAfterSuggestion(state.review, appliedItems);
+  state.review.parameter_reasonableness ||= { status: "pass", suggestions: [] };
+  state.review.parameter_reasonableness.suggestions ||= [];
+  for (const item of appliedItems.filter((i) => i.suggestion_kind === "formula_candidate")) {
+    if (!state.review.parameter_reasonableness.suggestions.some((i) => i.suggestion_id === item.suggestion_id)) state.review.parameter_reasonableness.suggestions.push(item);
+  }
+  if (typeof prepareCompressionDesignChecks === "function" && typeof CompressionDesignChecks !== "undefined") prepareCompressionDesignChecks(state.review);
   const appliedIds = new Set(appliedItems.map((item) => item.suggestion_id));
   const appliedTargets = new Set(appliedItems.map((item) => item.target_field));
   const valueChangingItems = appliedItems.filter(reasonablenessSuggestionChangesValue);
@@ -1839,6 +1893,7 @@ function applyReasonablenessSuggestions(items, options = {}) {
     targets: appliedItems.map((item) => String(item.target_field || "")),
     suggestion_ids: appliedItems.map((item) => item.suggestion_id),
     before,
+    undo_changes: appliedItems.some((i) => i.suggestion_kind === "formula_candidate") ? suggestionUndoChanges(before, state.review) : null,
   });
   state.review.parameter_reasonableness_stale = true;
   state.review.derived_parameters_stale = true;
@@ -1846,6 +1901,16 @@ function applyReasonablenessSuggestions(items, options = {}) {
 }
 
 function applyReasonablenessSuggestionValue(item) {
+  if (item?.suggestion_kind === "formula_candidate") {
+    if (!FormulaCandidates.fresh(state.review, item)) return false;
+    revokeManualConfirmations(item.target_field, "formula_candidate_applied");
+    if (!FormulaCandidates.apply(state.review, item)) return false;
+    state.reviewDraftFields.add(item.target_field);
+    invalidateStandardizationResults(item.target_field);
+    markDependentFormulaParametersPending(item.target_field);
+    syncBubbleValue(item.target_field, state.review.spring_parameters[item.target_field].value);
+    return true;
+  }
   const target = String(item.target_field || "");
   if (target === "solid_height" && (["GBT1239.2-SOLID", "FORMULA-SOLID-HEIGHT"].includes(item.rule_id) || item.metadata?.value_kind === "reference_limit")) return false;
   const loadTarget = parseLoadPointTarget(target);
@@ -1930,15 +1995,18 @@ async function recordReasonablenessSuggestionApplications(applied, messageId = s
       },
     });
   });
+  const sourceReview = state.review;
+  const sourceJobId = state.lastJob?.job_id;
+  const pending = applied.applied_items.filter((i) => i.suggestion_kind === "formula_candidate").length;
+  const appliedText = pending ? `已应用 ${applied.count} 项建议，其中 ${pending} 项新公式候选待重新确认` : `已应用并确认 ${applied.count} 项建议`;
   refreshReviewSurfaces();
-  updateLatestReviewMessage(`已应用并确认 ${applied.count} 项建议，正在保存。`);
+  updateLatestReviewMessage(`${appliedText}，正在保存。`);
   const needsServerSave = Boolean(state.lastJob?.job_id);
   const saved = !needsServerSave || await flushReviewPersistence();
+  if (state.review !== sourceReview || state.lastJob?.job_id !== sourceJobId) return false;
   if (saved) {
     scheduleParameterReasonablenessRefresh(messageId);
-    updateLatestReviewMessage(needsServerSave
-      ? `已应用、确认并保存 ${applied.count} 项建议。`
-      : `已应用并确认 ${applied.count} 项建议。`);
+    updateLatestReviewMessage(`${appliedText}${needsServerSave ? "，已保存" : ""}。`);
     return true;
   }
   refreshReasonablenessSuggestionControls(applied.applied_items.map((item) => item.target_field));
@@ -2241,6 +2309,7 @@ async function openPersistedReview(jobId, options = {}) {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || "无法恢复该审图记录");
     removeMessage(thinkingId);
+    resetGenerationState();
     state.lastJob = {
       job_id: jobId,
       review_revision: payload.review_revision ?? item?.revision ?? null,
@@ -2641,10 +2710,10 @@ function renderParameterReasonablenessHtml(review) {
   const status = assessment.status || "not_applicable";
   const bulkConfirmationReport = bulkConfirmationFollowupReport(review);
   const issues = Array.isArray(assessment.issues) ? assessment.issues : [];
-  const suggestions = Array.isArray(assessment.suggestions) ? assessment.suggestions : [];
+  const suggestions = reasonablenessSuggestions(review);
   const actionableSuggestions = suggestions.filter((item) => {
     const differsFromLiveTarget = !reasonablenessSuggestionMatchesCurrentTarget(item, review);
-    return (item?.status !== "informational" || differsFromLiveTarget)
+    return (item.suggestion_kind === "formula_candidate" && item.status === "applied") || (item?.status !== "informational" || differsFromLiveTarget)
       && item?.application_mode !== "none"
       && (reasonablenessSuggestionHasEffectiveChange(item) || differsFromLiveTarget);
   });
@@ -2663,7 +2732,7 @@ function renderParameterReasonablenessHtml(review) {
     needs_input: "需要补充信息",
     not_applicable: "暂不适用",
   };
-  if (status === "not_applicable" && !bulkConfirmationReport) return "";
+  if (status === "not_applicable" && !bulkConfirmationReport && !actionableSuggestions.length && !canUndo) return '<div data-kind="parameter-reasonableness" hidden></div>';
   return `
     <section class="review-block parameter-reasonableness-block" data-kind="parameter-reasonableness">
       <div class="block-head">
@@ -2696,7 +2765,7 @@ function renderParameterReasonablenessHtml(review) {
           }).join("")}
         </div>
       ` : `<div class="parameter-reasonableness-empty">当前没有需要处理的参数合理性问题。</div>`}
-      ${visibleActionableSuggestions.length || staleStandardizationSuggestions.length ? `
+      ${visibleActionableSuggestions.length || staleStandardizationSuggestions.length || canUndo ? `
         <div class="reasonableness-suggestion-section">
           <div class="reasonableness-suggestion-toolbar">
             <div>
@@ -2729,6 +2798,12 @@ function renderParameterReasonablenessHtml(review) {
       ` : ""}
     </section>
   `;
+}
+
+function reasonablenessSuggestions(review = state.review) {
+  const existing = review?.parameter_reasonableness?.suggestions || [];
+  return typeof FormulaCandidates === "undefined" ? existing
+    : FormulaCandidates.merge(review, existing, review?.review_revision ?? state.lastJob?.review_revision ?? null);
 }
 
 function renderBulkConfirmationFollowupHtml(report) {
@@ -2817,7 +2892,7 @@ function renderReasonablenessSuggestionHtml(item, review = state.review) {
     item.unit,
   );
   const supportingSources = new Set([item.source, ...(item.supporting_sources || [])]);
-  const sourceLabel = item.target_field === "standard_no" && (item.current_value == null || item.current_value === "")
+  const sourceLabel = item.suggestion_kind === "formula_candidate" ? "新公式候选，应用后需重新确认" : item.target_field === "standard_no" && (item.current_value == null || item.current_value === "")
     ? "系统推荐 · 图纸未标注"
     : supportingSources.has("formula") && supportingSources.has("standardization")
     ? "公式与标准一致"
@@ -2826,7 +2901,7 @@ function renderReasonablenessSuggestionHtml(item, review = state.review) {
     <article class="reasonableness-suggestion ${escapeHtml(control.state)}" data-suggestion-id="${escapeHtml(item.suggestion_id || "")}">
       <div class="reasonableness-suggestion-head">
         <div>
-          <strong title="${escapeHtml(targetFieldLabel(item.target_field))}">${escapeHtml(targetFieldLabel(item.target_field))}</strong>
+          <strong title="${escapeHtml(targetFieldLabel(item.target_field))}">${escapeHtml(targetFieldLabel(item.target_field))}${item.target_field === "solid_height" && item.formula_candidate ? `（${item.formula_candidate.purpose === "reference_limit" ? "上限参考" : "名义值"}）` : ""}</strong>
           <span>${escapeHtml(sourceLabel)}</span>
         </div>
       </div>
@@ -2969,7 +3044,8 @@ function reasonablenessSuggestionControlState(item, review = state.review) {
   if (item?.status === "stale") {
     return { state: "stale", label: "已过期", disabled: true, reason: "依赖参数已经变化，请更新建议。" };
   }
-  if (applied) return { state: "applied", label: "已应用", disabled: true, reason: "该建议已经应用并确认。" };
+  if (applied && item?.suggestion_kind === "formula_candidate" && reasonablenessSuggestionIsFresh(item, review)) return { state: "applied", label: targetItem.need_human_review === false ? "已确认" : "已应用·待确认", disabled: true, reason: "新公式候选已应用，请在参数行重新确认。" };
+  if (applied && item?.suggestion_kind !== "formula_candidate") return { state: "applied", label: "已应用", disabled: true, reason: "该建议已经应用并确认。" };
   if (!reasonablenessSuggestionHasEffectiveChange(item) && matchesCurrentTarget) {
     return { state: "informational", label: "无需修改", disabled: true, reason: "公式结果与当前值一致。" };
   }
@@ -2990,7 +3066,7 @@ function reasonablenessSuggestionControlState(item, review = state.review) {
   }
   const available = item?.status === "available"
     || (["applied", "informational"].includes(item?.status) && !matchesCurrentTarget);
-  return { state: "available", label: "应用建议", disabled: !available, reason: "应用后将视为人工确认并自动保存。" };
+  return { state: "available", label: "应用建议", disabled: !available, reason: item?.suggestion_kind === "formula_candidate" ? "应用后更新公式依据并保存，仍需重新确认。" : "应用后将视为人工确认并自动保存。" };
 }
 
 function reasonablenessSuggestionMatchesCurrentTarget(item, review = state.review) {
@@ -3012,6 +3088,7 @@ function reasonablenessSuggestionMatchesCurrentTarget(item, review = state.revie
 }
 
 function reasonablenessSuggestionHasEffectiveChange(item) {
+  if (item?.suggestion_kind === "formula_candidate" && item.status !== "applied") return true;
   const mode = String(item?.application_mode || "none");
   const valueChanged = ["value", "value_and_tolerance"].includes(mode)
     && !reasonablenessSuggestionValuesMatch(item?.current_value, item?.suggested_value);
@@ -3052,7 +3129,7 @@ function reasonablenessTargetHasAppliedSuggestion(review, target) {
 
 function reasonablenessSuggestionBatchPlan(review) {
   const groups = new Map();
-  for (const item of review?.parameter_reasonableness?.suggestions || []) {
+  for (const item of reasonablenessSuggestions(review)) {
     if (!["available", "conflict"].includes(item?.status)
       || item?.application_mode === "none"
       || !reasonablenessSuggestionHasEffectiveChange(item)
@@ -3116,7 +3193,8 @@ function findRecalculatedReasonablenessSuggestion(original, assessment) {
   const suggestions = assessment?.suggestions || [];
   const target = String(original?.target_field || "");
   const rule = String(original?.rule_id || "");
-  const sameTarget = suggestions.filter((item) => String(item?.target_field || "") === target);
+  const sameTarget = suggestions.filter((item) => String(item?.target_field || "") === target
+    && (original.suggestion_kind !== "formula_candidate" || item.suggestion_kind === "formula_candidate" && item.formula_candidate?.purpose === original.formula_candidate?.purpose));
   return sameTarget.find((item) => String(item?.rule_id || "") === rule)
     || sameTarget.find((item) => {
       const sources = new Set([item?.source, ...(item?.supporting_sources || [])]);
@@ -3126,7 +3204,8 @@ function findRecalculatedReasonablenessSuggestion(original, assessment) {
 }
 
 function reasonablenessSuggestionProposalMatches(left, right) {
-  return String(left?.target_field || "") === String(right?.target_field || "")
+  return left?.formula_candidate?.purpose === right?.formula_candidate?.purpose
+    && String(left?.target_field || "") === String(right?.target_field || "")
     && String(left?.application_mode || "none") === String(right?.application_mode || "none")
     && reasonablenessSuggestionValuesMatch(left?.suggested_value, right?.suggested_value)
     && reasonablenessSuggestionValuesMatch(left?.suggested_tolerance_upper, right?.suggested_tolerance_upper)
@@ -3134,6 +3213,7 @@ function reasonablenessSuggestionProposalMatches(left, right) {
 }
 
 function applyReasonablenessSuggestionToReview(review, item) {
+  if (item?.suggestion_kind === "formula_candidate") return FormulaCandidates.apply(review, item);
   const target = String(item?.target_field || "");
   const mode = String(item?.application_mode || "none");
   if (target === "solid_height" && (["GBT1239.2-SOLID", "FORMULA-SOLID-HEIGHT"].includes(item?.rule_id) || item?.metadata?.value_kind === "reference_limit")) return false;
@@ -3268,7 +3348,7 @@ async function preflightReasonablenessSuggestionBatch(plan) {
     ...(plan.dependency_blocks || []),
     ...graph.cycles,
   ];
-  let assessment = workingReview.parameter_reasonableness || { suggestions: [] };
+  let assessment = { ...(workingReview.parameter_reasonableness || {}), suggestions: reasonablenessSuggestions(workingReview) };
   const guardIsCurrent = () => state.review === sourceReview
     && state.reviewEditSerial === sourceEditSerial
     && String(state.lastJob?.review_revision ?? "") === String(sourceRevision ?? "");
@@ -3313,6 +3393,7 @@ async function preflightReasonablenessSuggestionBatch(plan) {
       if (layerApplied) {
         markStandardizationResultsAfterSuggestion(workingReview, accepted);
         assessment = await fetchReasonablenessAssessmentForReview(workingReview, sourceRevision);
+        if (typeof FormulaCandidates !== "undefined") assessment.suggestions = FormulaCandidates.merge(workingReview, assessment.suggestions, sourceRevision);
         workingReview.parameter_reasonableness = assessment;
         if (!guardIsCurrent()) {
           return { ok: false, message: "核对建议期间参数又发生修改，本次批量应用已取消，当前输入保持不变。" };
@@ -3328,9 +3409,9 @@ async function preflightReasonablenessSuggestionBatch(plan) {
   return { ok: true, items: accepted, resolved, deferred, assessment };
 }
 
-function reasonablenessBatchResultMessage(preflight, appliedCount) {
+function reasonablenessBatchResultMessage(preflight, appliedCount, pendingCount = 0) {
   const parts = [];
-  if (appliedCount) parts.push(`已应用、确认并保存 ${appliedCount} 项建议`);
+  if (appliedCount) parts.push(pendingCount ? `已应用并保存 ${appliedCount} 项建议，其中 ${pendingCount} 项新公式候选待重新确认` : `已应用、确认并保存 ${appliedCount} 项建议`);
   if (preflight.resolved.length) parts.push(`${preflight.resolved.length} 项按最新依赖核对后无需修改`);
   if (preflight.deferred.length) {
     const details = preflight.deferred.slice(0, 2).map((item) => {
@@ -3364,6 +3445,7 @@ function standardNumberSuggestionEligible(item, review = state.review) {
 
 function reasonablenessSuggestionIsFresh(item, review = state.review) {
   if (!item || !item.dependency_token) return false;
+  if (item.suggestion_kind === "formula_candidate" && (typeof FormulaCandidates === "undefined" || !FormulaCandidates.fresh(review, item))) return false;
   if (!["applied", "informational"].includes(item.status)) {
     const target = String(item.target_field || "");
     const targetItem = reasonablenessSuggestionTargetItem(review, target);
@@ -3543,6 +3625,7 @@ function auditTargetLabel(target) {
 function auditEventLabel(eventType) {
   const labels = {
     parameter_value_updated: "修改数值",
+    support_coils_recalculated: "重算单端支承圈数",
     parameter_tolerance_updated: "修改公差",
     parameter_confirmed: "确认参数",
     parameter_reopened: "重新编辑",
@@ -3644,7 +3727,7 @@ function renderCompressionDesignCheckHtml(review) {
 function compressionDesignDisclosureState(review) {
   state.compressionDesignDisclosures ||= new Map();
   const key = review.job_id || review;
-  if (!state.compressionDesignDisclosures.has(key)) state.compressionDesignDisclosures.set(key, { basis: true, formulas: false });
+  if (!state.compressionDesignDisclosures.has(key)) state.compressionDesignDisclosures.set(key, { basis: false, formulas: false });
   return state.compressionDesignDisclosures.get(key);
 }
 
@@ -3662,9 +3745,20 @@ function bindCompressionDesignDisclosures(root, review) {
 function prepareCompressionDesignChecks(review) {
   if (typeof CompressionDesignChecks === "undefined" || !isCompressionSpringReview(review)) return null;
   CompressionDesignChecks.applyPitch(review);
+  recordSupportCoilAdjustment(review);
   const checks = CompressionDesignChecks.calculate(review.spring_parameters || {}, review.spring_features || {}, state.materialCatalog || {});
   review.design_checks = checks;
   return checks;
+}
+
+function recordSupportCoilAdjustment(review) {
+  const adjustment = review.spring_parameters?.support_coils?.support_coils_adjustment;
+  if (!adjustment || adjustment.audit_recorded || typeof queueReviewAuditEvent !== "function" || state.review !== review) return;
+  adjustment.audit_recorded = true;
+  queueReviewAuditEvent({ event_type: "support_coils_recalculated", target_field: "support_coils", source: "formula_calculation",
+    reason: adjustment.reason === "confirmed_coil_inputs_changed" ? "总圈数与有效圈数确认后自动重算单端支承圈数，需重新确认" : "统一按单端公式校正自动识别值，需人工确认",
+    before_state: adjustment.before, after_state: { ...parameterAuditState(review.spring_parameters.support_coils), formula_calculation_inputs: adjustment.after.inputs },
+    metadata: { formula: "单端支承圈数 = (n1 - n) / 2", inputs: adjustment.after.inputs, previous_confirmation: adjustment.previous_confirmation } });
 }
 
 function compressionDesignResultText(metric, result) {
@@ -3814,13 +3908,23 @@ function syncDependentFormulaParameterRows(root, review, editedField) {
     syncBubbleValue(field, param.value);
     syncConfirmationControl(row, param, { kind: "parameter", field, review });
   });
+  if (typeof document !== "undefined") root.querySelectorAll('[data-kind="parameter-reasonableness"]').forEach((node) => {
+    const open = [...node.querySelectorAll("details")].map((d) => d.open);
+    const holder = document.createElement("div"); holder.innerHTML = renderParameterReasonablenessHtml(review);
+    const next = holder.firstElementChild;
+    if (!next) return;
+    next.querySelectorAll("details").forEach((d, i) => { if (i < open.length) d.open = open[i]; });
+    node.replaceWith(next);
+  });
+  if (typeof bindReasonablenessSuggestionControls === "function") bindReasonablenessSuggestionControls(root);
 }
 
 function formulaCandidateHtml(param) {
-  if (!param?.derived_value_stale && !param?.formula_recommendation_stale) return "";
+  if (!param?.derived_value_stale && !param?.formula_recommendation_stale && !param?.support_coils_conflict) return param?.support_coils_notice ? `<small>${escapeHtml(param.support_coils_notice)}</small>` : "";
   const candidate = param.formula_recalculation_candidate;
-  const value = candidate?.value;
-  return `<small>原确认值已失效：${escapeHtml(candidate?.reason || param.formula_calculation_reason || "计算依据已变化，请核对")}</small>${Number.isFinite(value) && value > 0 ? `<span>新候选值：${escapeHtml(formatCompactNumber(value))} ${escapeHtml(candidate.unit || "")} <button type="button" data-role="apply-formula-candidate">应用新候选值</button>（应用后需重新确认）</span>` : ""}`;
+  const value = candidate?.value, waiting = param.support_coils_waiting_confirmation;
+  const reason = param.support_coils_conflict || (waiting ? param.formula_calculation_reason : candidate?.reason || param.formula_calculation_reason) || "计算依据已变化，请核对";
+  return `<small>${param.support_coils_conflict ? "圈数关系需核对" : "原确认值已失效"}：${escapeHtml(reason)}</small>${Number.isFinite(value) && value > 0 ? `<span>新候选值：${escapeHtml(formatCompactNumber(value))} ${escapeHtml(candidate.unit === "turns" ? "圈" : candidate.unit || "")} <button type="button" data-role="apply-formula-candidate" ${waiting ? "disabled" : ""}>${waiting ? "等待圈数确认" : "应用新候选值"}</button>（应用后需重新确认）</span>` : ""}`;
 }
 
 function syncFormulaParameterPresentation(row, field, param) {
@@ -3840,7 +3944,11 @@ function syncFormulaParameterPresentation(row, field, param) {
     else badges?.remove();
   }
   const candidate = row.querySelector('[data-role="formula-candidate"]');
-  if (candidate) candidate.innerHTML = formulaCandidateHtml(param);
+  if (candidate) {
+    const opened = candidate.querySelector("details")?.open;
+    candidate.innerHTML = formulaCandidateHtml(param);
+    if (opened != null && candidate.querySelector("details")) candidate.querySelector("details").open = opened;
+  }
 }
 
 function refreshCompressionDesignChecks(root, review) {
@@ -4105,7 +4213,7 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
       ${confirmationButtonHtml(param, { kind: "parameter", field, review: state.review })}
       ${roughnessCandidates}
       ${materialNotes}
-      <div class="parameter-formula-candidate" data-role="formula-candidate">${["active_coils", "support_coils", "pitch", "solid_height"].includes(field) && (param.derived_value_stale || param.formula_recommendation_stale) ? formulaCandidateHtml(param) : ""}</div>
+      <div class="parameter-formula-candidate" data-role="formula-candidate">${["active_coils", "support_coils", "pitch", "solid_height"].includes(field) ? formulaCandidateHtml(param) : ""}</div>
     </div>
   `;
 }
@@ -4149,7 +4257,14 @@ function loadPointRowHtml(point, index, review = state.review) {
       <div class="data-label">
         <strong title="${escapeHtml(label)}">${escapeHtml(label)}</strong>
         <button type="button" class="load-point-rename" data-role="rename-load-point" aria-label="修改${escapeHtml(label)}编号">修改编号</button>
-        <input hidden data-role="label" aria-label="测试点编号" value="${escapeHtml(point.label || "")}">
+        <div class="load-point-rename-editor" data-role="rename-editor"${loadPointLabelDraft(point) ? "" : " hidden"}>
+          <input data-role="label" aria-label="测试点编号" value="${escapeHtml(loadPointLabelDraft(point)?.value ?? point.label ?? "")}" autocomplete="off">
+          <div class="load-point-rename-actions">
+            <button type="button" class="secondary-action" data-role="save-load-label">保存编号</button>
+            <button type="button" class="secondary-action" data-role="cancel-load-label">取消</button>
+          </div>
+          <span class="load-point-rename-status" data-role="rename-status" role="status" aria-live="polite"></span>
+        </div>
         ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
       </div>
       <label class="data-input-cell data-primary">
@@ -4355,6 +4470,11 @@ function confirmationControlState(item, options = {}) {
     if (technicalRequirementBlocksExport(item)) return { state: "invalid", label: "待中文化", disabled: true, reason: "外文说明需翻译或人工填写中文后确认；当前不会写入本次图纸。" };
     if (persistence === "saving") return { state: "saving", label: "保存中", disabled: true, reason: "正在保存技术要求。" };
   }
+  if (kind === "load_point") {
+    const persistence = loadPointPersistenceState(item);
+    if (persistence === "failed") return { state: "save_failed", label: "保存失败·重试保存", disabled: false, reason: "本地修改仍保留；请重试保存。" };
+    if (persistence === "saving") return { state: "saving", label: "保存中", disabled: true, reason: "正在保存载荷测试点。" };
+  }
   const isConfirmed = kind === "technical" ? item?.need_human_review === false : !item?.need_human_review;
   if (isConfirmed) {
     const persistence = kind === "parameter" ? parameterPersistenceState(field) : null;
@@ -4369,9 +4489,8 @@ function confirmationControlState(item, options = {}) {
 
   let invalidReason = "";
   if (kind === "load_point") {
-    if (!isFiniteReviewNumber(item?.height) || !isFiniteReviewNumber(item?.force)) {
-      invalidReason = "高度和力值需要完整填写为有效数字";
-    }
+    if (!isValidLoadPoint(item)) invalidReason = "编号不能为空，高度需大于零，力值需为非负数";
+    else if (isDuplicateLoadPointLabel(review, item.label, item.load_point_id)) invalidReason = "载荷点编号重复，请先修改编号";
   } else if (kind === "technical") {
     if (!String(item?.content || "").trim()) invalidReason = "技术要求内容不能为空";
     else if (item?.type === "surface" && item.translation_status !== "translated" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item?.normalization_status)) {
@@ -4522,7 +4641,7 @@ function renderGenerationReadinessHtml(review) {
       ${renderGenerationReadinessIssues("以下技术要求未写入本次图纸", (readiness.warnings || []).filter((item) => item.requirement_id), "warning")}
       <div class="generation-package-actions">
         <button type="button" data-action="export-generation-package">导出参数包</button>
-        <button type="button" class="primary-action" data-action="create-generation-job" ${canGenerate && !state.generationBusy ? "" : "disabled"}>${state.generationBusy ? "正在创建…" : "生成图纸"}</button>
+        <button type="button" class="primary-action" data-action="create-generation-job" ${canGenerate && !state.generationBusy ? "" : "disabled"}>${state.generationBusy ? "处理中…" : "生成图纸"}</button>
         <small>${isPersistedReview
           ? (state.generationQueueAvailable === false ? "就绪状态可查询；创建生图任务需要 PostgreSQL。" : "就绪状态由服务器重新计算；参数有提示时仍可确认后生成。")
           : "本地导入数据仅允许导出，保存为服务器审图单后才能生图。"}</small>
@@ -4545,6 +4664,7 @@ function renderGenerationJobsHtml(review) {
         <span>保留各次生图版本，可从已完成的图纸中选定最终版本</span>
       </div>
       <div class="generation-version-list">
+        ${jobs.some((job) => job.is_final) ? '<p class="generation-final-hint generation-status-message">请先取消当前最终版本，再选择其他版本。</p>' : ""}
         ${jobs.map((job, index) => renderGenerationJobHtml(job, jobs.length - index)).join("")}
       </div>
       <div class="generation-erp-placeholder">
@@ -4579,6 +4699,7 @@ function generationJobNeedsTracking(job) {
 }
 
 function renderGenerationJobHtml(job, versionNumber) {
+  const hasOtherFinal = (state.generationJobs || []).some((item) => item.is_final && item.generation_id !== job.generation_id);
   const labels = {
     queued: "排队中",
     claimed: "已领取",
@@ -4644,7 +4765,8 @@ function renderGenerationJobHtml(job, versionNumber) {
           ? `<button type="button" data-action="retry-generation" data-generation-id="${escapeHtml(job.generation_id)}">原参数重试</button>`
           : '<button type="button" data-action="recreate-generation">重新生图</button>') : ""}
         ${!terminal ? `<button type="button" class="secondary-action" data-action="cancel-generation" data-generation-id="${escapeHtml(job.generation_id)}">取消</button>` : ""}
-        ${job.status === "completed" && !job.is_final ? `<button type="button" class="primary-action" data-action="approve-generation" data-generation-id="${escapeHtml(job.generation_id)}">设为最终版本</button>` : ""}
+        ${job.status === "completed" && job.is_final ? `<button type="button" class="secondary-action" data-action="unapprove-generation" data-generation-id="${escapeHtml(job.generation_id)}" ${state.generationBusy ? "disabled" : ""}>取消设为最终版本</button>` : ""}
+        ${job.status === "completed" && !job.is_final ? `<button type="button" class="primary-action" data-action="approve-generation" data-generation-id="${escapeHtml(job.generation_id)}" ${hasOtherFinal || state.generationBusy ? "disabled" : ""}>设为最终版本</button>` : ""}
       </div>
     </article>
   `;
@@ -4985,7 +5107,7 @@ function renderStandardizationHtml(review) {
         ${results.map((item, index) => `
           <div class="standardization-row" data-kind="standardization" data-index="${index}">
             <div>
-              <strong>${escapeHtml(targetFieldLabel(item.target_field))}</strong>
+              <strong>${escapeHtml(targetFieldLabel(item.target_field))}${item.target_field === "solid_height" && item.formula_candidate ? `（${item.formula_candidate.purpose === "reference_limit" ? "上限参考" : "名义值"}）` : ""}</strong>
               <span class="normalization-status ${escapeHtml(item.status || "need_context")}">${escapeHtml(standardizationStatusLabel(item.status))}</span>
             </div>
             <div>
@@ -6160,9 +6282,155 @@ function loadPointAuditState(point, extra = {}) {
     force_unit: point.force_unit || "N",
     load_tolerance_upper: point.load_tolerance_upper ?? null,
     load_tolerance_lower: point.load_tolerance_lower ?? null,
+    load_tolerance_percent: point.load_tolerance_percent ?? null,
     need_human_review: point.need_human_review !== false,
     ...extra,
   };
+}
+
+// Label drafts are UI state only. The stable point ID survives renaming and rerenders.
+function loadPointLabelDraftKey(point) {
+  return `${state.lastJob?.job_id || state.activeReviewMessageId || "local"}:${point.load_point_id}`;
+}
+
+function loadPointLabelDraft(point) {
+  return state.loadPointLabelDrafts?.get(loadPointLabelDraftKey(point));
+}
+
+function loadPointPersistenceState(point) {
+  if (!state.lastJob?.job_id) return null;
+  const events = [...(state.pendingReviewAuditEvents || []), ...(state.reviewPersistenceInFlightEvents || [])]
+    .filter((event) => String(event.metadata?.load_point_id || event.after_state?.load_point_id || event.before_state?.load_point_id || "") === String(point?.load_point_id || ""));
+  if (!events.length) return null;
+  return events.some((event) => state.reviewPersistenceFailedFields?.[event.target_field]) ? "failed" : "saving";
+}
+
+function refreshLoadPointSummaries() {
+  const points = state.review?.spring_parameters?.load_points || [];
+  const confirmed = points.filter((point) => isValidLoadPoint(point) && point.need_human_review === false).length;
+  document.querySelectorAll('[data-role="load-point-summary"]').forEach((node) => {
+    node.textContent = `已确认 ${confirmed} 项 · 待确认 ${points.length - confirmed} 项 · 将写入二维图纸 ${confirmed} 项`;
+  });
+}
+
+function syncLoadPointRenameControls(row, point) {
+  const draft = loadPointLabelDraft(point);
+  const editor = row.querySelector('[data-role="rename-editor"]');
+  if (!editor) return;
+  const label = point.label || "未编号";
+  const title = row.querySelector(".data-label strong");
+  title.textContent = label;
+  title.title = label;
+  const rename = row.querySelector('[data-role="rename-load-point"]');
+  rename.hidden = Boolean(draft);
+  rename.setAttribute("aria-label", `修改${label}编号`);
+  editor.hidden = !draft;
+  const input = editor.querySelector('[data-role="label"]');
+  const saving = draft?.phase === "saving";
+  input.disabled = saving;
+  if (document.activeElement !== input) input.value = draft?.value ?? point.label ?? "";
+  input.setAttribute("aria-invalid", draft?.error ? "true" : "false");
+  const save = editor.querySelector('[data-role="save-load-label"]');
+  save.disabled = saving;
+  save.textContent = saving ? "保存中…" : draft?.phase === "failed" ? "重试保存" : "保存编号";
+  editor.querySelector('[data-role="cancel-load-label"]').disabled = saving;
+  const status = editor.querySelector('[data-role="rename-status"]');
+  status.textContent = draft?.error || (saving ? "正在保存编号…" : "");
+  status.classList.toggle("failed", Boolean(draft?.error));
+  const heightLabel = parameterUnitLabel("height", "高度", { unit: point.height_unit }, { unit: "mm" });
+  const forceLabel = parameterUnitLabel("force", "力值", { unit: point.force_unit }, { unit: "N" });
+  row.querySelector('[data-role="height"]')?.setAttribute("aria-label", `${label}${heightLabel.text}`);
+  row.querySelector('[data-role="force"]')?.setAttribute("aria-label", `${label}${forceLabel.text}`);
+  row.querySelector('[data-role="load-tolerance"]')?.setAttribute("aria-label", `${label}公差（绝对公差单位：${forceLabel.unit}；百分比公差：%）`);
+}
+
+function bindLoadPointRename(row, point, review, messageId, root, changed) {
+  const key = loadPointLabelDraftKey(point);
+  const jobId = state.lastJob?.job_id;
+  const input = row.querySelector('[data-role="label"]');
+  const drafts = state.loadPointLabelDrafts ||= new Map();
+  const refresh = () => {
+    if (state.lastJob?.job_id !== jobId) return;
+    refreshParameterPersistenceControls();
+  };
+  const cancel = () => {
+    if (drafts.get(key)?.phase === "saving") return;
+    drafts.delete(key);
+    refresh();
+    row.querySelector('[data-role="rename-load-point"]')?.focus();
+  };
+  row.querySelector('[data-role="rename-load-point"]').addEventListener("click", () => {
+    drafts.set(key, { value: point.label || "", phase: "editing", error: "" });
+    syncLoadPointRenameControls(row, point);
+    input.focus();
+    input.select();
+  });
+  input.addEventListener("input", () => {
+    const draft = drafts.get(key);
+    if (!draft || draft.phase === "saving") return;
+    draft.value = input.value;
+    draft.error = "";
+    syncLoadPointRenameControls(row, point);
+  });
+  const save = async () => {
+    const draft = drafts.get(key);
+    if (!draft || draft.phase === "saving" || state.lastJob?.job_id !== jobId) return;
+    activateReviewContext(messageId);
+    const current = state.review.spring_parameters?.load_points?.find((item) => item.load_point_id === point.load_point_id);
+    if (!current) return;
+    const label = normalizeLoadPointLabel(draft.value);
+    if (!label || isDuplicateLoadPointLabel(state.review, label, current.load_point_id)) {
+      draft.error = label ? `编号“${label}”已存在，请使用其他编号。` : "编号不能为空。";
+      syncLoadPointRenameControls(row, current);
+      input.focus();
+      return;
+    }
+    const field = loadPointField(current);
+    const needsRetry = loadPointPersistenceState(current) === "failed";
+    if (label === current.label && !needsRetry) { cancel(); return; }
+    draft.phase = "saving";
+    draft.error = "";
+    draft.value = label;
+    if (label !== current.label) {
+      const before = loadPointAuditState(current);
+      rememberConfirmedSnapshot(current);
+      current.label = label;
+      const newField = loadPointField(current);
+      markParamEdited(current, newField, { confirmationField: loadPointConfirmationKey(current) });
+      invalidateReasonablenessSuggestions(field);
+      invalidateStandardizationResults(field);
+      invalidateReasonablenessSuggestions(newField);
+      invalidateStandardizationResults(newField);
+      markParameterChangeProposalsStale("载荷测试点编号已修改");
+      queueReviewAuditEvent({ event_type: "load_point_value_updated", target_field: newField,
+        before_state: before, after_state: loadPointAuditState(current),
+        metadata: { load_point_id: current.load_point_id, previous_label: before.label, new_label: label } });
+      changed();
+      refreshCompressionDesignChecks(root, state.review);
+    }
+    refresh();
+    try {
+      if (!await flushReviewPersistence({ throwOnError: true })) throw new Error("编号尚未保存成功");
+      if (state.lastJob?.job_id !== jobId || drafts.get(key) !== draft) return;
+      drafts.delete(key);
+      refresh();
+      scheduleParameterReasonablenessRefresh(messageId);
+      refreshBulkConfirmationFollowupAfterLocalChange(messageId);
+    } catch (error) {
+      if (state.lastJob?.job_id !== jobId || drafts.get(key) !== draft) return;
+      draft.phase = "failed";
+      draft.error = `保存失败，重试保存：${error.message || String(error)}`;
+      refresh();
+    }
+  };
+  row.querySelector('[data-role="save-load-label"]').addEventListener("click", () => { void save(); });
+  row.querySelector('[data-role="cancel-load-label"]').addEventListener("click", cancel);
+  input.addEventListener("keydown", (event) => {
+    if (event.isComposing) return;
+    if (event.key === "Enter") { event.preventDefault(); void save(); }
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancel(); }
+  });
+  syncLoadPointRenameControls(row, point);
 }
 
 function isValidLoadPoint(point) {
@@ -6812,11 +7080,32 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       scheduleParameterReasonablenessRefresh(messageId);
     };
     valueInput.addEventListener("input", applyValueDraft);
-    row.addEventListener("click", (event) => {
+    row.addEventListener("click", async (event) => {
       if (!event.target.closest('[data-role="apply-formula-candidate"]')) return;
       activateReviewContext(messageId);
+      if (["pitch", "active_coils", "solid_height"].includes(field) && typeof FormulaCandidates !== "undefined") {
+        const item = reasonablenessSuggestions(review).find((i) => i.target_field === field && i.suggestion_kind === "formula_candidate");
+        if (!item) return;
+        invalidatePendingParameterReasonablenessRequests();
+        const applied = applyReasonablenessSuggestions([item], { mode: "formula_candidate_inline" });
+        await recordReasonablenessSuggestionApplications(applied, messageId);
+        return;
+      }
       const before = parameterAuditState(param);
+      if (field === "support_coils" && param.support_coils_waiting_confirmation) return;
+      if (field === "support_coils") {
+        const c = CompressionDesignChecks.calculateSupportCoils(review.spring_parameters, review);
+        if (c.value == null) return;
+        param.formula_recalculation_candidate = c;
+      }
       if (!CompressionDesignChecks.applyCandidate(param)) return;
+      if (field === "support_coils") {
+        param.formula_calculation_kind = "support_coils";
+        param.support_coils_input_baseline = structuredClone(param.formula_calculation_inputs);
+        delete param.support_coils_conflict;
+        // The explicit application adopts the formula instead of the original/manual value.
+        param.support_coils_origin = "inferred";
+      }
       delete param.confirmation_snapshot;
       state.reviewEditSerial += 1;
       state.reviewDraftFields.add(field);
@@ -6922,6 +7211,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       });
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
       if (field === "surface_roughness_ra") row.querySelector(".roughness-candidates")?.remove();
+      if (["total_coils", "active_coils", "end_type", "end_grinding"].includes(field)) syncDependentFormulaParameterRows(root, review, field);
       refreshCompressionDesignChecks(root, review);
       if (field === "accuracy_grade") syncAccuracyGradeControls(root, param);
       scheduleParameterReasonablenessRefresh(messageId);
@@ -7105,24 +7395,14 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     bindLoadPointDraft(row.querySelector('[data-role="force"]'), (event) => {
       point.force = parseValue(event.target.value, point.force);
     }, "load_point_value_updated");
-    const labelInput = row.querySelector('[data-role="label"]');
-    row.querySelector('[data-role="rename-load-point"]')?.addEventListener("click", () => {
-      labelInput.hidden = false;
-      labelInput.focus();
-    });
-    if (labelInput) bindLoadPointDraft(labelInput, (event) => {
-      invalidateReasonablenessSuggestions(pointField);
-      invalidateStandardizationResults(pointField);
-      point.label = normalizeLoadPointLabel(event.target.value);
-      pointField = loadPointField(point, pointIndex);
-      row.querySelector(".data-label strong").textContent = point.label || "未编号";
-    }, "load_point_value_updated");
+    bindLoadPointRename(row, point, review, messageId, root, () => { pointField = loadPointField(point, pointIndex); });
     bindLoadPointDraft(row.querySelector('[data-role="load-tolerance"]'), (event) => {
       applyLoadPointTolerance(point, event.target.value);
     }, "load_point_tolerance_updated");
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
       const control = confirmationControlState(point, { kind: "load_point", field: pointField, review });
+      if (control.state === "save_failed") { void flushReviewPersistence(); return; }
       if (control.disabled) return;
       const beforeState = loadPointAuditState(point);
       const eventType = confirmationAuditEventType(point, pointField, review);
@@ -7287,6 +7567,9 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
 
   root.querySelectorAll('[data-action="approve-generation"]').forEach((button) => {
     button.addEventListener("click", () => void approveGenerationJob(button.dataset.generationId || ""));
+  });
+  root.querySelectorAll('[data-action="unapprove-generation"]').forEach((button) => {
+    button.addEventListener("click", () => void unapproveGenerationJob(button.dataset.generationId || ""));
   });
 
   root.querySelector('[data-action="confirm-standard-selection"]')?.addEventListener("click", () => {
@@ -7590,20 +7873,57 @@ function applyStandardizationResults(items, options = {}) {
     applied_count: appliedItems.length,
     targets: appliedItems.map((item) => String(item.target_field || "")),
     before,
+    undo_changes: appliedItems.some((i) => i.suggestion_kind === "formula_candidate") ? suggestionUndoChanges(before, state.review) : null,
   });
   state.review.parameter_reasonableness_stale = true;
   return { count: appliedItems.length, history_id: historyId };
 }
 
+function suggestionUndoChanges(before, review) {
+  const changes = [];
+  for (const scope of ["spring_parameters", "manual_confirmations", "standardization_results", "standard_selection"]) {
+    const old = before[scope] || {}, current = review[scope] || {};
+    for (const key of new Set([...Object.keys(old), ...Object.keys(current)])) {
+      if (JSON.stringify(old[key]) === JSON.stringify(current[key])) continue;
+      changes.push({ scope, key, before_exists: key in old, after_exists: key in current,
+        before: structuredClone(old[key] ?? null), after: structuredClone(current[key] ?? null) });
+    }
+  }
+  return changes;
+}
+
 function undoLastStandardizationApplication() {
   const history = state.review?.standardization_apply_history || [];
-  const last = history.pop();
+  const last = history[history.length - 1];
   if (!last?.before) return null;
+  state.suggestionUndoConflict = "";
+  if (last.undo_changes) {
+    const fingerprint = (value) => {
+      if (!value || typeof value !== "object") return stableReasonablenessJson(value);
+      const copy = structuredClone(value);
+      // Recalculated diagnostics and server rendering metadata are not user edits.
+      for (const key of ["formula_recalculation_candidate", "formula_calculation_reason", "position", "suggested_region"]) delete copy[key];
+      return stableReasonablenessJson(copy);
+    };
+    if (last.undo_changes.some((c) => (c.key in (state.review[c.scope] || {})) !== c.after_exists
+      || fingerprint(state.review[c.scope]?.[c.key]) !== fingerprint(c.after))) {
+      state.suggestionUndoConflict = "相关参数在应用后又有修改或确认，无法撤销覆盖；请先核对当前参数。";
+      return null;
+    }
+    history.pop();
+    for (const c of last.undo_changes) {
+      state.review[c.scope] ||= {};
+      if (c.before_exists) state.review[c.scope][c.key] = structuredClone(c.before);
+      else delete state.review[c.scope][c.key];
+    }
+  } else {
+  history.pop();
   state.review.spring_parameters = structuredClone(last.before.spring_parameters || {});
   state.review.standardization_results = structuredClone(last.before.standardization_results || []);
   state.review.manual_confirmations = structuredClone(last.before.manual_confirmations || {});
   if (Object.prototype.hasOwnProperty.call(last.before, "standard_selection")) {
     state.review.standard_selection = structuredClone(last.before.standard_selection || {});
+  }
   }
   state.reviewEditSerial += 1;
   state.review.parameter_reasonableness_stale = true;
@@ -8492,6 +8812,7 @@ function renderCompareOverlay() {
 function captureCompareOverlayScrollState() {
   return {
     panels: captureComparePanelScrollPositions(),
+    disclosures: [...compareOverlay.querySelectorAll(".advanced-parameters, .stale-standardization-details")].map((d) => ({ key: d.className, open: d.open })),
     chatLists: Array.from(compareOverlay.querySelectorAll(".standardization-chat-list"), (list) => list.scrollTop),
   };
 }
@@ -8499,6 +8820,7 @@ function captureCompareOverlayScrollState() {
 function restoreCompareOverlayScrollState(scrollState) {
   if (!scrollState) return;
   const restore = () => {
+    for (const entry of scrollState.disclosures || []) compareOverlay.querySelectorAll("details").forEach((d) => { if (d.className === entry.key) d.open = entry.open; });
     restoreComparePanelScrollPositions(scrollState.panels, { immediate: true });
     compareOverlay.querySelectorAll(".standardization-chat-list").forEach((list, index) => {
       const scrollTop = scrollState.chatLists?.[index];
@@ -8715,6 +9037,7 @@ function formulaConfirmationValueSnapshot(param) {
     tolerance_upper: param?.tolerance_upper ?? null,
     tolerance_lower: param?.tolerance_lower ?? null,
     source_fields: Array.isArray(param?.source_fields) ? param.source_fields.map(String) : [],
+    ...(param?.formula_calculation_kind === "support_coils" ? { formula_calculation_inputs: param.formula_calculation_inputs || null } : {}),
     formula_calculation_status: param?.formula_calculation_status ?? null,
   });
 }
@@ -10205,6 +10528,8 @@ async function loadGenerationState(reviewId = state.lastJob?.job_id, options = {
     return;
   }
   state.generationQueueAvailable = null;
+  const request = {};
+  state.generationLoadRequest = request;
   try {
     const [readinessResponse, jobsResponse] = await Promise.all([
       apiFetch(`/api/reviews/${encodeURIComponent(reviewId)}/generation-readiness`),
@@ -10213,7 +10538,7 @@ async function loadGenerationState(reviewId = state.lastJob?.job_id, options = {
     const readinessPayload = await readinessResponse.json();
     const jobsPayload = await jobsResponse.json();
     if (!readinessResponse.ok) throw new Error(generationApiError(readinessPayload, "无法读取服务端生图就绪状态"));
-    if (state.lastJob?.job_id !== reviewId) return;
+    if (state.lastJob?.job_id !== reviewId || state.generationLoadRequest !== request) return;
     state.generationReadiness = readinessPayload;
     if (jobsResponse.ok) {
       state.generationQueueAvailable = true;
@@ -10229,6 +10554,7 @@ async function loadGenerationState(reviewId = state.lastJob?.job_id, options = {
     });
     if (options.render !== false) refreshReviewSurfaces();
   } catch (error) {
+    if (state.lastJob?.job_id !== reviewId || state.generationLoadRequest !== request) return;
     if (options.silent !== true) appendAssistantText(`生图服务暂不可用：${error.message || String(error)}`, true, { scroll: false });
   }
 }
@@ -10295,11 +10621,13 @@ async function createGenerationJob(options = {}) {
 function trackGenerationJob(generationId) {
   if (!generationId || state.generationPollers[generationId]) return;
   const poll = async () => {
+    const reviewId = state.lastJob?.job_id, request = state.generationLoadRequest;
     try {
       const response = await apiFetch(`/api/generation-jobs/${encodeURIComponent(generationId)}`);
       const payload = await response.json();
       if (!response.ok) throw new Error(generationApiError(payload, "读取生图进度失败"));
       const job = payload.generation_job;
+      if (state.lastJob?.job_id !== reviewId || job.review_id !== reviewId || state.generationLoadRequest !== request || state.generationBusy) return;
       const index = state.generationJobs.findIndex((item) => item.generation_id === generationId);
       if (index >= 0) state.generationJobs.splice(index, 1, job);
       else state.generationJobs.unshift(job);
@@ -10359,6 +10687,7 @@ async function cancelGenerationJob(generationId) {
 async function approveGenerationJob(generationId) {
   const job = state.generationJobs.find((item) => item.generation_id === generationId);
   if (!job || job.status !== "completed" || job.is_final) return;
+  if (state.generationJobs.some((item) => item.is_final)) return;
   if (job.is_stale) {
     const currentRevision = Number(state.lastJob?.review_revision);
     const currentLabel = Number.isInteger(currentRevision) && currentRevision > 0 ? `当前审图修订为 r${currentRevision}` : "当前审图修订已变化";
@@ -10369,35 +10698,41 @@ async function approveGenerationJob(generationId) {
   await generationJobAction(generationId, "approve", `已将所选图纸设为${isMock ? "模拟最终版本" : "最终版本"}；当前编辑参数不变。`, false);
 }
 
+async function unapproveGenerationJob(generationId) {
+  const job = state.generationJobs.find((item) => item.generation_id === generationId);
+  if (!job?.is_final) return;
+  await generationJobAction(generationId, "unapprove", "已取消设为最终版本，可重新选择其他已完成版本。", false);
+}
+
 async function generationJobAction(generationId, action, successMessage, shouldTrack) {
   if (!generationId || state.generationBusy) return;
+  const reviewId = state.lastJob?.job_id, review = state.review;
+  const isCurrent = () => state.lastJob?.job_id === reviewId && state.review === review;
+  state.generationLoadRequest = null;
   state.generationBusy = true;
+  refreshReviewSurfaces();
   try {
     const response = await apiFetch(`/api/generation-jobs/${encodeURIComponent(generationId)}/${action}`, { method: "POST" });
     const payload = await response.json();
-    if (!response.ok) throw new Error(generationApiError(payload, `生图任务${action}失败`));
-    const job = payload.generation_job;
-    if (action === "approve") {
-      let selectedFound = false;
-      state.generationJobs = state.generationJobs.map((item) => {
-        if (item.generation_id === job.generation_id) {
-          selectedFound = true;
-          return job;
-        }
-        return item.is_final ? { ...item, is_final: false, approved_by: null, approved_at: null } : item;
-      });
-      if (!selectedFound) state.generationJobs.unshift(job);
-    } else {
-      state.generationJobs = [job, ...state.generationJobs.filter((item) => item.generation_id !== job.generation_id)];
+    if (!isCurrent()) return;
+    if (!response.ok) {
+      if (payload?.detail?.code === "final_generation_already_selected") await loadGenerationState(reviewId, { silent: true });
+      if (!isCurrent()) return;
+      throw new Error(generationApiError(payload, `生图任务${action}失败`));
     }
+    const job = payload.generation_job;
+    const found = state.generationJobs.some((item) => item.generation_id === job.generation_id);
+    state.generationJobs = found ? state.generationJobs.map((item) => item.generation_id === job.generation_id ? job : item) : [job, ...state.generationJobs];
     if (shouldTrack) trackGenerationJob(job.generation_id);
     await loadGenerationState(job.review_id || state.lastJob?.job_id, { silent: true });
-    appendAssistantText(successMessage, false, { scroll: false });
+    if (isCurrent()) appendAssistantText(successMessage, false, { scroll: false });
   } catch (error) {
-    appendAssistantText(`操作失败：${error.message || String(error)}`, true, { scroll: false });
+    if (isCurrent()) appendAssistantText(`操作失败：${error.message || String(error)}`, true, { scroll: false });
   } finally {
-    state.generationBusy = false;
-    refreshReviewSurfaces();
+    if (isCurrent()) {
+      state.generationBusy = false;
+      refreshReviewSurfaces();
+    }
   }
 }
 
@@ -10425,6 +10760,7 @@ function generationApiError(payload, fallback) {
 }
 
 function resetGenerationState() {
+  state.generationLoadRequest = null;
   Object.keys(state.generationPollers).forEach(stopTrackingGenerationJob);
   state.generationReadiness = null;
   state.generationJobs = [];
@@ -11056,15 +11392,21 @@ function confirmParam(param, field) {
     ...(field === "material" ? { material_selection: materialSelectionAudit(param) } : {}),
   };
   param.confirmation_snapshot = confirmationSnapshotFor(param);
+  if (["total_coils", "active_coils"].includes(field) && typeof CompressionDesignChecks !== "undefined" && state.review?.spring_parameters?.[field] === param) {
+    CompressionDesignChecks.applySupportCoils(state.review);
+  }
 }
 
 function confirmationSnapshotFor(item) {
   if (!item || typeof item !== "object") return null;
-  if (Object.prototype.hasOwnProperty.call(item, "height") || Object.prototype.hasOwnProperty.call(item, "force")) {
+  if (item.load_point_id || Object.prototype.hasOwnProperty.call(item, "height") || Object.prototype.hasOwnProperty.call(item, "force")) {
     return {
       kind: "load_point",
+      label: normalizeLoadPointLabel(item.label),
       height: item.height ?? null,
+      height_unit: item.height_unit || "mm",
       force: item.force ?? null,
+      force_unit: item.force_unit || "N",
       load_tolerance_upper: item.load_tolerance_upper ?? null,
       load_tolerance_lower: item.load_tolerance_lower ?? null,
       load_tolerance_percent: item.load_tolerance_percent ?? null,
@@ -11087,8 +11429,11 @@ function confirmationSnapshotFor(item) {
 }
 
 function rememberConfirmedSnapshot(item) {
-  if (!item || item.need_human_review || item.confirmation_snapshot) return;
-  item.confirmation_snapshot = confirmationSnapshotFor(item);
+  if (!item || item.need_human_review) return;
+  const snapshot = confirmationSnapshotFor(item);
+  const legacyLoadSnapshot = snapshot?.kind === "load_point" &&
+    ["label", "height_unit", "force_unit"].some((key) => !Object.hasOwn(item.confirmation_snapshot || {}, key));
+  if (!item.confirmation_snapshot || legacyLoadSnapshot) item.confirmation_snapshot = snapshot;
 }
 
 function confirmationSnapshotMatches(item) {
@@ -11143,6 +11488,10 @@ function markDependentFormulaParametersPending(field) {
       const sourceFields = Array.isArray(target.source_fields) ? target.source_fields : [];
       if (!sourceFields.some((source) => changedSources.has(source))) return;
       affected.add(targetField);
+      if (targetField === "support_coils" && typeof CompressionDesignChecks !== "undefined") {
+        CompressionDesignChecks.applySupportCoils(state.review);
+        return;
+      }
       if (target.need_human_review === false || sourceValues(target.source).some((source) => source.startsWith("human") || source === "manual" || source === "manual_input")) {
         target.formula_recommendation_stale = true;
         state.review.derived_parameters_stale = true;
@@ -11369,7 +11718,7 @@ function invalidateStandardizationResults(field) {
     invalidated += 1;
   });
   if (!invalidated) return 0;
-  state.review.standardization_apply_history = [];
+  state.review.standardization_apply_history = (state.review.standardization_apply_history || []).filter((entry) => entry.undo_changes);
   state.review.derived_parameters_stale = true;
   if (["wire_diameter", "standard_no"].includes(field)) {
     state.review.standard_selection ||= {};

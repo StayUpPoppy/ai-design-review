@@ -7,6 +7,7 @@ from .end_conditions import normalize_end_type
 from .load_units import in_base_units, normalized_load_point
 from .parameter_suggestions import build_parameter_suggestions
 from .standardizers.compression import derive_compression_parameters, solid_height_mode
+from .standardizers.design_checks import calculate_support_coils
 
 
 COLD_COILED_STANDARD = "GB/T 1239.2-2009"
@@ -215,6 +216,17 @@ def _compression_issues(
             explanation="当前圈数关系不成立，无法据此计算刚度或载荷。",
             customer_question="请客户确认总圈数和有效圈数，或补充端部形式。",
         )
+
+    support = _number(_value(parameters, "support_coils"))
+    support_calculation = calculate_support_coils(parameters, {**review, "spring_parameters": parameters})
+    expected_support = support_calculation.get("value")
+    if support is not None and expected_support is not None and abs(support - expected_support) > 1e-9:
+        _issue(issues, "warning", "geometry", "SPRING-GEO-SUPPORT-COILS", ["support_coils", "total_coils", "active_coils"],
+               f"当前单端支承圈数为 {support:g} 圈，按圈数关系应为 {expected_support:g} 圈，请核对原图或人工值。",
+               calculation=f"单端支承圈数=(总圈数－有效圈数)/2={expected_support:g} 圈",
+               basis="两端并紧且支承结构对称时，支承圈数按两端均分。",
+               explanation="明确的原图值及人工值保留，不自动覆盖；可在参数行选择公式候选后重新确认。",
+               customer_question="请确认圈数和端部结构是否对称，或修正当前支承圈数。")
 
     if include_missing_context and total is not None and total > 0 and active is None:
         end_type = normalize_end_type(_value(parameters, "end_type"))

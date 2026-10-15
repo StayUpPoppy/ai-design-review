@@ -48,7 +48,7 @@ try {
     else body = { status: "ok", generation_runtime: { status: "not_configured" }, recognition_queue_runtime: { status: "not_configured" } };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
-  await page.goto(`http://127.0.0.1:${server.address().port}`);
+  await page.goto(process.env.SW_EXPORT_FRONTEND_URL || `http://127.0.0.1:${server.address().port}`);
   const reopen = () => page.evaluate(async () => { await openPersistedReview("sw-export"); state.compareTab = "parameters"; renderCompareOverlay(); });
   await reopen();
   const preview = () => page.evaluate(() => makeGenerationParameterPackage().solidworks_preview);
@@ -63,10 +63,44 @@ try {
   assert.deepEqual(current.titleBlockProperties, { "材料": "SUS304", "重量": 0.00642403, "表面粗糙度": 12.5 });
   assert.ok(!current.extraProperties["技术要求"].includes("粗糙度"));
   assert.ok(current.extraProperties["技术要求"].includes("材料：SUS304。"));
-  assert.deepEqual(Object.keys(current.modelParameters), ["线径", "中径", "自由高度", "圈数", "有效圈数n", "是否磨平"]);
+  assert.deepEqual(Object.keys(current.modelParameters), ["线径", "中径", "自由高度", "圈数", "有效圈数n", "是否磨平", "是否并紧"]);
   assert.deepEqual(Object.keys(current.extraProperties), ["技术要求", "P'", "C", "τ_b"]);
   assert.ok(current.extraProperties["技术要求"].includes("Hb = 6.3 mm"));
   const panel = page.locator('.compare-tab-panel[data-compare-panel="parameters"]');
+  assert.ok(current.extraProperties["技术要求"].startsWith("1.两端并紧磨平，每端磨270°。\n2.材料："));
+  const originalRequirements = await page.evaluate(() => structuredClone(state.review.technical_requirements));
+  const displayedRequirements = await panel.locator('[data-kind="technical"]').count();
+  const endRow = panel.locator('[data-kind="param"][data-field="end_type"]');
+  const grindingRow = panel.locator('[data-kind="param"][data-field="end_grinding"]');
+  for (const [target, value, note] of [
+    [grindingRow, "两端不磨削", "两端并紧，不磨平。"],
+    [endRow, "两端不并紧", "两端不并紧，不磨平。"],
+    [grindingRow, "两端磨削", "两端不并紧，端面磨平。"],
+    [endRow, "两端并紧", "两端并紧磨平，每端磨270°。"],
+  ]) {
+    await target.locator('[data-role="value"]').selectOption(value);
+    assert.ok(!(await preview()).extraProperties["技术要求"].includes("每端磨270°"), "a pending edit must not reuse the old end note");
+    assert.ok(!(await preview()).extraProperties["技术要求"].startsWith("1.两端"));
+    const pendingPreview = await preview();
+    if (target === endRow) {
+      assert.equal(pendingPreview.modelParameters["是否并紧"], null);
+      assert.ok(Object.hasOwn(pendingPreview.modelParameters, "有效圈数n"), "Unknown end state is not open");
+      assert.ok(pendingPreview.extraProperties["技术要求"].includes("有效圈数：2 圈。"), "Unknown state preserves existing preview behavior");
+    }
+    await target.locator('[data-role="confirm"]').click();
+    const projected = await preview();
+    assert.equal(Object.hasOwn(projected.modelParameters, "有效圈数n"), projected.modelParameters["是否并紧"] !== 0);
+    assert.equal(projected.extraProperties["技术要求"].includes("有效圈数：2 圈。"), projected.modelParameters["是否并紧"] !== 0);
+    assert.ok(!projected.extraProperties["技术要求"].includes("工作圈数：2 圈。"));
+    assert.ok(projected.extraProperties["技术要求"].includes("总圈数：4 圈。"));
+    if (projected.modelParameters["是否并紧"] === 0) assert.ok(!projected.extraProperties["技术要求"].includes("每端磨270°"));
+    assert.ok(projected.extraProperties["技术要求"].startsWith(`1.${note}\n2.材料：`));
+    assert.deepEqual(await page.evaluate(() => state.review.technical_requirements), originalRequirements);
+    assert.equal(await panel.locator('[data-kind="technical"]').count(), displayedRequirements);
+    assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
+    await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
+    assert.deepEqual(await preview(), projected, "Confirmed end text and conditional modelling keys survive save/reopen");
+  }
   const row = panel.locator('[data-kind="param"][data-field="solid_height"]'), input = row.locator('[data-role="value"]');
   await input.fill("8"); await input.dispatchEvent("change");
   assert.ok(!(await preview()).extraProperties["技术要求"].includes("Hb ="), "Pending human edit is not a released note");
@@ -137,9 +171,9 @@ try {
   assert.ok(await panel.locator('[data-kind="technical"][data-requirement-id="techreq_order2_0"]').textContent().then((text) => text.includes("其他识别来源")));
   await duplicateRow.locator('[data-role="confirm"]').click();
   current = await preview();
-  assert.equal(current.extraProperties["技术要求"].split("\n").length, 13);
+  assert.equal(current.extraProperties["技术要求"].split("\n").length, 14);
   assert.deepEqual(current, regression.package.solidworks_preview, "real confirmation retains the server projection");
-  assert.deepEqual(await panel.locator('.requirement-row[data-kind="technical"] textarea').evaluateAll((inputs) => inputs.map((input) => input.value)), current.extraProperties["技术要求"].split("\n").slice(7).map((line) => line.replace(/^\d+\./, "")), "visible confirmed notes exactly match non-template SW text and order");
+  assert.deepEqual(await panel.locator('.requirement-row[data-kind="technical"] textarea').evaluateAll((inputs) => inputs.map((input) => input.value)), current.extraProperties["技术要求"].split("\n").slice(8).map((line) => line.replace(/^\d+\./, "")), "visible confirmed notes exactly match non-template SW text and order");
   assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
   await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
   assert.deepEqual(await preview(), current);
@@ -155,7 +189,7 @@ try {
   assert.deepEqual(await heatRow.locator('[data-role="content"]').evaluate((element) => [document.activeElement === element, element.selectionStart, element.selectionEnd]), [true, 5, 9]);
   assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
   await heatRow.locator('[data-role="confirm"]').click();
-  assert.equal((await preview()).extraProperties["技术要求"].split("\n").length, 13, "a unified edit changes both records and keeps one output");
+  assert.equal((await preview()).extraProperties["技术要求"].split("\n").length, 14, "a unified edit changes both records and keeps one output");
   assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
   assert.ok(saved.change_history.filter((event) => event.event_type === "technical_requirement_updated" && event.metadata?.group_requirement_ids?.length === 2).length >= 2);
   const create = panel.locator('[data-kind="technical_requirement_create"]');
@@ -166,7 +200,7 @@ try {
   const newHeat = panel.locator('.requirement-row[data-kind="technical"]').last();
   assert.equal(await panel.locator('.requirement-row[data-kind="technical"]').count(), 7, "different temperature remains a separate requirement");
   await newHeat.locator('[data-role="confirm"]').click();
-  assert.equal((await preview()).extraProperties["技术要求"].split("\n").length, 14);
+  assert.equal((await preview()).extraProperties["技术要求"].split("\n").length, 15);
   assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
   await panel.locator('[data-action="show-technical-requirement-create"]').click();
   await create.locator('[data-role="new-technical-type"]').selectOption("heat_treatment");
@@ -244,7 +278,7 @@ try {
   await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
   assert.deepEqual(await preview(), final);
   assert.equal(await panel.locator('.requirement-row[data-kind="technical"]').count(), 6);
-  assert.deepEqual(await panel.locator('.requirement-row[data-kind="technical"] textarea').evaluateAll((inputs) => inputs.map((input) => input.value)), final.extraProperties["技术要求"].split("\n").slice(7).map((line) => line.replace(/^\d+\./, "")));
+  assert.deepEqual(await panel.locator('.requirement-row[data-kind="technical"] textarea').evaluateAll((inputs) => inputs.map((input) => input.value)), final.extraProperties["技术要求"].split("\n").slice(8).map((line) => line.replace(/^\d+\./, "")));
   assert.equal(await page.evaluate(() => state.review.technical_requirements.find((item) => item.requirement_id === "techreq_order2_7").original_content), regression.review.technical_requirements[7].content, "individual original wording survives unified editing");
   fs.mkdirSync("outputs/technical-duplication-qa", { recursive: true });
   await page.waitForLoadState("networkidle");

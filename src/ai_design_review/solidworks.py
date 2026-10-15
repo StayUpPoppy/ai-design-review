@@ -5,7 +5,7 @@ import re
 from copy import deepcopy
 from typing import Any
 
-from .generation_contract import handedness_label
+from .generation_contract import generation_source_item, handedness_label, normalize_generation_value
 from .material_catalog import material_catalog_display_value
 from .standardizers.calculation_state import parameter_current, solid_height_kind
 from .standardizers.design_checks import LENGTH_UNITS, calculate_design_checks
@@ -58,14 +58,18 @@ def build_solidworks_model_parameters(
 
     generation_parameters = parameter_package.get("generation_parameters") or {}
     spring_parameters = generation_parameters.get("spring_parameters") or {}
-    return {
+    model_parameters = {
         "线径": _parameter_value(spring_parameters.get("wire_diameter")),
         "中径": _parameter_value(spring_parameters.get("mean_diameter")),
         "自由高度": _parameter_value(spring_parameters.get("free_length")),
         "圈数": _parameter_value(spring_parameters.get("total_coils")),
         "有效圈数n": _parameter_value(spring_parameters.get("active_coils")),
         "是否磨平": _parameter_value(spring_parameters.get("end_grinding")),
+        "是否并紧": _parameter_value(spring_parameters.get("end_coils_closed")),
     }
+    if model_parameters["是否并紧"] == 0:
+        del model_parameters["有效圈数n"]
+    return model_parameters
 
 
 def _parameter_value(item: Any) -> Any | None:
@@ -142,6 +146,9 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
             keys.add(key)
             lines.append(line)
 
+    end_note = _confirmed_end_note(parameters, review)
+    if end_note:
+        append(end_note)
     material = _parameter_value(parameters.get("material"))
     if material is not None:
         append(f"材料：{material_catalog_display_value(material)}。")
@@ -185,7 +192,9 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
             append(f"当弹簧工作高度 H{match[1]} = {_text_number(height)} mm 时，对应工作载荷 {label} = {_force_text(point)}。")
         else:
             append(f"载荷点 {label}：高度 {_text_number(height)} mm，力值 {_force_text(point)}。")
-    for label, field in (("总圈数", "total_coils"), ("工作圈数", "active_coils")):
+    for label, field in (("总圈数", "total_coils"), ("有效圈数", "active_coils")):
+        if field == "active_coils" and _parameter_value(parameters.get("end_coils_closed")) == 0:
+            continue
         value = _parameter_value(parameters.get(field))
         if value is not None:
             append(f"{label}：{value} 圈。")
@@ -198,6 +207,34 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
             if body:
                 append(format_technical_requirement({"content": body}))
     return "\n".join(f"{index}.{line}" for index, line in enumerate(lines, 1))
+
+
+def _confirmed_end_note(exported: dict[str, Any], review: dict[str, Any]) -> str | None:
+    """Describe the same confirmed end conditions used by this generation snapshot."""
+    parameters = review.get("spring_parameters") or {}
+    values: list[int] = []
+    for field in ("end_coils_closed", "end_grinding"):
+        item = generation_source_item(parameters, field)
+        source_field = "end_type" if field == "end_coils_closed" and item is parameters.get("end_type") else field
+        if (not isinstance(item, dict) or item.get("need_human_review") is not False
+                or item.get("formula_recommendation_stale") or not parameter_current(parameters, source_field)):
+            return None
+        output = exported.get(field)
+        if not isinstance(output, dict):
+            return None
+        try:
+            value = normalize_generation_value(field, item.get("value"))
+            if value != normalize_generation_value(field, output.get("value")):
+                return None
+        except ValueError:
+            return None
+        values.append(value)
+    return {
+        (1, 1): "两端并紧磨平，每端磨270°。",
+        (1, 0): "两端并紧，不磨平。",
+        (0, 1): "两端不并紧，端面磨平。",
+        (0, 0): "两端不并紧，不磨平。",
+    }[tuple(values)]
 
 
 def _confirmed_solid_height(review: dict[str, Any]) -> float | None:

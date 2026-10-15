@@ -171,6 +171,7 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
    - 拉伸弹簧：hook_type、hook_outer_diameter、hook_inner_diameter、hook_gap、hook1_type、hook2_type、hook1_length、hook2_length、hook1_outer_diameter、hook2_outer_diameter、hook1_inner_diameter、hook2_inner_diameter、hook1_opening、hook2_opening、hook_orientation、center_to_center_length、initial_tension，可提取 load_points。
    - 卡簧/挡圈：ring_type、thickness、free_diameter、opening_width、gap_width、notch_depth、groove_diameter、groove_width、lug_hole_diameter、lug_center_distance、opening_angle、section_width、section_height、chamfer、corner_radius。
    - 端面磨削 end_grinding：只有图纸文字明确写“不磨/未磨”时才填“两端不磨削”；只有文字明确写“磨平/磨削”，或两端面有明确关联的表面粗糙度/加工符号且端面画为平整时才填“两端磨削”。不得仅因弹簧示意图看似开口、或没有文字标注，就推断为“不磨”；无法确定时不要输出该字段。
+   - support_coils 严格表示“单端支承圈数”。只提取原图明确写出的“单端/每端/两端各”支承圈数，evidence 保留完整原文，并标记 support_coils_origin="drawing_single_end"。禁止从总圈数、有效圈数自行相减或除以2推算，也不填默认值；未明确标注时省略该字段。两端合计圈数不能直接填入单端字段。原图明确两端支承不对称时，在 technical_requirements 保留原文说明，不自行均分。
    - 端部形式 end_type：只有图纸文字明确写“并紧/闭口”时才填“两端并紧”；明确写“不并紧/开口”时才填“两端不并紧”。端部形式与端面磨削是独立字段，无法确定时不要输出。
    - 表面粗糙度符号、加工符号或小三角旁的数值（例如 Ra 12.5、▽ 12.5）绝不能填入 outer_diameter、inner_diameter、mean_diameter、free_length、body_length、wire_diameter 或 load_points。识别到明确 Ra 数值时，必须在 parameters.surface_roughness_ra 中输出数值，并在 evidence 中保留符号或文字；明确知道作用位置时增加 surface_location（例如“两端面”），不明确时不要猜。
    - 对圆柱压缩弹簧：outer_diameter 必须来自直径尺寸线、直径符号或紧邻的一侧公差；free_length 必须来自两端之间的轴向总长度尺寸线；H1/H2 只属于 load_points 的试验高度。没有足够定位依据时省略字段并标记 need_human_review=true。
@@ -566,6 +567,9 @@ def _candidate(
         "position": item.get("position"),
         "suggested_region": item.get("suggested_region") or suggested_region,
     }
+    if field == "support_coils":
+        from ..standardizers.support_coils import classify_support_candidate
+        candidate = classify_support_candidate(candidate)
     if field == "material":
         for key in ("raw_value", "primary_materials", "alternative_materials", "material_alternatives"):
             if key in item:

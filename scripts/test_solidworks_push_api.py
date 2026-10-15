@@ -131,7 +131,8 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
     model = payload["models"][0]
     assert model["modelParameters"]["有效圈数n"] is None
     assert model["modelParameters"]["是否磨平"] is None
-    assert set(model["modelParameters"]) == {"线径", "中径", "自由高度", "圈数", "有效圈数n", "是否磨平"}
+    assert model["modelParameters"]["是否并紧"] is None
+    assert set(model["modelParameters"]) == {"线径", "中径", "自由高度", "圈数", "有效圈数n", "是否磨平", "是否并紧"}
     assert "P'" not in model["extraProperties"]
     assert "Hb =" not in model["extraProperties"]["技术要求"]
     assert model["customProperties"] == {"旋向": "右旋"}
@@ -226,6 +227,7 @@ def main() -> None:
                     "圈数": 9,
                     "有效圈数n": 7,
                     "是否磨平": 1,
+                    "是否并紧": 1,
                 }
                 exported = client.get("/api/reviews/review-solidworks-push/generation-package")
                 assert exported.status_code == 200, exported.text
@@ -240,8 +242,9 @@ def main() -> None:
                 notes = extra["技术要求"]
                 assert notes.count("表面喷丸处理") == 1 and notes.count("热处理：") == 1
                 assert "热处理：热处理要求" not in notes
-                assert notes.startswith("1.材料：60Si2Mn。\n2.绕制方向：左旋。\n3.")
+                assert notes.startswith("1.两端并紧磨平，每端磨270°。\n2.材料：60Si2Mn。\n3.绕制方向：左旋。\n4.")
                 assert "粗糙度" not in notes
+                assert "有效圈数：7 圈。" in notes and "工作圈数：" not in notes
                 for expected in ("Hb = 25 mm", "Fb = 2300 N", "H1 = 38 mm", "F1 = 2000 N", "H2 = 43 mm", "F2 = 2100 N", "表面喷丸处理"):
                     assert expected in notes, notes
                 assert isinstance(extra["P'"], (int, float)) and extra["C"] == round(29 / 3, 4)
@@ -277,7 +280,7 @@ def main() -> None:
                 order2_job = order2_created.json()["generation_job"]
                 order2_payload = submissions[-1]["payload"]
                 order2_notes = order2_payload["models"][0]["extraProperties"]["技术要求"]
-                assert len(order2_notes.splitlines()) == 13, order2_notes
+                assert len(order2_notes.splitlines()) == 14, order2_notes
                 assert order2_payload["models"][0]["titleBlockProperties"]["表面粗糙度"] == 12.5
                 assert "粗糙度" not in order2_notes
                 assert order2_payload["models"][0]["titleBlockProperties"] == order2_preview.json()["parameter_package"]["solidworks_preview"]["titleBlockProperties"]
@@ -652,6 +655,76 @@ def main() -> None:
                 assert failed_callback.status_code == 200, failed_callback.text
                 assert failed_callback.json() == {"TaskId": int(failed_task["generation_id"]), "code": 200}
                 assert client.post(f"/api/generation-jobs/{failed_task['generation_id']}/retry").status_code == 409
+
+                # A final version never prevents a new TaskId or its SW callbacks.
+                assert client.post(f"/api/generation-jobs/{task_id}/approve").status_code == 200
+                new_with_final = client.post("/api/reviews/review-solidworks-push/generation-jobs", json=create_request("with-final-new-task"))
+                assert new_with_final.status_code == 202, new_with_final.text
+                new_id = int(new_with_final.json()["generation_job"]["generation_id"])
+                assert new_id != task_id
+                assert client.post("/api/solidworks/status", json={"TaskId": new_id, "status": "generating_3d", "progress": 33}).status_code == 200
+                assert client.get(f"/api/generation-jobs/{new_id}").json()["generation_job"]["progress"] == 33
+                new_completion = client.post("/api/solidworks/status", json={"TaskId": new_id, "status": "completed", "progress": 100, "file": {"fileName": "new.pdf", "mimeType": "application/pdf", "contentBase64": pdf_base64()}})
+                assert new_completion.status_code == 200, new_completion.text
+                blocked = client.post(f"/api/generation-jobs/{new_id}/approve")
+                assert blocked.status_code == 409 and blocked.json()["detail"]["current_final_generation_id"] == str(task_id)
+                assert client.post(f"/api/generation-jobs/{task_id}/unapprove").status_code == 200
+                assert client.post(f"/api/generation-jobs/{new_id}/approve").status_code == 200
+                assert client.post(f"/api/generation-jobs/{task_id}/unapprove").status_code == 200
+                assert client.get(f"/api/generation-jobs/{new_id}").json()["generation_job"]["is_final"] is True
+
+                # Open ends omit the modelling key and generated note; internal n and readiness stay intact.
+                for grinding in (0, 1):
+                    open_id = f"open-end-{grinding}"
+                    open_review = ready_review()
+                    open_review["spring_parameters"]["end_type"] = parameter("两端不并紧")
+                    open_review["spring_parameters"]["end_grinding"] = parameter(grinding)
+                    active = 8 if grinding else 9
+                    open_review["spring_parameters"]["active_coils"] = parameter(active, "圈")
+                    repository.create_review(open_id, open_review, owner=OWNER)
+                    open_preview = client.get(f"/api/reviews/{open_id}/generation-package")
+                    assert open_preview.status_code == 200, open_preview.text
+                    open_package = open_preview.json()["parameter_package"]
+                    assert open_package["generation_parameters"]["spring_parameters"]["active_coils"]["value"] == active
+                    open_create = client.post(f"/api/reviews/{open_id}/generation-jobs", json=create_request(open_id))
+                    assert open_create.status_code == 202, open_create.text
+                    open_job = open_create.json()["generation_job"]
+                    open_payload = submissions[-1]["payload"]
+                    open_model = open_payload["models"][0]
+                    assert open_model["modelParameters"]["是否并紧"] == 0
+                    assert "有效圈数n" not in open_model["modelParameters"]
+                    assert list(open_model["modelParameters"]) == ["线径", "中径", "自由高度", "圈数", "是否磨平", "是否并紧"]
+                    open_notes = open_model["extraProperties"]["技术要求"]
+                    expected_end_note = "两端不并紧，端面磨平。" if grinding else "两端不并紧，不磨平。"
+                    assert open_notes.startswith("1." + expected_end_note + "\n") and "每端磨270°" not in open_notes
+                    assert "工作圈数：" not in open_notes and "有效圈数：" not in open_notes
+                    assert "总圈数：9 圈。" in open_notes
+                    assert {key: open_model[key] for key in open_package["solidworks_preview"]} == open_package["solidworks_preview"]
+                    with repository._session() as session:
+                        frozen_open = session.get(GenerationJobRecord, open_job["generation_id"]).parameter_package
+                        assert frozen_open["solidworks_preview"] == open_package["solidworks_preview"]
+                        assert "active_coils" in frozen_open["generation_parameters"]["spring_parameters"]
+                    before_retry_count = len(submissions)
+                    open_retry = client.post(f"/api/reviews/{open_id}/generation-jobs", json=create_request(open_id))
+                    assert open_retry.status_code == 200, open_retry.text
+                    assert len(submissions) == before_retry_count
+                    assert open_retry.json()["generation_job"]["execution_options"]["solidworks_payload"] == open_payload
+                    changed_open = repository.get_review(open_id, owner_user_id=OWNER["user_id"])["review"]
+                    changed_open["spring_parameters"]["end_type"] = parameter("两端并紧")
+                    changed_response = client.patch(f"/api/reviews/{open_id}", json={"expected_revision": 1, "review": changed_open})
+                    assert changed_response.status_code == 200, changed_response.text
+                    stale_retry = client.post(f"/api/reviews/{open_id}/generation-jobs", json=create_request(open_id))
+                    assert stale_retry.status_code == 409 and stale_retry.json()["detail"]["code"] == "review_revision_conflict"
+                    assert len(submissions) == before_retry_count
+                    assert client.get(f"/api/generation-jobs/{open_job['generation_id']}").json()["generation_job"]["execution_options"]["solidworks_payload"] == open_payload
+                pending_open = ready_review()
+                pending_open["spring_parameters"]["end_type"] = parameter("两端不并紧")
+                pending_open["spring_parameters"]["active_coils"]["need_human_review"] = True
+                repository.create_review("open-active-pending", pending_open, owner=OWNER)
+                before_pending_count = len(submissions)
+                pending_create = client.post("/api/reviews/open-active-pending/generation-jobs", json=create_request("open-active-pending"))
+                assert pending_create.status_code == 409, pending_create.text
+                assert len(submissions) == before_pending_count
 
                 def reject_command(url: str, payload: dict[str, object], *, timeout_seconds: float) -> None:
                     raise TimeoutError("test timeout")

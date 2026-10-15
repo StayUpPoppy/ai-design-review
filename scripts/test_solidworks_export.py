@@ -8,6 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ai_design_review.generation_readiness import build_generation_parameter_package, assess_generation_readiness
+from ai_design_review.generation_contract import COMPRESSION_GENERATION_INPUT_FIELDS
 from ai_design_review.generation_schemas import GenerationParameterPackageV2
 from ai_design_review.solidworks import build_solidworks_command, build_solidworks_preview
 
@@ -45,7 +46,7 @@ def base_review():
 
 def cases():
     result = []
-    def add(name, edits=None, points=None, features=None, requirements=None):
+    def add(name, edits=None, points=None, features=None, requirements=None, end_note="两端并紧磨平，每端磨270°。"):
         review = base_review()
         for field, updates in (edits or {}).items():
             review["spring_parameters"].setdefault(field, {}).update(updates)
@@ -57,8 +58,59 @@ def cases():
             review["technical_requirements"].extend(requirements)
         # Spoofed/stale cache must never be a source for outgoing metrics.
         review["design_checks"] = {"metrics": {"solid_stress": {"value": 999999}, "unit_mass": {"value": 999999, "unit": "kg", "status": "estimated"}}}
-        result.append({"name": name, "review": review})
+        result.append({"name": name, "review": review, "end_note": end_note})
     add("book_baseline")
+    for closed, ground, note in [
+        (1, 1, "两端并紧磨平，每端磨270°。"), (1, 0, "两端并紧，不磨平。"),
+        (0, 1, "两端不并紧，端面磨平。"), (0, 0, "两端不并紧，不磨平。"),
+    ]:
+        add(f"end_binary_{closed}_{ground}", {"end_coils_closed": parameter(closed), "end_grinding": parameter(ground)}, end_note=note)
+        add(f"end_legacy_{closed}_{ground}", {"end_type": parameter("两端并紧" if closed else "两端不并紧"), "end_grinding": parameter("两端磨平" if ground else "两端不磨平")}, end_note=note)
+    add("end_open_explicit_angles", {"end_type": parameter("两端不并紧")}, requirements=[
+        {"type": "process", "content": "两端不并紧，端面磨平，每端磨270°。", "need_human_review": False},
+        {"type": "process", "content": "两端不并紧，端面磨平，每端磨300°。", "need_human_review": False},
+    ], end_note="两端不并紧，端面磨平。")
+    add("end_open_duplicate", {"end_type": parameter("两端不并紧")}, requirements=[
+        {"type": "process", "content": "两端不并紧，端面磨平。", "need_human_review": False},
+        {"type": "other", "content": "两端不并紧，端面磨平", "need_human_review": False},
+    ], end_note="两端不并紧，端面磨平。")
+    add("end_open_pending", {"end_coils_closed": parameter(0, need_human_review=True)}, end_note=None)
+    add("end_open_grinding_pending", {"end_type": parameter("两端不并紧"), "end_grinding": parameter(1, need_human_review=True)}, end_note=None)
+    add("end_open_active_pending", {"end_type": parameter("两端不并紧"), "active_coils": parameter(2, need_human_review=True)}, end_note="两端不并紧，端面磨平。")
+    original_coil_notes = [
+        {"type": "other", "content": "工作圈数：2 圈。", "need_human_review": False},
+        {"type": "process", "content": "有效圈数：2 圈。", "need_human_review": False},
+        {"type": "other", "content": "有效圈数：3 圈。", "need_human_review": False},
+        {"type": "other", "content": "有效圈数：2 圈。", "application_scope": "备用弹簧", "need_human_review": False},
+        {"type": "other", "content": "工作圈数：2 圈，端面去毛刺。", "need_human_review": False},
+    ]
+    add("end_closed_active_original", requirements=original_coil_notes)
+    add("end_open_active_original", {"end_type": parameter("两端不并紧")}, requirements=original_coil_notes, end_note="两端不并紧，端面磨平。")
+    add("end_open_active_legacy_text", {"end_type": parameter("两端不并紧")}, end_note="两端不并紧，端面磨平。")
+    add("end_closed_active_legacy_text")
+    add("end_legacy_english", {"end_type": parameter("closed_and_ground"), "end_grinding": parameter("ground")})
+    add("end_string_binary", {"end_coils_closed": parameter("0"), "end_grinding": parameter("1")}, end_note="两端不并紧，端面磨平。")
+    for field in ("end_type", "end_grinding", "end_coils_closed"):
+        for suffix, updates in {
+            "pending": {"need_human_review": True}, "invalid": {"value": "invalid"},
+            "stale": {"derived_value_stale": True}, "formula_stale": {"formula_recommendation_stale": True, "source": ["human_edited"]},
+            "cycle": {"source": ["formula_calculation"], "source_fields": [field]},
+            "unconfirmed": {"need_human_review": None},
+        }.items():
+            add(f"end_{field}_{suffix}", {field: {**parameter("两端并紧" if field == "end_type" else 1), **updates}}, end_note=None)
+    for field in ("end_type", "end_grinding"):
+        for suffix, value in (("missing", None), ("cleared", "")):
+            add(f"end_{field}_{suffix}", {field: parameter(value, source=["human_edited"])}, end_note=None)
+    add("end_duplicate", requirements=[
+        {"type": "process", "content": "两端并紧磨平，每端磨270°。", "need_human_review": False},
+        {"type": "other", "content": "两端并紧磨平，每端磨 270°", "need_human_review": False},
+    ])
+    add("end_different_conditions", requirements=[
+        {"type": "process", "content": "两端并紧磨平，每端磨300°。", "need_human_review": False},
+        {"type": "process", "content": "两端并紧磨平，每端磨270°，去除毛刺。", "need_human_review": False},
+        {"type": "process", "content": "两端并紧磨平，每端磨270°。", "application_scope": "备用弹簧", "need_human_review": False},
+    ])
+    add("end_legacy_text")
     add("hb_pending", {"solid_height": {"need_human_review": True}})
     add("hb_stale", {"solid_height": {"derived_value_stale": True}})
     add("hb_formula_stale", {"solid_height": {"formula_recommendation_stale": True}})
@@ -142,14 +194,37 @@ def run():
                 + generation["technical_requirements_text"]
             )
             package["solidworks_preview"] = build_solidworks_preview(package, review)
-        if case["name"] != "invalid_wire":
+        if case["name"] == "end_legacy_text":
+            generation = package["generation_parameters"]
+            generation["technical_requirements"] = []
+            generation["technical_requirements_text"] += "\n99.两端并紧磨平，每端磨270°。\n100.两端并紧磨平，每端磨 270°。"
+            package["solidworks_preview"] = build_solidworks_preview(package, review)
+        if case["name"] in {"end_open_active_legacy_text", "end_closed_active_legacy_text"}:
+            generation = package["generation_parameters"]
+            generation["technical_requirements"] = []
+            generation["technical_requirements_text"] += "\n工作圈数：2 圈。\n有效圈数：3 圈。\n工作圈数：2 圈，端面去毛刺。"
+            package["solidworks_preview"] = build_solidworks_preview(package, review)
+        complete_contract = all(field in package["generation_parameters"]["spring_parameters"] for field in COMPRESSION_GENERATION_INPUT_FIELDS)
+        if complete_contract:
             GenerationParameterPackageV2.model_validate(package)
         preview = package["solidworks_preview"]
         assert list(preview) == ["modelParameters", "customProperties", "extraProperties", "titleBlockProperties"]
         command = build_solidworks_command("1000000099", package, review)
         model = command["models"][0]
         assert {k: model[k] for k in preview} == preview
-        assert list(preview["modelParameters"]) == ["线径", "中径", "自由高度", "圈数", "有效圈数n", "是否磨平"]
+        expected_model_keys = ["线径", "中径", "自由高度", "圈数", "有效圈数n", "是否磨平", "是否并紧"]
+        if preview["modelParameters"]["是否并紧"] == 0:
+            expected_model_keys.remove("有效圈数n")
+        assert list(preview["modelParameters"]) == expected_model_keys, case["name"]
+        assert review["spring_parameters"]["active_coils"] == original_review["spring_parameters"]["active_coils"]
+        if "active_coils" in package["generation_parameters"]["spring_parameters"]:
+            active = package["generation_parameters"]["spring_parameters"]["active_coils"]["value"]
+            coil_text = preview["extraProperties"]["技术要求"]
+            if preview["modelParameters"]["是否并紧"] != 0:
+                assert f"有效圈数：{active} 圈。" in coil_text
+            elif case["name"] not in {"end_open_active_original", "end_open_active_legacy_text"}:
+                assert "有效圈数：" not in coil_text and "工作圈数：" not in coil_text
+        assert preview["modelParameters"]["是否并紧"] == package["generation_parameters"]["spring_parameters"].get("end_coils_closed", {}).get("value")
         extra = preview["extraProperties"]
         title = preview["titleBlockProperties"]
         assert isinstance(title, dict) and set(title) <= {"材料", "重量", "表面粗糙度"}
@@ -159,6 +234,17 @@ def run():
             assert isinstance(title["重量"], (int, float)) and title["重量"] == round(mass["value"], 8)
         assert list(extra)[0] == "技术要求" and set(extra) <= {"技术要求", "P'", "C", "τ_b"}
         notes = extra["技术要求"]
+        if case["end_note"]:
+            assert notes.startswith("1." + case["end_note"] + "\n"), (case["name"], notes)
+            assert notes.count(case["end_note"]) == 1, notes
+            if "material" in package["generation_parameters"]["spring_parameters"]:
+                assert notes.splitlines()[1].startswith("2.材料："), notes
+        else:
+            assert notes.startswith("1.材料："), (case["name"], notes)
+            assert "每端磨270°" not in notes
+        if case["name"] == "book_baseline" or case["name"].startswith("end_"):
+            assert review["technical_requirements"] == original_review["technical_requirements"], case["name"]
+        assert "每端磨270°" not in package["generation_parameters"]["technical_requirements_text"] or case["name"] in {"end_duplicate", "end_different_conditions", "end_legacy_text", "end_open_explicit_angles"}
         for index, line in enumerate(notes.splitlines(), 1):
             assert line.startswith(f"{index}."), line
         assert "不应导出的" not in notes
@@ -173,6 +259,24 @@ def run():
             assert "材料：SUS304 不锈钢。" not in notes
         assert notes.count("绕制方向：右旋。") == 1
         name = case["name"]
+        if name in {"end_closed_active_original", "end_open_active_original", "end_open_active_legacy_text", "end_closed_active_legacy_text"}:
+            assert "有效圈数：3 圈。" in notes and "工作圈数：2 圈，端面去毛刺。" in notes
+            if "original" in name:
+                assert "备用弹簧" in notes
+            if preview["modelParameters"]["是否并紧"] == 0:
+                assert notes.count("工作圈数：2 圈。") == 1, notes
+                assert "有效圈数：2 圈。" not in notes, "Only equivalent original records are deduplicated; no generated row is restored"
+            else:
+                assert notes.count("有效圈数：2 圈。") == 1 and "工作圈数：2 圈。" not in notes, notes
+        if name == "end_open_explicit_angles":
+            assert notes.count("每端磨270°") == 1 and notes.count("每端磨300°") == 1
+        if name == "end_open_active_pending":
+            readiness = assess_generation_readiness(review)
+            assert readiness["status"] == "needs_confirmation", readiness
+        if name == "end_open_pending":
+            assert preview["modelParameters"]["是否并紧"] is None and "有效圈数n" in preview["modelParameters"]
+        if name == "end_different_conditions":
+            assert "每端磨300°" in notes and "去除毛刺" in notes and "备用弹簧" in notes
         if name == "book_baseline":
             assert extra == {"技术要求": notes, "P'": 2.9314, "C": 14, "τ_b": 451.2669}, extra
             assert "Hb = 6.3 mm" in notes and "Fb =" not in notes
@@ -240,12 +344,14 @@ def run():
         changed["spring_parameters"]["solid_height"]["value"] = 1
         changed["spring_parameters"]["material"]["value"] = "65Mn"
         changed["spring_parameters"]["total_coils"]["value"] = 8
+        changed["spring_parameters"]["end_type"]["value"] = "两端不并紧"
+        changed["spring_parameters"]["end_grinding"]["value"] = "两端不磨平"
         assert build_solidworks_command("1000000099", package, changed) == command
         assert package == frozen
         legacy = deepcopy(frozen)
         del legacy["solidworks_preview"]["titleBlockProperties"]
         del legacy["derived_parameters"]["solidworks_design_checks"]["metrics"]["unit_mass"]
-        if case["name"] != "invalid_wire":
+        if complete_contract:
             dumped = GenerationParameterPackageV2.model_validate(legacy).model_dump(mode="json")
             assert "titleBlockProperties" not in dumped["solidworks_preview"]
         assert "titleBlockProperties" not in build_solidworks_command("1000000099", legacy, changed)["models"][0]
@@ -254,6 +360,28 @@ def run():
         invalid = base_review()
         invalid["spring_parameters"]["surface_roughness_ra"]["value"] = value
         assert "表面粗糙度" not in build_generation_parameter_package(invalid)["solidworks_preview"]["titleBlockProperties"]
+    baseline = outputs[0]
+    for field, updates in [
+        ("end_type", {"value": "两端不并紧"}), ("end_grinding", {"value": "invalid"}),
+        ("end_type", {"need_human_review": True}), ("end_grinding", {"derived_value_stale": True}),
+    ]:
+        changed = deepcopy(baseline["review"])
+        changed["spring_parameters"][field].update(updates)
+        rebuilt = build_solidworks_preview(deepcopy(baseline["package"]), changed)
+        assert not rebuilt["extraProperties"]["技术要求"].startswith("1.两端"), field
+    old_open = deepcopy(next(item["package"] for item in outputs if item["name"] == "end_binary_0_1"))
+    old_open["solidworks_preview"]["modelParameters"]["有效圈数n"] = 2
+    old_open["solidworks_preview"]["extraProperties"]["技术要求"] = old_open["solidworks_preview"]["extraProperties"]["技术要求"].replace("1.两端不并紧，端面磨平。", "1.两端不并紧，端面磨平，每端磨270°。", 1)
+    old_open["solidworks_preview"]["extraProperties"]["技术要求"] += "\n99.工作圈数：2 圈。"
+    frozen_open = deepcopy(old_open["solidworks_preview"])
+    assert {key: build_solidworks_command("1000000099", old_open, baseline["review"])["models"][0][key] for key in frozen_open} == frozen_open
+    historical = deepcopy(baseline["package"])
+    old_text = historical["solidworks_preview"]["extraProperties"]["技术要求"].splitlines()[1:]
+    old_text = "\n".join(f"{index}.{line.split('.', 1)[1]}" for index, line in enumerate(old_text, 1)).replace("有效圈数：", "工作圈数：")
+    historical["solidworks_preview"]["extraProperties"]["技术要求"] = old_text
+    del historical["solidworks_preview"]["modelParameters"]["是否并紧"]
+    assert "是否并紧" not in build_solidworks_command("1000000099", historical, baseline["review"])["models"][0]["modelParameters"]
+    assert build_solidworks_command("1000000099", historical, baseline["review"])["models"][0]["extraProperties"]["技术要求"] == old_text, "pre-feature frozen requests must not gain the new template"
     return outputs
 
 
