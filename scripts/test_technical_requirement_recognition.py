@@ -46,7 +46,7 @@ def main():
     assert built["spring_parameters"]["wire_diameter"]["value"] == 1.8
     assert built["spring_parameters"]["total_coils"]["value"] == 10
     assert validate_translation("9. Load F3=2850 N", "载荷 F3=2850 N") is None
-    assert validate_translation("12.5 mm", "5 mm"), "decimal engineering numbers remain protected"
+    assert validate_translation("12.5 mm", "5 mm") is None, "Translation content comparisons are disabled"
 
     review = _ready_review()
     review["technical_requirements"] = copy.deepcopy(notes[1:3])

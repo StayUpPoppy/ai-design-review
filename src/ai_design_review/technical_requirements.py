@@ -38,11 +38,27 @@ _PREFIX_TYPES = {
     "热处理要求": "heat_treatment", "热处理": "heat_treatment",
     "盐雾要求": "salt_spray", "盐雾试验": "salt_spray", "盐雾测试": "salt_spray",
     "表面处理要求": "surface", "表面处理": "surface",
-    "硬度要求": "hardness", "材料环保要求": "environmental", "环保要求": "environmental",
-    "寿命要求": "lifetime", "寿命测试": "lifetime",
-    "工艺要求": "process", "其他要求": "other",
+    "硬度要求": "hardness", "硬度": "hardness", "材料环保要求": "environmental", "环保要求": "environmental", "环保": "environmental",
+    "寿命要求": "lifetime", "寿命测试": "lifetime", "寿命": "lifetime", "盐雾": "salt_spray",
+    "工艺要求": "process", "工艺": "process", "其他要求": "other", "其他": "other",
 }
-_PREFIX_PATTERN = re.compile(r"^(" + "|".join(_PREFIX_TYPES) + r")\s*(?::\s*|(?=[+\-±]?\d))")
+_HARDNESS_SCALE = r"(?:HBW|HRC|HRA|HRB|HV|HB)"
+_NUMBER = r"[+\-]?[0-9]+(?:\.[0-9]+)?"
+
+
+def _leading_label(text: str) -> tuple[int, str] | None:
+    """A label must end at a colon, a number, or an explicit hardness expression."""
+    for label in sorted(_PREFIX_TYPES, key=len, reverse=True):
+        if not text.startswith(label):
+            continue
+        # Width normalization keeps character offsets stable for display-label removal.
+        rest = "".join(chr(ord(char) - 0xFEE0) if 0xFF01 <= ord(char) <= 0xFF5E else char for char in text[len(label):])
+        boundary = re.match(r"\s*[:：]\s*", rest) or re.match(r"\s*(?=[+\-±]?[0-9０-９])", rest)
+        if boundary is None and _PREFIX_TYPES[label] == "hardness":
+            boundary = re.match(r"\s*(?=" + _HARDNESS_SCALE + r"\s*(?:[<>≤≥]=?\s*)?[+\-]?[0-9０-９])", rest, re.I)
+        if boundary is not None:
+            return len(label) + boundary.end(), _PREFIX_TYPES[label]
+    return None
 
 
 def normalize_technical_text(value: Any) -> str:
@@ -58,11 +74,11 @@ def technical_requirement_body(value: Any) -> tuple[str, str | None]:
     text = normalize_technical_text(value)
     text = re.sub(r"^\d+\s*[.、)]\s*(?=[^\d\s])", "", text)
     kind = None
-    while match := _PREFIX_PATTERN.match(text):
-        label_kind = _PREFIX_TYPES[match[1]]
+    while match := _leading_label(text):
+        end, label_kind = match
         if label_kind not in {"other", "process"} or kind is None:
             kind = label_kind
-        text = text[match.end():].strip()
+        text = text[end:].strip()
     return text.rstrip(".").strip(), kind
 
 
@@ -76,12 +92,78 @@ def _comparison_text(value: Any) -> str:
     return text
 
 
+# Comparison rewrites are deliberately local: all unmatched wording stays in place.
+# Never use a bag of extracted values: order, negatives and residual conditions matter.
+_UNIT_ALIASES = {
+    "摄氏度": "°C", "°C": "°C", "微米": "μm", "µm": "μm", "um": "μm", "μm": "μm",
+    "毫米": "mm", "mm": "mm", "厘米": "cm", "cm": "cm", "纳米": "nm", "nm": "nm",
+    "分钟": "min", "min": "min", "小时": "h", "h": "h", "秒钟": "s", "秒": "s", "s": "s",
+    "兆帕": "MPa", "MPa": "MPa", "牛顿": "N", "N": "N", "%": "%",
+}
+_UNIT_PATTERN = "(?:°\\s*C|" + "|".join(re.escape(unit) for unit in sorted(_UNIT_ALIASES, key=len, reverse=True) if unit != "°C") + ")"
+_QUANTITY = re.compile(r"(?<![\d.])(" + _NUMBER + r")\s*(" + _UNIT_PATTERN + r")(?![A-Za-z0-9_])")
+_RANGE = re.compile(r"(?<![A-Za-z0-9_.])(" + _NUMBER + r")\s*(" + _UNIT_PATTERN + r")?\s*([~–—至到-])\s*(" + _NUMBER + r")\s*(" + _UNIT_PATTERN + r")(?![A-Za-z0-9_])")
+_HARDNESS_RANGE = re.compile(r"(?<![A-Za-z0-9_])(" + _HARDNESS_SCALE + r")\s*(" + _NUMBER + r")\s*([~–—至到-])\s*(" + _NUMBER + r")(?![\d.])", re.I)
+
+
+def _range_body(left: str, separator: str, right: str) -> str:
+    # Descending subtraction/tolerance expressions are not rewritten as ranges.
+    if float(left) > float(right):
+        return f"{left}{separator}{right}"
+    return f"{left}~{right}"
+
+
+def _engineering_comparison_text(value: Any, kind: str) -> str:
+    text = normalize_technical_text(value)
+    if kind == "surface_roughness":
+        return _comparison_text(text)  # Keep the dedicated Ra export matching unchanged.
+    if kind == "lifetime":
+        text = re.sub(r"(?<![A-Za-z0-9_.])([0-9]+)万次", lambda m: ((m[1].lstrip("0") + "0000") if m[1].lstrip("0") else "0") + "次", text)
+        text = re.sub(r"(?:每)?(?:(?<![一二三四五六七八九十])一|(?<![A-Za-z0-9_.])1)\s*秒(?:钟)?\s*(?:一|1)\s*次", "每秒1次", text)
+        text = re.sub(r"每\s*秒(?:钟)?\s*([0-9]+)\s*次", r"每秒\1次", text)
+        text = re.sub(r"(?<![A-Za-z0-9_.])([0-9]+)\s*次\s*/\s*秒(?:钟)?", r"每秒\1次", text)
+    if kind == "hardness":
+        suffix = re.compile(r"(?<![A-Za-z0-9_.])(" + _NUMBER + r")(?:\s*([~–—至到-])\s*(" + _NUMBER + r"))?\s*(" + _HARDNESS_SCALE + r")(?![A-Za-z0-9_/]|\.[0-9])", re.I)
+        text = suffix.sub(lambda m: m[4].upper() + (_range_body(m[1], m[2], m[3]) if m[3] is not None else m[1]), text)
+        text = re.sub(r"(?<![A-Za-z0-9_])(" + _HARDNESS_SCALE + r")\s*(?=[<>≤≥+\-\d])", lambda m: m[1].upper(), text, flags=re.I)
+        text = _HARDNESS_RANGE.sub(lambda m: m[1].upper() + _range_body(m[2], m[3], m[4]), text)
+    if kind == "salt_spray":
+        for wording, code in (("铜加速乙酸盐雾", "CASS"), ("乙酸盐雾", "AASS"), ("中性盐雾", "NSS")):
+            text = re.sub(wording + r"(?:试验|测试)?", code, text)
+        text = re.sub(r"(?<![A-Za-z0-9_])(NSS|AASS|CASS)(?![A-Za-z_])", lambda m: m[1].upper(), text, flags=re.I)
+    if kind == "environmental":
+        text = re.sub(r"(?<![A-Za-z0-9_])(RoHS|REACH)(?![A-Za-z_])", lambda m: "RoHS" if m[1].lower() == "rohs" else "REACH", text, flags=re.I)
+    if kind in {"salt_spray", "environmental"}:
+        text = re.sub(r"(?<![A-Za-z0-9_])(NSS|AASS|CASS|RoHS|REACH)\s+(?=[0-9])", r"\1", text)
+    # Preserve action names, order and all other prose; only these explicit predicates are aliases.
+    for wording, symbol in (("小于等于", "≤"), ("大于等于", "≥"), ("不大于", "≤"), ("不小于", "≥"), ("小于", "<"), ("大于", ">")):
+        text = re.sub(wording + r"(?=\s*[+\-]?[0-9])", symbol, text)
+    text = text.replace("<=", "≤").replace(">=", "≥")
+    text = _QUANTITY.sub(lambda m: m[1] + _UNIT_ALIASES[re.sub(r"\s+", "", m[2])], text)
+
+    def quantity_range(match: re.Match[str]) -> str:
+        left, left_unit, separator, right, right_unit = match.groups()
+        left_unit = re.sub(r"\s+", "", left_unit or "")
+        right_unit = re.sub(r"\s+", "", right_unit)
+        # An explicit minus between complete quantities may be arithmetic.
+        if left_unit and (left_unit != right_unit or separator == "-"):
+            return match[0]
+        if separator == "-" and kind in {"other", "process", "environmental"}:
+            return match[0]
+        return _range_body(left, separator, right) + right_unit
+
+    text = _RANGE.sub(quantity_range, text)
+    # Recognize the boundary of known standard designators, but keep editions and suffixes.
+    text = re.sub(r"(?<![A-Za-z0-9_])(GB/T|GB|ISO|EN|DIN)\s+(?=[0-9])", r"\1", text)
+    return _comparison_text(text)
+
+
 def technical_requirement_equivalence_key(item: dict[str, Any]) -> tuple[str, str, str]:
     body, prefix_kind = technical_requirement_body(_single_line_technical_requirement_content(technical_requirement_output_content(item)))
     kind = prefix_kind or normalize_technical_requirement_type(item.get("type"), default="other") or "other"
     if kind == "process":
         kind = "other"
-    return kind, _comparison_text(body), _comparison_text(item.get("application_scope"))
+    return kind, _engineering_comparison_text(body, kind), _comparison_text(item.get("application_scope"))
 
 
 def format_technical_requirement(item: dict[str, Any]) -> str:
@@ -92,9 +174,8 @@ def format_technical_requirement(item: dict[str, Any]) -> str:
     kind = prefix_kind or normalize_technical_requirement_type(item.get("type"), default="other") or "other"
     # Preserve the user's punctuation and units; normalization is for comparison.
     text = re.sub(r"^\d+\s*[.．、)]\s*(?=[^\d\s])", "", content)
-    pattern = re.compile(r"^(" + "|".join(_PREFIX_TYPES) + r")\s*(?:[:：]\s*|(?=[+\-±]?\d))")
-    while match := pattern.match(text):
-        text = text[match.end():].strip()
+    while match := _leading_label(text):
+        text = text[match[0]:].strip()
     if not text:
         return ""
     scope = str(item.get("application_scope") or "").strip()

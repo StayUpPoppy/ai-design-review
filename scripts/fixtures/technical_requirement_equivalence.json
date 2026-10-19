@@ -203,5 +203,768 @@
     "type": "other",
     "left": "１２．５ mm",
     "right": "５ mm"
+  },
+  {
+    "id": "eight_hardness_1",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度 HRC45-50",
+    "right": "HRC 45～50"
+  },
+  {
+    "id": "eight_hardness_2",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度要求：45至50HRC",
+    "right": "HRC45—50"
+  },
+  {
+    "id": "eight_hardness_3",
+    "same": false,
+    "type": "hardness",
+    "left": "HRC45-50",
+    "right": "HRC45-51"
+  },
+  {
+    "id": "eight_hardness_4",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度 HRA45-50",
+    "right": "HRA 45～50"
+  },
+  {
+    "id": "eight_hardness_5",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度要求：45至50HRA",
+    "right": "HRA45—50"
+  },
+  {
+    "id": "eight_hardness_6",
+    "same": false,
+    "type": "hardness",
+    "left": "HRA45-50",
+    "right": "HRA45-51"
+  },
+  {
+    "id": "eight_hardness_7",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度 HRB45-50",
+    "right": "HRB 45～50"
+  },
+  {
+    "id": "eight_hardness_8",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度要求：45至50HRB",
+    "right": "HRB45—50"
+  },
+  {
+    "id": "eight_hardness_9",
+    "same": false,
+    "type": "hardness",
+    "left": "HRB45-50",
+    "right": "HRB45-51"
+  },
+  {
+    "id": "eight_hardness_10",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度 HV45-50",
+    "right": "HV 45～50"
+  },
+  {
+    "id": "eight_hardness_11",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度要求：45至50HV",
+    "right": "HV45—50"
+  },
+  {
+    "id": "eight_hardness_12",
+    "same": false,
+    "type": "hardness",
+    "left": "HV45-50",
+    "right": "HV45-51"
+  },
+  {
+    "id": "eight_hardness_13",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度 HB45-50",
+    "right": "HB 45～50"
+  },
+  {
+    "id": "eight_hardness_14",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度要求：45至50HB",
+    "right": "HB45—50"
+  },
+  {
+    "id": "eight_hardness_15",
+    "same": false,
+    "type": "hardness",
+    "left": "HB45-50",
+    "right": "HB45-51"
+  },
+  {
+    "id": "eight_hardness_16",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度 HBW45-50",
+    "right": "HBW 45～50"
+  },
+  {
+    "id": "eight_hardness_17",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度要求：45至50HBW",
+    "right": "HBW45—50"
+  },
+  {
+    "id": "eight_hardness_18",
+    "same": false,
+    "type": "hardness",
+    "left": "HBW45-50",
+    "right": "HBW45-51"
+  },
+  {
+    "id": "eight_hardness_19",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度要求：硬度：HRC45-50",
+    "right": "HRC45-50"
+  },
+  {
+    "id": "eight_hardness_20",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度hrc45-50",
+    "right": "HRC45~50"
+  },
+  {
+    "id": "eight_hardness_21",
+    "same": false,
+    "type": "hardness",
+    "left": "HRC≥45",
+    "right": "HRC<45"
+  },
+  {
+    "id": "eight_hardness_22",
+    "same": false,
+    "type": "hardness",
+    "left": "HRC45±5",
+    "right": "HRC45-50"
+  },
+  {
+    "id": "eight_hardness_23",
+    "same": false,
+    "type": "hardness",
+    "left": "HRC45-50",
+    "right": "HRC45.0-50.0"
+  },
+  {
+    "id": "eight_hardness_24",
+    "same": false,
+    "type": "hardness",
+    "left": "450HV0.3",
+    "right": "450HV30"
+  },
+  {
+    "id": "eight_hardness_25",
+    "same": false,
+    "type": "hardness",
+    "left": "450HV0.3",
+    "right": "HV450"
+  },
+  {
+    "id": "eight_hardness_26",
+    "same": false,
+    "type": "hardness",
+    "left": "HBW200/2.5/62.5",
+    "right": "HBW200/2.5/187.5"
+  },
+  {
+    "id": "eight_hardness_27",
+    "same": false,
+    "type": "hardness",
+    "left": "HRC45-50",
+    "right": "HRB45-50"
+  },
+  {
+    "id": "eight_hardness_28",
+    "same": false,
+    "type": "hardness",
+    "left": "HRC45-50，不得有裂纹",
+    "right": "HRC45-50"
+  },
+  {
+    "id": "eight_hardness_29",
+    "same": false,
+    "type": "hardness",
+    "left": "热处理后硬度HRC45-50",
+    "right": "HRC45-50"
+  },
+  {
+    "id": "eight_hardness_30",
+    "same": false,
+    "type": "hardness",
+    "left": "表面硬度HRC45-50",
+    "right": "心部硬度HRC45-50"
+  },
+  {
+    "id": "eight_hardness_31",
+    "same": false,
+    "type": "hardness",
+    "left": "HRC45-50",
+    "right": "HRC45-50",
+    "left_scope": "外圆",
+    "right_scope": "两端面"
+  },
+  {
+    "id": "eight_hardness_32",
+    "same": false,
+    "type": "hardness",
+    "left": "HRC45-50",
+    "right": "HRC45-50",
+    "right_scope": "两端面"
+  },
+  {
+    "id": "eight_hardness_33",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度 HRC45-50",
+    "right": "HRC45~50",
+    "left_scope": "两端面",
+    "right_scope": "两端面"
+  },
+  {
+    "id": "eight_heat_treatment_34",
+    "same": true,
+    "type": "heat_treatment",
+    "left": "热处理300摄氏度/20分钟",
+    "right": "300°C/20min"
+  },
+  {
+    "id": "eight_heat_treatment_35",
+    "same": true,
+    "type": "heat_treatment",
+    "left": "热处理：300至350℃，保温20分钟",
+    "right": "300-350°C,保温20min"
+  },
+  {
+    "id": "eight_heat_treatment_36",
+    "same": true,
+    "type": "heat_treatment",
+    "left": "300℃±10℃/20分钟+1分钟",
+    "right": "300 °C ±10° C/20 min+1 min"
+  },
+  {
+    "id": "eight_heat_treatment_37",
+    "same": true,
+    "type": "heat_treatment",
+    "left": "保温2小时，冷却10分钟",
+    "right": "保温2h,冷却10min"
+  },
+  {
+    "id": "eight_heat_treatment_38",
+    "same": false,
+    "type": "heat_treatment",
+    "left": "300℃/20min",
+    "right": "300℃/1200s"
+  },
+  {
+    "id": "eight_heat_treatment_39",
+    "same": false,
+    "type": "heat_treatment",
+    "left": "300°C-10°C",
+    "right": "300°C~10°C"
+  },
+  {
+    "id": "eight_heat_treatment_40",
+    "same": false,
+    "type": "heat_treatment",
+    "left": "300-10°C",
+    "right": "300~10°C"
+  },
+  {
+    "id": "eight_heat_treatment_41",
+    "same": false,
+    "type": "heat_treatment",
+    "left": "退火300°C/20min",
+    "right": "回火300°C/20min"
+  },
+  {
+    "id": "eight_heat_treatment_42",
+    "same": false,
+    "type": "heat_treatment",
+    "left": "先300°C/20min，后200°C/10min",
+    "right": "先200°C/10min，后300°C/20min"
+  },
+  {
+    "id": "eight_heat_treatment_43",
+    "same": false,
+    "type": "heat_treatment",
+    "left": "300°C/20min，空冷",
+    "right": "300°C/20min，水冷"
+  },
+  {
+    "id": "eight_heat_treatment_44",
+    "same": false,
+    "type": "heat_treatment",
+    "left": "300°C/20min，空冷",
+    "right": "300°C/20min"
+  },
+  {
+    "id": "eight_heat_treatment_45",
+    "same": false,
+    "type": "heat_treatment",
+    "left": "热处理后检查",
+    "right": "后检查"
+  },
+  {
+    "id": "eight_surface_46",
+    "same": true,
+    "type": "surface",
+    "left": "表面处理：镀镍厚度3微米，覆盖率不小于98%",
+    "right": "镀镍厚度3μm,覆盖率≥98%"
+  },
+  {
+    "id": "eight_surface_47",
+    "same": true,
+    "type": "surface",
+    "left": "镀锌，厚度5至8微米",
+    "right": "镀锌,厚度5-8μm"
+  },
+  {
+    "id": "eight_surface_48",
+    "same": true,
+    "type": "surface",
+    "left": "膜厚5µm，按ISO 4521检验",
+    "right": "膜厚5μm,按ISO4521检验"
+  },
+  {
+    "id": "eight_surface_49",
+    "same": false,
+    "type": "surface",
+    "left": "镀镍3μm",
+    "right": "镀锌3μm"
+  },
+  {
+    "id": "eight_surface_50",
+    "same": false,
+    "type": "surface",
+    "left": "覆盖率≥98%",
+    "right": "覆盖率>98%"
+  },
+  {
+    "id": "eight_surface_51",
+    "same": false,
+    "type": "surface",
+    "left": "厚度3μm，不得有油污",
+    "right": "厚度3μm，可有油污"
+  },
+  {
+    "id": "eight_surface_52",
+    "same": false,
+    "type": "surface",
+    "left": "两端面镀镍3μm",
+    "right": "外圆镀镍3μm"
+  },
+  {
+    "id": "eight_surface_53",
+    "same": false,
+    "type": "surface",
+    "left": "镀镍3μm，再镀银2μm",
+    "right": "镀银2μm，再镀镍3μm"
+  },
+  {
+    "id": "eight_surface_54",
+    "same": false,
+    "type": "surface",
+    "left": "镀镍3μm，覆盖率98%",
+    "right": "镀镍3μm"
+  },
+  {
+    "id": "eight_surface_55",
+    "same": false,
+    "type": "surface",
+    "left": "镀镍3μm，按ISO4521:2008",
+    "right": "镀镍3μm，按ISO4521:1985"
+  },
+  {
+    "id": "eight_salt_spray_56",
+    "same": true,
+    "type": "salt_spray",
+    "left": "盐雾要求：中性盐雾试验720小时无红锈",
+    "right": "NSS 720h无红锈"
+  },
+  {
+    "id": "eight_salt_spray_57",
+    "same": true,
+    "type": "salt_spray",
+    "left": "盐雾：乙酸盐雾测试48小时无红锈",
+    "right": "aass48h无红锈"
+  },
+  {
+    "id": "eight_salt_spray_58",
+    "same": true,
+    "type": "salt_spray",
+    "left": "铜加速乙酸盐雾试验24小时无红锈",
+    "right": "CASS24h无红锈"
+  },
+  {
+    "id": "eight_salt_spray_59",
+    "same": true,
+    "type": "salt_spray",
+    "left": "中性盐雾720小时，按GB/T 10125检验",
+    "right": "NSS720h,按GB/T10125检验"
+  },
+  {
+    "id": "eight_salt_spray_60",
+    "same": false,
+    "type": "salt_spray",
+    "left": "NSS720h无红锈",
+    "right": "AASS720h无红锈"
+  },
+  {
+    "id": "eight_salt_spray_61",
+    "same": false,
+    "type": "salt_spray",
+    "left": "720h无红锈",
+    "right": "NSS720h无红锈"
+  },
+  {
+    "id": "eight_salt_spray_62",
+    "same": false,
+    "type": "salt_spray",
+    "left": "NSS720h无红锈",
+    "right": "NSS720h无白锈"
+  },
+  {
+    "id": "eight_salt_spray_63",
+    "same": false,
+    "type": "salt_spray",
+    "left": "NSS720h无红锈",
+    "right": "NSS72h无红锈"
+  },
+  {
+    "id": "eight_salt_spray_64",
+    "same": false,
+    "type": "salt_spray",
+    "left": "NSS720h，无红锈且无白锈",
+    "right": "NSS720h，无红锈"
+  },
+  {
+    "id": "eight_salt_spray_65",
+    "same": false,
+    "type": "salt_spray",
+    "left": "NSS720h，按GB/T10125-2021",
+    "right": "NSS720h，按GB/T10125-2012"
+  },
+  {
+    "id": "eight_lifetime_66",
+    "same": true,
+    "type": "lifetime",
+    "left": "寿命测试：L1-L2-L1一秒钟一次，4万次内不可失效，力衰减保证10%之内",
+    "right": "L1-L2-L1每秒1次，40000次内不可失效，力衰减保证10%之内"
+  },
+  {
+    "id": "eight_lifetime_67",
+    "same": true,
+    "type": "lifetime",
+    "left": "寿命：4万次，每秒1次",
+    "right": "40000次，1次/秒"
+  },
+  {
+    "id": "eight_lifetime_68",
+    "same": true,
+    "type": "lifetime",
+    "left": "试验20分钟，每秒2次",
+    "right": "试验20min，2次/秒"
+  },
+  {
+    "id": "eight_lifetime_69",
+    "same": true,
+    "type": "lifetime",
+    "left": "1秒1次，100次",
+    "right": "每秒1次，100次"
+  },
+  {
+    "id": "eight_lifetime_70",
+    "same": false,
+    "type": "lifetime",
+    "left": "11秒1次",
+    "right": "1每秒1次"
+  },
+  {
+    "id": "eight_lifetime_71",
+    "same": false,
+    "type": "lifetime",
+    "left": "一秒钟一次，4万次",
+    "right": "一秒钟两次，4万次"
+  },
+  {
+    "id": "eight_lifetime_72",
+    "same": false,
+    "type": "lifetime",
+    "left": "每秒1次，4万次",
+    "right": "每秒1次，5万次"
+  },
+  {
+    "id": "eight_lifetime_73",
+    "same": false,
+    "type": "lifetime",
+    "left": "L1-L2-L1，4万次",
+    "right": "L2-L1-L2，4万次"
+  },
+  {
+    "id": "eight_lifetime_74",
+    "same": false,
+    "type": "lifetime",
+    "left": "40000次内不可失效",
+    "right": "40000次内可失效"
+  },
+  {
+    "id": "eight_lifetime_75",
+    "same": false,
+    "type": "lifetime",
+    "left": "力衰减保证10%之内",
+    "right": "力衰减≤10%"
+  },
+  {
+    "id": "eight_lifetime_76",
+    "same": false,
+    "type": "lifetime",
+    "left": "2.5万次",
+    "right": "25000次"
+  },
+  {
+    "id": "eight_lifetime_77",
+    "same": false,
+    "type": "lifetime",
+    "left": "每秒1次，4万次，力衰减10%",
+    "right": "每秒1次，4万次"
+  },
+  {
+    "id": "eight_environmental_78",
+    "same": true,
+    "type": "environmental",
+    "left": "环保要求：材料环保要求：rohs 2011/65/EU",
+    "right": "RoHS2011/65/EU"
+  },
+  {
+    "id": "eight_environmental_79",
+    "same": true,
+    "type": "environmental",
+    "left": "环保：reach 1907/2006",
+    "right": "REACH1907/2006"
+  },
+  {
+    "id": "eight_environmental_80",
+    "same": true,
+    "type": "environmental",
+    "left": "符合RoHS 2.0，铅含量不大于0.1%",
+    "right": "符合RoHS2.0,铅含量≤0.1%"
+  },
+  {
+    "id": "eight_environmental_81",
+    "same": false,
+    "type": "environmental",
+    "left": "符合环保要求",
+    "right": "符合RoHS"
+  },
+  {
+    "id": "eight_environmental_82",
+    "same": false,
+    "type": "environmental",
+    "left": "符合RoHS",
+    "right": "符合REACH"
+  },
+  {
+    "id": "eight_environmental_83",
+    "same": false,
+    "type": "environmental",
+    "left": "RoHS2011/65/EU",
+    "right": "RoHS2015/863/EU"
+  },
+  {
+    "id": "eight_environmental_84",
+    "same": false,
+    "type": "environmental",
+    "left": "RoHS2011/65/EU，允许豁免6(c)",
+    "right": "RoHS2011/65/EU，不允许豁免6(c)"
+  },
+  {
+    "id": "eight_environmental_85",
+    "same": false,
+    "type": "environmental",
+    "left": "不含有害物质",
+    "right": "符合RoHS"
+  },
+  {
+    "id": "eight_environmental_86",
+    "same": false,
+    "type": "environmental",
+    "left": "铅含量≤0.1%",
+    "right": "铅含量≤0.01%"
+  },
+  {
+    "id": "eight_environmental_87",
+    "same": false,
+    "type": "environmental",
+    "left": "符合RoHS及REACH",
+    "right": "符合RoHS"
+  },
+  {
+    "id": "eight_process_88",
+    "same": true,
+    "type": "process",
+    "left": "工艺：去除毛刺后镀镍3微米",
+    "right": "工艺要求：去除毛刺后镀镍3μm"
+  },
+  {
+    "id": "eight_process_89",
+    "same": true,
+    "type": "process",
+    "left": "工艺要求：未注尺寸以3D为准",
+    "right": "其他要求：未注尺寸以3D为准",
+    "right_type": "other"
+  },
+  {
+    "id": "eight_process_90",
+    "same": false,
+    "type": "process",
+    "left": "先去毛刺后镀锌",
+    "right": "先镀锌后去毛刺"
+  },
+  {
+    "id": "eight_process_91",
+    "same": false,
+    "type": "process",
+    "left": "去除毛刺",
+    "right": "不得去除毛刺"
+  },
+  {
+    "id": "eight_process_92",
+    "same": false,
+    "type": "process",
+    "left": "去除内孔毛刺",
+    "right": "去除外圆毛刺"
+  },
+  {
+    "id": "eight_process_93",
+    "same": false,
+    "type": "process",
+    "left": "去毛刺并清洗",
+    "right": "去毛刺"
+  },
+  {
+    "id": "eight_process_94",
+    "same": false,
+    "type": "process",
+    "left": "工艺处理后检查",
+    "right": "处理后检查"
+  },
+  {
+    "id": "eight_process_95",
+    "same": true,
+    "type": "process",
+    "left": "清洗20分钟",
+    "right": "清洗20min",
+    "right_type": "other"
+  },
+  {
+    "id": "eight_other_96",
+    "same": true,
+    "type": "other",
+    "left": "其他：未注尺寸以3D为准。",
+    "right": "未注尺寸以3D为准"
+  },
+  {
+    "id": "eight_other_97",
+    "same": false,
+    "type": "other",
+    "left": "未注尺寸以3D为准",
+    "right": "未注尺寸以2D为准"
+  },
+  {
+    "id": "eight_other_98",
+    "same": false,
+    "type": "other",
+    "left": "特殊检验：保留自由文字A",
+    "right": "特殊检验：保留自由文字B"
+  },
+  {
+    "id": "eight_other_99",
+    "same": false,
+    "type": "other",
+    "left": "1 6 mm",
+    "right": "16 mm"
+  },
+  {
+    "id": "eight_other_100",
+    "same": false,
+    "type": "other",
+    "left": "H1=12.5mm",
+    "right": "H1=12.50mm"
+  },
+  {
+    "id": "eight_other_101",
+    "same": false,
+    "type": "other",
+    "left": "F1=10N",
+    "right": "F1=10n"
+  },
+  {
+    "id": "eight_other_102",
+    "same": false,
+    "type": "other",
+    "left": "两端处理，不得有裂纹",
+    "right": "两端处理"
+  },
+  {
+    "id": "eight_other_103",
+    "same": false,
+    "type": "other",
+    "left": "2mm-3mm",
+    "right": "2~3mm"
+  },
+  {
+    "id": "eight_other_unknown",
+    "same": true,
+    "type": "other",
+    "left": "其他要求：未知检验：按附图A执行。",
+    "right": "未知检验：按附图A执行"
+  },
+  {
+    "id": "eight_hardness_fullwidth",
+    "same": true,
+    "type": "hardness",
+    "left": "硬度 ＨＲＣ４５－５０",
+    "right": "HRC45-50"
+  },
+  {
+    "id": "eight_heat_fullwidth_sign",
+    "same": true,
+    "type": "heat_treatment",
+    "left": "热处理 ＋３００℃/２０分钟",
+    "right": "+300°C/20min"
+  },
+  {
+    "id": "eight_lifetime_zero",
+    "same": true,
+    "type": "lifetime",
+    "left": "0万次",
+    "right": "0次"
+  },
+  {
+    "id": "eight_lifetime_large_integer",
+    "same": true,
+    "type": "lifetime",
+    "left": "9007199254740993万次",
+    "right": "90071992547409930000次"
   }
 ]

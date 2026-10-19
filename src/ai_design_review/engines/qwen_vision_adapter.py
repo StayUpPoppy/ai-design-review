@@ -23,6 +23,7 @@ from ..surface_roughness import (
     positive_surface_roughness,
     surface_roughness_location,
     surface_roughness_mentions,
+    roughness_evidence_assessment,
 )
 
 
@@ -174,6 +175,7 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
    - support_coils 严格表示“单端支承圈数”。只提取原图明确写出的“单端/每端/两端各”支承圈数，evidence 保留完整原文，并标记 support_coils_origin="drawing_single_end"。禁止从总圈数、有效圈数自行相减或除以2推算，也不填默认值；未明确标注时省略该字段。两端合计圈数不能直接填入单端字段。原图明确两端支承不对称时，在 technical_requirements 保留原文说明，不自行均分。
    - 端部形式 end_type：只有图纸文字明确写“并紧/闭口”时才填“两端并紧”；明确写“不并紧/开口”时才填“两端不并紧”。端部形式与端面磨削是独立字段，无法确定时不要输出。
    - 表面粗糙度符号、加工符号或小三角旁的数值（例如 Ra 12.5、▽ 12.5）绝不能填入 outer_diameter、inner_diameter、mean_diameter、free_length、body_length、wire_diameter 或 load_points。识别到明确 Ra 数值时，必须在 parameters.surface_roughness_ra 中输出数值，并在 evidence 中保留符号或文字；明确知道作用位置时增加 surface_location（例如“两端面”），不明确时不要猜。
+   - 粗糙度 evidence 只填写可见原图的简短原文或符号，不写分析过程、推测、默认参考或内部JSON字段。无法辨认时不补造Ra值；notes中出现的讨论、举例或推荐值不代表原图标注。
    - 对圆柱压缩弹簧：outer_diameter 必须来自直径尺寸线、直径符号或紧邻的一侧公差；free_length 必须来自两端之间的轴向总长度尺寸线；H1/H2 只属于 load_points 的试验高度。没有足够定位依据时省略字段并标记 need_human_review=true。
 4. 提取动态工艺要求：surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process、other。表面处理、硬度、热处理、盐雾等放进 technical_requirements；表面粗糙度只放进 parameters.surface_roughness_ra，不要重复输出为技术要求。
    - 按原图逐条、逐页阅读顺序完整提取，不概括、不按类型合并；同为 process 或 other 的不同条目必须分别输出。original_number 保存原图序号（可重复，无编号时为 null），source_order 保存阅读顺序，page 保存所在页。content 仅为正文，不加序号或“技术要求”标题；original_content 完整保留原文。
@@ -458,11 +460,14 @@ def _surface_roughness_candidates(payload: dict[str, Any]) -> list[dict[str, Any
     results: list[dict[str, Any]] = []
     seen: set[tuple[float, str, str]] = set()
 
-    def append(value: Any, item: dict[str, Any], evidence: Any, location: Any = None) -> None:
+    def append(value: Any, item: dict[str, Any], evidence: Any, location: Any = None, *, structured: bool = False) -> None:
         number = positive_surface_roughness(value)
         if number is None:
             return
         evidence_text = str(evidence or "").strip()
+        status, reason = roughness_evidence_assessment(number, evidence_text, structured=structured)
+        if status == "excluded":
+            return
         normalized_location = str(location or "").strip() or surface_roughness_location(evidence_text)
         key = (number, normalized_location, evidence_text)
         if key in seen:
@@ -471,11 +476,12 @@ def _surface_roughness_candidates(payload: dict[str, Any]) -> list[dict[str, Any
         candidate = _candidate(
             SURFACE_ROUGHNESS_FIELD,
             number,
-            {**item, "evidence": evidence_text or f"Ra {number}"},
+            {**item, "evidence": evidence_text},
             unit=SURFACE_ROUGHNESS_UNIT,
             suggested_region="Qwen surface roughness recognition",
         )
         candidate["surface_location"] = normalized_location or None
+        candidate.update(evidence=evidence_text, evidence_status=status, evidence_reason=reason)
         results.append(candidate)
 
     parameters = payload.get("parameters") if isinstance(payload.get("parameters"), dict) else {}
@@ -486,19 +492,19 @@ def _surface_roughness_candidates(payload: dict[str, Any]) -> list[dict[str, Any
         value = item.get("value")
         direct = positive_surface_roughness(value)
         if direct is not None:
-            append(direct, item, item.get("evidence") or f"Ra {direct}", item.get("surface_location") or item.get("location"))
+            append(direct, item, item.get("evidence") or "", item.get("surface_location") or item.get("location"), structured=True)
         else:
             for mention in surface_roughness_mentions(value):
-                append(mention["value"], item, item.get("evidence") or mention["evidence"], item.get("surface_location") or mention.get("location"))
+                append(mention["value"], item, item.get("evidence") or str(value), item.get("surface_location") or mention.get("location"))
 
     for item in payload.get("technical_requirements") or []:
         if not isinstance(item, dict) or not _is_surface_roughness_type(item.get("type")):
             continue
         direct = positive_surface_roughness(item.get("content"))
         if direct is not None:
-            append(direct, item, item.get("evidence") or f"Ra {direct}", item.get("surface_location") or item.get("location"))
+            append(direct, item, item.get("evidence") or item.get("content"), item.get("surface_location") or item.get("location"), structured=True)
         for mention in surface_roughness_mentions(item.get("content")):
-            append(mention["value"], item, item.get("evidence") or mention["evidence"], item.get("surface_location") or mention.get("location"))
+            append(mention["value"], item, item.get("evidence") or item.get("content"), item.get("surface_location") or mention.get("location"))
 
     evidence_texts: list[tuple[str, dict[str, Any]]] = []
     for item in parameters.values():
@@ -509,7 +515,7 @@ def _surface_roughness_candidates(payload: dict[str, Any]) -> list[dict[str, Any
         evidence_texts.append((notes, {"confidence": 0.68, "need_human_review": True}))
     for text, item in evidence_texts:
         for mention in surface_roughness_mentions(text):
-            append(mention["value"], item, mention["evidence"], mention.get("location"))
+            append(mention["value"], item, text, mention.get("location"))
     return results
 
 

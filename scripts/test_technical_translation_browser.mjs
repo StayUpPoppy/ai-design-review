@@ -11,6 +11,9 @@ const { chromium } = process.env.CODEX_NODE_MODULES
 const root = path.resolve("frontend");
 const output = path.resolve("outputs/translation-ui-qa");
 const warningFixtures = JSON.parse(fs.readFileSync("scripts/fixtures/technical_translation_warning_pairs.json", "utf8"));
+const directFixtures = JSON.parse(fs.readFileSync("scripts/fixtures/technical_translation_direct_results.json", "utf8"));
+const germanOriginal = "Arbeitsweg (Hub) sh = 0.85 mm";
+const germanChinese = "工作行程（行程）sh = 0.85 mm";
 fs.mkdirSync(output, { recursive: true });
 const server = http.createServer((request, response) => {
   const file = path.resolve(root, request.url.split("?")[0].replace(/^\//, "") || "index.html");
@@ -44,9 +47,22 @@ try {
           translation_status: "failed", translation_error: "译文仍包含外语说明", translation_input_snapshot: { content: "Покрытие Ц15.hr ГОСТ 9306-85（人工补充）", type: "surface" } },
         { requirement_id: "chinese", type: "heat_treatment", content: "热处理 300°C+10°C/20min+1min", need_human_review: false }],
       manual_confirmations: {}, change_history: [], standardization_results: [], drawing_annotations: null };
+    review.technical_requirements.push(
+      ...["german-saved", "german-manual"].map((id) => ({ requirement_id: id, type: "process",
+        content: germanOriginal, original_content: germanOriginal,
+        source: id === "german-manual" ? ["qwen_vision", "human_edited"] : ["qwen_vision"],
+        need_human_review: true, translation_status: "failed", translation_error: "译文仍包含外语说明",
+        translation_error_code: "foreign_prose_remaining", translation_error_details: { candidate_content: germanChinese, remaining_text: "sh" },
+        translation_input_snapshot: { content: germanOriginal, type: "process" } })),
+      { requirement_id: "german-partial", type: "process", content: "Arbeitsweg (Hub) sh = 1.25 mm", need_human_review: true });
     review.technical_requirements.push(...warningFixtures.map((fixture) => ({ requirement_id: `warning-${fixture.original_number}`,
       type: fixture.type, original_number: fixture.original_number, content: fixture.original_content, original_content: fixture.original_content,
       source: ["qwen_vision"], need_human_review: true, translation_status: "failed", translation_error: "历史工程信息不一致",
+      translation_input_snapshot: { content: fixture.original_content, type: fixture.type } })));
+    review.technical_requirements.push(...directFixtures.map((fixture) => ({ ...fixture,
+      content: fixture.original_content, source: ["qwen_vision"], need_human_review: true,
+      translation_status: "failed", translation_error: "历史内容校验失败",
+      translation_error_details: { candidate_content: fixture.content },
       translation_input_snapshot: { content: fixture.original_content, type: fixture.type } })));
     await page.route("**/api/**", async (route) => {
       const request = route.request();
@@ -74,6 +90,9 @@ try {
           if (mode === "revalidate") {
             const item = review.technical_requirements.find((item) => item.requirement_id === row.requirement_id);
             const result = { ...row, content: item.content, original_content: item.original_content || item.content, translation_status: "failed", translation_error: item.translation_error || "没有可用候选", translation_input_snapshot: row.source_snapshot, recovery_mode: "unavailable" };
+            const direct = directFixtures.find((fixture) => fixture.requirement_id === row.requirement_id);
+            if (direct) return { ...result, content: direct.content, translation_status: "translated", translation_error: "",
+              translation_error_details: {}, translation_source: "saved_failed_translation", recovery_mode: "automatic" };
             const fixture = warningFixtures.find((fixture) => row.requirement_id === `warning-${fixture.original_number}`);
             if (fixture) return { ...result, content: fixture.content, translation_status: "translated", translation_error: "", source_language: "ru",
               translation_source: "saved_recognition", recovery_mode: "automatic", translation_warnings: [{ code: "engineering_mismatch",
@@ -84,9 +103,17 @@ try {
             if (row.requirement_id === "historical-3d") return { ...result, translation_status: "not_required", translation_error: "", recovery_mode: "automatic" };
             if (row.requirement_id === "r9") return { ...result, content: "在力 F3 作用下强压处理，保载时间不少于 6 小时", source_language: "ru", translation_status: "translated", translation_error: "", translation_source: "saved_recognition", recovery_mode: "automatic" };
             if (row.requirement_id === "r12-edited") return { ...result, recovery_mode: "preview", recovery_reason: "此条已有人工编辑，请对照后选择；不会自动替换当前文本。", translation_candidates: [{ content: "镀层 Ц15.hr 按 ГОСТ 9306-85 执行", original_content: item.original_content, source_language: "ru", translation_source: "saved_recognition" }] };
+            if (row.requirement_id === "german-saved") return { ...result, content: germanChinese, translation_status: "translated", translation_error: "", translation_source: "saved_failed_translation", recovery_mode: "automatic" };
+            if (row.requirement_id === "german-manual") return { ...result, recovery_mode: "preview", translation_error_details: item.translation_error_details,
+              recovery_reason: "此条已有人工编辑，请对照后选择；不会自动替换当前文本。",
+              translation_candidates: [{ content: germanChinese, original_content: germanOriginal, source_language: "de", translation_source: "saved_failed_translation" }] };
+            if (row.requirement_id === "german-partial") return { ...result, translation_error_details: item.translation_error_details, translation_error_code: "foreign_prose_remaining" };
             return result;
           }
           assert.notEqual(row.requirement_id, "unsafe", "engineering validation failures cannot be auto-translated");
+          if (row.requirement_id === "german-partial") return { ...row, content: "工作行程 (Hub) sh = 1.25 mm", original_content: row.source_snapshot.content,
+            source_language: "de", translation_status: "translated", translation_error: "", translation_source: "simulated:test", translation_input_snapshot: row.source_snapshot,
+            translation_error_code: "", translation_error_details: {} };
           if (row.requirement_id === "historical-3d") return { ...row, content: row.source_snapshot.content, original_content: row.source_snapshot.content,
             source_language: "zh", translation_status: "not_required", translation_error: "", translation_source: "qwen_text:old", translation_input_snapshot: row.source_snapshot };
           const failed = row.requirement_id === "failed" && !retryWorks;
@@ -135,12 +162,8 @@ try {
     const warningRow = block.locator('[data-requirement-id="warning-11"]');
     assert.equal(await warningRow.locator('textarea').inputValue(), `其他要求：${warningFixtures[0].content}`);
     assert.equal(await warningRow.locator('[data-role="confirm"]').isEnabled(), true);
-    assert.equal(await warningRow.locator('.technical-translation-status').textContent(), "译文与原文存在工程信息差异，请核对后确认。");
-    const warningDetails = warningRow.locator('.technical-translation-details');
-    assert.equal(await warningDetails.getAttribute('open'), null);
-    await warningDetails.locator('summary').press('Enter');
-    assert.equal(await warningDetails.getAttribute('open'), "");
-    assert.ok((await warningDetails.textContent()).includes('СТ ЦКБА'));
+    assert.equal(await warningRow.locator('.technical-translation-status').textContent(), "译文已填入，请确认。");
+    assert.equal(await warningRow.locator('.technical-translation-details').count(), 0);
     await warningRow.scrollIntoViewIfNeeded();
     if (!process.env.SKIP_UI_QA_SCREENSHOTS) await warningRow.screenshot({ path: path.join(output, `${size}-warnings.png`) });
     assert.equal(await warningRow.evaluate((element) => [...element.querySelectorAll('button, p, summary')].some((control) => control.getBoundingClientRect().right > element.getBoundingClientRect().right + 2)), false);
@@ -150,6 +173,36 @@ try {
     assert.equal(await block.locator('[data-requirement-id="historical-3d"] [data-translation-action]').count(), 0);
     assert.equal(await block.locator('[data-requirement-id="unsafe"] [data-role="confirm"]').isEnabled(), false);
     assert.equal(await block.locator('[data-requirement-id="r9"] textarea').inputValue(), "工艺要求：在力 F3 作用下强压处理，保载时间不少于 6 小时");
+    for (const fixture of directFixtures) {
+      const direct = await page.evaluate((id) => state.review.technical_requirements.find((item) => item.requirement_id === id), fixture.requirement_id);
+      assert.equal(direct.content, fixture.content);
+      assert.equal(direct.translation_status, "translated");
+      assert.equal(direct.need_human_review, true);
+      assert.equal(direct.translation_output_snapshot.content, fixture.content);
+    }
+    const germanSaved = block.locator('[data-requirement-id="german-saved"]');
+    assert.equal(await germanSaved.locator('textarea').inputValue(), `工艺要求：${germanChinese}`);
+    assert.equal(await page.evaluate(() => makeGenerationParameterPackage().generation_parameters.technical_requirements_text.includes('sh = 0.85 mm')), false);
+    const germanManual = block.locator('[data-requirement-id="german-manual"]');
+    assert.equal(await germanManual.locator('textarea').inputValue(), `工艺要求：${germanOriginal}`);
+    await germanManual.locator('.technical-translation-candidates summary').press('Enter');
+    await germanManual.getByRole('button', { name: '采用候选译文', exact: true }).click();
+    await page.waitForFunction(() => !state.reviewPersistenceSaving && !state.pendingReviewAuditEvents.length && state.review.technical_requirements.find((item) => item.requirement_id === 'german-manual').content.includes('工作行程'));
+    assert.equal(await page.evaluate(() => state.review.technical_requirements.find((item) => item.requirement_id === 'german-manual').need_human_review), true);
+    await germanSaved.locator('[data-role="confirm"]').click();
+    await page.waitForFunction(() => !state.reviewPersistenceSaving && !state.pendingReviewAuditEvents.length && state.review.technical_requirements.filter((item) => ['german-manual', 'german-saved'].includes(item.requirement_id)).every((item) => item.need_human_review === false));
+    const germanText = await page.evaluate(() => makeGenerationParameterPackage().generation_parameters.technical_requirements_text);
+    assert.equal(germanText.match(/sh = 0\.85 mm/g)?.length, 1, 'equivalent adopted notes output once after explicit group confirmation');
+    const germanPartial = block.locator('[data-requirement-id="german-partial"]');
+    assert.equal(await germanPartial.locator('[data-role="confirm"]').isEnabled(), true);
+    assert.equal(await germanPartial.locator('textarea').inputValue(), '工艺要求：工作行程 (Hub) sh = 1.25 mm');
+    assert.equal(await germanPartial.locator('.technical-translation-details').count(), 0);
+    assert.equal(translationCount, 1, 'accepted foreign tokens never trigger translation again');
+    assert.equal(revalidationCount, 1);
+    assert.equal(await page.evaluate(() => makeGenerationParameterPackage().generation_parameters.technical_requirements_text.includes('1.25 mm')), false);
+    await germanPartial.scrollIntoViewIfNeeded();
+    assert.equal(await germanPartial.evaluate((element) => [...element.querySelectorAll('button, p, summary')].some((control) => control.getBoundingClientRect().right > element.getBoundingClientRect().right + 2)), false);
+    if (!process.env.SKIP_UI_QA_SCREENSHOTS) await germanPartial.screenshot({ path: path.join(output, `${size}-direct-translation.png`) });
     const edited = block.locator('[data-requirement-id="r12-edited"]');
     assert.equal(await edited.locator('textarea').inputValue(), "表面处理：Покрытие Ц15.hr ГОСТ 9306-85（人工补充）");
     await edited.locator('.technical-translation-candidates summary').press("Enter");
@@ -213,21 +266,27 @@ try {
     assert.equal(await page.evaluate(() => makeGenerationParameterPackage().generation_parameters.technical_requirements_text.startsWith("技术要求\n")), false);
     await block.locator('[data-requirement-id="warning-11"] [data-role="confirm"]').click();
     await page.waitForFunction(() => !state.reviewPersistenceSaving && !state.pendingReviewAuditEvents.length && state.review.technical_requirements.find((item) => item.requirement_id === "warning-11").need_human_review === false);
-    assert.equal(await page.evaluate(() => state.review.change_history.some((event) => event.event_type === 'technical_requirement_confirmed' && event.metadata.translation_warning_acknowledgement?.requirement_id === 'warning-11')), true);
+    assert.equal(await page.evaluate(() => state.review.change_history.some((event) => event.event_type === 'technical_requirement_confirmed' && event.metadata.translation_warning_acknowledgement?.requirement_id === 'warning-11')), false);
     assert.equal(await page.evaluate(() => buildSafeConfirmationPlan(state.review).items.some((entry) => entry.item?.requirement_id === 'warning-13')), true);
     await page.locator('.compare-overlay [data-action="confirm-all-review-items"]').first().click();
     await page.waitForFunction(() => !state.reviewPersistenceSaving && !state.pendingReviewAuditEvents.length && state.review.technical_requirements.find((item) => item.requirement_id === "warning-13").need_human_review === false);
-    assert.equal(await page.evaluate(() => state.review.change_history.some((event) => event.event_type === 'safe_fields_confirmed' && event.metadata.translation_warning_acknowledgements?.some((ack) => ack.requirement_id === 'warning-13'))), true);
+    assert.equal(await page.evaluate(() => state.review.change_history.some((event) => event.event_type === 'safe_fields_confirmed' && event.metadata.translation_warning_acknowledgements?.some((ack) => ack.requirement_id === 'warning-13'))), false);
     assert.equal(await page.evaluate(() => makeGenerationParameterPackage().generation_parameters.technical_requirements_text.includes('B-1-1.5')), true);
+    const finalText = await page.evaluate(() => makeGenerationParameterPackage().generation_parameters.technical_requirements_text);
+    for (const fragment of ['Cu/Ni15/Ag3', 'Ls=3.59', 'Di', 'FN 942010', 'LABS', 'Hub', 'F2=17 mm', 'Spring must pass']) {
+      assert.ok(finalText.includes(fragment), fragment);
+    }
     await page.reload();
     await page.evaluate(async () => { await openPersistedReview("test-order"); focusMissingStandardizationField("technical_requirements.historical-3d"); });
     const reopened = await page.evaluate(() => state.review.technical_requirements.find((item) => item.requirement_id === "historical-3d"));
     assert.equal(reopened.content, "7.未注尺寸以3D为准");
     assert.equal(reopened.need_human_review, false);
     assert.equal(reopened.translation_status, "not_required");
+    assert.equal(await page.evaluate(() => state.review.technical_requirements.find((item) => item.requirement_id === 'german-saved').content), germanChinese);
+    assert.equal(await page.evaluate(() => state.review.technical_requirements.find((item) => item.requirement_id === 'german-partial').content), "工作行程 (Hub) sh = 1.25 mm");
     assert.equal(translationCount, 2, "refresh must not check a recovered note again");
     assert.equal(await page.evaluate(() => state.review.technical_requirements.find((item) => item.requirement_id === 'warning-13').need_human_review), false);
-    assert.equal(await page.evaluate(() => TechnicalRequirementTranslation.warnings(state.review.technical_requirements.find((item) => item.requirement_id === 'warning-13')).length), 1);
+    assert.equal(await page.evaluate(() => TechnicalRequirementTranslation.warnings(state.review.technical_requirements.find((item) => item.requirement_id === 'warning-13')).length), 0);
     assert.equal(await page.evaluate(() => state.review.technical_requirements.filter((item) => item.recognition_key === "raw-ten").length), 1);
     assert.deepEqual(errors, [], `${size} browser must have no uncaught errors`);
     await page.close();

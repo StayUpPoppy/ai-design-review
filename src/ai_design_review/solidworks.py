@@ -123,6 +123,9 @@ def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str
     number = _number(mass.get("value"))
     if mass.get("status") in {"calculated", "estimated"} and mass.get("unit") == "kg" and number is not None and number > 0:
         title_block["重量"] = _rounded(number, 8)
+    drawing_no = (parameter_package.get("source") or {}).get("drawing_no")
+    if isinstance(drawing_no, str) and drawing_no.strip():
+        title_block["客户图号"] = drawing_no.strip()
     roughness = confirmed_surface_roughness(review)
     if roughness is not None:
         title_block["表面粗糙度"] = roughness["value"]
@@ -199,7 +202,13 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
         if value is not None:
             append(f"{label}：{value} 圈。")
     # Only whole equivalent sentences are removed; composite/conflicting notes survive.
+    requirement_keys: set[tuple[str, str, str]] = set()
     for item in remaining:
+        # Match the frontend group before adding display labels or scope text.
+        key = technical_requirement_equivalence_key(item)
+        if key in requirement_keys:
+            continue
+        requirement_keys.add(key)
         append(format_technical_requirement(item), item.get("application_scope"))
     if not requirements:
         for line in strip_technical_requirements_title(generation.get("technical_requirements_text")).splitlines():

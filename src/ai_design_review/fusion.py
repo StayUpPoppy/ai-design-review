@@ -7,6 +7,7 @@ from typing import Any
 from .technical_translation import TRANSLATION_KEYS
 from .standardizers.support_coils import classify_support_candidate
 from .technical_requirement_recognition import TECHNICAL_FIELD_TYPES, collect_technical_requirements
+from .surface_roughness import roughness_evidence_assessment
 
 
 SOURCE_PRIORITY = {
@@ -143,13 +144,17 @@ def _merge_field(field: str, ordered: list[dict[str, Any]]) -> dict[str, Any]:
     if field == "surface_roughness_ra":
         candidates = _surface_roughness_candidates(ordered)
         merged["roughness_candidates"] = candidates
-        if len({item["value"] for item in candidates}) > 1:
+        direct = [item for item in candidates if item["evidence_status"] == "direct"]
+        if len(direct) > 1:
             merged["value"] = None
             merged["roughness_conflict"] = True
             merged["need_human_review"] = True
-        elif candidates:
-            merged["value"] = candidates[0]["value"]
-            merged["surface_location"] = candidates[0].get("location")
+        elif direct:
+            merged["value"] = direct[0]["value"]
+            merged["surface_location"] = direct[0].get("location")
+        else:
+            merged["value"] = None
+            merged["need_human_review"] = True
         for key in SURFACE_ROUGHNESS_KEYS:
             if key in best and key not in merged:
                 merged[key] = best[key]
@@ -158,7 +163,7 @@ def _merge_field(field: str, ordered: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _surface_roughness_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    by_value: dict[float, dict[str, Any]] = {}
+    by_value: dict[tuple[float, str, str], dict[str, Any]] = {}
     for item in items:
         try:
             value = float(item.get("value"))
@@ -166,26 +171,53 @@ def _surface_roughness_candidates(items: list[dict[str, Any]]) -> list[dict[str,
             continue
         if not isfinite(value) or value <= 0:
             continue
-        existing = by_value.get(value)
+        unit = str(item.get("unit") or "μm").strip().replace("µ", "μ").replace("um", "μm")
+        location = str(item.get("surface_location") or "").strip()
+        location = {"两端": "两端面", "外圆表面": "外圆", "内圆表面": "内圆"}.get(location, location)
+        status, reason = roughness_evidence_assessment(value, item.get("evidence"), structured=True)
+        if item.get("evidence_status") in {"direct", "unverified"}:
+            status, reason = item["evidence_status"], item.get("evidence_reason") or reason
+        if status == "excluded":
+            continue
+        key = (value, unit, location)
+        existing = by_value.get(key)
         if existing is None:
             existing = {
                 "value": value,
-                "location": item.get("surface_location"),
+                "unit": unit,
+                "location": location or None,
                 "evidence": item.get("evidence", ""),
                 "source": item.get("source", "unknown"),
-                "_locations": {str(item.get("surface_location") or "")},
+                "page": item.get("page"),
+                "position": item.get("position"),
+                "evidence_status": status,
+                "evidence_reason": reason,
+                "evidence_records": [],
             }
-            by_value[value] = existing
+            by_value[key] = existing
             candidates.append(existing)
-            continue
-        existing["_locations"].add(str(item.get("surface_location") or ""))
+        if status == "direct":
+            existing.update(evidence_status=status, evidence_reason=reason)
+        record = {key: item.get(key) for key in ("evidence", "source", "page", "position")}
+        if record not in existing["evidence_records"]:
+            existing["evidence_records"].append(record)
         evidence = str(item.get("evidence") or "").strip()
         if evidence and evidence not in str(existing.get("evidence") or ""):
             existing["evidence"] = " | ".join(filter(None, [str(existing.get("evidence") or "").strip(), evidence]))
-    for candidate in candidates:
-        locations = candidate.pop("_locations", set())
-        if "两端面" in locations or ({"左端面", "右端面"} <= locations):
+    for candidate in list(candidates):
+        if candidate not in candidates or candidate["location"] != "左端面":
+            continue
+        right = by_value.get((candidate["value"], candidate["unit"], "右端面"))
+        if right and candidate["evidence_status"] == right["evidence_status"] == "direct":
             candidate["location"] = "两端面"
+            candidate["evidence_records"].extend(record for record in right["evidence_records"] if record not in candidate["evidence_records"])
+            candidate["evidence"] = " | ".join(dict.fromkeys(filter(None, [candidate["evidence"], right["evidence"]])))
+            candidates.remove(right)
+            both = by_value.get((candidate["value"], candidate["unit"], "两端面"))
+            if both and both is not candidate:
+                both["evidence_records"].extend(record for record in candidate["evidence_records"] if record not in both["evidence_records"])
+                both.update(evidence_status="direct", evidence_reason=candidate["evidence_reason"])
+                candidates.remove(candidate)
     return candidates
 
 

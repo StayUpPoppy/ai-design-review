@@ -14,6 +14,10 @@ const context = {
   FIELD_LABELS: {},
   sourceValues: (value) => Array.isArray(value) ? value : [value].filter(Boolean),
   pendingDefaultCandidateNotice: () => "",
+  formulaCandidateHtml: () => "",
+  isCompressionSpringReview: () => false,
+  formatCompactNumber: (value) => String(value),
+  loadPointLabelDraft: () => null,
   reasonablenessSeverityForField: () => "",
   accuracyGradeStatusLabel: () => "",
   surfaceRoughnessCandidatesHtml: () => "",
@@ -62,9 +66,9 @@ for (const [field, label, param, meta, expected] of fixtures) {
 for (const field of ["material", "standard_no", "accuracy_grade", "diameter_accuracy_grade", "free_length_accuracy_grade", "load_accuracy_grade", "stiffness_accuracy_grade", "handedness", "end_type", "end_grinding", "end_coils_closed", "hook_type", "controlled_diameter_field"]) {
   assert.equal(context.parameterUnitLabel(field, "非数值选项", { unit: "mm" }, {}).text, "非数值选项");
 }
-const solid = { value: 20, unit: "mm", need_human_review: true, source: ["formula_calculation"] };
+const solid = { value: 20, unit: "mm", value_kind: "reference_limit", need_human_review: true, source: ["formula_calculation"] };
 const solidHtml = context.parameterRowHtml("solid_height", solid, { label: "压并高度", unit: "mm" });
-assert.match(solidHtml, /title="压并高度（参考）（mm）"/);
+assert.match(solidHtml, /title="压并高度（mm）"/);
 assert.match(solidHtml, /公式参考 \/ 待确认/);
 const escaped = context.parameterUnitLabelHtml(context.parameterUnitLabel("custom", '<script>"', { unit: '<img src=x>' }, {}));
 assert.ok(!escaped.includes("<script>") && !escaped.includes("<img src=x>"));

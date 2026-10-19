@@ -127,7 +127,7 @@ class GenerationExportPolicyV1(BaseModel):
 
 
 class GenerationSourceV1(BaseModel):
-    drawing_no: str | None = Field(default=None, description="原图纸编号。")
+    drawing_no: str | None = Field(default=None, description="原图纸编号；新建任务以字符串写入标题栏客户图号，仅去除首尾空白，保留前导零等内容。")
     drawing_name: str | None = Field(default=None, description="原图纸名称。")
     spring_type: str | None = Field(default=None, description="审图识别的弹簧类型代码。")
     spring_type_label: str | None = Field(default=None, description="弹簧类型中文名称。")
@@ -220,8 +220,8 @@ class SolidWorksPreviewV2(BaseModel):
     titleBlockProperties: dict[str, int | float | str] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="标题栏属性：已确认材料纯牌号、单件重量（数字，kg，最多八位小数）及已确认有效的表面粗糙度 Ra（数字，μm）。粗糙度对应独立句不再输出到技术要求；其它部位及附加条件保留。各项缺失时省略键；新预览都缺失时为空对象，旧预览可省略此字段。",
-        examples=[{"材料": "SUS304", "重量": 0.00642403, "表面粗糙度": 12.5}],
+        description="标题栏属性按材料、重量、客户图号、表面粗糙度顺序输出：已确认材料纯牌号、单件重量（数字，kg，最多八位小数）、参数包source.drawing_no中的客户图号（字符串，仅去首尾空白）及已确认有效的表面粗糙度Ra（数字，μm）。图号缺失或为空时独立省略，不增加生图拦截。粗糙度对应独立句不再输出到技术要求；其它部位及附加条件保留。各项缺失时省略键；新预览都缺失时为空对象，旧预览可省略此字段或客户图号，已冻结请求及重试保持原样。",
+        examples=[{"材料": "SUS304", "重量": 0.00642403, "客户图号": "YD4765020178", "表面粗糙度": 12.5}],
     )
 
 
@@ -255,7 +255,7 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
                 "technical_requirements_text": "1.其他要求：两端磨平，表面镀锌。",
             },
             "derived_parameters": {},
-            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10, "有效圈数n": 8, "是否磨平": 1, "是否并紧": 1}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.两端并紧磨平，每端磨270°。\n2.材料：65Mn。\n3.绕制方向：右旋。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn"}},
+            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10, "有效圈数n": 8, "是否磨平": 1, "是否并紧": 1}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.两端并紧磨平，每端磨270°。\n2.材料：65Mn。\n3.绕制方向：右旋。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn", "客户图号": "SPRING-001"}},
         }]},
     )
 

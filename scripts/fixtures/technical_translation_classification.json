@@ -24,7 +24,20 @@
     "GOST 9389-75",
     "Ra 12.5μm",
     "300°C+10°C/20min+1min",
-    "按 GB/T 1239.2-2009 检验"
+    "按 GB/T 1239.2-2009 检验",
+    "工艺要求：工作行程（行程）sh = 0.85 mm",
+    "工作行程 s_h=0.85 mm",
+    "工作行程 sₕ=0.85 mm",
+    "极限外径 Dmax ≤ 12 mm",
+    "最小力 Fmin >= 16 N",
+    "公称长度 Lnom=19 mm",
+    "有效圈数 neff=14",
+    "总圈数 ntot=16",
+    "载荷 Fmin=sh*k",
+    "行程 s=sh+s_h",
+    "最大直径 Dmax = D + d",
+    "行程 sh = 0,85 mm，负偏差 -0.02 mm",
+    "力 Fmin=16 N，外径 Dmax=12 mm"
   ],
   "requires_translation": [
     "Dimensions according to 3D model",
@@ -39,6 +52,20 @@
     "Модуль сдвига G*=80000 МПа",
     "表面Coating Zn15.hr GOST9306-85",
     "ばねの表面を研磨する",
-    "تلميع سطح النابض"
+    "تلميع سطح النابض",
+    "Arbeitsweg (Hub) sh = 0.85 mm",
+    "工作行程 Hub sh = 0.85 mm",
+    "Stroke sh = 0.85 mm",
+    "Рабочий ход sh = 0.85 мм",
+    "load = 30 N",
+    "spring = 10",
+    "Hub=0.85 mm",
+    "Arbeitsweg=0.85 mm",
+    "load_max = 30 N",
+    "unknown_variable = 10 mm",
+    "最小力 Fmin=16 N，请按 Standard 检验",
+    "工作行程 sh=0.85 mm，Hub 未翻译",
+    "工作行程 sh=0.85 mm；quality control",
+    "没有公式上下文的 sh 仍需核对"
   ]
 }

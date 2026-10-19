@@ -104,6 +104,58 @@ try {
       const anchors = [...document.querySelectorAll(".annotation-anchor")];
       return locations.every((l, i) => Math.abs(Number(anchors[i].getAttribute("cx")) - view.x - l.anchor.x * image.naturalWidth * view.scale) < .001 && Math.abs(Number(anchors[i].getAttribute("cy")) - view.y - l.anchor.y * image.naturalHeight * view.scale) < .001);
     });
+    const verifyColors = async (width) => {
+      const beforeDocument = await page.evaluate(() => JSON.stringify(DrawingAnnotations.entry().document));
+      const beforeRevision = saved.annotation_revision, beforeSaves = locationSaves;
+      const geometry = () => page.evaluate(() => [...document.querySelectorAll('.drawing-annotation-layer line, .annotation-anchor, .annotation-bubble, .annotation-bubble circle, .annotation-bubble text')].map((element) => ({
+        attributes: [...element.attributes].map(({ name, value }) => [name, value]),
+        fontSize: getComputedStyle(element).fontSize, fontWeight: getComputedStyle(element).fontWeight,
+        strokeWidth: getComputedStyle(element).strokeWidth,
+      })));
+      const resetSelection = async () => {
+        await page.mouse.move(0, 0);
+        await page.evaluate(() => { document.activeElement?.blur(); DrawingAnnotations.entry().selected = ''; DrawingAnnotations.renderLayer(); });
+      };
+      await resetSelection();
+      const currentGeometry = await geometry();
+      const previousPalette = await page.addStyleTag({ content: '.annotation-bubble circle {fill:#2452cb;stroke:#fff}.annotation-bubble text {fill:#fff}.annotation-bubble:hover circle,.annotation-bubble:focus-visible circle,.annotation-bubble.selected circle {fill:#14388f;stroke:#e9a800}' });
+      assert.deepEqual(await geometry(), currentGeometry, 'changing only the palette never changes SVG geometry or typography');
+      await previousPalette.evaluate((element) => element.remove());
+      const bubble = page.locator('.annotation-bubble[data-annotation-id="free_length"]').first();
+      const colors = () => bubble.evaluate((element) => {
+        const circle = getComputedStyle(element.querySelector('circle')), text = getComputedStyle(element.querySelector('text'));
+        return { fill: circle.fill, border: circle.stroke, text: text.fill, strokeWidth: circle.strokeWidth, opacity: getComputedStyle(element).opacity };
+      });
+      assert.deepEqual(await colors(), { fill: 'rgba(0, 0, 0, 0)', border: 'rgb(36, 82, 203)', text: 'rgb(36, 82, 203)', strokeWidth: '2px', opacity: '1' });
+      if (!process.env.SKIP_UI_QA_SCREENSHOTS) await page.screenshot({ path: path.join(qa, `${fixture.id}-${width}-transparent.png`) });
+      const emphasized = { fill: 'rgba(36, 82, 203, 0.12)', border: 'rgb(233, 168, 0)', text: 'rgb(20, 56, 143)', strokeWidth: '3px', opacity: '1' };
+      await bubble.hover();
+      assert.deepEqual(await colors(), emphasized);
+      await page.mouse.move(0, 0);
+      await page.keyboard.press('Tab');
+      await bubble.focus();
+      assert.equal(await bubble.evaluate((element) => element.matches(':focus-visible')), true);
+      assert.deepEqual(await colors(), emphasized);
+      await bubble.press('Enter');
+      await page.waitForFunction(() => document.activeElement?.closest('[data-field="free_length"]'));
+      await page.mouse.move(0, 0);
+      await page.evaluate(() => { document.activeElement?.blur(); DrawingAnnotations.renderLayer(); });
+      assert.deepEqual(await colors(), emphasized, 'selection remains emphasized after hover and focus end');
+      if (!process.env.SKIP_UI_QA_SCREENSHOTS) await page.screenshot({ path: path.join(qa, `${fixture.id}-${width}-selected.png`) });
+      for (const point of [{ x: 0, y: 0 }, { x: 0, y: -9 }, { x: 14, y: 0 }]) {
+        await resetSelection();
+        const box = await bubble.boundingBox();
+        await page.mouse.click(box.x + box.width / 2 + point.x, box.y + box.height / 2 + point.y);
+        await page.waitForFunction(() => DrawingAnnotations.entry().selected === 'free_length');
+        await page.waitForFunction(() => document.activeElement?.closest('[data-field="free_length"]'));
+      }
+      await resetSelection();
+      assert.deepEqual(await geometry(), currentGeometry);
+      assert.equal(await page.evaluate(() => JSON.stringify(DrawingAnnotations.entry().document)), beforeDocument, 'color and selection never edit saved locations');
+      assert.equal(saved.annotation_revision, beforeRevision);
+      assert.equal(locationSaves, beforeSaves, 'palette and click checks do not save annotations');
+      assert.equal(parameterSaves, 0);
+    };
     assert.equal(await verifyAnchors(), true);
     failBackfill = true;
     const beforeBackfill = structuredClone(saved.annotations);
@@ -153,6 +205,7 @@ try {
       await page.locator('[data-view-action="fit"]').click();
       assert.equal(await page.locator(".annotation-bubble").count(), expected, "narrow panels never hide annotations");
       assert.equal(await verifyAnchors(), true);
+      await verifyColors(width);
       await page.screenshot({ path: path.join(qa, `${fixture.id}-${width}.png`) });
     }
     assert.deepEqual(errors, []);

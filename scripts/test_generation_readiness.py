@@ -336,7 +336,7 @@ def _assert_technical_requirements_text_formatting() -> None:
     ]
     assert build_technical_requirements_text(requirements) == "\n".join((
         "1.表面处理：表面镀锌。",
-        "2.硬度要求：硬度 HRC 45～50。",
+        "2.硬度要求：HRC 45～50。",
         "3.热处理：淬火并回火。",
         "4.盐雾试验：96小时。",
         "5.环保要求：符合 RoHS。",

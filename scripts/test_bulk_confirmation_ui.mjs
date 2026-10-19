@@ -420,9 +420,7 @@ const warningPlan = context.buildSafeConfirmationPlan(warningReview);
 assert.equal(warningPlan.items.length, 3, "engineering warnings and translated surfaces are all bulk confirmable");
 const warningResult = context.confirmSafeRecognizedFields(warningPlan);
 assert.equal(warningResult.count, 3);
-assert.equal(warningResult.translation_warning_acknowledgements.length, 3);
-assert.equal(warningResult.translation_warning_acknowledgements[0].original_content, warningFixtures[0].original_content);
-assert.equal(warningResult.translation_warning_acknowledgements[0].content, warningFixtures[0].content);
+assert.equal(warningResult.translation_warning_acknowledgements.length, 0, "Content warnings are no longer generated or acknowledged");
 assert.equal(warningReview.technical_requirements[2].normalization_status, "human_confirmed");
 assert.ok(warningReview.technical_requirements.every((item) => item.need_human_review === false));
 

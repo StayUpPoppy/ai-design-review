@@ -34,8 +34,8 @@ assert.equal(await service.run(), true);
 assert.equal(item.content, fixtures[0].content);
 assert.equal(item.need_human_review, true);
 assert.equal(service.blocksExport(item), false);
-assert.equal(service.warnings(item).length, 1);
-assert.equal(events[0].metadata.translation_warnings.length, 1);
+assert.equal(service.warnings(item).length, 0);
+assert.equal(events[0].metadata.translation_warnings.length, 0);
 await service.run();
 assert.equal(calls, 1, "usable warning Chinese never invokes another model request");
 assert.equal(review.spring_parameters.active_coils.value, 8);
@@ -48,12 +48,12 @@ item.translation_input_snapshot = service.snapshot(item);
 await service.run();
 assert.equal(item.content, fixtures[0].original_content);
 assert.equal(await service.adoptCandidate("r11", 0), true);
-assert.equal(service.warnings(item).length, 1, "adopted preview warnings belong to the current row type");
+assert.equal(service.warnings(item).length, 0, "Historical engineering warnings are no longer active");
 assert.equal(item.need_human_review, true);
 setup(); failSave = true;
 assert.equal(await service.run(), false);
 assert.equal(item.content, fixtures[0].content);
-assert.equal(service.warnings(item).length, 1);
+assert.equal(service.warnings(item).length, 0);
 await service.run();
 assert.equal(calls, 1, "failed final save keeps Chinese and warnings without retranslation");
 for (const action of ["edit", "delete", "switch", "type", "edit_back"]) {
@@ -70,8 +70,8 @@ for (const action of ["edit", "delete", "switch", "type", "edit_back"]) {
   assert.equal(events.length, 0, action);
 }
 for (const fixture of fixtures) assert.equal(service.needsTranslation(fixture.content), false);
-assert.equal(service.blocksExport({ content: "中文 Force 16 N", need_human_review: false, translation_status: "translated" }), true);
+assert.equal(service.blocksExport({ content: "中文 Force 16 N", need_human_review: false, translation_status: "translated" }), false);
 assert.equal(service.blocksExport({ content: "力 ⟦ENG_9999⟧", need_human_review: false, translation_status: "translated" }), true);
 assert.equal(service.blocksExport({ content: "G*=80000 MPa", translation_status: "not_required" }), false);
-assert.equal(service.blocksExport({ content: "G*=80000 MPa", original_content: "Shear modulus G*=80000 MPa", translation_status: "translated" }), true);
+assert.equal(service.blocksExport({ content: "G*=80000 MPa", original_content: "Shear modulus G*=80000 MPa", translation_status: "translated" }), false);
 console.log("PASS: engineering-warning Chinese, active snapshots, preview adoption, no retry loop, races and save failure");

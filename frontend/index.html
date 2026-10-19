@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>弹簧图纸 AI 审查助手</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="./styles.css?v=20261015-load-label-save">
+    <link rel="stylesheet" href="./styles.css?v=20261019-history-actions">
   </head>
   <body>
     <main class="app-shell">
@@ -33,7 +33,31 @@
           </button>
           <div class="history-sidebar-head">
             <h2>历史订单</h2>
-            <button id="refreshRecentReviewsButton" class="history-refresh-button" type="button" title="刷新历史订单" aria-label="刷新历史订单">刷新</button>
+            <button id="historyUnreadCount" class="history-unread-count" type="button" title="定位第一条尚未查看的新识别结果" hidden></button>
+            <div class="history-header-actions">
+              <button id="enterHistoryManagement" type="button">批量管理</button>
+              <button id="refreshRecentReviewsButton" class="history-refresh-button" type="button" title="刷新历史订单" aria-label="刷新历史订单">刷新</button>
+            </div>
+          </div>
+          <div id="historyManagement" class="history-management" aria-label="历史订单批量管理" hidden>
+            <div id="historySelectionControls" class="history-selection-controls" hidden>
+              <span id="historySelectedCount">已选0项</span>
+              <button id="historySelectAll" type="button">全选当前列表</button>
+              <button id="historyClearSelection" type="button">取消全选</button>
+              <button id="historyDeleteSelected" class="history-delete-selected" type="button" disabled>删除所选（0）</button>
+              <button id="exitHistoryManagement" type="button">退出管理</button>
+            </div>
+            <p id="historyDeletionProgress" role="status" hidden></p>
+            <p id="historyDeletionNotice" role="status" hidden></p>
+            <details id="historyDeletionResults" class="history-deletion-results" hidden>
+              <summary id="historyDeletionSummary"></summary>
+              <ul id="historyDeletionResultList"></ul>
+            </details>
+            <div class="history-deletion-actions">
+              <button id="historyRetryFailed" type="button" hidden>重试失败项</button>
+              <button id="historyCheckUnknown" type="button" hidden>刷新核对</button>
+              <button id="historyClearDeletionResults" type="button" hidden>清除结果</button>
+            </div>
           </div>
           <div id="recentReviewList" class="history-order-list"></div>
         </aside>
@@ -51,18 +75,47 @@
 
         <div class="composer" aria-label="图纸上传">
           <div id="dropZone" class="drop-zone">
-            <input id="drawingInput" type="file" accept=".pdf,image/*" hidden>
+            <input id="drawingInput" type="file" accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" multiple hidden>
+            <input id="drawingFolderInput" type="file" webkitdirectory multiple hidden>
             <input id="reviewJsonInput" type="file" accept="application/json,.json" hidden>
             <div class="upload-copy">
-              <strong id="selectedFileName">上传 PDF 或图片开始审查</strong>
-              <span>支持拖拽上传 · PDF、PNG、JPG、TIFF、BMP、WEBP</span>
+              <strong id="selectedFileName">图纸上传</strong>
+              <span id="uploadHelpText">多选或拖入文件、文件夹 · 每批最多50份</span>
             </div>
+            <section id="uploadQueue" class="upload-queue" aria-label="上传状态" hidden>
+              <p id="uploadScanStatus" class="upload-scan-status" role="status" hidden></p>
+              <p id="uploadQueueNotice" class="upload-queue-notice" role="status" hidden></p>
+              <div id="uploadQueueList">
+                <details id="uploadPendingSection" class="upload-section" hidden>
+                  <summary><span id="uploadPendingSummary">待上传</span><span class="upload-section-action">查看清单</span></summary>
+                  <ul id="uploadPendingList" class="upload-queue-list" aria-label="待上传文件"></ul>
+                </details>
+                <details id="uploadProgressSection" class="upload-section" hidden>
+                  <summary><span id="uploadProgressSummary">识别进度</span><span class="upload-section-action">查看进度</span></summary>
+                  <ul id="uploadProgressList" class="upload-queue-list" aria-label="正在识别的文件"></ul>
+                </details>
+                <details id="uploadProblemsSection" class="upload-section upload-problems" hidden>
+                  <summary><span id="uploadProblemsSummary">待处理</span><span class="upload-section-action">查看问题</span></summary>
+                  <ul id="uploadProblemsList" class="upload-queue-list" aria-label="上传待处理项"></ul>
+                </details>
+              </div>
+              <div id="uploadCompletion" class="upload-completion" hidden>
+                <span id="uploadCompletionText" role="status"></span>
+                <button id="clearUploadCompletion" type="button">清除提示</button>
+              </div>
+              <div id="uploadQueueControls" class="upload-queue-controls" hidden>
+                <button id="pauseUploadButton" type="button" hidden>停止后续上传</button>
+                <button id="clearUploadsButton" type="button">清空待上传</button>
+              </div>
+              <p id="uploadUnsentHint" class="upload-queue-hint" hidden>未上传文件仅保留在本页，刷新后需重新选择。</p>
+            </section>
             <div class="composer-toolbar">
               <div class="composer-tools">
                 <button id="chooseFileButton" class="tool-button" type="button">
                   <span class="tool-icon" aria-hidden="true">＋</span>
                   选择文件
                 </button>
+                <button id="chooseFolderButton" class="tool-button" type="button">选择文件夹</button>
                 <details id="advancedOptions" class="advanced-options">
                   <summary>
                     <span class="tool-icon sliders-icon" aria-hidden="true">☷</span>
@@ -136,7 +189,7 @@
                   </div>
                 </details>
               </div>
-              <button id="submitButton" class="submit-button" type="button" aria-label="开始审查" disabled>↑</button>
+              <button id="submitButton" class="submit-button" type="button" aria-label="开始识别" disabled>开始识别</button>
             </div>
           </div>
         </div>
@@ -145,12 +198,16 @@
     </main>
 
     <script src="./drawing-annotations.js?v=20261014-annotation-v3"></script>
-    <script src="./technical-requirement-translation.js?v=20261009-translation-warnings"></script>
+    <script src="./technical-requirement-translation.js?v=20261018-direct-translation"></script>
     <script src="./technical-requirement-recovery.js?v=20261013-recognition-aliases"></script>
     <script src="./compression-design-checks.js?v=20261015-support-coils"></script>
     <script src="./formula-candidates.js?v=20261015-formula-candidates"></script>
-    <script src="./technical-requirement-equivalence.js?v=20261013-ui-note-dedup"></script>
-    <script src="./solidworks-export.js?v=20261015-active-coil-note"></script>
-    <script src="./app.js?v=20261015-support-coils-cleanup"></script>
+    <script src="./technical-requirement-equivalence.js?v=20261016-eight-class-dedup"></script>
+    <script src="./solidworks-export.js?v=20261016-eight-class-dedup"></script>
+    <script src="./surface-roughness-reference.js?v=20261018-roughness-choices"></script>
+    <script src="./drawing-upload-queue.js?v=20261019-upload-compact"></script>
+    <script src="./history-recognition-unread.js?v=20261019-history-unread"></script>
+    <script src="./history-bulk-deletion.js?v=20261019-bulk-delete"></script>
+    <script src="./app.js?v=20261019-history-actions"></script>
   </body>
 </html>

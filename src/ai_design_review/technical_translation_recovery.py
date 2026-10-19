@@ -6,7 +6,7 @@ from copy import deepcopy
 from typing import Any
 
 from .technical_translation import (
-    TechnicalTranslationEngine, can_recover_translation_failure, requires_translation,
+    TechnicalTranslationEngine, can_recover_translation_failure,
     assess_translation, translation_snapshot, translation_warning_fields,
 )
 
@@ -50,7 +50,7 @@ def revalidate_translations(review: dict[str, Any], items: list[dict[str, Any]],
         result = {"requirement_id": item["requirement_id"], "source_snapshot": snapshot,
                   "content": snapshot["content"], "original_content": item.get("original_content") or "",
                   "source_language": item.get("source_language") or "unknown", "translation_status": "failed",
-                  "translation_error": item.get("translation_error") or "没有通过校验的已有中文译文，请重新翻译或人工填写。",
+                  "translation_error": item.get("translation_error") or "没有已保存的可用译文，请重新翻译或人工填写。",
                   "translation_error_code": item.get("translation_error_code") or "",
                   "translation_error_details": deepcopy(item.get("translation_error_details") or {}),
                   "translation_input_snapshot": deepcopy(item.get("translation_input_snapshot") or snapshot),
@@ -68,31 +68,49 @@ def revalidate_translations(review: dict[str, Any], items: list[dict[str, Any]],
         # A persisted recognition candidate is usable when full raw artifacts are missing.
         if not matches and not recognized and item.get("original_content") and item.get("recognized_content"):
             matches = [item]
+        # Failed text-model responses are saved separately from the editor. They
+        # are evidence only for the exact input/type snapshot that produced them.
+        evidence = [(note, "saved_recognition") for note in matches]
+        details = item.get("translation_error_details") or {}
+        saved = item.get("translation_input_snapshot")
+        candidate = details.get("candidate_content") if isinstance(details, dict) else None
+        if (isinstance(candidate, str) and isinstance(saved, dict)
+                and isinstance(saved.get("content"), str) and saved.get("type")
+                and _words(saved["content"]) == _words(item.get("original_content"))):
+            evidence.insert(0, ({"original_content": saved["content"], "recognized_content": candidate,
+                                 "source_language": item.get("source_language"), "type": saved["type"]}, "saved_failed_translation"))
         candidates = []
-        for note in matches:
+        for note, source in evidence:
             original = str(note.get("original_content") or "").strip()
             translated = str(note.get("recognized_content") or note.get("content") or "").strip()
-            if not original or original == translated or not requires_translation(original):
+            if not original or (source != "saved_failed_translation" and original == translated
+                                and note.get("translation_status") != "translated"):
                 continue
             diagnostic, warnings = assess_translation(original, translated)
             if diagnostic:
                 result.update(translation_error=diagnostic["message"], translation_error_code=diagnostic["code"],
-                              translation_error_details=diagnostic["details"])
+                               translation_error_details={**result["translation_error_details"], **diagnostic["details"]})
+                continue
+            if any(existing["content"] == translated and existing["original_content"] == original
+                   and existing["type"] == note.get("type") for existing in candidates):
                 continue
             candidates.append({"content": translated, "original_content": original,
                                "source_language": note.get("source_language") or item.get("source_language") or "unknown",
-                               "translation_source": "saved_recognition", "original_number": note.get("original_number"),
+                               "translation_source": source, "original_number": note.get("original_number"),
                                "recognition_key": note.get("recognition_key"), "type": note.get("type")})
+            candidates[-1]["translation_output_snapshot"] = {"content": translated, "type": str(note.get("type") or "other")}
             candidates[-1].update(translation_warning_fields(warnings, translated, str(note.get("type") or "other")))
         if not candidates:
+            if not evidence:
+                result["recovery_reason"] = "没有已保存的候选译文，请重新翻译或人工填写中文。"
             continue
         unchanged = (snapshot == item.get("translation_input_snapshot")
                      and _words(snapshot["content"]) == _words(item.get("original_content"))
                      and _words(candidates[0]["original_content"]) == _words(item.get("original_content"))
                      and candidates[0]["type"] == snapshot["type"] and not _human_changed(review, item))
-        if len(matches) == len(candidates) == 1 and unchanged:
+        if len(matches) <= 1 and len(candidates) == 1 and unchanged:
             result.update({key: value for key, value in candidates[0].items() if key in {
-                "content", "original_content", "source_language", "translation_source", "translation_warnings", "translation_warning_snapshot"}})
+                "content", "original_content", "source_language", "translation_source", "translation_warnings", "translation_warning_snapshot", "translation_output_snapshot"}})
             result.update(translation_status="translated", translation_error="", translation_error_code="",
                           translation_error_details={}, translation_input_snapshot=snapshot, recovery_mode="automatic")
         else:

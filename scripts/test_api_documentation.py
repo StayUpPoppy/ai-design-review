@@ -234,12 +234,20 @@ def main() -> None:
         "$ref": "#/components/schemas/ReviewDocument"
     }
     assert schema["components"]["schemas"]["ReviewDocument"].get("examples")
+    roughness_candidate = schema["components"]["schemas"]["ReviewRoughnessCandidate"]["properties"]
+    assert set(roughness_candidate["evidence_status"]["anyOf"][0]["enum"]) == {"direct", "unverified"}
+    assert "evidence_reason" in roughness_candidate and "evidence_records" in roughness_candidate
     for model_name in ("TechnicalRequirementDocument", "TechnicalTranslationResult"):
         properties = schema["components"]["schemas"][model_name]["properties"]
         assert properties["translation_warnings"]["type"] == "array"
         assert "translation_warning_snapshot" in properties
+        assert "translation_output_snapshot" in properties
+        assert "candidate_content" in properties["translation_error_details"]["description"]
         assert set(properties["translation_status"].get("enum") or properties["translation_status"]["anyOf"][0]["enum"]) == {"not_required", "translated", "failed"}
     assert schema["components"]["schemas"]["GenerationJobCreate"].get("examples")
+    title_schema = schema["components"]["schemas"]["SolidWorksPreviewV2"]["properties"]["titleBlockProperties"]
+    assert "客户图号" in title_schema["description"] and "source.drawing_no" in title_schema["description"]
+    assert title_schema["examples"][0]["客户图号"] == "YD4765020178"
     frozen_inputs = schema["components"]["schemas"]["CompressionSpringGenerationInputsV1"]
     frozen_fields = {
         "wire_diameter", "mean_diameter", "free_length", "total_coils",
@@ -252,6 +260,7 @@ def main() -> None:
     frozen_inputs_v2 = schema["components"]["schemas"]["CompressionSpringGenerationInputsV2"]
     assert set(frozen_inputs_v2["required"]) == frozen_fields
     assert frozen_inputs_v2["properties"]["material"]["anyOf"][0]["$ref"].endswith("GenerationMaterialParameter")
+    assert "不发送给SW" in schema["components"]["schemas"]["ReviewParameterValue"]["properties"]["roughness_reference_dismissed"]["description"]
     sw_preview_schema = schema["components"]["schemas"]["SolidWorksPreviewV2"]["properties"]
     assert "是否并紧为0时省略有效圈数n" in sw_preview_schema["modelParameters"]["description"]
     assert "仅并紧且磨平时追加每端磨270°" in sw_preview_schema["extraProperties"]["description"]

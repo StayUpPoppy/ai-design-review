@@ -169,7 +169,11 @@
       const value = parameterValue(parameters[field]);
       if (value != null) append(`${label}：${value} 圈。`);
     }
+    const requirementKeys = new Set();
     for (const item of remaining) {
+      const key = JSON.stringify(TechnicalRequirementEquivalence.key(item));
+      if (requirementKeys.has(key)) continue;
+      requirementKeys.add(key);
       append(TechnicalRequirementEquivalence.format(item), item.application_scope);
     }
     if (!requirements.length) {
@@ -196,6 +200,8 @@
     if (typeof material === "string" && material) titleBlock["材料"] = CompressionDesignChecks.materialDisplayValue(material, catalog);
     const mass = checks.metrics.unit_mass, weight = number(mass?.value);
     if (["calculated", "estimated"].includes(mass?.status) && mass.unit === "kg" && weight != null && weight > 0) titleBlock["重量"] = rounded(weight, 8);
+    const drawingNo = packageData.source?.drawing_no;
+    if (typeof drawingNo === "string" && drawingNo.trim()) titleBlock["客户图号"] = drawingNo.trim();
     const roughness = confirmedRoughness(review);
     if (roughness != null) titleBlock["表面粗糙度"] = roughness.value;
     const modelParameters = Object.fromEntries([["线径", "wire_diameter"], ["中径", "mean_diameter"], ["自由高度", "free_length"], ["圈数", "total_coils"], ["有效圈数n", "active_coils"], ["是否磨平", "end_grinding"], ["是否并紧", "end_coils_closed"]].map(([label, field]) => [label, parameterValue(parameters[field])]));

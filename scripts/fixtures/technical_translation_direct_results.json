@@ -1,0 +1,32 @@
+[
+  {
+    "requirement_id": "coating", "type": "salt_spray",
+    "original_content": "Überzug: ISO 4521 - Cu/Ni15/Ag3 passiviert (µm); Korrosionsbeständigkeitsklasse (Grundwerkstoff): KBK2",
+    "content": "镀层：ISO 4521 - Cu/Ni15/Ag3 钝化（µm）；耐腐蚀等级（基体材料）：KBK2"
+  },
+  {
+    "requirement_id": "setting", "type": "process",
+    "original_content": "Setzlänge Ls=3.59 mm, Prüffedern 3 mal setzen. L0=6.92±0.28 für ungesetzte Federn. Übrige Federn gesetzt / ungesetzt (liefern)",
+    "content": "设定长度 Ls=3.59 mm，试验弹簧预压3次。未预压弹簧 L0=6.92±0.28。其余弹簧预压／未预压（供货状态）"
+  },
+  {
+    "requirement_id": "sleeve", "type": "other",
+    "original_content": "Zusätzliche Angaben: Feder muss durch Eigengewicht durch eine Hülse Ø1,55 H7 fallen. Hülsenlänge: 6mm. Abscher Nase nur an Di zulässig. LABS-frei nach FN 942010",
+    "content": "补充说明：弹簧必须靠自重穿过 Ø1,55 H7 的套筒。套筒长度：6mm。仅允许在 Di 处设置剪切凸片。符合 FN 942010 的无 LABS 要求"
+  },
+  {
+    "requirement_id": "partial", "type": "process",
+    "original_content": "Arbeitsweg (Hub) sh=0.85 mm",
+    "content": "工作行程 (Hub) sh=0.85 mm"
+  },
+  {
+    "requirement_id": "changed", "type": "other",
+    "original_content": "Force F1=16 N; material SUS304; ISO 4521",
+    "content": "力 F2=17 mm；材料 SUS316；GB/T 1239"
+  },
+  {
+    "requirement_id": "same", "type": "other",
+    "original_content": "Spring must pass through sleeve Ø1.55 H7",
+    "content": "Spring must pass through sleeve Ø1.55 H7"
+  }
+]

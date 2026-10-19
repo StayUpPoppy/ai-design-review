@@ -5,27 +5,38 @@
   const standardIdentifiers = /(?:СТ|ST)\s*[A-Za-zА-Яа-яЁё]{2,12}\s*\d+(?:[./–—-]\d+)+/giu;
   const codes = /Zn\d+(?:\.[a-z]{1,3})?|(?<![A-Za-zА-Яа-яЁё0-9_])(?:INCONEL\s+\d+|[A-ZА-ЯЁ]{1,8}(?:-\d+(?:[.,]\d+)?)+|[A-Z]{1,8}(?:-\d[A-Za-z\d.]*)+|[A-Z]{2,8}\d[A-Za-z\d-]*|(?![23][Dd])\d+[A-ZА-ЯЁ][A-Za-zА-ЯЁ\d]*|[А-ЯЁ]+\d[А-ЯЁ\d-]*(?:\.[a-zа-яё]{1,3})?)(?![A-Za-zА-Яа-яЁё0-9_])/gu;
   const drawingReferences = /(?<![A-Za-z0-9_])(?:2D|3D)(?![A-Za-z0-9_])/giu;
-  const units = /(?<![A-Za-zА-Яа-я])(?:MPa|GPa|Pa|МПа|ГПа|mm|мм|μm|µm|um|мкм|N\/mm|N|Н|kg|g|min|h|HRC|HB|HV|Ra|Rz|°C|℃)(?![A-Za-zА-Яа-я])/gu;
-  const variables = /(?<![A-Za-zА-Яа-яЁё\d_])(?:[A-Za-zΑ-Ωα-ω][0-9₀-₉]*\*?(?=\s*[=<>])|[A-Za-z][0-9₀-₉]+\*?(?![A-Za-zА-Яа-яЁё\d_])|III(?![A-Za-z\d_])|II(?![A-Za-z\d_])|IV(?![A-Za-z\d_]))/gu;
+  const units = /(?<![A-Za-zΑ-Ωα-ωА-Яа-я_])(?:MPa|GPa|Pa|МПа|ГПа|mm|мм|μm|µm|um|мкм|N\/mm|N|Н|kg|g|min|h|HRC|HB|HV|Ra|Rz|°C|℃)(?![A-Za-zΑ-Ωα-ωА-Яа-я_])/gu;
+  // Same bounded symbol grammar as technical_translation.py. Compound symbols
+  // require formula context; natural language such as "load = 30 N" stays prose.
+  const symbolBoundary = String.raw`A-Za-zΑ-Ωα-ωА-Яа-яЁё\d_ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓ`;
+  const symbolBody = String.raw`[A-Za-zΑ-Ωα-ω](?:[0-9₀-₉]+|_[A-Za-zΑ-Ωα-ω0-9₀-₉]{1,3}|[ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓ]+|(?:min|max|nom|eff|tot|[hbdnt]))?\*?`;
+  const variables = new RegExp(String.raw`(?<![${symbolBoundary}])(?:${symbolBody}(?![${symbolBoundary}])(?=\s*[=<>≤≥])|[A-Za-z][0-9₀-₉]+\*?(?![${symbolBoundary}])|III(?![A-Za-z\d_])|II(?![A-Za-z\d_])|IV(?![A-Za-z\d_]))`, "gu");
+  const equations = new RegExp(String.raw`(?<![${symbolBoundary}])${symbolBody}(?![${symbolBoundary}])\s*[=<>≤≥]=?\s*(?:${symbolBody}(?![${symbolBoundary}])|\d+(?:[.,]\d+)?|[\s+−*/^().%±-])+`, "gu");
   const snapshot = (item) => ({ content: String(item?.content || "").trim(), type: String(item?.type || "other") });
   const same = (a, b) => a?.content === b?.content && a?.type === b?.type;
+  function masked(content) {
+    return String(content || "").replace(drawingReferences, " ").replace(standards, " ").replace(standardIdentifiers, " ").replace(codes, " ").replace(units, " ").replace(equations, " ").replace(variables, " ").replace(/(?<![A-Za-zΑ-Ωα-ω\d_])[A-Za-zΑ-Ωα-ω](?![A-Za-zΑ-Ωα-ω\d_])/gu, " ");
+  }
   function needsTranslation(content) {
     if (/⟦ENG_/u.test(String(content || ""))) return true;
-    const text = String(content || "").replace(drawingReferences, " ").replace(standards, " ").replace(standardIdentifiers, " ").replace(codes, " ").replace(units, " ").replace(variables, " ").replace(/(?<![A-Za-zΑ-Ωα-ω\d_])[A-Za-zΑ-Ωα-ω](?![A-Za-zΑ-Ωα-ω\d_])/gu, " ");
+    const text = masked(content);
     return [...text].some((char) => /\p{L}/u.test(char) && !/[\u3400-\u9fff\u{20000}-\u{2fa1f}]/u.test(char));
   }
-  function blocksExport(item) {
-    return needsTranslation(item?.content)
-      || (item?.translation_status === "translated" && needsTranslation(item.original_content) && !hasChineseExplanation(item.content))
-      || (item?.translation_status === "failed" && same(item.translation_input_snapshot, snapshot(item)));
+  function validResultText(content) {
+    return typeof content === "string" && Boolean(content.trim()) && !/⟦ENG_/u.test(content);
   }
-  function hasChineseExplanation(content) {
-    const text = String(content || "").replace(standards, " ").replace(standardIdentifiers, " ").replace(codes, " ").replace(units, " ");
-    return /[\u3400-\u9fff\u{20000}-\u{2fa1f}]/u.test(text);
+  function isCurrent(item) {
+    return item?.translation_status === "translated" && validResultText(item.content)
+      && (!item.translation_output_snapshot || same(item.translation_output_snapshot, snapshot(item)));
+  }
+  function blocksExport(item) {
+    if (/⟦ENG_/u.test(String(item?.content || ""))) return true;
+    if (isCurrent(item)) return false;
+    return needsTranslation(item?.content)
+      || (item?.translation_status === "failed" && (!item.translation_input_snapshot || same(item.translation_input_snapshot, snapshot(item))));
   }
   function warnings(item) {
-    return same(item?.translation_warning_snapshot, snapshot(item)) && Array.isArray(item?.translation_warnings)
-      ? item.translation_warnings.filter((warning) => warning && typeof warning === "object") : [];
+    return [];
   }
   function canRecover(item) {
     const current = snapshot(item);
@@ -51,7 +62,18 @@
     const failure = review && session(review).recoveryErrors.get(item.requirement_id);
     return failure && same(failure.snapshot, snapshot(item)) ? failure.error : "";
   }
-  function changed(item) { edits.set(item, (edits.get(item) || 0) + 1); }
+  function changed(item, { typeOnly = false } = {}) {
+    edits.set(item, (edits.get(item) || 0) + 1);
+    if (item.translation_status === "translated") {
+      if (typeOnly || item.translation_output_snapshot?.content === snapshot(item).content) {
+        // A type-only edit changes the snapshot, never triggers another translation.
+        item.translation_output_snapshot = snapshot(item);
+      } else {
+        item.translation_status = "not_required";
+        item.translation_output_snapshot = null;
+      }
+    }
+  }
   function schedule() {
     clearTimeout(timer);
     const review = hooks.getReview?.();
@@ -61,13 +83,13 @@
   function apply(review, item, result) {
     const before = structuredClone(item);
     const recovered = ["automatic", "adopted"].includes(result.recovery_mode) || result.translation_status === "not_required";
-    const keys = result.translation_status === "not_required" ? ["translation_status", "translation_error", "translation_input_snapshot", "translation_error_code", "translation_error_details"]
-      : ["content", "original_content", "source_language", "translation_status", "translation_error", "translation_source", "translation_input_snapshot", "translation_error_code", "translation_error_details", "translation_warnings", "translation_warning_snapshot"];
+    const keys = result.translation_status === "not_required" ? ["translation_status", "translation_error", "translation_input_snapshot", "translation_error_code", "translation_error_details", "translation_output_snapshot"]
+      : ["content", "original_content", "source_language", "translation_status", "translation_error", "translation_source", "translation_input_snapshot", "translation_error_code", "translation_error_details", "translation_warnings", "translation_warning_snapshot", "translation_output_snapshot"];
     for (const key of keys) {
       if (Object.hasOwn(result, key)) item[key] = structuredClone(result[key]);
     }
-    item.translation_warnings = structuredClone(result.translation_warnings || []);
-    item.translation_warning_snapshot = structuredClone(result.translation_warning_snapshot || null);
+    item.translation_warnings = [];
+    item.translation_warning_snapshot = null;
     item.need_human_review = true;
     item.human_confirmed = false;
     delete item.confirmation_snapshot;
@@ -85,15 +107,17 @@
     }
     hooks.audit({ event_type: recovered ? "technical_requirement_translation_recovered" : result.translation_status === "translated" ? "technical_requirement_translated" : "technical_requirement_translation_failed",
       target_field: `technical_requirements.${item.requirement_id}`, source: recovered ? "translation_validation" : "machine_translation",
-      reason: recovered ? "已有译文重新核验并恢复（仍需人工确认）" : "外文技术要求中文化（仍需人工确认）",
+      reason: recovered ? "恢复已保存译文（仍需人工确认）" : "填入返回译文（仍需人工确认）",
       before_state: before, after_state: structuredClone(item), metadata: { requirement_id: item.requirement_id, translation_source: item.translation_source, translation_error: item.translation_error || "", translation_error_code: item.translation_error_code || "", translation_warnings: warnings(item), recovery_mode: result.recovery_mode } });
   }
-  async function run(retryId = null) {
+  async function run(retryId = null, modeOverride = null) {
     const review = hooks.getReview?.(), jobId = hooks.getJobId?.();
     if (!review || !jobId || session(review).running) return false;
     const entry = session(review);
     const operation = (item) => {
+      if (isCurrent(item)) return null;
       if (retryId && item.requirement_id !== retryId) return null;
+      if (retryId && modeOverride === "revalidate") return item.translation_status === "failed" ? "revalidate" : null;
       if (retryId) return needsTranslation(item.content) && !canRecover(item) ? "translate" : item.translation_status === "failed" ? "revalidate" : null;
       if (item.translation_status === "failed" && (!item.translation_input_snapshot || same(item.translation_input_snapshot, snapshot(item)))) {
         const checked = entry.checked.get(item.requirement_id);
@@ -136,6 +160,10 @@
         } catch (error) {
           results.push(...batch.map((row) => ({ requirement_id: row.requirement_id, source_snapshot: row.source_snapshot, content: row.source_snapshot.content,
           original_content: row.source_snapshot.content, source_language: row.item.source_language || "unknown", translation_status: "failed",
+            translation_error_details: same(row.item.translation_input_snapshot, row.source_snapshot)
+              && typeof row.item.translation_error_details?.candidate_content === "string"
+              && !/⟦ENG_/u.test(row.item.translation_error_details.candidate_content)
+              ? { candidate_content: row.item.translation_error_details.candidate_content } : {},
             translation_error: error.message || "网络不可用，请重试。", translation_error_code: "request_failed", translation_source: "request_failed", translation_input_snapshot: row.source_snapshot })));
         }
       }
@@ -145,6 +173,7 @@
         const matches = results.filter((r) => r.requirement_id === row.requirement_id);
         const result = matches.length === 1 && ["not_required", "translated", "failed"].includes(matches[0].translation_status) ? matches[0] : { requirement_id: row.requirement_id, source_snapshot: row.source_snapshot,
           content: row.source_snapshot.content, original_content: row.source_snapshot.content, translation_status: "failed", translation_error: "翻译返回条目不完整，请重试。",
+          translation_error_code: "invalid_response", translation_error_details: {},
           translation_input_snapshot: row.source_snapshot, translation_source: "invalid_response" };
         if (!review.technical_requirements.includes(row.item) || (edits.get(row.item) || 0) !== row.edit || !same(snapshot(row.item), row.source_snapshot)
           || !same(result.source_snapshot, row.source_snapshot)) continue;
@@ -173,18 +202,22 @@
           result.translation_status = "failed";
           result.content = row.source_snapshot.content;
           result.translation_error = "翻译返回状态与当前文本不一致，请重试。";
+          result.translation_error_code = "invalid_response";
+          result.translation_error_details = {};
           result.translation_input_snapshot = row.source_snapshot;
         }
-        if (result.translation_status === "translated" && (!String(result.content || "").trim() || needsTranslation(result.content)
-          || (needsTranslation(result.original_content || row.source_snapshot.content) && !hasChineseExplanation(result.content)))) {
+        if (result.translation_status === "translated" && !validResultText(result.content)) {
           result.translation_status = "failed";
+          result.translation_error_details = {};
           result.content = row.source_snapshot.content;
-          result.translation_error = "翻译返回无可用中文说明，请重试或人工填写中文。";
+          result.translation_error = "翻译返回空内容或无法还原的占位符，请重试。";
           result.translation_error_code = "invalid_response";
           result.translation_input_snapshot = row.source_snapshot;
           result.translation_warnings = [];
           result.translation_warning_snapshot = null;
         }
+        result.translation_output_snapshot = result.translation_status === "translated"
+          ? { content: result.content.trim(), type: row.source_snapshot.type } : null;
         apply(review, row.item, result);
         if (result.translation_status === "failed") entry.checked.set(row.requirement_id, { snapshot: snapshot(row.item), edit: row.edit });
         entry.previews.delete(row.requirement_id);
@@ -214,8 +247,7 @@
     const item = review.technical_requirements.find((note) => note.requirement_id === id);
     const stored = item && preview(review, item);
     const candidate = stored?.translation_candidates?.[index];
-    if (!candidate || !String(candidate.content || "").trim() || needsTranslation(candidate.content)
-      || (needsTranslation(candidate.original_content || item.original_content) && !hasChineseExplanation(candidate.content))) return false;
+    if (!candidate || !validResultText(candidate.content)) return false;
     const before = snapshot(item), edit = edits.get(item) || 0;
     const entry = session(review);
     entry.running = true;
@@ -225,7 +257,8 @@
         || !same(before, snapshot(item)) || preview(review, item) !== stored) return false;
       apply(review, item, { ...candidate, requirement_id: id, source_snapshot: before, translation_input_snapshot: before,
         translation_status: "translated", translation_error: "", translation_error_code: "", translation_error_details: {}, recovery_mode: "adopted",
-        translation_warning_snapshot: candidate.translation_warnings?.length ? { content: candidate.content.trim(), type: item.type || "other" } : null });
+        translation_warnings: [], translation_warning_snapshot: null,
+        translation_output_snapshot: { content: candidate.content.trim(), type: item.type || "other" } });
       entry.previews.delete(id);
       entry.recoveryErrors.delete(id);
       hooks.update(true);
@@ -235,5 +268,10 @@
       if (hooks.getReview() === review && hooks.getJobId() === jobId) hooks.update(false);
     }
   }
-  window.TechnicalRequirementTranslation = { configure: (value) => { hooks = value; }, needsTranslation, blocksExport, warnings, canRecover, recoveryError, snapshot, same, isPending, pendingMode, preview, adoptCandidate, changed, schedule, run };
+  window.TechnicalRequirementTranslation = { configure: (value) => {
+    hooks = value;
+    for (const item of hooks.getReview?.()?.technical_requirements || []) {
+      if (isCurrent(item) && !item.translation_output_snapshot) item.translation_output_snapshot = snapshot(item);
+    }
+  }, needsTranslation, blocksExport, warnings, isCurrent, canRecover, recoveryError, snapshot, same, isPending, pendingMode, preview, adoptCandidate, changed, schedule, run };
 })();

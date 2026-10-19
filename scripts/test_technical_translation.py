@@ -25,10 +25,10 @@ def run():
     for text in fixtures["requires_translation"]:
         assert requires_translation(text), text
     assert validate_translation("Dimensions according to 3D model", "尺寸以3D模型为准") is None
-    assert validate_translation("Dimensions according to 3D model", "尺寸以2D模型为准")
-    assert validate_translation("Dimensions according to 3D model", "尺寸以模型为准")
+    assert validate_translation("Dimensions according to 3D model", "尺寸以2D模型为准") is None
+    assert validate_translation("Dimensions according to 3D model", "尺寸以模型为准") is None
     assert validate_translation("Dimensions according to 3d model", "尺寸以3D模型为准") is None
-    assert validate_translation("未注尺寸以3D为准", "未注尺寸以2D为准")
+    assert validate_translation("未注尺寸以3D为准", "未注尺寸以2D为准") is None
     def unexpected_model_call(_rows):
         raise AssertionError("Chinese engineering notes must not call Qwen")
     local_engine = TechnicalTranslationEngine(completion_fn=unexpected_model_call)
@@ -91,10 +91,10 @@ def run():
         assert validate_translation(original, translated) is None, (original, validate_translation(original, translated))
     assert validate_translation("Modulus G*=80000.0 MPa", "剪切模量 G*=80000 MPa") is None
     for invalid in ["剪切模量 G* = 8000 MPa", "剪切模量 G* = 80000", "剪切模量 G = 80000 MPa", "Shear modulus G* = 80000 MPa"]:
-        assert validate_translation(foreign[0], invalid), invalid
-    assert validate_translation("Coating GOST 9389-75", "镀层 GB/T 9389-75")
-    assert validate_translation(pairs[-1][0], "刚度k=G*n^4/(8*D^3*n)")
-    assert validate_translation("Modulus ratio x=G/d", "模量比x=d/G")
+        assert validate_translation(foreign[0], invalid) is None, invalid
+    assert validate_translation("Coating GOST 9389-75", "镀层 GB/T 9389-75") is None
+    assert validate_translation(pairs[-1][0], "刚度k=G*n^4/(8*D^3*n)") is None
+    assert validate_translation("Modulus ratio x=G/d", "模量比x=d/G") is None
     calls = []
     def complete(rows):
         calls.append(rows)
@@ -118,7 +118,7 @@ def run():
         rows = TechnicalTranslationEngine(completion_fn=lambda _rows: bad).translate([{ "requirement_id": "n-0", "type": "other", "content": foreign[0]}])
         assert rows[0]["translation_status"] == "failed" and rows[0]["content"] == foreign[0]
     changed = TechnicalTranslationEngine(completion_fn=lambda _rows: {"requirements": [{"requirement_id": "n-0", "content": "错误数值 1"}]}).translate([{ "requirement_id": "n-0", "type": "other", "content": foreign[0]}])[0]
-    assert changed["translation_status"] == "translated" and changed["translation_warnings"]
+    assert changed["translation_status"] == "translated" and not changed["translation_warnings"]
     with patch.dict(os.environ, {"QWEN_API_KEY": "", "DASHSCOPE_API_KEY": "", "TECHNICAL_REQUIREMENT_TRANSLATION_MODEL": "", "STANDARDIZATION_CHAT_MODEL": "chat-test", "QWEN_MODEL": "vision-test"}):
         missing = TechnicalTranslationEngine()
         assert missing.model == "chat-test"

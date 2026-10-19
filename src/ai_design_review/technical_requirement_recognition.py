@@ -103,6 +103,8 @@ def collect_technical_requirements(candidates: list[dict[str, Any]], *, preserve
                             translation_input_snapshot={"content": item["content"], "type": kind}, translation_source="qwen_vision")
             else:
                 item.update(translation_status="translated", translation_error="", translation_error_code="", translation_error_details={}, translation_source="qwen_vision")
+                item["translation_output_snapshot"] = {"content": item["content"].strip(), "type": kind}
+                item["need_human_review"] = True
                 item.update(translation_warning_fields(warnings, item["content"], kind))
         item["requirement_id"] = "techreq_" + hashlib.sha256(item["recognition_key"].encode()).hexdigest()[:24]
         notes.append(item)
@@ -137,7 +139,9 @@ def _recognition_keys(item: dict[str, Any]) -> set[str]:
 
 
 def _wording(item: dict[str, Any]) -> set[str]:
-    return {_text(note.get(key)) for note in [item, *(item.get("recognition_aliases") or [])] if isinstance(note, dict)
+    # Recovery must recognize the same aliases as display/export, including old wording.
+    return {json.dumps(technical_requirement_equivalence_key({**item, **note, "content": note[key]}), ensure_ascii=False)
+            for note in [item, *(item.get("recognition_aliases") or [])] if isinstance(note, dict)
             for key in ("content", "original_content", "recognized_content", "raw_content") if _text(note.get(key))}
 
 

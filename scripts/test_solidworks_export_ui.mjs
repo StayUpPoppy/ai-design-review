@@ -32,6 +32,8 @@ for (const test of cases) {
   delete input.solidworks_preview;
   const preview = context.SolidWorksExport.buildPreview(input, test.review, catalog);
   assert.deepEqual(JSON.parse(JSON.stringify(preview)), test.package.solidworks_preview, test.name);
+  assert.deepEqual(Object.keys(preview.titleBlockProperties), ["材料", "重量", "客户图号", "表面粗糙度"].filter((key) => Object.hasOwn(preview.titleBlockProperties, key)), `${test.name} title-block order`);
+  assert.deepEqual(input.source, test.package.source, `${test.name} source snapshot is not rewritten`);
   assert.deepEqual(JSON.parse(JSON.stringify(input.derived_parameters.solidworks_design_checks.metrics.unit_mass)),
     test.package.derived_parameters.solidworks_design_checks.metrics.unit_mass, `${test.name} frozen weight basis`);
   const points = test.review.spring_parameters.load_points.filter((p) => p.need_human_review === false)

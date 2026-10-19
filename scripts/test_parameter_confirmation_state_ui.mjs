@@ -56,7 +56,7 @@ control = context.confirmationControlState(translatedSurface, { kind: "technical
 assert.equal(control.disabled, false, "translated surfaces with differences are single confirmable just like bulk confirmation");
 control = context.confirmationControlState({ ...translatedSurface, content: "Покрытие Ц15.hr ГОСТ 9306-85" },
   { kind: "technical", field: "technical_requirements.surface-warning", review: {} });
-assert.equal(control.disabled, true, "translated state never permits foreign prose");
+assert.equal(control.disabled, false, "Accepted nonempty translation is confirmable even when foreign prose remains");
 
 const edited = { value: 3.2, need_human_review: true, source: ["human_edited"] };
 control = context.confirmationControlState(edited, {

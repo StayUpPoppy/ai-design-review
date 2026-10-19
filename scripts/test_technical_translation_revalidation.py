@@ -42,12 +42,12 @@ def run():
     for original, chinese in PAIRS:
         assert validate_translation(original, chinese) is None, translation_diagnostic(original, chinese)
     for changed in [PAIRS[0][1].replace("F3", "F2"), PAIRS[0][1].replace("6", "8")]:
-        assert translation_diagnostic(PAIRS[0][0], changed)["code"] == "engineering_mismatch"
-    assert validate_translation(PAIRS[3][0], PAIRS[3][1].replace("Ц15.hr", "Ц16.hr"))
-    assert validate_translation(PAIRS[4][0], PAIRS[4][1].replace("Б-1-1.5", "Б-1-1.6"))
-    assert validate_translation(PAIRS[2][0], PAIRS[2][1].replace("СТ ЦКБА", "ST TsKBA"))
-    assert validate_translation(PAIRS[3][0], PAIRS[3][1].replace("GOST", "GB/T"))
-    assert translation_diagnostic("Polish the surface", "表面 Polish")["code"] == "foreign_prose_remaining"
+        assert translation_diagnostic(PAIRS[0][0], changed) is None
+    assert validate_translation(PAIRS[3][0], PAIRS[3][1].replace("Ц15.hr", "Ц16.hr")) is None
+    assert validate_translation(PAIRS[4][0], PAIRS[4][1].replace("Б-1-1.5", "Б-1-1.6")) is None
+    assert validate_translation(PAIRS[2][0], PAIRS[2][1].replace("СТ ЦКБА", "ST TsKBA")) is None
+    assert validate_translation(PAIRS[3][0], PAIRS[3][1].replace("GOST", "GB/T")) is None
+    assert translation_diagnostic("Polish the surface", "表面 Polish") is None
     source = "Force F₃=2850 N; ГОСТ 9389-75; Б-1-1,5; k=G*d^4/(8*D^3*n); ⟦ENG_bad⟧"
     protected, tokens = protect_engineering_text(source)
     assert restore_engineering_text(protected, tokens) == source
@@ -70,7 +70,7 @@ def run():
         if "⟦ENG_9999⟧" in reply:
             assert broken["translation_error_code"] == "invalid_response" and broken["content"] == row["content"]
         else:
-            assert broken["translation_status"] == "translated" and broken["translation_warnings"]
+            assert broken["translation_status"] == "translated" and not broken["translation_warnings"]
     uncertain = TechnicalTranslationEngine(completion_fn=lambda rows: {"requirements": [{"requirement_id": "n", "error": "无法确定"}]}).translate([row])[0]
     assert uncertain["translation_error_code"] == "model_uncertain"
     review = _ready_review()

@@ -67,7 +67,7 @@ def _operation(tag: str, summary: str, description: str) -> dict[str, str]:
 OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/api/material-catalog"): _operation("审图管理", "获取公司压缩弹簧材料目录", "按当前 ERP 身份返回15种材料的稳定ID、完整名称、标准牌号、明确别名和公司表内固定剪切模量及目录版本。只读，不调用模型、不保存审图；新材料选择限定目录，历史人工原值兼容保留，确认后的完整名称用于参数包及SW材料字段。"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): _operation("审图管理", "预览并核对遗漏技术要求", "按订单归属和当前修订读取原始识别列表，返回未保留的独立条目；不调用识别模型、不保存、不覆盖人工内容。客户端选择补回后使用既有保存接口，仍须逐条确认。"),
-    ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): _operation("审图管理", "翻译或核验技术要求中文译文", "校验订单归属、稳定ID及已保存文本快照，逐条保护工程信息。中文直接显示，工程差异以translation_warnings提示，允许单项或批量确认；真实外文和无效响应仍失败。mode=translate调用现有Qwen；mode=revalidate只核验已有译文，不调用模型。返回安全自动恢复或待用户选择的候选；不保存、不代替人工确认，客户端通过现有串行保存持久化。"),
+    ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): _operation("审图管理", "翻译或恢复技术要求译文", "校验订单归属、稳定ID及已保存文本快照。有效非空译文直接填入正文，不检查外文残留、中文充分性或工程内容差异，不生成差异警告；保留网络、空结果、格式、ID及无法还原占位符异常。mode=translate调用现有Qwen；mode=revalidate仅恢复实际保存的候选，不调用模型。translation_output_snapshot防止成功结果重复送译。返回自动恢复或待用户选择的候选；不保存、不代替人工确认，客户端通过现有串行保存持久化。"),
     ("GET", "/api/reviews/{job_id}/annotations"): _operation("审图管理", "获取原图关键参数气泡标注", "返回原图页面清单、稳定参数编号、定位依据和独立标注版本。历史订单按已有原图补建定位，不重新调用Qwen或RAG。"),
     ("PATCH", "/api/reviews/{job_id}/annotations"): _operation("审图管理", "独立保存原图标注位置", "仅调整原图定位点和气泡位置，不改变参数、审图修订号或SW生图状态。标注版本冲突返回409并附带服务器位置。"),
     ("POST", "/api/reviews/{job_id}/annotations/relocalize"): _operation("审图管理", "重新补定位未定位的原图参数", "使用本地放大/旋转OCR重试缺项及失败区域，保留已可靠定位及人工位置。原图或独立标注版本冲突返回409，不修改工程参数。"),
@@ -96,7 +96,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/apply"): _operation("标准化与合理性", "应用完整参数修改方案", "按方案版本和审图修订执行乐观锁校验，重新求解全部关联参数并原子写入。ready 或 warning 方案可以应用；过期、缺信息或存在冲突时返回409。"),
     ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/discard"): _operation("标准化与合理性", "放弃参数修改方案", "关闭尚未应用的方案草稿并保存审计事件，不修改正式参数；已应用或版本已变化时返回409。"),
     ("GET", "/api/reviews/{job_id}/generation-readiness"): _operation("生图准备", "检查审图是否可以生图", "由服务端根据当前审图修订重新计算缺失字段、待确认字段、警告和参数矛盾，是前端启用“生成图纸”的唯一可信依据。标准化为可选功能；未标准化、标准未确认或标准化结果过期只产生警告，不阻止按当前人工确认参数生图。"),
-    ("GET", "/api/reviews/{job_id}/generation-package"): _operation("生图准备", "获取 SolidWorks 生图参数包", "仅 ready 或 ready_with_warnings 状态返回冻结的 spring_generation_parameters/v2 参数快照。spring_parameters 包含线径、中径、自由长度、总圈数、有效圈数、旋向、两端磨削和端圈压并八个必填字段，以及可选的已确认材料字段 material；solidworks_preview.modelParameters 展示实际发送给 SolidWorks 的建模字段映射（不含尚未创建的 TaskId），其中有效圈数n为已确认有效圈数，但是否并紧为0时直接省略该建模键；内部有效圈数及确认要求保留；技术要求在不并紧时不自动生成圈数行，并紧时自动使用“有效圈数”名称。原图或人工填写的圈数要求按现有确认和去重规则保留。是否磨平和其后的是否并紧均为整数 1 或 0；是否并紧的 1 表示两端并紧，0 表示两端不并紧。solidworks_preview.titleBlockProperties 展示标题栏已确认材料纯牌号、单件重量（数字、kg、最多八位小数）及表面粗糙度 Ra（数字、μm）；对应独立粗糙度技术要求句移除，其它部位和附加条件保留，缺失键独立省略，都缺失时为空对象；材料继续保留在技术要求中。技术要求首条按最终已确认且有效的端部状态生成，仅并紧且磨平时追加“每端磨270°”；不并紧且磨平时输出“两端不并紧，端面磨平。”；不写入审图技术要求编辑列表。SolidWorks 根据中径和线径计算外径、内径。材料缺失或待确认时仍可生成，但参数包省略 material 并在就绪状态中给出警告。未执行标准化时 standard_context 保持空值，参数包仍可用于生图；其他未就绪状态返回 409 和具体原因。"),
+    ("GET", "/api/reviews/{job_id}/generation-package"): _operation("生图准备", "获取 SolidWorks 生图参数包", "仅 ready 或 ready_with_warnings 状态返回冻结的 spring_generation_parameters/v2 参数快照。spring_parameters 包含线径、中径、自由长度、总圈数、有效圈数、旋向、两端磨削和端圈压并八个必填字段，以及可选的已确认材料字段 material；solidworks_preview.modelParameters 展示实际发送给 SolidWorks 的建模字段映射（不含尚未创建的 TaskId），其中有效圈数n为已确认有效圈数，但是否并紧为0时直接省略该建模键；内部有效圈数及确认要求保留；技术要求在不并紧时不自动生成圈数行，并紧时自动使用“有效圈数”名称。原图或人工填写的圈数要求按现有确认和去重规则保留。是否磨平和其后的是否并紧均为整数 1 或 0；是否并紧的 1 表示两端并紧，0 表示两端不并紧。solidworks_preview.titleBlockProperties 按材料、重量、客户图号、表面粗糙度顺序展示标题栏属性；客户图号来自当前审图drawing_summary.drawing_no创建的source.drawing_no快照，以字符串输出，仅去首尾空白，保留前导零、字母和连字符，缺失时独立省略且不增加确认或拦截；材料为已确认纯牌号，单件重量为数字（kg、最多八位小数），表面粗糙度Ra为数字（μm）；新任务冻结客户图号，历史冻结请求及重试不补入该键；对应独立粗糙度技术要求句移除，其它部位和附加条件保留，缺失键独立省略，都缺失时为空对象；材料继续保留在技术要求中。技术要求首条按最终已确认且有效的端部状态生成，仅并紧且磨平时追加“每端磨270°”；不并紧且磨平时输出“两端不并紧，端面磨平。”；不写入审图技术要求编辑列表。SolidWorks 根据中径和线径计算外径、内径。材料缺失或待确认时仍可生成，但参数包省略 material 并在就绪状态中给出警告。未执行标准化时 standard_context 保持空值，参数包仍可用于生图；其他未就绪状态返回 409 和具体原因。"),
     ("POST", "/api/reviews/{job_id}/generation-template-match"): _operation("生图准备", "匹配 SolidWorks 生图模板", "根据图纸类型、必填字段、匹配规则和优先级返回模板候选；可指定 template_code，也可由后端自动选择。"),
     ("GET", "/api/generation-templates"): _operation("模板查询", "查询启用的生图模板", "返回当前启用的模板及匹配规则、参数映射和 Worker 能力要求；不返回已禁用版本。"),
     ("GET", "/api/generation-templates/{template_code}/versions"): _operation("模板查询", "查询模板的启用版本", "返回指定 template_code 当前所有启用版本；模板代码可包含斜杠。"),
@@ -139,6 +139,18 @@ class MaterialCatalogResponse(BaseModel):
     items: list[MaterialCatalogItem] = Field(min_length=15, max_length=15, description="按公司材料表顺序提供的15种材料。")
 
 
+class ReviewRoughnessCandidate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    value: Any | None = Field(default=None, description="原图粗糙度候选数值，旧记录兼容读取。")
+    unit: str | None = Field(default=None, description="候选单位，通常为μm。")
+    location: str | None = Field(default=None, description="原图明确的作用部位；未知不猜测。")
+    evidence: str | None = Field(default=None, description="原始识别依据，前端默认收起。")
+    evidence_status: Literal["direct", "unverified"] | None = Field(default=None, description="direct为明确原图依据；unverified仅供核对，不自动选为正式值。旧记录允许缺少，不因此改变历史数值或确认。")
+    evidence_reason: str | None = Field(default=None, description="依据分类原因。")
+    evidence_records: list[dict[str, Any]] | None = Field(default=None, description="合并候选的各来源原文、页码和坐标，保留追溯。")
+
+
 class ReviewParameterValue(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -150,6 +162,8 @@ class ReviewParameterValue(BaseModel):
     evidence: str | None = Field(default=None, description="支持该参数值的图纸文字或计算依据。")
     confidence: float | None = Field(default=None, ge=0, le=1, description="识别置信度，范围为 0 至 1。")
     need_human_review: bool | None = Field(default=None, description="是否仍需人工核对。")
+    roughness_reference_dismissed: bool | None = Field(default=None, description="仅用于粗糙度缺值时记住不添加选择；true收起项目参考提示，保留重新展开入口。不是确认状态，不发送给SW。")
+    roughness_candidates: list[ReviewRoughnessCandidate] | None = Field(default=None, description="粗糙度原图候选及可选依据分类；不含项目参考值，不能单凭候选直接输出SW。")
 
 
 class ReviewSupportCoilsValue(ReviewParameterValue):
@@ -274,7 +288,7 @@ class TechnicalRequirementDocument(BaseModel):
         description="技术要求类型：surface、surface_roughness、hardness、heat_treatment、salt_spray、environmental、lifetime、process或other。",
         examples=["surface"],
     )
-    content: str = Field(default="", description="当前技术要求编辑及输出文本；译文放在此字段，送译原文另存original_content。", examples=["表面镀锌。"])
+    content: str = Field(default="", description="当前技术要求编辑及输出文本；译文放在此字段，送译原文另存original_content。热处理、表面处理、盐雾、寿命、环保、硬度、工艺及其他要求共用完整正文等价规则，前端与新建SW请求仅去除正文、范围及全部工程条件等价的重复；不同条件和未解析文字保留，原始记录不删除。", examples=["表面镀锌。"])
     original_content: str | None = Field(default=None, description="保留的图纸原文；历史缺原文时保留已有文本，不伪造原文。")
     original_number: str | None = Field(default=None, description="原图条目序号，仅用于核对，可重复；无编号时为空。")
     source_order: float | None = Field(default=None, description="原图阅读顺序，不是SW输出编号。")
@@ -284,13 +298,14 @@ class TechnicalRequirementDocument(BaseModel):
     application_scope: str | None = Field(default=None, description="原图明确指定的作用范围；比较等价要求时一并保留。")
     source_language: str | None = Field(default=None, description="原文自然语言代码，如ru、en、zh；未知为unknown。")
     translation_status: Literal["not_required", "translated", "failed"] | None = Field(default=None, description="中文化状态；译文仍须人工确认。")
-    translation_error: str | None = Field(default=None, description="真正翻译失败原因；工程信息差异使用translation_warnings，不阻止确认。")
-    translation_error_code: str | None = Field(default=None, description="失败分类：request_failed、model_uncertain、invalid_response、foreign_prose_remaining；兼容历史engineering_mismatch，新工程差异仅使用警告。")
-    translation_error_details: dict[str, Any] | None = Field(default=None, description="真正失败的详细说明；兼容历史工程差异，新的差异保存在translation_warnings。")
+    translation_error: str | None = Field(default=None, description="请求或响应异常；译文内容不作校验。")
+    translation_error_code: str | None = Field(default=None, description="request_failed、model_uncertain、invalid_response；兼容读取历史内容校验失败代码。")
+    translation_error_details: dict[str, Any] | None = Field(default=None, description="失败详情；可选candidate_content为实际保存的历史响应候选，关联translation_input_snapshot，可本地恢复或人工采用，仍须确认。")
     translation_source: str | None = Field(default=None, description="翻译来源及模型；不代表人工确认。")
     translation_input_snapshot: dict[str, Any] | None = Field(default=None, description="最后一次送译文本与类型，用于防止重复失败请求。")
-    translation_warnings: list[dict[str, Any]] = Field(default_factory=list, description="工程信息差异提醒；允许单项及批量人工确认，不表示翻译失败。")
-    translation_warning_snapshot: dict[str, Any] | None = Field(default=None, description="警告对应的当前中文正文和类型；编辑后旧警告不再生效。")
+    translation_output_snapshot: dict[str, Any] | None = Field(default=None, description="已接受译文的正文和类型，防止保留外文字母的成功结果重复送译；旧成功记录允许缺失。")
+    translation_warnings: list[dict[str, Any]] = Field(default_factory=list, description="历史兼容字段；不再生成或展示内容差异警告。")
+    translation_warning_snapshot: dict[str, Any] | None = Field(default=None, description="历史兼容字段；不再生效。")
     source: list[str] = Field(default_factory=list, description="识别、人工编辑或AI方案等内部来源。")
     evidence: str | None = Field(default=None, description="图纸识别证据或人工修改说明。")
     confidence: float | None = Field(default=None, ge=0, le=1, description="识别或确认置信度。")
@@ -902,14 +917,15 @@ class TechnicalTranslationResult(BaseModel):
     translation_status: Literal["not_required", "translated", "failed"] = Field(description="not_required 也用于已核实的历史语言误判恢复；不代表已人工确认。")
     translation_error: str
     translation_error_code: str = ""
-    translation_error_details: dict[str, Any] = Field(default_factory=dict)
-    translation_warnings: list[dict[str, Any]] = Field(default_factory=list, description="当前中文译文的工程差异提醒，不作为翻译失败或确认拦截。")
-    translation_warning_snapshot: TechnicalTranslationSnapshot | None = Field(default=None, description="警告对应的正文和类型，编辑后旧警告不再适用。")
+    translation_error_details: dict[str, Any] = Field(default_factory=dict, description="失败原因及可选candidate_content；实际保存的候选关联translation_input_snapshot，可本地恢复或人工采用，仍须确认。")
+    translation_warnings: list[dict[str, Any]] = Field(default_factory=list, description="历史兼容字段；不再生成或展示。")
+    translation_warning_snapshot: TechnicalTranslationSnapshot | None = Field(default=None, description="历史兼容字段；不再生效。")
     recovery_mode: Literal["automatic", "preview", "unavailable"] | None = None
-    translation_candidates: list[dict[str, Any]] = Field(default_factory=list, description="仅供用户预览；不能直接写入content。")
+    translation_candidates: list[dict[str, Any]] = Field(default_factory=list, description="待用户预览选择的候选；采用后写入content并保持待确认。")
     recovery_reason: str | None = None
     translation_source: str
     translation_input_snapshot: TechnicalTranslationSnapshot
+    translation_output_snapshot: TechnicalTranslationSnapshot | None = Field(default=None, description="已接受译文的正文和类型；用于避免重复翻译。")
 
 
 class TechnicalTranslationResponse(BaseModel):

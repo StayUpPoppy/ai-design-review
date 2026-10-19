@@ -21,6 +21,7 @@ try {
   const page = await browser.newPage(), errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   let saved = structuredClone(cases[0].review), revision = 1, released = false;
+  saved.drawing_summary.drawing_no = "  000-YD4765020178  ";
   let failNextPatch = false, holdNextPatch = false, heldPatchRelease = null;
   // A confirmed human height starts independently of formula snapshot migration.
   Object.assign(saved.spring_parameters.solid_height, { source: ["manual"], value_kind: "input_height" });
@@ -56,11 +57,13 @@ try {
   assert.equal(current.extraProperties.C, 14);
   assert.equal(current.extraProperties["P'"], undefined, "Async material is not guessed");
   assert.equal(current.titleBlockProperties["重量"], undefined, "Weight waits for material properties");
+  assert.equal(current.titleBlockProperties["客户图号"], "000-YD4765020178", "Drawing number is independent of weight and preserves leading zeroes");
   release(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
   current = await preview();
   assert.equal(current.extraProperties["P'"], 2.9314);
   assert.equal(current.extraProperties["τ_b"], 451.2669);
-  assert.deepEqual(current.titleBlockProperties, { "材料": "SUS304", "重量": 0.00642403, "表面粗糙度": 12.5 });
+  assert.deepEqual(current.titleBlockProperties, { "材料": "SUS304", "重量": 0.00642403, "客户图号": "000-YD4765020178", "表面粗糙度": 12.5 });
+  assert.deepEqual(Object.keys(current.titleBlockProperties), ["材料", "重量", "客户图号", "表面粗糙度"]);
   assert.ok(!current.extraProperties["技术要求"].includes("粗糙度"));
   assert.ok(current.extraProperties["技术要求"].includes("材料：SUS304。"));
   assert.deepEqual(Object.keys(current.modelParameters), ["线径", "中径", "自由高度", "圈数", "有效圈数n", "是否磨平", "是否并紧"]);
@@ -149,6 +152,8 @@ try {
   // Imported/new uploads with a nominal candidate require confirmation for text.
   assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
   saved = structuredClone(cases[0].review); delete saved.spring_parameters.solid_height; revision++;
+  // This nominal-height case needs independently confirmed support, not an unverified legacy inference.
+  saved.spring_parameters.support_coils.evidence = "每端支承圈数：1圈";
   await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
   assert.equal(await input.inputValue(), "6.3");
   current = await preview();
@@ -280,14 +285,51 @@ try {
   assert.equal(await panel.locator('.requirement-row[data-kind="technical"]').count(), 6);
   assert.deepEqual(await panel.locator('.requirement-row[data-kind="technical"] textarea').evaluateAll((inputs) => inputs.map((input) => input.value)), final.extraProperties["技术要求"].split("\n").slice(8).map((line) => line.replace(/^\d+\./, "")));
   assert.equal(await page.evaluate(() => state.review.technical_requirements.find((item) => item.requirement_id === "techreq_order2_7").original_content), regression.review.technical_requirements[7].content, "individual original wording survives unified editing");
+  // Hardness screenshot: preserve all three source records, display two rows and export nine notes.
+  saved = structuredClone(regression.hardness_review); revision++;
+  await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
+  assert.equal(await panel.locator('.requirement-row[data-kind="technical"]').count(), 2);
+  const hardness = panel.locator('[data-kind="technical"][data-requirement-id="hardness_0"]');
+  assert.equal(await hardness.locator('textarea').inputValue(), "硬度要求：HRC45-50");
+  assert.ok((await hardness.textContent()).includes("对应 2 条原始记录"));
+  assert.deepEqual(await preview(), regression.hardness_package.solidworks_preview);
+  const hardnessOriginals = saved.technical_requirements.map((item) => [item.requirement_id, item.original_content, item.evidence]);
+  await hardness.locator('textarea').fill("硬度要求：HRC46-50");
+  await hardness.locator('[data-role="confirm"]').click();
+  assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
+  assert.deepEqual(saved.technical_requirements.filter((item) => item.type === "hardness").map((item) => [item.content, item.need_human_review]), [["硬度要求：HRC46-50", false], ["硬度要求：HRC46-50", false]]);
+  assert.deepEqual(saved.technical_requirements.map((item) => [item.requirement_id, item.original_content, item.evidence]), hardnessOriginals);
+  const savedHardnessPreview = await preview();
+  await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
+  assert.equal(await panel.locator('.requirement-row[data-kind="technical"]').count(), 2);
+  assert.deepEqual(await preview(), savedHardnessPreview);
+
+  // Every class has two independent sources, one pending and one confirmed.
+  saved = structuredClone(regression.eight_review); revision++;
+  await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
+  assert.equal(await panel.locator('.requirement-row[data-kind="technical"]').count(), 8);
+  assert.equal(await page.evaluate(() => state.review.technical_requirements.length), 16);
+  assert.equal(await panel.locator('[data-role="technical-group-status"]').filter({ hasText: "部分确认" }).count(), 8);
+  assert.deepEqual(await preview(), regression.eight_pending_package.solidworks_preview, "confirmed representatives match backend body and order before unified confirmation");
+  for (let index = 0; index < 8; index++) {
+    await panel.locator('.requirement-row[data-kind="technical"]').nth(index).locator('[data-role="confirm"]').click();
+    assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
+  }
+  assert.equal(saved.technical_requirements.filter((item) => item.need_human_review).length, 0);
+  assert.deepEqual(saved.technical_requirements.map((item) => [item.requirement_id, item.original_content, item.evidence]), regression.eight_review.technical_requirements.map((item) => [item.requirement_id, item.original_content, item.evidence]));
+  assert.deepEqual(await panel.locator('.requirement-row[data-kind="technical"] textarea').evaluateAll((inputs) => inputs.map((input) => input.value)), regression.eight_package.solidworks_preview.extraProperties["技术要求"].split("\n").slice(8).map((line) => line.replace(/^\d+\./, "")));
+  await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
+  assert.equal(await panel.locator('.requirement-row[data-kind="technical"]').count(), 8);
+  assert.equal(await panel.locator('[data-role="technical-group-status"]').filter({ hasText: "部分确认" }).count(), 0);
+  assert.deepEqual(await preview(), regression.eight_package.solidworks_preview);
   fs.mkdirSync("outputs/technical-duplication-qa", { recursive: true });
   await page.waitForLoadState("networkidle");
   for (const width of process.env.SKIP_UI_QA_SCREENSHOTS ? [] : [1440, 390]) {
-    await page.setViewportSize({ width, height: 1000 });
+    await page.setViewportSize({ width, height: width < 500 ? 1600 : 1000 });
     await panel.locator('.technical-requirements-block').evaluate((element) => element.scrollIntoView({ block: "start" }));
     assert.equal(await panel.locator('.technical-requirements-block').evaluate((element) => element.scrollWidth > element.clientWidth + 2), false);
     await page.screenshot({ path: `outputs/technical-duplication-qa/frontend-dedup-${width}.png` });
   }
   assert.deepEqual(errors, []);
-  console.log("PASS: 9 records -> 6 editable requirements, unified edit/type/confirm, group delete/undo, repeated add, failed save, save race, regroup, source navigation, desktop/mobile and SW preview parity");
+  console.log("PASS: eight classes 16 -> 8, hardness 10 -> 9 SW notes, 9 records -> 6 editable requirements, unified edit/type/confirm, group delete/undo, repeated add, failed save, save race, regroup, source navigation, desktop/mobile and SW preview parity");
 } finally { await browser?.close(); await new Promise((resolve) => server.close(resolve)); }

@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -252,6 +253,8 @@ def main() -> None:
                 title = model["titleBlockProperties"]
                 assert title["材料"] == "60Si2Mn" and isinstance(title["重量"], (int, float))
                 assert title["表面粗糙度"] == 12.5
+                assert title["客户图号"] == "SW-PUSH-001"
+                assert list(title) == ["材料", "重量", "客户图号", "表面粗糙度"]
                 with repository._session() as session:
                     stored_package = session.get(GenerationJobRecord, job["generation_id"]).parameter_package
                     mass = stored_package["derived_parameters"]["solidworks_design_checks"]["metrics"]["unit_mass"]
@@ -271,6 +274,7 @@ def main() -> None:
 
                 from test_technical_requirement_equivalence import order2_review
                 order2 = order2_review()
+                order2["drawing_summary"]["drawing_no"] = "  YD4765020178  "
                 order2["spring_parameters"]["solid_height"].update(source=["manual"], value_kind="input_height")
                 repository.create_review("order2-technical-dedup", order2, owner=OWNER)
                 order2_preview = client.get("/api/reviews/order2-technical-dedup/generation-package")
@@ -282,6 +286,7 @@ def main() -> None:
                 order2_notes = order2_payload["models"][0]["extraProperties"]["技术要求"]
                 assert len(order2_notes.splitlines()) == 14, order2_notes
                 assert order2_payload["models"][0]["titleBlockProperties"]["表面粗糙度"] == 12.5
+                assert order2_payload["models"][0]["titleBlockProperties"]["客户图号"] == "YD4765020178"
                 assert "粗糙度" not in order2_notes
                 assert order2_payload["models"][0]["titleBlockProperties"] == order2_preview.json()["parameter_package"]["solidworks_preview"]["titleBlockProperties"]
                 assert order2_payload["models"][0]["extraProperties"] == order2_preview.json()["parameter_package"]["solidworks_preview"]["extraProperties"]
@@ -293,11 +298,64 @@ def main() -> None:
                 order2_retry = client.post("/api/reviews/order2-technical-dedup/generation-jobs", json=create_request("order2-dedup-r1"))
                 assert order2_retry.status_code == 200 and len(submissions) == submission_count
                 assert order2_retry.json()["generation_job"]["execution_options"]["solidworks_payload"] == order2_payload
+                changed_order2 = deepcopy(order2)
+                changed_order2["drawing_summary"]["drawing_no"] = "000-NEW-DRAWING"
+                updated_order2 = client.patch("/api/reviews/order2-technical-dedup", json={"expected_revision": 1, "review": changed_order2})
+                assert updated_order2.status_code == 200, updated_order2.text
+                reopened_order2 = client.get("/api/reviews/order2-technical-dedup")
+                assert reopened_order2.json()["drawing_summary"]["drawing_no"] == "000-NEW-DRAWING"
+                new_preview = client.get("/api/reviews/order2-technical-dedup/generation-package")
+                assert new_preview.json()["parameter_package"]["solidworks_preview"]["titleBlockProperties"]["客户图号"] == "000-NEW-DRAWING"
+                frozen_order2 = client.get(f"/api/generation-jobs/{order2_job['generation_id']}")
+                assert frozen_order2.json()["generation_job"]["execution_options"]["solidworks_payload"] == order2_payload
+                assert len(submissions) == submission_count, "Review edits and preview must not resubmit an existing task"
                 if os.getenv("SAVE_SW_QA_OUTPUT") == "1":
                     out = Path("outputs/technical-duplication-qa")
                     out.mkdir(parents=True, exist_ok=True)
                     (out / "order2-request.json").write_text(json.dumps(order2_payload, ensure_ascii=False, indent=2), encoding="utf-8")
                     (out / "order2-requirements.txt").write_text(order2_notes, encoding="utf-8")
+
+                # Eight classes share display/export equivalence; frozen tasks keep the exact submitted body.
+                from test_technical_requirement_equivalence import hardness_review, eight_category_review, pairs
+                reference_review = hardness_review()
+                reference_review["spring_parameters"]["surface_roughness_ra"].update(value=12.5, need_human_review=False, source=["human_edited", "human_roughness_reference"], roughness_reference_dismissed=False)
+                for review_id, sample, expected_count in [
+                    ("roughness-reference", reference_review, 9),
+                    ("hardness-eight-dedup", hardness_review(), 9),
+                    ("eight-class-dedup", eight_category_review(pairs()), 16),
+                ]:
+                    for requirement in sample["technical_requirements"]:
+                        requirement["need_human_review"] = False
+                    originals = deepcopy(sample["technical_requirements"])
+                    repository.create_review(review_id, sample, owner=OWNER)
+                    preview_response = client.get(f"/api/reviews/{review_id}/generation-package")
+                    assert preview_response.status_code == 200, preview_response.text
+                    result = client.post(f"/api/reviews/{review_id}/generation-jobs", json=create_request(review_id))
+                    assert result.status_code == 202, result.text
+                    new_job = result.json()["generation_job"]
+                    payload = deepcopy(submissions[-1]["payload"])
+                    model = payload["models"][0]
+                    assert model["extraProperties"] == preview_response.json()["parameter_package"]["solidworks_preview"]["extraProperties"]
+                    assert len(model["extraProperties"]["技术要求"].splitlines()) == expected_count
+                    assert repository.get_review(review_id, owner_user_id=OWNER["user_id"])["review"]["technical_requirements"] == originals
+                    with repository._session() as session:
+                        frozen_notes = session.get(GenerationJobRecord, new_job["generation_id"]).parameter_package["solidworks_preview"]["extraProperties"]["技术要求"]
+                        assert frozen_notes == model["extraProperties"]["技术要求"]
+                    before_retry = len(submissions)
+                    retried = client.post(f"/api/reviews/{review_id}/generation-jobs", json=create_request(review_id))
+                    assert retried.status_code == 200 and len(submissions) == before_retry
+                    assert retried.json()["generation_job"]["execution_options"]["solidworks_payload"] == payload
+                    if review_id == "roughness-reference":
+                        assert model["titleBlockProperties"]["表面粗糙度"] == 12.5
+                        assert "roughness_reference_dismissed" not in json.dumps(payload)
+                        declined = deepcopy(sample)
+                        declined["spring_parameters"]["surface_roughness_ra"].update(value=None, need_human_review=True, source=["human_edited"], roughness_reference_dismissed=True)
+                        changed = client.patch(f"/api/reviews/{review_id}", json={"expected_revision": 1, "review": declined})
+                        assert changed.status_code == 200, changed.text
+                        current_preview = client.get(f"/api/reviews/{review_id}/generation-package")
+                        assert current_preview.status_code == 200, current_preview.text
+                        assert "表面粗糙度" not in current_preview.json()["parameter_package"]["solidworks_preview"]["titleBlockProperties"]
+                        assert client.get(f"/api/generation-jobs/{new_job['generation_id']}").json()["generation_job"]["execution_options"]["solidworks_payload"] == payload
 
                 progress = {"TaskId": task_id, "status": "generating_3d", "progress": 35, "message": "正在生成三维图"}
                 progress_response = client.post("/api/solidworks/status", json=progress)

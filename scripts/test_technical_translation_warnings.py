@@ -32,14 +32,15 @@ def run():
     recognized = collect_technical_requirements(qwen_payload_to_candidates(raw))
     for note, fixture in zip(recognized, fixtures):
         assert note["content"] == fixture["content"] and note["translation_status"] == "translated"
-        assert active_translation_warnings(note)[0]["category"] == fixture["expected_category"]
+        assert not active_translation_warnings(note)
         assert not requires_translation(note["content"])
     review = _ready_review()
     review["technical_requirements"] = deepcopy(recognized)
     before_parameters = deepcopy(review["spring_parameters"])
     with patch.object(TechnicalTranslationEngine, "_complete", side_effect=AssertionError("Usable Chinese must not call Qwen")):
         results = prepare_review_translations(review)
-    assert all(row["translation_status"] == "translated" and row["translation_warnings"] for row in results)
+    assert all(row["translation_status"] == "translated" and not row["translation_warnings"] for row in results)
+    assert len(results) == len(recognized), "Initial direct translations retain their audit results without model calls"
     assert review["spring_parameters"] == before_parameters
     assert not build_generation_parameter_package(review)["generation_parameters"]["technical_requirements_text"]
     for note in review["technical_requirements"]:
@@ -62,13 +63,13 @@ def run():
     changed = ["力 F2=16 N", "尺寸 13 mm", "镀层 GB/T 9389-75", "钢丝 B-1-1.5", "尺寸按2D"]
     for original, chinese in zip(originals, changed):
         error, warnings = assess_translation(original, chinese)
-        assert error is None and warnings, (original, chinese)
-    assert assess_translation("Polish surface 12.5 mm", "表面 Polish 12.5 mm")[0]["code"] == "foreign_prose_remaining"
+        assert error is None and not warnings, (original, chinese)
+    assert assess_translation("Polish surface 12.5 mm", "表面 Polish 12.5 mm") == (None, [])
     assert assess_translation("Force 16 N", "")[0]["code"] == "invalid_response"
     assert assess_translation("Force 16 N", "力 ⟦ENG_9999⟧")[0]["code"] == "invalid_response"
-    assert assess_translation("Force 16 N", "16 N")[0]["code"] == "invalid_response"
+    assert assess_translation("Force 16 N", "16 N") == (None, [])
     assert not translation_blocks_export({"content": "G*=80000 MPa", "translation_status": "not_required"})
-    assert translation_blocks_export({"content": "G*=80000 MPa", "original_content": "Shear modulus G*=80000 MPa", "translation_status": "translated"})
+    assert not translation_blocks_export({"content": "G*=80000 MPa", "original_content": "Shear modulus G*=80000 MPa", "translation_status": "translated"})
     for prefix in ["11. ", "11．", "11、", "11) ", "11："]:
         assert strip_note_number(prefix + "其余要求") == "其余要求"
         assert protect_engineering_text(prefix + "其余要求")[1] == {}
@@ -91,8 +92,8 @@ def run():
             if mode == "empty": protected = ""
             return {"requirements": [{"requirement_id": "wrong" if mode == "wrong_id" else "p", "content": protected}]}
         result = TechnicalTranslationEngine(completion_fn=reply).translate([row])[0]
-        if mode in {"missing", "duplicate"}:
-            assert result["translation_status"] == "translated" and result["translation_warnings"], (mode, result)
+        if mode in {"missing", "duplicate", "foreign"}:
+            assert result["translation_status"] == "translated" and not result["translation_warnings"], (mode, result)
         else:
             assert result["translation_status"] == "failed" and result["content"] == original
 
@@ -104,7 +105,7 @@ def run():
         failed.append(note)
     with patch.object(TechnicalTranslationEngine, "_complete", side_effect=AssertionError("Recovery is local only")):
         recovered = revalidate_translations({"technical_requirements": failed}, failed, recognized)
-    assert all(result["recovery_mode"] == "automatic" and result["translation_warnings"] for result in recovered)
+    assert all(result["recovery_mode"] == "automatic" and not result["translation_warnings"] for result in recovered)
     for note, result in zip(failed, recovered):
         assert apply_translation_result({"technical_requirements": failed}, note, result)
         assert note["need_human_review"] and not note["human_confirmed"]
@@ -128,7 +129,7 @@ def run():
             response = TestClient(api.app).post("/api/reviews/order/technical-requirements/translate", json={"mode": "revalidate", "requirements": [{"requirement_id": note["requirement_id"], "source_snapshot": translation_snapshot(note)}]})
             assert response.status_code == 200, response.text
             result = response.json()["requirements"][0]
-            assert result["translation_status"] == "translated" and result["translation_warnings"]
+            assert result["translation_status"] == "translated" and not result["translation_warnings"]
             assert (job / "review.json").read_bytes() == before
     print("PASS: real 11/13 warning fixtures, numbering, token protection, recovery API and frozen SW output")
 

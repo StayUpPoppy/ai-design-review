@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from ai_design_review.technical_requirements import technical_requirements_are_duplicates, technical_requirement_equivalence_key, build_technical_requirements_text
+from ai_design_review.technical_requirements import technical_requirements_are_duplicates, technical_requirement_equivalence_key, build_technical_requirements_text, format_technical_requirement
 from ai_design_review.technical_requirement_recognition import collect_technical_requirements, recovery_preview
 from ai_design_review.engines.qwen_vision_adapter import qwen_payload_to_candidates
 from ai_design_review.generation_readiness import build_generation_parameter_package, assess_generation_readiness
@@ -43,6 +43,35 @@ def order2_review():
     return review
 
 
+def hardness_review():
+    review = base_review()
+    review["drawing_summary"].update(drawing_no="2454BN-57", drawing_name="压缩弹簧9")
+    p = review["spring_parameters"]
+    for field, value in {"material": "65Mn", "wire_diameter": 1.6, "mean_diameter": 10.4,
+                         "free_length": 55.6, "total_coils": 16, "active_coils": 14, "pitch": 3.8}.items():
+        p[field]["value"] = value
+    p["solid_height"].update(value=24.8, source=["manual"], value_kind="input_height")
+    p["support_coils"]["evidence"] = "每端支承圈数：1圈"
+    p["load_points"] = [{"label": "P", "height": 45.6, "force": 30, "need_human_review": False}]
+    review["technical_requirements"] = [{"requirement_id": f"hardness_{i}", "type": kind, "content": body,
+        "original_content": body, "page": 1, "evidence": "原图硬度/表面处理参数表", "recognition_key": f"hardness_note_{i}", "need_human_review": False}
+        for i, (kind, body) in enumerate((("hardness", "硬度 HRC45-50"), ("surface", "防锈处理"), ("hardness", "HRC45-50")))]
+    return review
+
+
+def eight_category_review(rows):
+    review = base_review()
+    review["spring_parameters"]["load_points"] = review["spring_parameters"]["load_points"][:2]
+    review["spring_parameters"]["solid_height"].update(source=["manual"], value_kind="input_height")
+    review["technical_requirements"] = []
+    for kind in ("hardness", "heat_treatment", "surface", "salt_spray", "lifetime", "environmental", "process", "other"):
+        pair = next(row for row in rows if row["type"] == kind and row["same"] and (kind != "other" or "未知检验" in row["left"]) and (kind != "surface" or row["left"] == "镀锌"))
+        for n, item in enumerate((pair["a"], pair["b"])):
+            review["technical_requirements"].append({**deepcopy(item), "requirement_id": f"eight_{kind}_{n}", "original_content": item["content"],
+                "evidence": f"八类离线样例：{kind}/{n}", **({"normalization_status": "matched"} if kind == "surface" else {}), "page": n + 1, "recognition_key": f"eight_source_{kind}_{n}", "need_human_review": n == 0})
+    return review
+
+
 def run():
     rows = pairs()
     for row in rows:
@@ -51,7 +80,13 @@ def run():
         row["key_b"] = technical_requirement_equivalence_key(row["b"])
         row["text"] = build_technical_requirements_text([row["a"], row["b"]])
         assert len(row["text"].splitlines()) == (1 if row["same"] else 2), row
+        if row["type"] != "surface_roughness":
+            structured = {"generation_parameters": {"technical_requirements": [row["a"], row["b"]]}}
+            row["sw_text"] = build_solidworks_technical_text(structured, {})
+            assert row["sw_text"] == row["text"], row
+        assert (row["a"]["content"], row["b"]["content"]) == (row["left"], row["right"]), "Comparison never rewrites records"
 
+    assert format_technical_requirement({"type": "hardness", "content": "硬度 ＨＲＣ４５－５０"}) == "硬度要求：ＨＲＣ４５－５０"
     original = {"content": "2.热处理要求：300℃/20min", "original_content": "2.热处理要求：300℃/20min", "page": 1, "position": [10, 20, 30, 40]}
     payload = {"parameters": {"heat_treatment": {**original, "value": original["content"]}},
                "technical_requirements": [{**original, "type": "heat_treatment"}]}
@@ -112,7 +147,41 @@ def run():
     assert build_solidworks_technical_text(legacy, {}) == "1.热处理：300℃/20min"
     scoped = {"generation_parameters": {"technical_requirements": [{"type": "surface", "content": "镀锌", "application_scope": scope} for scope in ["外圆", "两端面"]]}}
     assert len(build_solidworks_technical_text(scoped, {}).splitlines()) == 2
-    return {"pairs": rows, "review": order2_review(), "package": package, "merged": merged}
+    hard = hardness_review()
+    original_hard = deepcopy(hard["technical_requirements"])
+    hard_package = build_generation_parameter_package(hard)
+    hard_notes = hard_package["solidworks_preview"]["extraProperties"]["技术要求"]
+    assert len(hard_notes.splitlines()) == 9 and hard_notes.count("硬度要求：") == 1, hard_notes
+    assert "8.硬度要求：HRC45-50" in hard_notes
+    assert hard["technical_requirements"] == original_hard and len(original_hard) == 3
+    legacy_hard = {"generation_parameters": {"technical_requirements_text": "技术要求\n8.硬度要求：硬度 HRC45-50\n10.硬度要求：HRC45~50"}}
+    assert build_solidworks_technical_text(legacy_hard, {}) == "1.硬度要求：HRC45-50"
+    old_hard = deepcopy(hard_package)
+    old_hard["solidworks_preview"]["extraProperties"]["技术要求"] += "\n10.硬度要求：HRC45-50"
+    frozen_hard = deepcopy(old_hard)
+    assert build_solidworks_command("1000000199", old_hard, hard)["models"][0]["extraProperties"]["技术要求"].count("硬度要求：") == 2
+    assert old_hard == frozen_hard, "Historical duplicate notes are not rewritten"
+    # Recovery uses engineering equivalence, while retaining every original condition.
+    for row in rows:
+        first, second = {**row["a"], "requirement_id": "legacy_note", "recognition_key": None, "need_human_review": False}, {**row["b"], "recognition_key": "new_note", "page": 1}
+        candidate = {**second, "original_content": second["content"], "recognized_content": second["content"], "original_number": None, "source_order": 1}
+        recovered = recovery_preview({"technical_requirements": [first]}, [candidate])["items"]
+        assert bool(recovered) is not row["same"], row
+    engine_hard = [
+        {"field": "hardness", "value": body, "source": [f"ocr-{i}"], "page": 1, "position": [1, 2, 3, 4]}
+        for i, body in enumerate(("硬度 HRC45-50", "HRC45~50"))]
+    recognized_hard = collect_technical_requirements(engine_hard)
+    assert len(recognized_hard) == 1 and len(recognized_hard[0]["recognition_aliases"]) == 1
+    engine_hard[1]["page"] = 2
+    assert len(collect_technical_requirements(engine_hard)) == 2, "Independent pages stay separate"
+    eight = eight_category_review(rows)
+    confirmed_eight = deepcopy(eight)
+    for item in confirmed_eight["technical_requirements"]:
+        item["need_human_review"] = False
+    eight_package = build_generation_parameter_package(confirmed_eight)
+    assert len(eight_package["solidworks_preview"]["extraProperties"]["技术要求"].splitlines()) == 16
+    return {"pairs": rows, "review": order2_review(), "package": package, "merged": merged,
+            "hardness_review": hard, "hardness_package": hard_package, "eight_review": eight, "eight_package": eight_package, "eight_pending_package": build_generation_parameter_package(eight)}
 
 
 if __name__ == "__main__":

@@ -80,7 +80,48 @@ _LOCATION_PATTERNS = (
     (re.compile(r"两端(?:面)?"), "两端面"),
     (re.compile(r"(?:左|右)端面"), None),
     (re.compile(r"端面"), "端面"),
+    (re.compile(r"外圆(?:表面)?"), "外圆"),
+    (re.compile(r"内圆(?:表面)?"), "内圆"),
+    (re.compile(r"全表面|整体|弹簧表面"), None),
 )
+
+# These qualifiers apply to the Ra clause, not unrelated statements such as
+# "Ra12.5不作为尺寸提取". Keep the display fallback in JS in sync via fixtures.
+_ROUGHNESS_SPECULATION = re.compile(r"可能|也许|大概|猜测|推测|怀疑|似乎|不确定|无法确认|看不清|假设|例如|比如|举例|推荐|建议|默认|常规|参考|possibly|perhaps|example|recommend|default", re.I)
+_ROUGHNESS_NEGATION = re.compile(r"(?:未|没有|无|并无|不含|不存在|未见|不要求|无需|不需要|不涉及).{0,12}(?:粗糙度|Ra|标注)|(?:不是|并非|不属于|不作为|不应作为).{0,8}(?:粗糙度|Ra)|(?:粗糙度|Ra).{0,8}(?:未标注|没有标注|不要求|未出现|没有出现|不适用)|not\s+(?:roughness|Ra)|no\s+(?:roughness|Ra)", re.I)
+_ROUGHNESS_DISCUSSION = re.compile(r"need_human_review|surface_roughness_ra|我们|我再|再看|再确认|无法辨认|无法确定", re.I)
+_CLAUSE_BOUNDARY = re.compile(r"[。；;\n|，]|(?<!\d),|,(?!\d)|而是|实际为")
+
+
+def roughness_evidence_assessment(value: Any, evidence: Any, *, structured: bool = False) -> tuple[str, str]:
+    """Classify new candidates; never rewrite an existing review or its evidence."""
+    number, text = positive_surface_roughness(value), str(evidence or "").strip()
+    statuses = []
+    for pattern in _ROUGHNESS_PATTERNS:
+        for match in pattern.finditer(text):
+            if positive_surface_roughness(match[1]) != number:
+                continue
+            boundaries = list(_CLAUSE_BOUNDARY.finditer(text))
+            start = max((edge.end() for edge in boundaries if edge.end() <= match.start()), default=0)
+            end = min((edge.start() for edge in boundaries if edge.start() >= match.end()), default=len(text))
+            clause = text[start:end]
+            if _ROUGHNESS_NEGATION.search(clause):
+                statuses.append(("excluded", "该数值所在语句否定了粗糙度标注，不作为原图候选。"))
+            elif _ROUGHNESS_SPECULATION.search(clause):
+                statuses.append(("excluded", "该数值来自推测、举例或参考说明，不作为原图候选。"))
+            elif len(clause) > 160 or _ROUGHNESS_DISCUSSION.search(text) or len(text) > 240:
+                statuses.append(("unverified", "依据包含长篇解释，尚不能证明是原图明确标注。"))
+            else:
+                statuses.append(("direct", "包含与候选一致的明确粗糙度文字或符号。"))
+    if any(status == "direct" for status, _ in statuses):
+        return next(entry for entry in statuses if entry[0] == "direct")
+    if any(status == "unverified" for status, _ in statuses):
+        return next(entry for entry in statuses if entry[0] == "unverified")
+    if statuses:
+        return statuses[0]
+    if structured and number is not None and positive_surface_roughness(text) == number:
+        return "direct", "粗糙度结构化字段保留了对应原图数值。"
+    return "unverified", "缺少与候选一致的原图粗糙度文字或符号，请核对。"
 
 
 def surface_roughness_mentions(text: Any) -> list[dict[str, Any]]:
@@ -125,14 +166,17 @@ def surface_roughness_location(text: Any) -> str | None:
 
 
 def _surface_roughness_location_near(text: str, start: int, end: int) -> str | None:
-    before = text[max(0, start - 36) : start]
+    boundaries = list(_CLAUSE_BOUNDARY.finditer(text))
+    clause_start = max((edge.end() for edge in boundaries if edge.end() <= start), default=0)
+    clause_end = min((edge.start() for edge in boundaries if edge.start() >= end), default=len(text))
+    before = text[max(clause_start, start - 36) : start]
     matches: list[tuple[int, str]] = []
     for pattern, normalized in _LOCATION_PATTERNS:
         for match in pattern.finditer(before):
             matches.append((match.end(), normalized or match.group(0)))
     if matches:
         return max(matches, key=lambda item: item[0])[1]
-    return surface_roughness_location(text[end : min(len(text), end + 36)])
+    return surface_roughness_location(text[end : min(clause_end, end + 36)])
 
 
 def positive_surface_roughness(value: Any) -> float | None:

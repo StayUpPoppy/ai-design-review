@@ -1,10 +1,11 @@
 const state = {
   apiBaseUrl: normalizeBaseUrl(
     new URLSearchParams(window.location.search).get("api")
-      || localStorage.getItem("aiDesignReviewApiBaseUrl")
+      || readBrowserPreference("aiDesignReviewApiBaseUrl")
       || defaultApiBaseUrl(),
   ),
-  selectedFile: null,
+  reviewNavigationSerial: 0,
+  pendingUploadAutoOpen: null,
   imageUrl: null,
   review: null,
   selectedBubbleId: null,
@@ -53,6 +54,9 @@ const state = {
   recentReviewsLoading: false,
   recognitionPollers: {},
   recognitionMessageIds: {},
+  recognitionRequestSerial: 0,
+  recognitionStatusVersions: new Map(),
+  deletedReviewIds: new Set(),
   generationReadiness: null,
   generationJobs: [],
   generationQueueAvailable: null,
@@ -78,7 +82,7 @@ window.addEventListener("beforeunload", (event) => {
     || state.pendingReviewAuditEvents.length > 0
     || state.reviewPersistenceSaving
     || (typeof DrawingAnnotations !== "undefined" && DrawingAnnotations.hasUnsaved());
-  if (!hasUnsavedReviewWork) return;
+  if (!hasUnsavedReviewWork && !drawingUploads.hasUnsent && !historyDeletion.state.running) return;
   event.preventDefault();
   event.returnValue = "";
 });
@@ -459,6 +463,8 @@ const apiBaseInput = document.getElementById("apiBaseInput");
 const demoButton = document.getElementById("demoButton");
 const exportButton = document.getElementById("exportButton");
 const drawingInput = document.getElementById("drawingInput");
+const drawingFolderInput = document.getElementById("drawingFolderInput");
+const chooseFolderButton = document.getElementById("chooseFolderButton");
 const reviewJsonInput = document.getElementById("reviewJsonInput");
 const chooseFileButton = document.getElementById("chooseFileButton");
 const loadReviewJsonButton = document.getElementById("loadReviewJsonButton");
@@ -485,17 +491,83 @@ const identityProfileName = document.getElementById("identityProfileName");
 const identityProfileOrg = document.getElementById("identityProfileOrg");
 const identityProfileSource = document.getElementById("identityProfileSource");
 const compareOverlay = createCompareOverlay();
+let historyUnread = null;
+let historyUnreadScope = "";
+let historyUnreadRefreshScheduled = false;
+let identityRequestSerial = 0;
+const displayedRecognitionRounds = new WeakMap();
+let uploadRenderScheduled = false;
+let renderedUploadPendingRevision = 0;
+let uploadPreparing = false;
+let uploadContextSerial = 0;
+const uploadContexts = new Map();
+const drawingUploads = DrawingUploadQueue.create({
+  onChange: scheduleUploadRender,
+  upload: uploadDrawingFile,
+  onAccepted: registerUploadedDrawing,
+  canUpload: (snapshot) => state.identityReady && snapshot.apiBase === state.apiBaseUrl
+    && snapshot.userId === state.identity?.user_id,
+});
+const historyDeletion = HistoryBulkDeletion.create({
+  getScope: historyRecognitionScope,
+  save: () => flushReviewPersistence({ throwOnError: true }),
+  requestDelete: (item, scope) => fetch(`${JSON.parse(scope)[0]}/api/reviews/${encodeURIComponent(item.job_id)}`, {
+    method: "DELETE", credentials: "include", signal: AbortSignal.timeout(30000),
+  }),
+  onDeleted: finishHistoryOrderDeletion,
+  onChange: renderHistoryManagement,
+  onRunningChange: (running) => {
+    if (running) state.reviewNavigationSerial += 1;
+    conversation.inert = running;
+    compareOverlay.inert = running;
+    setBusy(running);
+  },
+});
 
 apiBaseInput.value = state.apiBaseUrl;
 
 apiBaseInput.addEventListener("change", () => {
+  if (historyDeletion.state.running) { apiBaseInput.value = state.apiBaseUrl; return; }
   state.apiBaseUrl = normalizeBaseUrl(apiBaseInput.value || state.apiBaseUrl);
   apiBaseInput.value = state.apiBaseUrl;
-  localStorage.setItem("aiDesignReviewApiBaseUrl", state.apiBaseUrl);
+  try { localStorage.setItem("aiDesignReviewApiBaseUrl", state.apiBaseUrl); } catch { /* Session-only preferences. */ }
+  void initializeIdentity();
   void ensureMaterialCatalog();
 });
 
 chooseFileButton.addEventListener("click", () => drawingInput.click());
+chooseFolderButton.addEventListener("click", () => drawingFolderInput.click());
+document.getElementById("clearUploadsButton").addEventListener("click", () => drawingUploads.clearPending());
+document.getElementById("pauseUploadButton").addEventListener("click", () => drawingUploads.stop());
+document.getElementById("clearUploadCompletion").addEventListener("click", () => drawingUploads.dismissCompletion());
+document.getElementById("historyUnreadCount").addEventListener("click", focusFirstUnreadHistoryOrder);
+document.addEventListener("visibilitychange", markDisplayedRecognitionRead);
+document.getElementById("enterHistoryManagement").addEventListener("click", () => {
+  if (state.busy || !state.identityReady) return;
+  historyDeletion.enter();
+});
+document.getElementById("exitHistoryManagement").addEventListener("click", () => {
+  historyDeletion.exit(); focusHistoryManagementAction();
+});
+document.getElementById("historySelectAll").addEventListener("click", () => historyDeletion.selectAll());
+document.getElementById("historyClearSelection").addEventListener("click", () => historyDeletion.clearSelection());
+document.getElementById("historyDeleteSelected").addEventListener("click", () => showHistoryDeletionDialog(historyDeletion.selectedItems(), { bulk: true }));
+document.getElementById("historyRetryFailed").addEventListener("click", () => showHistoryDeletionDialog(historyDeletion.failedItems(), { bulk: true }));
+document.getElementById("historyCheckUnknown").addEventListener("click", async () => {
+  if (historyDeletion.state.running) return;
+  const scope = historyRecognitionScope();
+  if (await loadRecentReviews() && scope === historyRecognitionScope()) historyDeletion.checkedUnknown([...historyDeletion.state.visible.keys()]);
+});
+document.getElementById("historyClearDeletionResults").addEventListener("click", () => {
+  if (historyDeletion.state.running) return;
+  historyDeletion.state.results.clear(); historyDeletion.state.notice = ""; renderHistoryManagement();
+  focusHistoryManagementAction();
+});
+document.getElementById("uploadQueueList").addEventListener("click", (event) => { void handleUploadAction(event); });
+for (const [id, label] of [["uploadPendingSection", "查看清单"], ["uploadProgressSection", "查看进度"], ["uploadProblemsSection", "查看问题"]]) {
+  const section = document.getElementById(id);
+  section.addEventListener("toggle", () => { section.querySelector(".upload-section-action").textContent = section.open ? "收起" : label; });
+}
 loadReviewJsonButton.addEventListener("click", () => reviewJsonInput.click());
 submitButton.addEventListener("click", () => submitSelectedFile());
 newReviewButton?.addEventListener("click", () => {
@@ -517,6 +589,7 @@ syncVlmProviderState();
 void initializeIdentity();
 
 async function initializeIdentity() {
+  const apiBase = state.apiBaseUrl, requestSerial = ++identityRequestSerial;
   state.identityReady = false;
   state.identityError = "";
   refreshIdentityUi();
@@ -524,16 +597,19 @@ async function initializeIdentity() {
   try {
     const response = await apiFetch("/api/session");
     const payload = await response.json();
+    if (apiBase !== state.apiBaseUrl || requestSerial !== identityRequestSerial) return;
     if (!response.ok || !payload?.identity) {
       throw new Error(payload?.detail || "无法读取 ERP 登录身份");
     }
     state.identity = payload.identity;
     state.identityReady = true;
+    configureHistoryUnread();
     refreshIdentityUi();
     setBusy(false);
     void loadRecentReviews();
     void ensureMaterialCatalog();
   } catch (error) {
+    if (apiBase !== state.apiBaseUrl || requestSerial !== identityRequestSerial) return;
     state.identity = null;
     state.identityReady = false;
     state.identityError = error.message || "请从 ERP 登录后进入审图助手";
@@ -574,8 +650,12 @@ function syncVlmProviderState() {
 }
 
 drawingInput.addEventListener("change", (event) => {
-  const file = event.target.files?.[0];
-  if (file) selectDrawingFile(file);
+  if (state.identityReady) void drawingUploads.collectFiles(event.target.files);
+  drawingInput.value = "";
+});
+drawingFolderInput.addEventListener("change", (event) => {
+  if (state.identityReady) void drawingUploads.collectFiles(event.target.files);
+  drawingFolderInput.value = "";
 });
 
 reviewJsonInput.addEventListener("change", async (event) => {
@@ -600,6 +680,7 @@ reviewJsonInput.addEventListener("change", async (event) => {
 
 ["dragenter", "dragover"].forEach((eventName) => {
   window.addEventListener(eventName, (event) => {
+    if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
     event.preventDefault();
     dropZone.classList.add("dragging");
   });
@@ -607,6 +688,7 @@ reviewJsonInput.addEventListener("change", async (event) => {
 
 ["dragleave", "drop"].forEach((eventName) => {
   window.addEventListener(eventName, (event) => {
+    if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
     event.preventDefault();
     if (eventName === "drop") return;
     dropZone.classList.remove("dragging");
@@ -614,14 +696,11 @@ reviewJsonInput.addEventListener("change", async (event) => {
 });
 
 window.addEventListener("drop", (event) => {
+  if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+  event.preventDefault();
   dropZone.classList.remove("dragging");
-  const file = Array.from(event.dataTransfer?.files || []).find(isSupportedDrawing);
-  if (!file) {
-    appendAssistantText("暂未找到可上传的 PDF 或图片文件。");
-    return;
-  }
-  selectDrawingFile(file);
-  submitSelectedFile();
+  if (!state.identityReady || state.busy || uploadPreparing) return;
+  void drawingUploads.collectDrop(DrawingUploadQueue.snapshotDrop(event.dataTransfer));
 });
 
 window.addEventListener("keydown", (event) => {
@@ -639,74 +718,195 @@ window.addEventListener("click", (event) => {
 });
 
 function selectDrawingFile(file) {
-  if (!state.identityReady) return;
-  if (!isSupportedDrawing(file)) {
-    appendAssistantText("当前仅支持 PDF 或常见图片格式。");
-    return;
-  }
-  state.selectedFile = file;
-  selectedFileName.textContent = file.name;
-  submitButton.disabled = state.busy;
+  if (state.identityReady) void drawingUploads.collectFiles([file]);
 }
 
 async function submitSelectedFile() {
-  if (!state.selectedFile || state.busy || !state.identityReady) return;
-  if (!await flushReviewPersistence()) {
-    appendAssistantText("当前参数尚未保存，请先重试保存后再上传新图纸。", true);
-    return;
-  }
+  if (state.busy || !state.identityReady || uploadPreparing || drawingUploads.running
+      || drawingUploads.scanning || drawingUploads.tooMany || !drawingUploads.pending.length) return;
   if (useWerk24Input?.checked && !confirmWerk24Input?.checked) {
     appendAssistantText("调用 Werk24 前必须勾选“确认上传到 Werk24”。");
     return;
   }
-
-  advancedOptions.open = false;
-  setBusy(true);
-  appendUserMessage(`上传图纸：${state.selectedFile.name}`);
-  const providerLabel = ocrProviderInput.selectedOptions[0]?.textContent || "OCR";
-  const activeEngineLabel = useQwenInput?.checked
-    ? "Qwen3.7 视觉识别（必要时自动坐标复核）"
-    : providerLabel;
-  const thinkingId = appendAssistantText(`正在上传图纸，识别引擎：${activeEngineLabel}...`);
-
+  const contextId = ++uploadContextSerial;
+  uploadContexts.set(contextId, { review: state.review, previousJobId: state.lastJob?.job_id,
+    editSerial: state.reviewEditSerial, navigationSerial: state.reviewNavigationSerial });
+  const fields = {
+    use_qwen: Boolean(useQwenInput?.checked), use_ocr: useOcrInput.checked,
+    use_geometry: false, use_vlm: Boolean(useVlmInput?.checked), vision_provider: visionProviderInput?.value || "none",
+    use_werk24: Boolean(useWerk24Input?.checked), confirm_upload_to_werk24: Boolean(confirmWerk24Input?.checked),
+    use_cached_werk24: Boolean(useCachedWerk24Input?.checked), use_sample_ocr: useSampleOcrInput.checked,
+  };
+  if (useOcrInput.checked) fields.ocr_provider = ocrProviderInput.value;
+  const snapshot = { apiBase: state.apiBaseUrl, userId: state.identity?.user_id, contextId, fields };
+  uploadPreparing = true;
+  renderDrawingUploads();
   try {
-    const form = new FormData();
-    form.append("drawing", state.selectedFile);
-    form.append("use_qwen", useQwenInput?.checked ? "true" : "false");
-    form.append("use_ocr", useOcrInput.checked ? "true" : "false");
-    if (useOcrInput.checked) form.append("ocr_provider", ocrProviderInput.value);
-    form.append("use_geometry", "false");
-    form.append("use_vlm", useVlmInput?.checked ? "true" : "false");
-    form.append("vision_provider", visionProviderInput?.value || "none");
-    form.append("use_werk24", useWerk24Input?.checked ? "true" : "false");
-    form.append("confirm_upload_to_werk24", confirmWerk24Input?.checked ? "true" : "false");
-    form.append("use_cached_werk24", useCachedWerk24Input?.checked ? "true" : "false");
-    form.append("use_sample_ocr", useSampleOcrInput.checked ? "true" : "false");
-
-    const response = await apiFetch("/api/reviews", { method: "POST", body: form });
-    const payload = await readUploadResponsePayload(response);
-    if (!response.ok) throw new Error(payload.detail || "后端审查失败");
-
-    state.lastJob = payload;
-    state.reviewPersistenceFailedFields = {};
-    state.reviewDraftFields.clear();
-    state.selectedFile = null;
-    drawingInput.value = "";
-    selectedFileName.textContent = "图纸已加入识别队列";
-    state.recognitionMessageIds[payload.job_id] = thinkingId;
-    replaceMessage(thinkingId, recognitionProgressText({
-      status: payload.recognition_status,
-      stage: payload.recognition_stage,
-      progress: payload.recognition_progress,
-      queue_position: payload.queue_position,
-    }));
-    trackRecognitionJob(payload.job_id, thinkingId);
-    void loadRecentReviews();
+    if (!await flushReviewPersistence()) {
+      appendAssistantText("当前参数尚未保存，请先重试保存后再上传新图纸。", true); return;
+    }
+    if (!state.identityReady || state.busy || drawingUploads.scanning) return;
+    advancedOptions.open = false;
+    if (!drawingUploads.resumable) state.pendingUploadAutoOpen = null;
+    appendUserMessage(`开始上传 ${drawingUploads.pending.length} 份图纸，每份独立识别。`);
+    uploadPreparing = false;
+    await drawingUploads.run(snapshot);
   } catch (error) {
-    replaceMessage(thinkingId, error.message || String(error), true);
+    appendAssistantText(error.message || String(error), true);
   } finally {
-    setBusy(false);
+    if (!drawingUploads.resumable) uploadContexts.delete(contextId);
+    uploadPreparing = false;
+    renderDrawingUploads();
   }
+}
+
+async function uploadDrawingFile(item, snapshot) {
+  const form = new FormData();
+  form.append("drawing", item.file, item.name);
+  Object.entries(snapshot.fields).forEach(([key, value]) => form.append(key, String(value)));
+  try {
+    const response = await fetch(`${snapshot.apiBase}/api/reviews`, { method: "POST", body: form, credentials: "include" });
+    const payload = await readUploadResponsePayload(response);
+    if (!response.ok) {
+      const error = new Error(typeof payload.detail === "string" ? payload.detail : `上传失败（HTTP ${response.status}）`);
+      error.uncertain = response.status >= 500 || response.status === 408;
+      error.auth = [401, 403].includes(response.status);
+      error.uploadResponse = true;
+      throw error;
+    }
+    return payload;
+  } catch (error) {
+    if (!error.uploadResponse) { error.uncertain = true; error.message = `上传结果未知：${error.message}。请先核对历史订单，勿直接重复提交。`; }
+    throw error;
+  }
+}
+
+function registerUploadedDrawing(item, payload, batch) {
+  if (item.options.apiBase !== state.apiBaseUrl || item.options.userId !== state.identity?.user_id) return;
+  if (batch.ids.length === 1) state.pendingUploadAutoOpen = { jobId: item.jobId, ...uploadContexts.get(batch.options.contextId) };
+  if (state.pendingUploadAutoOpen?.jobId === item.jobId) Object.assign(state.pendingUploadAutoOpen, {
+    apiBase: item.options.apiBase, userId: item.options.userId,
+  });
+  uploadContexts.delete(batch.options.contextId);
+  mergeRecognitionStatus(item.jobId, { status: payload.recognition_status, stage: payload.recognition_stage,
+    progress: payload.recognition_progress, queue_position: payload.queue_position, drawing_name: item.name,
+    attempt_count: payload.recognition_attempt_count }, { submission: true });
+  trackRecognitionJob(item.jobId);
+}
+
+function uploadAutoOpenIsCurrent(jobId, { allowBusy = false } = {}) {
+  const context = state.pendingUploadAutoOpen;
+  return Boolean(context?.jobId === jobId && (allowBusy || !state.busy) && context.review === state.review
+    && context.apiBase === state.apiBaseUrl && context.userId === state.identity?.user_id
+    && context.editSerial === state.reviewEditSerial && context.navigationSerial === state.reviewNavigationSerial
+    && context.previousJobId === state.lastJob?.job_id);
+}
+
+function scheduleUploadRender() {
+  if (uploadRenderScheduled) return;
+  uploadRenderScheduled = true;
+  requestAnimationFrame(() => { uploadRenderScheduled = false; renderDrawingUploads(); });
+}
+
+function renderDrawingUploads() {
+  const panel = document.getElementById("uploadQueue"), list = document.getElementById("uploadQueueList");
+  const entries = drawingUploads.entries;
+  const focused = document.activeElement;
+  const completion = drawingUploads.completion;
+  panel.hidden = !entries.length && !drawingUploads.scanning && !drawingUploads.notice && !completion;
+  const count = (status) => entries.filter((item) => item.status === status).length;
+  const groups = {
+    pending: { section: document.getElementById("uploadPendingSection"), list: document.getElementById("uploadPendingList"), count: 0 },
+    progress: { section: document.getElementById("uploadProgressSection"), list: document.getElementById("uploadProgressList"), count: 0 },
+    problems: { section: document.getElementById("uploadProblemsSection"), list: document.getElementById("uploadProblemsList"), count: 0 },
+  };
+  document.getElementById("uploadPendingSummary").textContent = [`待上传 ${count("pending")}份`, count("uploading") ? "正在上传1份" : ""].filter(Boolean).join(" · ");
+  document.getElementById("uploadProgressSummary").textContent = [`排队 ${count("queued")}份`, `识别中 ${count("processing")}份`, count("cancel_requested") ? "正在取消" : ""].filter(Boolean).join(" · ");
+  const problemCount = entries.filter((item) => ["upload_failed", "unknown", "invalid"].includes(item.status)).length;
+  document.getElementById("uploadProblemsSummary").textContent = `待处理 ${problemCount}项`;
+  if (renderedUploadPendingRevision !== drawingUploads.pendingRevision) {
+    groups.pending.section.open = true;
+    renderedUploadPendingRevision = drawingUploads.pendingRevision;
+  }
+  const scan = document.getElementById("uploadScanStatus");
+  scan.hidden = !drawingUploads.scanning;
+  scan.textContent = drawingUploads.scanning ? `正在读取文件夹／文件，已发现 ${drawingUploads.discovered} 项…` : "";
+  const notice = document.getElementById("uploadQueueNotice");
+  notice.textContent = [drawingUploads.tooMany ? `待提交的有效文件超过50份（${drawingUploads.unsubmitted.length}份），请移除多余文件或分批上传。` : "", drawingUploads.notice].filter(Boolean).join(" ");
+  notice.hidden = !notice.textContent;
+  const existing = new Map(Array.from(list.querySelectorAll(".upload-file")).map((row) => [row.dataset.uploadId, row]));
+  entries.forEach((item) => {
+    const group = groups[["pending", "uploading"].includes(item.status) ? "pending" : item.jobId ? "progress" : "problems"];
+    let row = existing.get(item.id);
+    if (!row) {
+      row = document.createElement("li"); row.className = "upload-file"; row.dataset.uploadId = item.id;
+      row.innerHTML = `<div class="upload-file-info"><span class="upload-file-name"></span><span class="upload-file-path"></span></div><span class="upload-file-state"></span><p class="upload-file-error" hidden></p><div class="upload-file-actions"><button type="button" data-upload-action="remove">移除</button><button type="button" data-upload-action="retry-upload">重试上传</button><button type="button" data-upload-action="check-unknown">核对历史订单</button><button type="button" data-upload-action="retry-unknown">核对后重试上传</button><button type="button" data-upload-action="refresh">刷新进度</button></div>`;
+    }
+    row.dataset.status = item.status;
+    row.querySelector(".upload-file-name").textContent = item.name;
+    row.querySelector(".upload-file-path").textContent = [item.path.includes("/") ? item.path : "", DrawingUploadQueue.formatBytes(item.size)].filter(Boolean).join(" · ");
+    row.title = item.path;
+    row.querySelector(".upload-file-state").textContent = DrawingUploadQueue.statusText(item);
+    const error = row.querySelector(".upload-file-error");
+    error.textContent = item.error || item.syncError || ""; error.hidden = !error.textContent;
+    const visible = { remove: !item.jobId && item.status !== "uploading", "retry-upload": item.status === "upload_failed",
+      "check-unknown": item.status === "unknown", "retry-unknown": item.status === "unknown" && item.checkedUnknown,
+      refresh: Boolean(item.jobId && item.syncError) };
+    for (const button of row.querySelectorAll("button")) {
+      button.hidden = !visible[button.dataset.uploadAction];
+      button.disabled = uploadPreparing || Boolean(item.actionBusy) || (button.dataset.uploadAction.includes("retry") && drawingUploads.running);
+    }
+    if (group.list.children[group.count] !== row) group.list.insertBefore(row, group.list.children[group.count] || null);
+    group.count++;
+    existing.delete(item.id);
+  });
+  existing.forEach((row) => row.remove());
+  Object.values(groups).forEach((group) => {
+    group.section.hidden = !group.count;
+    if (!group.count && group !== groups.pending) group.section.open = false;
+  });
+  const completionPanel = document.getElementById("uploadCompletion");
+  completionPanel.hidden = !completion;
+  completionPanel.classList.toggle("has-failure", Boolean(completion?.failed));
+  document.getElementById("uploadCompletionText").textContent = completion
+    ? `本批${completion.total}份 · ${!completion.failed && !completion.cancelled ? "全部完成" : `完成${completion.completed}份 · 失败${completion.failed}份${completion.cancelled ? ` · 取消${completion.cancelled}份` : ""}`}` : "";
+  selectedFileName.textContent = "图纸上传";
+  document.getElementById("uploadHelpText").textContent = state.identityReady
+    ? "多选或拖入文件、文件夹 · 每批最多50份" : "请从 ERP 登录后进入审图助手";
+  const blocked = state.busy || !state.identityReady || uploadPreparing;
+  chooseFileButton.disabled = blocked;
+  chooseFolderButton.disabled = blocked || !("webkitdirectory" in drawingFolderInput);
+  chooseFolderButton.title = "webkitdirectory" in drawingFolderInput ? "包含子文件夹" : "当前浏览器不支持选择文件夹，请多选文件。";
+  submitButton.disabled = blocked || drawingUploads.running || drawingUploads.scanning || drawingUploads.tooMany || !drawingUploads.pending.length;
+  submitButton.hidden = !drawingUploads.pending.length && !drawingUploads.running && !uploadPreparing;
+  submitButton.textContent = uploadPreparing && !drawingUploads.running ? "准备上传…" : drawingUploads.running ? "上传中…" : drawingUploads.resumable ? "继续上传" : "开始识别";
+  submitButton.setAttribute("aria-label", submitButton.textContent);
+  submitButton.classList.toggle("busy", uploadPreparing || drawingUploads.running);
+  document.getElementById("clearUploadsButton").disabled = uploadPreparing || (!drawingUploads.scanning && !entries.some((item) => !item.jobId && item.status !== "uploading"));
+  document.getElementById("pauseUploadButton").hidden = !drawingUploads.running;
+  document.getElementById("uploadQueueControls").hidden = !drawingUploads.scanning && !entries.some((item) => !item.jobId);
+  document.getElementById("uploadUnsentHint").hidden = !drawingUploads.hasUnsent;
+  apiBaseInput.disabled = drawingUploads.running || uploadPreparing || historyDeletion.state.running;
+  if (focused !== document.body && (panel.contains(focused) || focused === submitButton || !focused.isConnected)
+      && (!focused.isConnected || focused.closest("[hidden]") || focused.closest("details:not([open])") || document.activeElement === document.body)) {
+    (panel.querySelector("details:not([hidden]) > summary") || (!completionPanel.hidden && document.getElementById("clearUploadCompletion")) || chooseFileButton).focus();
+  }
+}
+
+async function handleUploadAction(event) {
+  const button = event.target.closest("button[data-upload-action]");
+  if (!button || button.disabled) return;
+  const item = drawingUploads.entries.find((entry) => entry.id === button.closest("[data-upload-id]").dataset.uploadId);
+  if (!item) return;
+  const action = button.dataset.uploadAction;
+  if (action === "remove") drawingUploads.remove(item.id);
+  else if (["retry-upload", "retry-unknown"].includes(action)) { drawingUploads.retryUpload(item.id); await submitSelectedFile(); }
+  else if (action === "check-unknown") {
+    await loadRecentReviews();
+    item.checkedUnknown = true;
+    drawingUploads.notice = "请核对历史订单：若已有该图纸，请移除此待核对项；确认未创建后，才点击“核对后重试上传”。";
+    drawingUploads.changed();
+  } else if (action === "refresh") { trackRecognitionJob(item.jobId); }
 }
 
 async function runStandardization(messageId = state.activeReviewMessageId, options = {}) {
@@ -1123,6 +1323,7 @@ function parameterAuditState(param) {
     evidence: param?.evidence ?? "",
     surface_location: param?.surface_location ?? null,
     roughness_conflict: Boolean(param?.roughness_conflict),
+    ...(Object.hasOwn(param || {}, "roughness_reference_dismissed") ? { roughness_reference_dismissed: Boolean(param.roughness_reference_dismissed) } : {}),
     ...(Object.prototype.hasOwnProperty.call(param || {}, "material_selection_source") ? materialSelectionAudit(param) : {}),
   };
 }
@@ -1164,6 +1365,7 @@ function refreshParameterPersistenceControls(fields = null) {
     if (targetFields && !targetFields.has(field)) return;
     const param = state.review.spring_parameters?.[field];
     if (param) syncConfirmationControl(row, param, { kind: "parameter", field, review: state.review });
+    if (field === "surface_roughness_ra" && param) syncSurfaceRoughnessReferenceRow(row, param);
   });
   document.querySelectorAll('[data-kind="load_point"][data-load-point-id]').forEach((row) => {
     const point = state.review.spring_parameters?.load_points?.find((item) => item.load_point_id === row.dataset.loadPointId);
@@ -2095,25 +2297,125 @@ async function loadDemoReview() {
   }
 }
 
+function readBrowserPreference(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function historyRecognitionScope() {
+  return state.identityReady ? JSON.stringify([state.apiBaseUrl, state.identity?.user_id, identityRequestSerial]) : null;
+}
+
+function configureHistoryUnread() {
+  const scope = historyRecognitionScope();
+  if (scope === historyUnreadScope) return;
+  historyDeletion.reset();
+  historyUnread?.dispose();
+  Object.keys(state.recognitionPollers).forEach(stopTrackingRecognitionJob);
+  state.recentReviews = [];
+  state.recentReviewsLoading = false;
+  state.recognitionStatusVersions.clear();
+  state.deletedReviewIds.clear();
+  historyUnreadScope = scope;
+  historyUnread = HistoryRecognitionUnread.create({ service: state.apiBaseUrl, userId: state.identity.user_id,
+    eventTarget: window, onChange: scheduleHistoryUnreadRefresh });
+  renderRecentReviews();
+}
+
+function scheduleHistoryUnreadRefresh() {
+  if (historyUnreadRefreshScheduled) return;
+  historyUnreadRefreshScheduled = true;
+  window.requestAnimationFrame(() => {
+    historyUnreadRefreshScheduled = false;
+    state.recentReviews.forEach((item) => updateRecentReviewRow(item));
+    updateHistoryUnreadCount();
+  });
+}
+
+function historyOrderIsUnread(item) {
+  return historyRecognitionScope() === historyUnreadScope && Boolean(historyUnread?.isUnread(item));
+}
+
+function updateHistoryUnreadCount() {
+  const button = document.getElementById("historyUnreadCount");
+  const count = state.recentReviews.filter((item) => historyOrderIsVisible(item) && historyOrderIsUnread(item)
+    && Array.from(recentReviewList.querySelectorAll('.history-order-item')).some((row) => row.dataset.historyJobId === item.job_id)).length;
+  if (!button) return;
+  const wasFocused = document.activeElement === button;
+  button.hidden = count === 0;
+  button.textContent = `新完成 ${count}`;
+  button.setAttribute("aria-label", `新完成 ${count} 份，定位第一条尚未查看的订单`);
+  if (!count && wasFocused) refreshRecentReviewsButton?.focus();
+}
+
+function focusFirstUnreadHistoryOrder() {
+  const item = state.recentReviews.find((entry) => historyOrderIsVisible(entry) && historyOrderIsUnread(entry)
+    && Array.from(recentReviewList.querySelectorAll('.history-order-item')).some((row) => row.dataset.historyJobId === entry.job_id));
+  const row = Array.from(recentReviewList.querySelectorAll('.history-order-item')).find((element) => element.dataset.historyJobId === item?.job_id);
+  row?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  row?.querySelector('.history-select-button')?.focus({ preventScroll: true });
+}
+
+function markDisplayedRecognitionRead() {
+  if (!state.review || !state.compareOpen || compareOverlay.hidden || document.visibilityState !== "visible") return;
+  const displayed = displayedRecognitionRounds.get(state.review);
+  if (!displayed || displayed.scope !== historyRecognitionScope() || displayed.controller !== historyUnread
+      || displayed.jobId !== state.lastJob?.job_id) return;
+  // Use the loaded snapshot's round, never the latest round observed by polling.
+  historyUnread.markRead(displayed.jobId, displayed.round);
+  const item = state.recentReviews.find((entry) => entry.job_id === displayed.jobId);
+  if (item) updateRecentReviewRow(item);
+  updateHistoryUnreadCount();
+}
+
 async function loadRecentReviews() {
   if (!state.identityReady || !recentReviews || !recentReviewList || state.recentReviewsLoading) return;
   state.recentReviewsLoading = true;
+  const requestSerial = ++state.recognitionRequestSerial;
+  const scope = historyRecognitionScope();
   if (refreshRecentReviewsButton) refreshRecentReviewsButton.disabled = true;
   try {
-    const response = await apiFetch("/api/reviews?limit=20");
+    const response = await apiFetch("/api/reviews?limit=100");
     const payload = await response.json();
+    if (scope !== historyRecognitionScope()) return;
     if (!response.ok) throw new Error(payload.detail || "无法读取已保存的审图记录");
-    state.recentReviews = Array.isArray(payload.reviews) ? payload.reviews : [];
+    if (!Array.isArray(payload.reviews)) throw new Error("订单列表返回无效，请刷新重试。");
+    const previous = new Map(state.recentReviews.map((item) => [item.job_id, item]));
+    const incoming = payload.reviews;
+    const incomingIds = new Set(incoming.map((item) => item.job_id));
+    const addedDuringRequest = state.recentReviews.filter((item) => !incomingIds.has(item.job_id)
+      && (state.recognitionStatusVersions.get(item.job_id)?.serial > requestSerial
+        || (typeof drawingUploads !== "undefined" && drawingUploads.isTracking(item.job_id))) && historyOrderIsVisible(item));
+    const merged = incoming
+      .filter((item) => !state.deletedReviewIds.has(item.job_id))
+      .map((item) => reconcileRecognitionListItem(previous.get(item.job_id), item, requestSerial));
+    const byId = new Map(merged.map((item) => [item.job_id, item]));
+    state.recentReviews = [...addedDuringRequest, ...merged.filter((item) => !previous.has(item.job_id)),
+      ...Array.from(previous.keys()).map((id) => byId.get(id)).filter(Boolean)];
+    historyUnread?.observeList(state.recentReviews.filter(historyOrderIsVisible));
+    if (typeof drawingUploads !== "undefined") state.recentReviews.forEach((item) => drawingUploads.updateRecognition(item.job_id, item));
+    if (refreshRecentReviewsButton) refreshRecentReviewsButton.title = "刷新历史订单";
     renderRecentReviews();
+    const visibleIds = new Set(state.recentReviews.filter(historyOrderIsVisible).map((item) => item.job_id));
+    const trackedIds = new Set(historyUnread?.trackedIds() || []);
+    Object.keys(state.recognitionPollers).filter((id) => !visibleIds.has(id) && !trackedIds.has(id)).forEach(stopTrackingRecognitionJob);
     state.recentReviews
-      .filter((item) => ["queued", "processing", "cancel_requested"].includes(item.recognition_status))
+      .filter((item) => ["queued", "processing"].includes(item.recognition_status) && historyOrderIsVisible(item))
       .forEach((item) => trackRecognitionJob(item.job_id));
+    trackedIds.forEach((id) => trackRecognitionJob(id));
+    return true;
   } catch (error) {
-    state.recentReviews = [];
-    renderRecentReviews();
+    if (scope !== historyRecognitionScope()) return;
+    if (refreshRecentReviewsButton) refreshRecentReviewsButton.title = `${error.message || "无法刷新订单"}；请点击重试。`;
+    // Keep the last usable list on transient errors, including active progress.
+    for (const item of state.recentReviews) {
+      item.recognition_sync_error = error.message || "无法刷新订单，请重试。";
+      updateRecentReviewRow(item);
+    }
   } finally {
-    state.recentReviewsLoading = false;
-    if (refreshRecentReviewsButton) refreshRecentReviewsButton.disabled = false;
+    if (scope === historyRecognitionScope()) {
+      state.recentReviewsLoading = false;
+      if (refreshRecentReviewsButton) refreshRecentReviewsButton.disabled = false;
+    }
   }
 }
 
@@ -2151,144 +2453,272 @@ function recognitionProgressText(recognition = {}) {
 }
 
 function recognitionStatusLabel(item = {}) {
+  return historyRecognitionState(item).label;
+}
+
+function historyOrderIsVisible(item) {
+  return !state.deletedReviewIds.has(item.job_id) && !["cancel_requested", "cancelled"].includes(item.recognition_status);
+}
+
+function recognitionNumber(value) {
+  if (!["number", "string"].includes(typeof value) || String(value).trim() === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.floor(number) : null;
+}
+
+function historyRecognitionState(item = {}) {
   const status = item.recognition_status;
-  if (!status) return "";
-  if (status === "queued") return item.queue_position ? `排队中 · 第${item.queue_position}位` : "排队中";
-  if (status === "processing") return `${Math.max(0, Number(item.recognition_progress || 0))}% · 识别中`;
-  if (status === "completed") return "已完成";
-  if (status === "failed") return "识别失败";
-  if (status === "cancel_requested") return "取消中";
-  if (status === "cancelled") return "已取消";
-  return status;
+  if (!status || status === "completed") return { kind: "completed", label: "识别完成", progress: null };
+  if (status === "failed") return { kind: "failed", label: "识别失败", progress: null };
+  const value = status === "queued" ? 0 : recognitionNumber(item.recognition_progress);
+  return { kind: "processing", label: "识别中", progress: value == null ? null : Math.max(0, Math.min(value, 99)) };
+}
+
+function reconcileRecognitionListItem(previous, incoming, requestSerial, { restart = false } = {}) {
+  if (!incoming.recognition_status) return { ...previous, ...incoming };
+  const version = state.recognitionStatusVersions.get(incoming.job_id);
+  const oldAttempt = recognitionNumber(previous?.recognition_attempt_count);
+  const newAttempt = recognitionNumber(incoming.recognition_attempt_count);
+  const newerAttempt = newAttempt != null && oldAttempt != null && newAttempt > oldAttempt;
+  const oldTime = Date.parse(previous?.updated_at), newTime = Date.parse(incoming.updated_at);
+  if (previous && !restart) {
+    if (newAttempt != null && oldAttempt != null && newAttempt < oldAttempt) return previous;
+    if (!newerAttempt) {
+      if (version && requestSerial < version.serial) return previous;
+      if (Number.isFinite(oldTime) && Number.isFinite(newTime) && newTime < oldTime) return previous;
+      if (["completed", "failed"].includes(previous.recognition_status)
+          && ["queued", "processing"].includes(incoming.recognition_status)
+          && !(Number.isFinite(newTime) && newTime > oldTime)) return previous;
+    }
+  }
+  const next = { ...previous, ...incoming, recognition_sync_error: "" };
+  if (newAttempt == null && oldAttempt != null) next.recognition_attempt_count = oldAttempt;
+  if (incoming.recognition_status === "queued") next.recognition_progress = 0;
+  else if (incoming.recognition_status === "processing") {
+    const progress = recognitionNumber(incoming.recognition_progress);
+    next.recognition_progress = progress == null
+      ? (restart || newerAttempt ? null : previous?.recognition_progress ?? null)
+      : Math.max(0, Math.min(progress, 99));
+  }
+  state.recognitionStatusVersions.set(incoming.job_id, { serial: requestSerial });
+  return next;
+}
+
+function historyRecognitionIcon(kind) {
+  const shape = kind === "completed"
+    ? '<circle cx="8" cy="8" r="6"/><path d="m4.8 8 2.2 2.2 4.2-4.4"/>'
+    : kind === "failed"
+      ? '<circle cx="8" cy="8" r="6"/><path d="m5.8 5.8 4.4 4.4m0-4.4-4.4 4.4"/>'
+      : '<circle class="history-recognition-track" cx="8" cy="8" r="6"/><path d="M8 2a6 6 0 0 1 6 6"/>';
+  return `<svg class="history-recognition-icon${kind === "processing" ? " is-spinning" : ""}" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${shape}</svg>`;
+}
+
+function historyOrderTooltip(item) {
+  const status = historyRecognitionState(item);
+  const type = SPRING_TYPE_LABELS[item.spring_type] || item.spring_type || "未知类型";
+  const details = [item.drawing_name, item.drawing_no ? `图号：${item.drawing_no}` : "", `类型：${type}`,
+    item.revision ? `版本：${item.revision}` : "本地文件", formatRecentReviewTime(item.updated_at),
+    `${status.label}${status.progress == null ? "" : ` ${status.progress}%`}`];
+  if (item.recognition_status === "queued") details.push(item.queue_position ? `排队中，当前第${item.queue_position}位` : "排队等待识别");
+  if (item.recognition_status === "failed") details.push(`失败原因：${item.recognition_error || "请点击重试"}`);
+  if (item.recognition_sync_error) details.push(`进度暂时无法刷新：${item.recognition_sync_error}；请点击“刷新”重试。`);
+  if (historyOrderIsUnread(item)) details.push("新识别结果，尚未查看");
+  return details.filter(Boolean).join("\n");
+}
+
+function updateRecentReviewRow(item, row = null) {
+  row ||= Array.from(recentReviewList?.querySelectorAll('.history-order-item') || []).find((element) => element.dataset.historyJobId === item.job_id);
+  if (!row) return;
+  if (!historyOrderIsVisible(item)) {
+    row.remove();
+    if (!recentReviewList.querySelector('.history-order-item')) renderRecentReviews();
+    return;
+  }
+  const status = historyRecognitionState(item);
+  const title = item.drawing_name || item.drawing_no || `审图 ${String(item.job_id || "").slice(0, 8)}`;
+  const button = row.querySelector('[data-role="open-recent-review"]');
+  const name = row.querySelector('strong');
+  if (name.textContent !== title) name.textContent = title;
+  const unread = historyOrderIsUnread(item);
+  row.querySelector('.history-unread-dot').hidden = !unread;
+  button.title = historyOrderTooltip(item);
+  button.setAttribute('aria-label', `${title}，${status.label}${status.progress == null ? "" : `，${status.progress}%`}${unread ? "，新识别结果，尚未查看" : ""}`);
+  row.classList.toggle('active', item.job_id === state.lastJob?.job_id);
+  row.classList.toggle('has-retry', status.kind === "failed");
+  const retry = row.querySelector('[data-role="retry-recognition"]');
+  const retryFocused = document.activeElement === retry;
+  retry.hidden = status.kind !== "failed";
+  if (retryFocused && retry.hidden) button.focus();
+  const badge = row.querySelector('.history-recognition-status');
+  if (badge.dataset.status !== status.kind) {
+    badge.dataset.status = status.kind;
+    badge.querySelector('[data-role="recognition-label"]').textContent = status.label;
+    badge.querySelector('[data-role="recognition-icon"]').innerHTML = historyRecognitionIcon(status.kind);
+  }
+  const progress = badge.querySelector('[data-role="recognition-percentage"]');
+  const value = status.progress == null ? "" : `${status.progress}%`;
+  progress.hidden = status.progress == null;
+  if (progress.textContent !== value) progress.textContent = value;
+  if (typeof applyHistoryManagementToRow === "function") applyHistoryManagementToRow(item, row);
 }
 
 function trackRecognitionJob(jobId, messageId = null) {
-  if (!jobId || state.recognitionPollers[jobId]) return;
+  if (!jobId || state.deletedReviewIds.has(jobId)) return;
   if (messageId) state.recognitionMessageIds[jobId] = messageId;
+  if (state.recognitionPollers[jobId]) return;
+  const watcher = { timer: null, inFlight: false };
+  const scope = historyRecognitionScope();
+  const active = () => scope === historyRecognitionScope() && state.recognitionPollers[jobId] === watcher && !state.deletedReviewIds.has(jobId);
   const poll = async () => {
+    if (!active() || watcher.inFlight) return;
+    watcher.inFlight = true;
+    const requestSerial = ++state.recognitionRequestSerial;
     try {
       const response = await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}/recognition-status`);
       const payload = await response.json();
+      if (!active()) return;
       if (response.status === 404) {
-        stopTrackingRecognitionJob(jobId);
-        return;
+        throw new Error("暂未找到识别进度");
       }
       if (!response.ok) throw new Error(payload.detail || "无法读取识别进度");
       const recognition = payload.recognition || {};
-      mergeRecognitionStatus(jobId, recognition);
+      if (!["queued", "processing", "completed", "failed", "cancel_requested", "cancelled"].includes(recognition.status) || (payload.job_id && payload.job_id !== jobId)
+          || (recognition.job_id && recognition.job_id !== jobId)) throw new Error("识别进度返回无效");
+      if (!mergeRecognitionStatus(jobId, recognition, { requestSerial })) return;
       const progressMessageId = state.recognitionMessageIds[jobId];
       if (progressMessageId) replaceMessage(progressMessageId, recognitionProgressText(recognition), recognition.status === "failed");
       if (["queued", "processing", "cancel_requested"].includes(recognition.status)) return;
       stopTrackingRecognitionJob(jobId);
-      if (recognition.status === "completed" && state.lastJob?.job_id === jobId) {
+      const uploadAutoOpen = typeof uploadAutoOpenIsCurrent === "function" && uploadAutoOpenIsCurrent(jobId);
+      if (recognition.status === "completed" && (state.lastJob?.job_id === jobId || uploadAutoOpen)) {
         if (progressMessageId) removeMessage(progressMessageId);
         delete state.recognitionMessageIds[jobId];
-        await openPersistedReview(jobId, { recognitionCompleted: true });
+        await openPersistedReview(jobId, { recognitionCompleted: true, uploadAutoOpen });
+        if (uploadAutoOpen) state.pendingUploadAutoOpen = null;
       }
     } catch (error) {
+      if (!active()) return;
+      const item = state.recentReviews.find((review) => review.job_id === jobId);
+      if (item) {
+        item.recognition_sync_error = error.message || "请重试"; updateRecentReviewRow(item);
+        if (typeof drawingUploads !== "undefined") drawingUploads.updateRecognition(jobId, item);
+      }
       const progressMessageId = state.recognitionMessageIds[jobId];
       if (progressMessageId) replaceMessage(progressMessageId, `识别进度读取失败：${error.message || String(error)}`, true);
       stopTrackingRecognitionJob(jobId);
+    } finally {
+      watcher.inFlight = false;
     }
   };
-  state.recognitionPollers[jobId] = window.setInterval(() => { void poll(); }, 2000);
+  state.recognitionPollers[jobId] = watcher;
+  watcher.timer = window.setInterval(() => { void poll(); }, 2000);
   void poll();
 }
 
 function stopTrackingRecognitionJob(jobId) {
-  const timer = state.recognitionPollers[jobId];
-  if (timer) window.clearInterval(timer);
+  const watcher = state.recognitionPollers[jobId];
+  if (watcher) window.clearInterval(watcher.timer);
   delete state.recognitionPollers[jobId];
 }
 
-function mergeRecognitionStatus(jobId, recognition) {
+function mergeRecognitionStatus(jobId, recognition, { requestSerial = ++state.recognitionRequestSerial, restart = false, submission = false } = {}) {
+  if (state.deletedReviewIds.has(jobId)) return false;
+  // The retry response is a barrier for every list/poll request already in flight,
+  // including requests started while the retry POST was pending.
+  if (restart) requestSerial = Math.max(requestSerial, ++state.recognitionRequestSerial);
   const index = state.recentReviews.findIndex((item) => item.job_id === jobId);
+  const previous = index >= 0 ? state.recentReviews[index] : null;
+  const incoming = { job_id: jobId,
+    recognition_status: recognition.status, recognition_stage: recognition.stage,
+    recognition_progress: recognition.progress, recognition_error: recognition.error_message,
+    queue_position: recognition.queue_position, recognition_attempt_count: recognition.attempt_count,
+    image_url: recognition.image_url || previous?.image_url || null,
+    updated_at: recognition.updated_at || previous?.updated_at,
+  };
+  if (!previous) incoming.drawing_name = recognition.drawing_name;
+  const next = reconcileRecognitionListItem(previous, incoming, requestSerial, { restart });
+  if (next === previous) return false;
+  historyUnread?.observe(next, { restart, submission });
   if (index >= 0) {
-    state.recentReviews[index] = {
-      ...state.recentReviews[index],
-      recognition_status: recognition.status,
-      recognition_stage: recognition.stage,
-      recognition_progress: recognition.progress,
-      recognition_error: recognition.error_message,
-      queue_position: recognition.queue_position,
-      recognition_attempt_count: recognition.attempt_count,
-      image_url: recognition.image_url || state.recentReviews[index].image_url || null,
-      updated_at: recognition.updated_at || state.recentReviews[index].updated_at,
-    };
+    state.recentReviews[index] = next;
+    updateRecentReviewRow(next);
   } else {
-    state.recentReviews.unshift({
-      job_id: jobId,
-      drawing_name: recognition.drawing_name,
-      recognition_status: recognition.status,
-      recognition_stage: recognition.stage,
-      recognition_progress: recognition.progress,
-      recognition_error: recognition.error_message,
-      queue_position: recognition.queue_position,
-      recognition_attempt_count: recognition.attempt_count,
-      image_url: recognition.image_url || null,
-      updated_at: recognition.updated_at,
-    });
+    state.recentReviews.unshift(next);
+    renderRecentReviews();
   }
-  renderRecentReviews();
+  if (typeof drawingUploads !== "undefined") drawingUploads.updateRecognition(jobId, next);
+  updateHistoryUnreadCount();
+  return true;
 }
 
 function renderRecentReviews() {
   if (!recentReviews || !recentReviewList) return;
-  const reviews = state.recentReviews || [];
+  const reviews = (state.recentReviews || []).filter(historyOrderIsVisible);
   if (!reviews.length) {
     recentReviewList.innerHTML = '<p class="history-empty">暂无历史订单。上传并完成审图后，记录会自动保存在这里。</p>';
+    updateHistoryUnreadCount();
+    if (typeof historyDeletion !== "undefined") historyDeletion.updateVisible([]);
     return;
   }
-  recentReviewList.innerHTML = reviews.map((item) => {
-    const title = item.drawing_name || item.drawing_no || `审图 ${String(item.job_id || "").slice(0, 8)}`;
-    const type = SPRING_TYPE_LABELS[item.spring_type] || item.spring_type || "未知类型";
-    const status = recognitionStatusLabel(item) || recentReviewStatusLabel(item.overall_status);
-    const revision = item.revision ? `版本 ${item.revision}` : "本地文件";
-    const updatedAt = formatRecentReviewTime(item.updated_at);
-    const details = [item.drawing_no, type, status, revision, updatedAt].filter(Boolean).join(" · ");
-    const isActive = item.job_id === state.lastJob?.job_id;
-    const canRetry = item.recognition_status === "failed";
-    return `
-      <article class="history-order-item${isActive ? " active" : ""}${canRetry ? " has-retry" : ""}">
-        <button class="history-select-button" type="button" data-role="open-recent-review" data-job-id="${escapeHtml(item.job_id)}">
+  const existing = new Map(Array.from(recentReviewList.querySelectorAll('.history-order-item')).map((row) => [row.dataset.historyJobId, row]));
+  recentReviewList.querySelector('.history-empty')?.remove();
+  reviews.forEach((item, index) => {
+    let row = existing.get(item.job_id);
+    if (!row) {
+      row = document.createElement('article');
+      row.className = 'history-order-item';
+      row.dataset.historyJobId = item.job_id;
+      row.innerHTML = `
+        <input class="history-selection-checkbox" type="checkbox" data-role="select-history-order" hidden>
+        <button class="history-select-button" type="button" data-role="open-recent-review">
           <span class="history-order-copy">
-            <strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong>
-            <span>${escapeHtml(details)}</span>
+            <span class="history-order-title"><strong></strong><span class="history-unread-dot" title="新识别结果，尚未查看" aria-hidden="true" hidden></span></span>
+            <span class="history-recognition-status">
+              <span data-role="recognition-label"></span><span data-role="recognition-icon"></span><span data-role="recognition-percentage" hidden></span>
+            </span>
           </span>
           <span class="history-order-arrow" aria-hidden="true">›</span>
         </button>
-        ${canRetry ? `<button class="history-retry-button" type="button" data-role="retry-recognition" data-job-id="${escapeHtml(item.job_id)}" title="重新识别">重试</button>` : ""}
-        <button class="history-delete-button" type="button" data-role="delete-recent-review" data-job-id="${escapeHtml(item.job_id)}" title="删除订单" aria-label="删除订单">
+        <button class="history-retry-button" type="button" data-role="retry-recognition" title="重新识别" hidden>重试</button>
+        <button class="history-delete-button" type="button" data-role="delete-recent-review" title="删除订单" aria-label="删除订单">
           <span class="history-delete-icon" aria-hidden="true"></span>
         </button>
-      </article>
-    `;
-  }).join("");
-  recentReviewList.querySelectorAll('[data-role="open-recent-review"]').forEach((button) => {
-    button.addEventListener("click", () => {
-      void openPersistedReview(button.dataset.jobId || "");
-    });
+      `;
+      row.querySelectorAll('[data-role]').forEach((button) => {
+        if (['open-recent-review', 'retry-recognition', 'delete-recent-review'].includes(button.dataset.role)) button.dataset.jobId = item.job_id;
+      });
+      row.querySelector('[data-role="select-history-order"]').addEventListener('change', () => historyDeletion.toggle(item.job_id));
+      row.querySelector('[data-role="open-recent-review"]').addEventListener('click', () => {
+        if (historyDeletion.state.managing) historyDeletion.toggle(item.job_id);
+        else void openPersistedReview(item.job_id);
+      });
+      row.querySelector('[data-role="retry-recognition"]').addEventListener('click', () => { void retryRecognitionJob(item.job_id); });
+      row.querySelector('[data-role="delete-recent-review"]').addEventListener('click', () => {
+        const current = state.recentReviews.find((review) => review.job_id === item.job_id);
+        if (current) showDeleteReviewDialog(current);
+      });
+    }
+    updateRecentReviewRow(item, row);
+    if (recentReviewList.children[index] !== row) recentReviewList.insertBefore(row, recentReviewList.children[index] || null);
+    existing.delete(item.job_id);
   });
-  recentReviewList.querySelectorAll('[data-role="delete-recent-review"]').forEach((button) => {
-    button.addEventListener("click", () => {
-      const item = state.recentReviews.find((review) => review.job_id === button.dataset.jobId);
-      if (item) showDeleteReviewDialog(item);
-    });
-  });
-  recentReviewList.querySelectorAll('[data-role="retry-recognition"]').forEach((button) => {
-    button.addEventListener("click", () => {
-      void retryRecognitionJob(button.dataset.jobId || "");
-    });
-  });
+  existing.forEach((row) => row.remove());
+  updateHistoryUnreadCount();
+  if (typeof historyDeletion !== "undefined") historyDeletion.updateVisible(reviews);
 }
 
 async function openPersistedReview(jobId, options = {}) {
   if (!jobId || state.busy) return;
+  if (!options.recognitionCompleted) state.reviewNavigationSerial += 1;
+  const navigationSerial = state.reviewNavigationSerial;
+  const scope = historyRecognitionScope(), controller = historyUnread;
   if (!await flushReviewPersistence()) {
     appendAssistantText("当前参数尚未保存，请先重试保存后再切换订单。", true);
     return;
   }
+  if (scope !== historyRecognitionScope() || navigationSerial !== state.reviewNavigationSerial || (options.uploadAutoOpen && !uploadAutoOpenIsCurrent(jobId))) return;
   const item = state.recentReviews.find((review) => review.job_id === jobId);
+  const loadedRound = controller?.capture(item);
   if (["queued", "processing", "cancel_requested"].includes(item?.recognition_status)) {
     const messageId = appendAssistantText(recognitionProgressText(item), false);
     trackRecognitionJob(jobId, messageId);
@@ -2308,6 +2738,10 @@ async function openPersistedReview(jobId, options = {}) {
     const response = await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || "无法恢复该审图记录");
+    if (state.deletedReviewIds.has(jobId) || scope !== historyRecognitionScope() || navigationSerial !== state.reviewNavigationSerial
+        || (options.uploadAutoOpen && !uploadAutoOpenIsCurrent(jobId, { allowBusy: true }))) {
+      removeMessage(thinkingId); return;
+    }
     removeMessage(thinkingId);
     resetGenerationState();
     state.lastJob = {
@@ -2319,7 +2753,9 @@ async function openPersistedReview(jobId, options = {}) {
     state.reviewPersistenceFailedFields = {};
     state.reviewDraftFields.clear();
     setReview(normalizeReview(payload), toBackendAssetUrl(item?.image_url));
+    displayedRecognitionRounds.set(state.review, { scope, controller, jobId, round: loadedRound });
     await loadGenerationState(jobId, { render: false, silent: true });
+    if (scope !== historyRecognitionScope() || navigationSerial !== state.reviewNavigationSerial || state.lastJob?.job_id !== jobId) return;
     renderRecentReviews();
     if (!options.recognitionCompleted) appendUserMessage(`打开已保存审图：${item?.drawing_name || item?.drawing_no || jobId}`);
     appendReviewMessage("已恢复审图结果，可继续确认、标准化或与 AI 对话。");
@@ -2332,18 +2768,27 @@ async function openPersistedReview(jobId, options = {}) {
   }
 }
 
-async function retryRecognitionJob(jobId) {
-  if (!jobId || state.busy) return;
+async function retryRecognitionJob(jobId, { preserveCurrent = false } = {}) {
+  if (!jobId || state.busy || state.deletedReviewIds.has(jobId)) return;
   const item = state.recentReviews.find((review) => review.job_id === jobId);
+  const requestSerial = ++state.recognitionRequestSerial;
+  const scope = historyRecognitionScope();
   try {
     const response = await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}/retry`, { method: "POST" });
     const payload = await response.json();
+    if (scope !== historyRecognitionScope()) return;
     if (!response.ok) throw new Error(payload.detail || "重新识别失败");
+    if (state.deletedReviewIds.has(jobId)) return;
     const recognition = payload.recognition || {};
-    state.lastJob = { ...(state.lastJob || {}), job_id: jobId };
+    if (!["queued", "processing", "completed", "failed"].includes(recognition.status)
+        || (payload.job_id && payload.job_id !== jobId)
+        || (recognition.job_id && recognition.job_id !== jobId)) throw new Error("重新识别返回无效，请刷新后重试。");
+    if (!preserveCurrent && !drawingUploads.hasJob(jobId)) state.lastJob = { ...(state.lastJob || {}), job_id: jobId };
     const messageId = appendAssistantText(`正在重新识别：${item?.drawing_name || jobId}`);
     state.recognitionMessageIds[jobId] = messageId;
-    mergeRecognitionStatus(jobId, recognition);
+    stopTrackingRecognitionJob(jobId);
+    mergeRecognitionStatus(jobId, recognition, { requestSerial, restart: true });
+    renderRecentReviews();
     trackRecognitionJob(jobId, messageId);
   } catch (error) {
     appendAssistantText(`无法重新识别：${error.message || String(error)}`, true);
@@ -2351,15 +2796,99 @@ async function retryRecognitionJob(jobId) {
 }
 
 function showDeleteReviewDialog(item) {
-  if (!item?.job_id || document.querySelector(".delete-review-dialog[open]")) return;
-  const title = item.drawing_name || item.drawing_no || item.job_id;
+  if (item?.job_id) showHistoryDeletionDialog([item], { bulk: false });
+}
+
+function applyHistoryManagementToRow(item, row) {
+  const management = historyDeletion.state;
+  if (management.visible.has(item.job_id)) management.visible.set(item.job_id, item);
+  const checkbox = row.querySelector('[data-role="select-history-order"]');
+  checkbox.hidden = !management.managing;
+  checkbox.checked = management.selected.has(item.job_id);
+  checkbox.disabled = management.running;
+  checkbox.setAttribute("aria-label", `选择订单：${item.drawing_name || item.drawing_no || item.job_id}`);
+  row.classList.toggle("is-managing", management.managing);
+  row.classList.toggle("is-selected", management.managing && checkbox.checked);
+  const button = row.querySelector('[data-role="open-recent-review"]');
+  button.disabled = management.running;
+  if (management.managing) {
+    button.setAttribute("aria-pressed", String(checkbox.checked));
+    button.setAttribute("aria-label", `${checkbox.checked ? "取消选择" : "选择"}订单：${item.drawing_name || item.drawing_no || item.job_id}`);
+  } else button.removeAttribute("aria-pressed");
+  row.querySelector('[data-role="delete-recent-review"]').hidden = management.managing;
+  row.querySelector('[data-role="delete-recent-review"]').disabled = management.running;
+  const retry = row.querySelector('[data-role="retry-recognition"]');
+  retry.hidden = management.managing || historyRecognitionState(item).kind !== "failed";
+  retry.disabled = management.running;
+}
+
+function focusHistoryManagementAction() {
+  const ids = historyDeletion.state.managing
+    ? ["historyDeleteSelected", "historyCheckUnknown", "exitHistoryManagement", "refreshRecentReviewsButton"]
+    : ["enterHistoryManagement", "refreshRecentReviewsButton"];
+  ids.map((id) => document.getElementById(id)).find((button) => button && !button.disabled && !button.closest("[hidden]"))?.focus();
+}
+
+function renderHistoryManagement() {
+  const management = historyDeletion.state, counts = historyDeletion.summary();
+  document.getElementById("historyManagement").hidden = !management.managing && !management.running && !management.notice && !management.results.size;
+  const enter = document.getElementById("enterHistoryManagement");
+  enter.hidden = management.managing;
+  enter.disabled = state.busy || !state.identityReady || !management.visible.size;
+  document.getElementById("historySelectionControls").hidden = !management.managing;
+  document.getElementById("historySelectedCount").textContent = `已选${management.selected.size}项`;
+  const remove = document.getElementById("historyDeleteSelected");
+  remove.textContent = `删除所选（${management.selected.size}）`;
+  const uncheckedUnknown = [...management.selected].some((id) => management.results.get(id)?.kind === "unknown" && !management.results.get(id)?.checked);
+  remove.disabled = state.busy || !state.identityReady || !historyDeletion.selectedItems().length || uncheckedUnknown;
+  remove.title = uncheckedUnknown ? "所选订单中存在结果待核对项，请先点击“刷新核对”。" : "删除当前所选订单";
+  for (const id of ["historySelectAll", "historyClearSelection", "exitHistoryManagement"]) document.getElementById(id).disabled = management.running;
+  const progress = document.getElementById("historyDeletionProgress");
+  progress.hidden = !management.running;
+  progress.textContent = management.progress.current ? `正在处理 ${management.progress.current}／${management.progress.total}` : "正在保存当前修改…";
+  const notice = document.getElementById("historyDeletionNotice");
+  notice.hidden = !management.notice; notice.textContent = management.notice;
+  const results = document.getElementById("historyDeletionResults");
+  results.hidden = !management.results.size;
+  document.getElementById("historyDeletionSummary").textContent = `已删除${counts.deleted} · 取消处理中${counts.cancelling} · 失败${counts.failed} · 待核对${counts.unknown}${counts.pending ? ` · 未处理${counts.pending}` : ""}${counts.cleanupPending ? ` · 文件清理未完成${counts.cleanupPending}` : ""}`;
+  const list = document.getElementById("historyDeletionResultList");
+  const existing = new Map([...list.children].map((row) => [row.dataset.jobId, row]));
+  for (const [id, result] of management.results) {
+    let row = existing.get(id);
+    if (!row) { row = document.createElement("li"); row.dataset.jobId = id; row.innerHTML = '<strong></strong><span></span>'; list.appendChild(row); }
+    row.dataset.kind = result.kind;
+    row.querySelector("strong").textContent = result.item.drawing_name || result.item.drawing_no || id;
+    row.querySelector("span").textContent = result.message + (result.cleanupPending ? "；服务器文件清理未完成" : "") + (result.checked ? "（已刷新，可重新确认删除）" : "");
+    existing.delete(id);
+  }
+  existing.forEach((row) => row.remove());
+  document.getElementById("historyRetryFailed").hidden = !management.managing || !historyDeletion.failedItems().length;
+  document.getElementById("historyRetryFailed").disabled = management.running || !state.identityReady;
+  document.getElementById("historyCheckUnknown").hidden = !counts.unknown;
+  document.getElementById("historyCheckUnknown").disabled = management.running || state.recentReviewsLoading;
+  document.getElementById("historyClearDeletionResults").hidden = management.managing || !management.results.size;
+  document.getElementById("historyClearDeletionResults").disabled = management.running;
+  recentReviews.classList.toggle("is-managing", management.managing);
+  const rows = new Map([...recentReviewList.querySelectorAll('.history-order-item')].map((row) => [row.dataset.historyJobId, row]));
+  for (const item of state.recentReviews) {
+    const row = rows.get(item.job_id);
+    if (row) applyHistoryManagementToRow(item, row);
+  }
+}
+
+function showHistoryDeletionDialog(items, { bulk = true } = {}) {
+  if (!items.length || state.busy || !state.identityReady || historyDeletion.state.running || document.querySelector(".delete-review-dialog[open]")) return;
+  const scope = historyRecognitionScope();
+  const captured = items.map((item) => ({ ...item }));
+  const activeCount = captured.filter((item) => ["queued", "processing"].includes(item.recognition_status)).length;
   const dialog = document.createElement("dialog");
   dialog.className = "delete-review-dialog";
   dialog.innerHTML = `
     <div class="delete-review-dialog-content">
-      <h2>删除历史订单？</h2>
-      <p>“${escapeHtml(title)}”将从历史订单中移除。</p>
-      <p class="delete-review-dialog-note">审图记录、修改留痕和本地识别产物会一并删除，删除后无法恢复。</p>
+      <h2>${bulk ? `删除所选${captured.length}条订单？` : "删除历史订单？"}</h2>
+      <p>将删除服务器订单及关联数据库记录，删除后无法恢复。${activeCount ? `其中${activeCount}条正在排队或识别，将先请求取消。` : ""}</p>
+      <ul class="delete-review-order-list">${captured.map((item) => `<li>${escapeHtml(item.drawing_name || item.drawing_no || item.job_id)}</li>`).join("")}</ul>
+      <p class="delete-review-dialog-note">订单目录会尝试清理；独立SW生成文件不在本次清理范围。</p>
       <p class="delete-review-dialog-error" data-role="delete-review-error" hidden></p>
       <div class="delete-review-dialog-actions">
         <button type="button" data-role="cancel-delete-review">取消</button>
@@ -2368,49 +2897,49 @@ function showDeleteReviewDialog(item) {
     </div>
   `;
   document.body.appendChild(dialog);
-  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.addEventListener("close", () => {
+    dialog.remove();
+    focusHistoryManagementAction();
+  }, { once: true });
+  dialog.addEventListener("cancel", (event) => { if (historyDeletion.state.running) event.preventDefault(); });
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) dialog.close();
+    if (event.target === dialog && !historyDeletion.state.running) dialog.close();
   });
   dialog.querySelector('[data-role="cancel-delete-review"]').addEventListener("click", () => dialog.close());
-  dialog.querySelector('[data-role="confirm-delete-review"]').addEventListener("click", () => {
-    void deletePersistedReview(item, dialog);
+  dialog.querySelector('[data-role="confirm-delete-review"]').addEventListener("click", async () => {
+    if (scope !== historyRecognitionScope()) { dialog.close(); return; }
+    if (historyDeletion.state.running || state.busy) return;
+    const confirm = dialog.querySelector('[data-role="confirm-delete-review"]');
+    const cancel = dialog.querySelector('[data-role="cancel-delete-review"]');
+    confirm.disabled = true; cancel.disabled = true;
+    const ok = await historyDeletion.run(captured, { bulk });
+    if (scope !== historyRecognitionScope()) { dialog.close(); return; }
+    const result = historyDeletion.state.results.get(captured[0].job_id);
+    if (ok && (bulk || ["deleted", "cancelling"].includes(result?.kind))) dialog.close();
+    else {
+      const error = dialog.querySelector('[data-role="delete-review-error"]');
+      error.hidden = false; error.textContent = historyDeletion.state.notice || result?.message || "未能完成删除，请重试。";
+      confirm.disabled = result?.kind === "unknown"; cancel.disabled = false;
+    }
   });
   dialog.showModal();
 }
 
-async function deletePersistedReview(item, dialog) {
-  if (!item?.job_id || state.busy) return;
-  const confirmButton = dialog.querySelector('[data-role="confirm-delete-review"]');
-  const cancelButton = dialog.querySelector('[data-role="cancel-delete-review"]');
-  const errorNode = dialog.querySelector('[data-role="delete-review-error"]');
-  confirmButton.disabled = true;
-  cancelButton.disabled = true;
-  setBusy(true);
-  await flushReviewPersistence();
-  try {
-    const response = await apiFetch(`/api/reviews/${encodeURIComponent(item.job_id)}`, { method: "DELETE" });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || "删除历史订单失败");
-    const title = item.drawing_name || item.drawing_no || item.job_id;
-    const deletedCurrentReview = state.lastJob?.job_id === item.job_id;
-    stopTrackingRecognitionJob(item.job_id);
-    const progressMessageId = state.recognitionMessageIds[item.job_id];
-    if (progressMessageId) removeMessage(progressMessageId);
-    delete state.recognitionMessageIds[item.job_id];
-    state.recentReviews = state.recentReviews.filter((review) => review.job_id !== item.job_id);
-    if (deletedCurrentReview) resetDeletedReviewState();
-    renderRecentReviews();
-    dialog.close();
-    appendAssistantText(`已删除历史订单：${title}`);
-  } catch (error) {
-    errorNode.hidden = false;
-    errorNode.textContent = error.message || String(error);
-    confirmButton.disabled = false;
-    cancelButton.disabled = false;
-  } finally {
-    setBusy(false);
-  }
+function finishHistoryOrderDeletion(item, result) {
+  const title = item.drawing_name || item.drawing_no || item.job_id;
+  const deletedCurrentReview = state.lastJob?.job_id === item.job_id;
+  state.deletedReviewIds.add(item.job_id);
+  historyUnread?.remove(item.job_id);
+  drawingUploads.markDeleted(item.job_id);
+  stopTrackingRecognitionJob(item.job_id);
+  const progressMessageId = state.recognitionMessageIds[item.job_id];
+  if (progressMessageId) removeMessage(progressMessageId);
+  delete state.recognitionMessageIds[item.job_id];
+  if (state.pendingUploadAutoOpen?.jobId === item.job_id) state.pendingUploadAutoOpen = null;
+  state.recentReviews = state.recentReviews.filter((review) => review.job_id !== item.job_id);
+  if (deletedCurrentReview) resetDeletedReviewState();
+  renderRecentReviews();
+  if (!historyDeletion.state.managing) appendAssistantText(`${result.message}：${title}${result.cleanupPending ? "（服务器文件清理未完成）" : ""}`);
 }
 
 function resetDeletedReviewState() {
@@ -2439,6 +2968,7 @@ function resetDeletedReviewState() {
 
 async function startNewReview() {
   if (state.busy || !state.identityReady) return;
+  state.reviewNavigationSerial += 1;
   setBusy(true);
   try {
     await flushReviewPersistence({ throwOnError: true });
@@ -2461,8 +2991,8 @@ async function startNewReview() {
     resetGenerationState();
     state.activeReviewMessageId = null;
     state.selectedBubbleId = null;
-    state.selectedFile = null;
     drawingInput.value = "";
+    drawingFolderInput.value = "";
     reviewJsonInput.value = "";
     selectedFileName.textContent = "未选择文件";
     advancedOptions.open = false;
@@ -4145,6 +4675,7 @@ function parameterUnitLabelHtml(label) {
 
 function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)) {
   const evidence = param.evidence || param.suggested_region || "";
+  const compactEvidence = field === "surface_roughness_ra" && typeof SurfaceRoughnessReference !== "undefined" ? SurfaceRoughnessReference.summary(param) : evidence;
   const defaultCandidateNotice = pendingDefaultCandidateNotice(param);
   let label = meta.label || FIELD_LABELS[field] || field;
   const requiredMark = meta.required ? " *" : "";
@@ -4197,7 +4728,7 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
       <div class="data-label">
         ${typeof DrawingAnnotations !== "undefined" ? DrawingAnnotations.badgeHtml(field, param) : ""}
         <strong title="${escapeHtml(displayLabel.text)}">${parameterUnitLabelHtml(displayLabel)}${escapeHtml(requiredMark)}</strong>
-        ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
+        ${compactEvidence ? `<small${field === "surface_roughness_ra" ? ' data-role="roughness-source-summary"' : ` title="${escapeHtml(compactEvidence)}"`}>${escapeHtml(compactEvidence)}</small>` : ""}
         ${field === "spring_rate" && param.formula_material_catalog_stale ? `<small class="parameter-formula-reference-note">${escapeHtml(param.formula_calculation_reason || "公司材料表剪切模量已更新，请核对最新刚度建议。")}</small>` : ""}
         ${defaultCandidateNotice ? `<small class="parameter-default-candidate-note">${escapeHtml(defaultCandidateNotice)}</small>` : ""}
         ${badges.length || accuracyGradeStatus ? `<div class="parameter-badges">${accuracyGradeStatus ? `<span class="accuracy-grade-source ${accuracyGradeStatusClass(param)}" data-accuracy-grade-source>${escapeHtml(accuracyGradeStatus)}</span>` : ""}${badges.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
@@ -4212,36 +4743,120 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
       </label>
       ${confirmationButtonHtml(param, { kind: "parameter", field, review: state.review })}
       ${roughnessCandidates}
+      ${field === "surface_roughness_ra" && isCompressionSpringReview(state.review) ? `<div class="roughness-reference" data-role="roughness-reference" role="group" aria-label="粗糙度常规参考">${surfaceRoughnessReferenceHtml(param)}</div>` : ""}
       ${materialNotes}
       <div class="parameter-formula-candidate" data-role="formula-candidate">${["active_coils", "support_coils", "pitch", "solid_height"].includes(field) ? formulaCandidateHtml(param) : ""}</div>
     </div>
   `;
 }
 
+function surfaceRoughnessReferenceHtml(param, expanded = false) {
+  if (typeof SurfaceRoughnessReference === "undefined") return "";
+  let content = "";
+  if (SurfaceRoughnessReference.eligible(param)) {
+    content = SurfaceRoughnessReference.dismissed(param) && !expanded
+      ? `<button type="button" class="roughness-reference-link" data-action="show-roughness-reference">查看常规参考</button>`
+       : `<small>项目参考，非原图识别值 · 两端面；也可直接输入。</small>
+         <div class="roughness-reference-actions">
+            <button type="button" data-action="adopt-roughness-reference" data-reference-value="12.5">采用 Ra 12.5</button>
+            <button type="button" data-action="adopt-roughness-reference" data-reference-value="6.3">采用 Ra 6.3</button>
+           <button type="button" data-action="dismiss-roughness-reference">不添加</button>
+         </div>`;
+  }
+  const persistence = parameterPersistenceState("surface_roughness_ra");
+  if (persistence === "failed") content += `<div class="roughness-reference-save" role="status">保存失败，当前修改仍保留。<button type="button" data-action="retry-roughness-reference-save">重试保存</button></div>`;
+  else if (persistence === "saving") content += `<small role="status">保存中…</small>`;
+  return content;
+}
+
+function syncSurfaceRoughnessReferenceRow(row, param) {
+  const summary = row?.querySelector?.('[data-role="roughness-source-summary"]');
+  if (summary && typeof SurfaceRoughnessReference !== "undefined") summary.textContent = SurfaceRoughnessReference.summary(param);
+  const container = row?.querySelector?.('[data-role="roughness-reference"]');
+  if (!container) return;
+  const html = surfaceRoughnessReferenceHtml(param, row.dataset.roughnessReferenceExpanded === "true");
+  if (container.innerHTML === html) return;
+  const action = container.contains(document.activeElement) ? document.activeElement.closest('[data-action]')?.dataset.action : null;
+  container.innerHTML = html;
+  if (action) {
+    const next = [...container.querySelectorAll('[data-action]')].find((button) => button.dataset.action === action)
+      || container.querySelector('[data-action="show-roughness-reference"]') || row.querySelector('[data-role="value"]');
+    next?.focus({ preventScroll: true });
+  }
+}
+
+function bindSurfaceRoughnessReference(row, param, review, messageId, root) {
+  if (typeof SurfaceRoughnessReference === "undefined") return;
+  row.querySelector('[data-role="roughness-evidence"]')?.addEventListener("toggle", (event) => {
+    if (event.target.isConnected) SurfaceRoughnessReference.setEvidenceOpen(param, event.target.open);
+  });
+  row.addEventListener("click", (event) => {
+    const action = event.target.closest('[data-role="roughness-reference"] [data-action]')?.dataset.action;
+    if (!action) return;
+    activateReviewContext(messageId);
+    if (state.review !== review) return;
+    const input = row.querySelector('[data-role="value"]');
+    if (action === "retry-roughness-reference-save") { void persistReviewChanges(); return; }
+    if (action === "show-roughness-reference") {
+      row.dataset.roughnessReferenceExpanded = "true";
+      syncSurfaceRoughnessReferenceRow(row, param);
+      row.querySelector('[data-action="adopt-roughness-reference"]')?.focus({ preventScroll: true });
+      return;
+    }
+    if (!SurfaceRoughnessReference.eligible(param)) return;
+    const before = parameterAuditState(param);
+    const adopting = action === "adopt-roughness-reference";
+    const referenceValue = Number(event.target.closest('[data-reference-value]')?.dataset.referenceValue);
+    if (!(adopting ? SurfaceRoughnessReference.adopt(param, referenceValue) : action === "dismiss-roughness-reference" && SurfaceRoughnessReference.dismiss(param))) return;
+    row.dataset.roughnessReferenceExpanded = "false";
+    markParamEdited(param, "surface_roughness_ra");
+    input.value = formatFieldInput(param);
+    queueReviewAuditEvent({ event_type: "parameter_value_updated", target_field: "surface_roughness_ra",
+      before_state: before, after_state: parameterAuditState(param),
+      reason: adopting ? "人工采用粗糙度常规参考值，仍待确认" : "选择不添加粗糙度",
+      metadata: { action: adopting ? "roughness_reference_adopt" : "roughness_reference_dismiss", ...(adopting ? { reference_value: referenceValue, surface_location: "两端面" } : {}) } });
+    syncConfirmationControl(row, param, { kind: "parameter", field: "surface_roughness_ra", review });
+    syncSurfaceRoughnessReferenceRow(row, param);
+    refreshCompressionDesignChecks(root, review);
+    scheduleParameterReasonablenessRefresh(messageId);
+    refreshBulkConfirmationFollowupAfterLocalChange(messageId);
+    if (adopting) input.focus({ preventScroll: true });
+    else row.querySelector('[data-action="show-roughness-reference"]')?.focus({ preventScroll: true });
+  });
+}
+
 function surfaceRoughnessCandidatesHtml(param) {
   const candidates = Array.isArray(param?.roughness_candidates) ? param.roughness_candidates : [];
-  const distinctValues = new Set(candidates.map((item) => Number(item?.value)).filter(Number.isFinite));
-  if (!param?.roughness_conflict && distinctValues.size < 2) return "";
-  return `
+  const service = typeof SurfaceRoughnessReference !== "undefined" ? SurfaceRoughnessReference : null;
+  const seen = new Set();
+  const options = candidates.map((item, index) => ({ item, index })).filter(({ item }) => {
+    const key = JSON.stringify([Number(item?.value), item?.unit || "μm", item?.location || ""]);
+    if (!Number.isFinite(Number(item?.value)) || Number(item.value) <= 0 || seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  const showOptions = options.length && param.need_human_review !== false && (options.length > 1 || param.value == null || options.some(({ item }) => service?.candidateEvidence(item)[0] === "unverified"));
+  const choices = showOptions ? `
     <div class="roughness-candidates" role="group" aria-label="表面粗糙度候选值">
-      <small>识别到多个 Ra 值，请选择当前弹簧端面的值，再确认一次。</small>
+      <small>请选择适用的原图候选，或直接输入；修改后需确认。</small>
       <div>
-        ${candidates.map((item, index) => {
+        ${options.map(({ item, index }) => {
           const value = Number(item?.value);
           if (!Number.isFinite(value) || value <= 0) return "";
           const location = String(item?.location || "").trim();
-          const label = `Ra ${formatCompactNumber(value)}${location ? ` · ${location}` : ""}`;
-          const evidence = String(item?.evidence || "").trim();
+          const label = `Ra ${formatCompactNumber(value)} μm · ${location || "部位未明确"}`;
+          const unverified = service?.candidateEvidence(item)[0] === "unverified";
           return `
             <span class="roughness-candidate-option">
-              <button type="button" class="roughness-candidate" data-role="roughness-candidate" data-candidate-index="${index}" title="${escapeHtml(evidence || label)}">${escapeHtml(label)}</button>
-              ${evidence ? `<small>${escapeHtml(evidence)}</small>` : ""}
+              <button type="button" class="roughness-candidate" data-role="roughness-candidate" data-candidate-index="${index}">${escapeHtml(label)}</button>
+              ${unverified ? '<small>依据不足，需核对</small>' : ""}
             </span>
           `;
         }).join("")}
       </div>
-    </div>
-  `;
+    </div>` : "";
+  const entries = service?.evidenceEntries(param) || [];
+  const details = entries.length ? `<details class="roughness-evidence" data-role="roughness-evidence"${service?.evidenceOpen(param) ? " open" : ""}><summary>查看识别依据（${entries.length}条）</summary><div class="roughness-evidence-body">${entries.map((entry) => `<div class="roughness-evidence-entry">${entry.labels.length ? `<p>${escapeHtml(entry.labels.join("；"))}</p>` : ""}<small>来源：${escapeHtml(entry.sources.join("、") || "未记录")}${entry.pages.length ? ` · 第 ${escapeHtml(entry.pages.join("、"))} 页` : ""}</small><p>${escapeHtml(entry.text)}</p>${entry.reasons.map((reason) => `<small>${escapeHtml(reason)}</small>`).join("")}</div>`).join("")}</div></details>` : "";
+  return choices + details;
 }
 
 function loadPointRowHtml(point, index, review = state.review) {
@@ -6643,7 +7258,7 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
         else item.content = value.trim();
         if (item.type === "surface") applyManualSurfaceNormalization(item, "人工统一编辑当前技术要求");
         else if (previousType === "surface") clearSurfaceNormalization(item);
-        markTechnicalRequirementEdited(item, technicalRequirementField(item, index), technicalRequirementConfirmationKey(item, index));
+        markTechnicalRequirementEdited(item, technicalRequirementField(item, index), technicalRequirementConfirmationKey(item, index), changedField);
       }
       syncTechnicalGroupControl(row, review); syncTechnicalRequirementSummary(root, review);
     };
@@ -6767,13 +7382,13 @@ function clearSurfaceNormalization(item) {
   ].forEach((field) => delete item[field]);
 }
 
-function markTechnicalRequirementEdited(item, technicalField, confirmationField) {
+function markTechnicalRequirementEdited(item, technicalField, confirmationField, changedField = "content") {
   if (!item) return;
-  technicalTranslationService()?.changed(item);
+  technicalTranslationService()?.changed(item, { typeOnly: changedField === "type" });
   item.translation_warnings = [];
   item.translation_warning_snapshot = null;
   state.reviewDraftFields.add(technicalField);
-  if (!technicalTranslationService()?.needsTranslation(item.content)) {
+  if (!technicalTranslationService()?.isCurrent(item) && !technicalTranslationService()?.needsTranslation(item.content)) {
     item.translation_status = "not_required";
     item.translation_error = "";
     item.translation_error_code = "";
@@ -7056,6 +7671,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       bindMaterialCatalogRetry(row);
       if (state.materialCatalog.status === "idle" || state.materialCatalog.apiBaseUrl !== state.apiBaseUrl) void ensureMaterialCatalog();
     }
+    if (field === "surface_roughness_ra" && isCompressionSpringReview(review)) bindSurfaceRoughnessReference(row, param, review, messageId, root);
     let valueBeforeState = null;
     const applyValueDraft = (event) => {
       if (field === "accuracy_grade") return;
@@ -7071,11 +7687,16 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
           param.source = sourceValues(param.source).filter((source) => source !== "reference_limit_applied");
         }
       }
+      if (field === "surface_roughness_ra" && isCompressionSpringReview(review) && typeof SurfaceRoughnessReference !== "undefined") {
+        SurfaceRoughnessReference.edited(param);
+        row.dataset.roughnessReferenceExpanded = "false";
+      }
       if (field === "material" && isCompressionSpringReview(review)) markParamEdited(param, field);
       else applyEditedConfirmationState(param, field);
       syncDependentFormulaParameterRows(root, review, field);
       syncBubbleValue(field, param.value);
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
+      if (field === "surface_roughness_ra") syncSurfaceRoughnessReferenceRow(row, param);
       refreshCompressionDesignChecks(root, review);
       scheduleParameterReasonablenessRefresh(messageId);
     };
@@ -7210,7 +7831,10 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         },
       });
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
-      if (field === "surface_roughness_ra") row.querySelector(".roughness-candidates")?.remove();
+      if (field === "surface_roughness_ra") {
+        row.querySelector(".roughness-candidates")?.remove();
+        syncSurfaceRoughnessReferenceRow(row, param);
+      }
       if (["total_coils", "active_coils", "end_type", "end_grinding"].includes(field)) syncDependentFormulaParameterRows(root, review, field);
       refreshCompressionDesignChecks(root, review);
       if (field === "accuracy_grade") syncAccuracyGradeControls(root, param);
@@ -8655,6 +9279,7 @@ function openCompareOverlay(messageId = state.activeReviewMessageId) {
   document.body.classList.add("compare-open");
   compareOverlay.hidden = false;
   renderCompareOverlay();
+  if (typeof markDisplayedRecognitionRead === "function") markDisplayedRecognitionRead();
 }
 
 function closeCompareOverlay() {
@@ -10379,17 +11004,14 @@ function technicalTranslationFeedbackHtml(review, item, index) {
     const labels = { request_failed: "翻译请求失败", model_uncertain: "模型无法确定", invalid_response: "翻译返回不完整", foreign_prose_remaining: "尚有外文说明", engineering_mismatch: "工程信息不一致" };
     const label = labels[checked?.translation_error_code || item.translation_error_code];
     const detail = checked?.translation_error_details || item.translation_error_details || {};
-    const details = Object.keys(detail).length ? `<details class="technical-original technical-translation-details"><summary>查看失败详情</summary>${detail.category ? `<p>需核对：${escapeHtml(detail.category)}</p>` : ""}${detail.original != null ? `<p>原文工程信息：${escapeHtml(JSON.stringify(detail.original))}</p><p>译文工程信息：${escapeHtml(JSON.stringify(detail.translated))}</p>` : ""}${detail.remaining_text ? `<p>待中文化内容：${escapeHtml(detail.remaining_text)}</p>` : ""}${detail.model_reason ? `<p>${escapeHtml(detail.model_reason)}</p>` : ""}</details>` : "";
+    const details = Object.keys(detail).length ? `<details class="technical-original technical-translation-details"><summary>查看失败详情</summary>${detail.candidate_content ? `<p>送译原文：${escapeHtml(item.translation_input_snapshot?.content || item.original_content || item.content)}</p><p>未通过校验的候选译文：${escapeHtml(detail.candidate_content)}</p><p>候选尚未写入正文或本次图纸，须通过核验并确认。</p>` : ""}${detail.category ? `<p>需核对：${escapeHtml(detail.category)}</p>` : ""}${detail.original != null ? `<p>原文工程信息：${escapeHtml(JSON.stringify(detail.original))}</p><p>译文工程信息：${escapeHtml(JSON.stringify(detail.translated))}</p>` : ""}${detail.remaining_text ? `<p>待中文化内容：${escapeHtml(detail.remaining_text)}</p>` : ""}${detail.model_reason ? `<p>${escapeHtml(detail.model_reason)}</p>` : ""}</details>` : "";
     const candidates = checked?.translation_candidates || [];
     const preview = candidates.length ? `<details class="technical-original technical-translation-candidates"><summary>查看已有译文（${candidates.length}条）</summary><p>${escapeHtml(checked.recovery_reason || "请对照后选择，采用后仍需确认。")}</p><p>当前内容：${escapeHtml(item.content)}</p>${candidates.map((candidate, index) => `<div class="technical-translation-candidate"><p>原文：${escapeHtml(candidate.original_content)}</p><p>候选译文：${escapeHtml(candidate.content)}</p><button type="button" class="secondary-action" data-translation-action="adopt" data-candidate-index="${index}">采用候选译文</button></div>`).join("")}</details>` : "";
-    return `<p class="technical-translation-status failed" role="status">${escapeHtml(label ? `${label}：${error}` : error)}此项未写入本次图纸。<button type="button" class="secondary-action" data-translation-action="translate">${technicalTranslationService()?.needsTranslation(item.content) ? "重新翻译" : "重新检查"}</button></p>${details}${preview}`;
+    const recheck = detail.candidate_content ? '<button type="button" class="secondary-action" data-translation-action="revalidate">重新检查已有译文</button>' : "";
+    const unavailable = checked?.recovery_mode === "unavailable" && checked.recovery_reason ? `<p class="technical-translation-status">${escapeHtml(checked.recovery_reason)}</p>` : "";
+    return `<p class="technical-translation-status failed" role="status">${escapeHtml(label ? `${label}：${error}` : error)}此项未写入本次图纸。${recheck}<button type="button" class="secondary-action" data-translation-action="translate">${technicalTranslationService()?.needsTranslation(item.content) ? "重新翻译" : "重新检查"}</button></p>${details}${preview}${unavailable}`;
   }
-  const warnings = technicalTranslationService()?.warnings(item) || [];
-  if (warnings.length) {
-    const status = item.need_human_review === false ? "已确认，工程信息差异记录仍保留。" : "译文与原文存在工程信息差异，请核对后确认。";
-    return `<p class="technical-translation-status warning" role="status">${escapeHtml(status)}</p><details class="technical-original technical-translation-details"><summary>查看差异（${warnings.length}项）</summary>${warnings.map((warning) => `<div class="technical-translation-difference"><p>${escapeHtml(warning.category || "工程信息")}：${escapeHtml(warning.message || "请对照原文核对。")}</p><p>原文：${escapeHtml(technicalTranslationDifferenceValue(warning.original))}</p><p>译文：${escapeHtml(technicalTranslationDifferenceValue(warning.translated))}</p></div>`).join("")}</details>`;
-  }
-  if (item.translation_status === "translated" && item.need_human_review !== false) return '<p class="technical-translation-status" role="status">已翻译，请核对后确认。</p>';
+  if (item.translation_status === "translated" && item.need_human_review !== false) return '<p class="technical-translation-status" role="status">译文已填入，请确认。</p>';
   return "";
 }
 
@@ -10404,11 +11026,7 @@ function technicalTranslationDifferenceValue(value) {
 }
 
 function technicalTranslationWarningAudit(item) {
-  const warnings = technicalTranslationService()?.warnings(item) || [];
-  if (!warnings.length) return null;
-  return { requirement_id: item.requirement_id, content: item.content, type: item.type,
-    original_content: item.original_content || "", translation_warnings: structuredClone(warnings),
-    translation_warning_snapshot: structuredClone(item.translation_warning_snapshot) };
+  return null;
 }
 
 function refreshTechnicalTranslationControls() {
@@ -10437,6 +11055,7 @@ function bindTechnicalTranslationControls(root, messageId = state.activeReviewMe
       button.disabled = true;
       if (button.dataset.translationAction === "save") { await flushReviewPersistence(); refreshTechnicalTranslationControls(); }
       else if (button.dataset.translationAction === "adopt") await technicalTranslationService()?.adoptCandidate(id, Number(button.dataset.candidateIndex));
+      else if (button.dataset.translationAction === "revalidate") await technicalTranslationService()?.run(id, "revalidate");
       else await technicalTranslationService()?.run(id);
     });
   });
@@ -10502,15 +11121,12 @@ function createMessageId() {
 }
 
 function setBusy(busy) {
-  state.busy = busy;
-  const disabled = busy || !state.identityReady;
-  submitButton.disabled = disabled || !state.selectedFile;
-  chooseFileButton.disabled = disabled;
+  state.busy = busy || (typeof historyDeletion !== "undefined" && historyDeletion.state.running);
+  const disabled = state.busy || !state.identityReady;
   demoButton.disabled = disabled;
   if (newReviewButton) newReviewButton.disabled = disabled;
-  submitButton.classList.toggle("busy", busy);
-  submitButton.textContent = busy ? "审查中..." : "↑";
-  submitButton.setAttribute("aria-label", busy ? "正在审查" : "开始审查");
+  renderDrawingUploads();
+  if (typeof renderHistoryManagement === "function") renderHistoryManagement();
 }
 
 function apiUrl(path) {
@@ -12014,11 +12630,7 @@ function parseValue(text, previous) {
 }
 
 function isSupportedDrawing(file) {
-  if (!file) return false;
-  const name = file.name.toLowerCase();
-  return file.type === "application/pdf"
-    || file.type.startsWith("image/")
-    || [".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"].some((suffix) => name.endsWith(suffix));
+  return DrawingUploadQueue.supported(file);
 }
 
 function scrollToBottom() {

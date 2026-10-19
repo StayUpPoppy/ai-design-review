@@ -46,8 +46,9 @@ def base_review():
 
 def cases():
     result = []
-    def add(name, edits=None, points=None, features=None, requirements=None, end_note="两端并紧磨平，每端磨270°。"):
+    def add(name, edits=None, points=None, features=None, requirements=None, end_note="两端并紧磨平，每端磨270°。", summary=None):
         review = base_review()
+        review["drawing_summary"].update(summary or {})
         for field, updates in (edits or {}).items():
             review["spring_parameters"].setdefault(field, {}).update(updates)
         if points is not None:
@@ -176,6 +177,15 @@ def cases():
     add("roughness_legacy_scopes", {"surface_roughness_ra": {"value": None}}, requirements=[matching_note, {**matching_note, "content": "外圆粗糙度 Ra 12.5μm"}])
     add("roughness_all_missing", {"material": {"value": ""}, "surface_roughness_ra": {"value": ""}})
     add("roughness_only", {"material": {"value": ""}})
+    for name, value in (
+        ("drawing_no", "YD4765020178"), ("drawing_no_numeric", "00001234"),
+        ("drawing_no_mixed", "00-AB/01.2"), ("drawing_no_trimmed", " \t00-A  B-01\n "),
+        ("drawing_no_empty", ""), ("drawing_no_blank", " \t\n "), ("drawing_no_null", None),
+        ("drawing_no_source_missing", "LIVE-REVIEW-NO"), ("drawing_no_source_snapshot", "LIVE-REVIEW-NO"),
+    ):
+        add(name, summary={"drawing_no": value})
+    add("drawing_no_without_weight", {"material": {"value": ""}}, summary={"drawing_no": "0001"})
+    add("drawing_no_only", {"material": {"value": ""}, "surface_roughness_ra": {"value": ""}}, summary={"drawing_no": "0"})
     return result
 
 
@@ -185,6 +195,13 @@ def run():
         review = case["review"]
         original_review = deepcopy(review)
         package = build_generation_parameter_package(review)
+        assert package["source"]["drawing_no"] == original_review["drawing_summary"].get("drawing_no")
+        if case["name"] == "drawing_no_source_missing":
+            del package["source"]["drawing_no"]
+            package["solidworks_preview"] = build_solidworks_preview(package, review)
+        if case["name"] == "drawing_no_source_snapshot":
+            package["source"]["drawing_no"] = "000-FROZEN-NO"
+            package["solidworks_preview"] = build_solidworks_preview(package, review)
         if case["name"] == "roughness_legacy_text":
             generation = package["generation_parameters"]
             generation["technical_requirements"] = []
@@ -227,7 +244,18 @@ def run():
         assert preview["modelParameters"]["是否并紧"] == package["generation_parameters"]["spring_parameters"].get("end_coils_closed", {}).get("value")
         extra = preview["extraProperties"]
         title = preview["titleBlockProperties"]
-        assert isinstance(title, dict) and set(title) <= {"材料", "重量", "表面粗糙度"}
+        assert isinstance(title, dict) and set(title) <= {"材料", "重量", "客户图号", "表面粗糙度"}
+        assert list(title) == [key for key in ("材料", "重量", "客户图号", "表面粗糙度") if key in title]
+        drawing_no = package["source"].get("drawing_no")
+        if isinstance(drawing_no, str) and drawing_no.strip():
+            assert title["客户图号"] == drawing_no.strip() and isinstance(title["客户图号"], str)
+        else:
+            assert "客户图号" not in title
+        assert review["drawing_summary"] == original_review["drawing_summary"]
+        if case["name"] == "drawing_no_without_weight":
+            assert title == {"客户图号": "0001", "表面粗糙度": 12.5}
+        if case["name"] == "drawing_no_only":
+            assert title == {"客户图号": "0"}
         mass = package["derived_parameters"]["solidworks_design_checks"]["metrics"]["unit_mass"]
         assert mass["unit"] == "kg" and "formula" in mass and "inputs" in mass
         if "重量" in title:
@@ -293,6 +321,8 @@ def run():
                 assert "外圆表面粗糙度：Ra 12.5 μm" in notes and review["spring_parameters"]["surface_roughness_ra"]["value"] is None
         elif name in {f"roughness_{suffix}" for suffix in ["pending", "missing", "empty", "zero", "negative", "nan", "infinity", "text", "boolean", "stale", "formula_stale", "cycle", "conflict", "unsupported_unit", "all_missing", "hex", "underscore"]}:
             assert "表面粗糙度" not in title and "粗糙度" not in notes, (name, title, notes)
+        elif name == "drawing_no_only":
+            assert "表面粗糙度" not in title and "粗糙度" not in notes
         else:
             expected_ra = review["spring_parameters"]["surface_roughness_ra"]["value"]
             assert title["表面粗糙度"] == expected_ra and not isinstance(title["表面粗糙度"], bool)
@@ -340,6 +370,7 @@ def run():
             assert "材料：65Mn。" in notes
         frozen = deepcopy(package)
         changed = deepcopy(review)
+        changed["drawing_summary"]["drawing_no"] = "CHANGED-AFTER-FREEZE"
         changed["spring_parameters"]["wire_diameter"]["value"] = 8
         changed["spring_parameters"]["solid_height"]["value"] = 1
         changed["spring_parameters"]["material"]["value"] = "65Mn"
@@ -348,6 +379,14 @@ def run():
         changed["spring_parameters"]["end_grinding"]["value"] = "两端不磨平"
         assert build_solidworks_command("1000000099", package, changed) == command
         assert package == frozen
+        legacy_title = deepcopy(frozen)
+        legacy_title["solidworks_preview"]["titleBlockProperties"].pop("客户图号", None)
+        if complete_contract:
+            dumped = GenerationParameterPackageV2.model_validate(legacy_title).model_dump(mode="json")
+            assert "客户图号" not in dumped["solidworks_preview"]["titleBlockProperties"]
+        legacy_model = build_solidworks_command("1000000099", legacy_title, changed)["models"][0]
+        assert legacy_model["titleBlockProperties"] == legacy_title["solidworks_preview"]["titleBlockProperties"]
+        assert "客户图号" not in legacy_model["titleBlockProperties"], "Legacy requests must not gain a drawing number"
         legacy = deepcopy(frozen)
         del legacy["solidworks_preview"]["titleBlockProperties"]
         del legacy["derived_parameters"]["solidworks_design_checks"]["metrics"]["unit_mass"]
