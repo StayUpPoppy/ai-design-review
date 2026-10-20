@@ -146,7 +146,13 @@ class ReviewRoughnessCandidate(BaseModel):
     unit: str | None = Field(default=None, description="候选单位，通常为μm。")
     location: str | None = Field(default=None, description="原图明确的作用部位；未知不猜测。")
     evidence: str | None = Field(default=None, description="原始识别依据，前端默认收起。")
-    evidence_status: Literal["direct", "unverified"] | None = Field(default=None, description="direct为明确原图依据；unverified仅供核对，不自动选为正式值。旧记录允许缺少，不因此改变历史数值或确认。")
+    evidence_status: Literal["direct", "unverified"] | None = Field(default=None, description="direct表示原图位置已核实；unverified不代表数值未核实，需同时读取value_verified及recognition_state。旧记录允许缺少。")
+    value_verified: bool | None = Field(default=None, description="服务端v3核实了粗糙度数值；位置待核对时仍可显示该值，人工确认后可输出SW。")
+    verification_version: str | None = Field(default=None, description="原图核验版本，当前roughness_original_evidence/v3；旧版须服务端重判。")
+    verification_method: str | None = Field(default=None, description="数值与定位核验方式，end_pair为同一视图区两端同值配对。")
+    recognition_state: Literal["located", "needs_location", "unverified", "missing", "failed"] | None = Field(default=None, description="位置已定位、待定位、证据未核实、缺值或核验失败；与数值是否核实分别判断。")
+    independent_evidence: list[dict[str, Any]] | None = Field(default=None, description="已分配原图位置的独立PDF/OCR证据；用于气泡锚点。")
+    numeric_evidence: list[dict[str, Any]] | None = Field(default=None, description="核实数值的独立PDF/OCR数字框，位置分配未完成时保留。")
     evidence_reason: str | None = Field(default=None, description="依据分类原因。")
     evidence_records: list[dict[str, Any]] | None = Field(default=None, description="合并候选的各来源原文、页码和坐标，保留追溯。")
 
@@ -164,6 +170,7 @@ class ReviewParameterValue(BaseModel):
     need_human_review: bool | None = Field(default=None, description="是否仍需人工核对。")
     roughness_reference_dismissed: bool | None = Field(default=None, description="仅用于粗糙度缺值时记住不添加选择；true收起项目参考提示，保留重新展开入口。不是确认状态，不发送给SW。")
     roughness_candidates: list[ReviewRoughnessCandidate] | None = Field(default=None, description="粗糙度原图候选及可选依据分类；不含项目参考值，不能单凭候选直接输出SW。")
+    value_verified: bool | None = Field(default=None, description="仅粗糙度：当前参数值是否具有本地原图数字证据，不等同于人工确认或位置已定位。")
 
 
 class ReviewSupportCoilsValue(ReviewParameterValue):

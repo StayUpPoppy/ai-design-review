@@ -19,8 +19,9 @@ assert.equal(statusText({ status: 'completed', progress: 100 }), '识别完成')
 
 let queue = create();
 await queue.collectFiles([file('a.pdf', 'root/a.pdf'), file('a.pdf', 'root/a.pdf'), file('a.pdf', 'other/a.pdf'), file('bad.zip'), file('empty.jpg', '', 0)]);
-assert.equal(queue.pending.length, 2); assert.equal(queue.entries.length, 4);
-assert.ok(queue.notice.includes('重复')); assert.equal(queue.entries[2].status, 'invalid');
+assert.equal(queue.pending.length, 3); assert.equal(queue.entries.length, 5);
+assert.equal(queue.notice, ''); assert.equal(queue.entries[3].status, 'invalid');
+assert.equal(new Set(queue.entries.map((item) => item.id)).size, 5, 'Every selection gets an independent entry');
 assert.equal(queue.hasUnsent, true);
 queue.clearPending(); assert.equal(queue.entries.length, 0); assert.equal(queue.hasUnsent, false);
 
@@ -116,7 +117,7 @@ queue = create({ upload: async () => ({}) }); await queue.collectFiles([file('ba
 assert.equal(queue.entries[0].status, 'unknown');
 queue = create({ upload: async () => { throw new Error('must not upload'); }, canUpload: () => false });
 await queue.collectFiles([file('guarded.pdf')]); await queue.run(snapshot); assert.equal(queue.entries[0].status, 'pending');
-// Terminal rows are released; one latest completion summary and lightweight dedup remain.
+// Terminal rows are released; selecting the same originals creates new pending entries.
 let uploads = 0;
 queue = create({ upload: async () => receipt(`summary-${++uploads}`) });
 const originalFiles = ['one.pdf', 'two.pdf', 'three.pdf', 'four.pdf'].map((name) => file(name));
@@ -128,8 +129,9 @@ assert.deepEqual(queue.completion, { batchId, total: 4, completed: 3, failed: 1,
 assert.equal(queue.hasUnsent, false);
 queue.dismissCompletion(); queue.updateRecognition('summary-1', { status: 'completed' }); assert.equal(queue.completion, null);
 const revision = queue.pendingRevision;
-await queue.collectFiles(originalFiles); assert.equal(queue.entries.length, 0, 'Clearing UI records never permits duplicate uploads');
-assert.equal(queue.pendingRevision, revision);
+await queue.collectFiles(originalFiles); assert.equal(queue.pending.length, 4, 'Completed originals can be selected again without refreshing');
+assert.equal(queue.pendingRevision, revision + 4);
+queue.clearPending();
 await queue.collectFiles([file('next.pdf')]); assert.equal(queue.completion, null);
 await queue.run(snapshot); assert.notEqual(queue.latestBatchId, batchId);
 assert.equal(queue.batches.size, 1, 'Finished older batch statistics are released');
@@ -152,4 +154,48 @@ queue.updateRecognition(currentJob, { status: 'completed' }); assert.equal(queue
 queue.updateRecognition(currentJob, { status: 'queued', progress: 0 });
 assert.equal(queue.completion, null, 'History retry invalidates completion without adding a count');
 queue.updateRecognition(currentJob, { status: 'completed' }); assert.equal(queue.completion.total, 1);
-console.log('PASS: collection/upload regressions, terminal cleanup, separate tracking and dedup, active old batches, stable batch counts and dismissible completion.');
+
+// Identical files across all collection paths remain separate through upload, progress and deletion.
+let repeatUploads = 0;
+queue = create({ upload: async () => receipt(`repeat-${++repeatUploads}`) });
+const same = file('same.pdf'), sameFolder = { ...same, webkitRelativePath: 'root/same.pdf' };
+await queue.collectFiles([same, same]);
+await queue.collectFiles([same]);
+await queue.collectDrop([{ file: same }, { file: same }]);
+await queue.collectFiles([sameFolder, sameFolder]);
+const repeatedDirectory = directory('root', [[entry(same)]]);
+await queue.collectDrop([{ entry: repeatedDirectory }, { entry: repeatedDirectory }]);
+assert.equal(queue.pending.length, 9);
+const removedId = queue.pending[0].id;
+queue.remove(removedId); assert.equal(queue.pending.length, 8);
+assert.equal(new Set(queue.pending.map((item) => item.id)).size, 8);
+await queue.run(snapshot); assert.equal(repeatUploads, 8); assert.equal(queue.trackedJobs.size, 8);
+queue.updateRecognition('repeat-1', { status: 'processing', progress: 73 });
+queue.updateRecognition('repeat-2', { status: 'processing', progress: 26 });
+assert.equal(queue.trackedJobs.get('repeat-1').progress, 73); assert.equal(queue.trackedJobs.get('repeat-2').progress, 26);
+await queue.collectFiles([same]); await queue.run(snapshot);
+assert.equal(repeatUploads, 9, 'Same file can be uploaded again while its older orders are processing');
+queue.markDeleted('repeat-1'); queue.updateRecognition('repeat-1', { status: 'completed' });
+assert.equal(queue.isTracking('repeat-1'), false); assert.equal(queue.isTracking('repeat-2'), true);
+for (const id of [...queue.trackedJobs.keys()]) queue.updateRecognition(id, { status: 'completed' });
+await queue.collectFiles([same]); await queue.run(snapshot);
+assert.equal(repeatUploads, 10, 'Completion and cleanup impose no same-file restriction');
+
+queue = create({ upload: async (item) => receipt(item.id) });
+await queue.collectFiles(Array(51).fill(same));
+assert.equal(queue.pending.length, 51); assert.equal(queue.tooMany, true); assert.equal(await queue.run(snapshot), false);
+queue.remove(queue.pending[0].id); assert.equal(queue.tooMany, false);
+await queue.run(snapshot); assert.equal(queue.knownJobs.size, 50, 'Repeated files count individually toward the 50-file limit');
+
+let unknownCalls = 0;
+queue = create({ upload: async () => {
+  if (++unknownCalls === 1) throw Object.assign(new Error('lost response'), { uncertain: true });
+  return receipt('manual-new-upload');
+} });
+await queue.collectFiles([same]); await queue.run(snapshot);
+const unknownId = queue.entries[0].id;
+await queue.collectFiles([same]); await queue.run(snapshot);
+assert.equal(unknownCalls, 2); assert.equal(queue.entries.find((item) => item.id === unknownId).status, 'unknown');
+queue.retryUpload(unknownId); assert.equal(queue.entries.find((item) => item.id === unknownId).status, 'unknown');
+assert.equal(queue.entries.length, 2, 'Manual re-selection does not discard or automatically retry the unknown item');
+console.log('PASS: repeated file/folder selections, independent IDs and jobs, active/completed re-upload, 50-file limit, safe retries, terminal cleanup and batch regressions.');

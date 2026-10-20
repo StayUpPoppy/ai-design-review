@@ -1,4 +1,4 @@
-/* Original drawing UI only. This module never edits or saves spring parameters. */
+/* Original drawing UI. Parameter updates from relocalization belong to app.js. */
 window.DrawingAnnotations = (() => {
   const fields = ["material", "standard_no", "accuracy_grade", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "solid_height", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"];
   const cache = new Map();
@@ -7,6 +7,7 @@ window.DrawingAnnotations = (() => {
   const esc = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const bound = (value) => Math.max(0, Math.min(1, value));
+  const bubbleRadius = 15;
   function entry() {
     const id = config?.getJobId();
     if (!id || !config.isCompression()) return null;
@@ -102,6 +103,12 @@ window.DrawingAnnotations = (() => {
     const view = config.getView();
     return { x: view.x + point.x * image.naturalWidth * view.scale, y: view.y + point.y * image.naturalHeight * view.scale };
   }
+  function leaderEndpoint(anchor, bubble) {
+    const dx = anchor.x - bubble.x, dy = anchor.y - bubble.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance <= bubbleRadius) return null;
+    return { x: bubble.x + dx * bubbleRadius / distance, y: bubble.y + dy * bubbleRadius / distance };
+  }
   function imagePoint(event) {
     const viewport = config.getViewport();
     const image = config.getImage();
@@ -184,8 +191,9 @@ window.DrawingAnnotations = (() => {
     layer.innerHTML = !item?.visible ? "" : entries.map(({ a, location: l, key }) => {
       const anchor = screenPoint(l.anchor), p = item.layout.positions.get(key);
       const bubble = { x: view.x + p.x, y: view.y + p.y };
-      return `<line x1="${anchor.x}" y1="${anchor.y}" x2="${bubble.x}" y2="${bubble.y}"/><circle class="annotation-anchor" cx="${anchor.x}" cy="${anchor.y}" r="3"/>
-        <g class="annotation-bubble ${item.selected === a.field ? "selected" : ""}" transform="translate(${bubble.x} ${bubble.y})" role="button" tabindex="0" aria-label="${esc(`${a.number} ${a.label}，定位参数${item.editing ? '，方向键移动气泡' : ''}`)}" data-annotation-id="${esc(a.field)}" data-location-id="${esc(l.location_id)}"><title>${esc(a.label)}：原图 ${esc(a.original_value ?? "人工定位")}；当前 ${esc(config.getParameter(a.field)?.value ?? "未填写")}</title><circle r="15"/><text text-anchor="middle" dy=".35em">${a.number}</text></g>`;
+      const end = leaderEndpoint(anchor, bubble);
+      return `${end ? `<line x1="${anchor.x}" y1="${anchor.y}" x2="${end.x}" y2="${end.y}"/>` : ""}<circle class="annotation-anchor" cx="${anchor.x}" cy="${anchor.y}" r="3"/>
+        <g class="annotation-bubble ${item.selected === a.field ? "selected" : ""}" transform="translate(${bubble.x} ${bubble.y})" role="button" tabindex="0" aria-label="${esc(`${a.number} ${a.label}，定位参数${item.editing ? '，方向键移动气泡' : ''}`)}" data-annotation-id="${esc(a.field)}" data-location-id="${esc(l.location_id)}"><title>${esc(a.label)}：原图 ${esc(l.evidence_value ?? a.original_value ?? "人工定位")}；当前 ${esc(config.getParameter(a.field)?.value ?? "未填写")}</title><circle r="${bubbleRadius}"/><text text-anchor="middle" dy=".35em">${a.number}</text></g>`;
     }).join("");
     const viewport = config.getViewport();
     const warning = viewport.parentElement?.querySelector(".annotation-layout-warning");
@@ -255,6 +263,7 @@ window.DrawingAnnotations = (() => {
     item.relocalizing = true;
     item.placing = "";
     item.error = "";
+    const context = config.beginRelocalize?.();
     notify(item);
     try {
       await save(item);
@@ -268,6 +277,7 @@ window.DrawingAnnotations = (() => {
       if (!response.ok) throw new Error(typeof payload.detail === "string" ? payload.detail : "补定位失败，原位置已保留，可重试。");
       item.document = payload;
       item.phase = "saved";
+      config.onRelocalized?.(payload, context);
     } catch (error) {
       item.error = error.message;
     } finally {
@@ -381,6 +391,6 @@ window.DrawingAnnotations = (() => {
     capturesPointer: (event) => Boolean(entry()?.placing || event.target.closest("[data-annotation-id]")),
     hasUnsaved: () => Array.from(cache.values()).some((item) => item.pending.size || item.saving),
     // Exposed pure helpers also make coordinate/saving tests independent of the application.
-    fields, screenPoint, imagePoint, focusField, save, entry, layoutLocations, relocalize,
+    fields, screenPoint, imagePoint, leaderEndpoint, focusField, save, entry, layoutLocations, relocalize,
   };
 })();

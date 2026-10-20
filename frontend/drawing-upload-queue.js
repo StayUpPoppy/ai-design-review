@@ -30,7 +30,7 @@
     let serial = 0, epoch = 0, batch = null, batchSerial = 0;
     const queue = {
       entries: [], scans: new Map(), running: false, notice: "",
-      seenKeys: new Set(), knownJobs: new Map(), trackedJobs: new Map(), batches: new Map(),
+      knownJobs: new Map(), trackedJobs: new Map(), batches: new Map(),
       latestBatchId: null, completionHidden: true, pendingRevision: 0,
       get scanning() { return this.scans.size > 0; },
       get discovered() { return Array.from(this.scans.values()).reduce((sum, count) => sum + count, 0); },
@@ -65,16 +65,10 @@
       add(file, path, scanId, scanEpoch, fallback = false) {
         if (epoch !== scanEpoch) return;
         const normalizedPath = pathText(path || file.name);
-        const key = JSON.stringify([normalizedPath, file.name, file.size, file.lastModified]);
-        if (this.seenKeys.has(key)) {
-          this.notice = "已跳过重复选择的同一路径文件；不同文件夹的同名文件分别保留。";
-          return;
-        }
         let error = !supported(file) ? "不支持的格式，请选择 PDF、PNG、JPG、TIFF、BMP 或 WEBP。" : "";
         if (!supported(file) && fallback && !file.type && !file.size) error = "无法读取目录或不支持的文件；文件夹请改用“选择文件夹”。";
         if (supported(file) && !file.size) error = "文件为空，无法识别。";
-        this.seenKeys.add(key);
-        this.entries.push({ id: `upload-${++serial}`, key, name: file.name, path: normalizedPath,
+        this.entries.push({ id: `upload-${++serial}`, name: file.name, path: normalizedPath,
           size: file.size, file: error ? null : file, valid: !error, status: error ? "invalid" : "pending", error, jobId: null });
         if (!error) { this.pendingRevision++; this.completionHidden = true; }
         this.scans.set(scanId, (this.scans.get(scanId) || 0) + 1); this.changed();
@@ -161,13 +155,13 @@
       remove(id) {
         const item = this.entries.find((entry) => entry.id === id);
         if (!item || item.jobId || item.status === "uploading") return;
-        this.seenKeys.delete(item.key); this.batches.get(item.batchId)?.states.delete(item.id);
+        this.batches.get(item.batchId)?.states.delete(item.id);
         this.entries = this.entries.filter((entry) => entry !== item); this.pruneBatches(); this.changed();
       },
       clearPending() {
         epoch++; this.scans.clear(); this.notice = "";
         for (const item of this.entries.filter((entry) => !entry.jobId && entry.status !== "uploading")) {
-          this.seenKeys.delete(item.key); this.batches.get(item.batchId)?.states.delete(item.id);
+          this.batches.get(item.batchId)?.states.delete(item.id);
         }
         this.entries = this.entries.filter((item) => item.jobId || item.status === "uploading"); this.changed();
       },

@@ -175,7 +175,8 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
    - support_coils 严格表示“单端支承圈数”。只提取原图明确写出的“单端/每端/两端各”支承圈数，evidence 保留完整原文，并标记 support_coils_origin="drawing_single_end"。禁止从总圈数、有效圈数自行相减或除以2推算，也不填默认值；未明确标注时省略该字段。两端合计圈数不能直接填入单端字段。原图明确两端支承不对称时，在 technical_requirements 保留原文说明，不自行均分。
    - 端部形式 end_type：只有图纸文字明确写“并紧/闭口”时才填“两端并紧”；明确写“不并紧/开口”时才填“两端不并紧”。端部形式与端面磨削是独立字段，无法确定时不要输出。
    - 表面粗糙度符号、加工符号或小三角旁的数值（例如 Ra 12.5、▽ 12.5）绝不能填入 outer_diameter、inner_diameter、mean_diameter、free_length、body_length、wire_diameter 或 load_points。识别到明确 Ra 数值时，必须在 parameters.surface_roughness_ra 中输出数值，并在 evidence 中保留符号或文字；明确知道作用位置时增加 surface_location（例如“两端面”），不明确时不要猜。
-   - 粗糙度 evidence 只填写可见原图的简短原文或符号，不写分析过程、推测、默认参考或内部JSON字段。无法辨认时不补造Ra值；notes中出现的讨论、举例或推荐值不代表原图标注。
+   - 粗糙度 evidence 只填写可见原图的简短原文或符号，不写分析过程、推测、默认参考或内部JSON字段。禁止根据磨平、端部形式、加工习惯推测Ra值；“▲：加工基准面”是基准说明，不能作为粗糙度标注。缺少明确可见标注时surface_roughness_ra返回空值，不能补造Ra数值、符号或位置；notes中出现的讨论、举例或推荐值不代表原图标注。
+   - 粗糙度每处标注分别写入该参数的 occurrences 数组：value、page（从1开始）、position（仅数字框，x/y/width/height为0至1归一化坐标，coordinate_type="normalized"，origin="top_left"）、evidence、surface_location。数字框或页码不能确定时返回null，绝不补造坐标；同值的两端标注也分别输出。
    - 对圆柱压缩弹簧：outer_diameter 必须来自直径尺寸线、直径符号或紧邻的一侧公差；free_length 必须来自两端之间的轴向总长度尺寸线；H1/H2 只属于 load_points 的试验高度。没有足够定位依据时省略字段并标记 need_human_review=true。
 4. 提取动态工艺要求：surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process、other。表面处理、硬度、热处理、盐雾等放进 technical_requirements；表面粗糙度只放进 parameters.surface_roughness_ra，不要重复输出为技术要求。
    - 按原图逐条、逐页阅读顺序完整提取，不概括、不按类型合并；同为 process 或 other 的不同条目必须分别输出。original_number 保存原图序号（可重复，无编号时为 null），source_order 保存阅读顺序，page 保存所在页。content 仅为正文，不加序号或“技术要求”标题；original_content 完整保留原文。
@@ -458,9 +459,9 @@ def _parameter_candidate(field: str, item: Any) -> list[dict[str, Any]]:
 
 def _surface_roughness_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    seen: set[tuple[float, str, str]] = set()
+    seen: set[tuple[Any, ...]] = set()
 
-    def append(value: Any, item: dict[str, Any], evidence: Any, location: Any = None, *, structured: bool = False) -> None:
+    def append(value: Any, item: dict[str, Any], evidence: Any, location: Any = None, *, structured: bool = False, parent: dict[str, Any] | None = None) -> None:
         number = positive_surface_roughness(value)
         if number is None:
             return
@@ -469,7 +470,7 @@ def _surface_roughness_candidates(payload: dict[str, Any]) -> list[dict[str, Any
         if status == "excluded":
             return
         normalized_location = str(location or "").strip() or surface_roughness_location(evidence_text)
-        key = (number, normalized_location, evidence_text)
+        key = (number, normalized_location, evidence_text, item.get("page"), json.dumps(item.get("position"), sort_keys=True))
         if key in seen:
             return
         seen.add(key)
@@ -481,7 +482,18 @@ def _surface_roughness_candidates(payload: dict[str, Any]) -> list[dict[str, Any
             suggested_region="Qwen surface roughness recognition",
         )
         candidate["surface_location"] = normalized_location or None
-        candidate.update(evidence=evidence_text, evidence_status=status, evidence_reason=reason)
+        candidate.update(evidence=evidence_text, evidence_status="unverified",
+                         roughness_model_claim=structured,
+                         roughness_page_known=isinstance(item.get("page"), int) and not isinstance(item.get("page"), bool) and item["page"] > 0,
+                         evidence_reason="模型提取候选，尚需原图PDF文字或本地OCR独立核验。")
+        if parent is not None:
+            candidate["evidence_records"] = [{"evidence": evidence_text, "source": QWEN_SOURCE, "page": item.get("page", 1),
+                                               "position": item.get("position"), "surface_location": normalized_location}]
+            if parent.get("evidence"):
+                record = {"evidence": parent["evidence"], "source": QWEN_SOURCE, "page": parent.get("page", item.get("page", 1)),
+                          "position": parent.get("position"), "surface_location": parent.get("surface_location") or parent.get("location")}
+                if record not in candidate["evidence_records"]:
+                    candidate["evidence_records"].append(record)
         results.append(candidate)
 
     parameters = payload.get("parameters") if isinstance(payload.get("parameters"), dict) else {}
@@ -492,10 +504,16 @@ def _surface_roughness_candidates(payload: dict[str, Any]) -> list[dict[str, Any
         value = item.get("value")
         direct = positive_surface_roughness(value)
         if direct is not None:
-            append(direct, item, item.get("evidence") or "", item.get("surface_location") or item.get("location"), structured=True)
+            occurrences = item.get("occurrences")
+            if isinstance(occurrences, list) and occurrences:
+                for occurrence in occurrences:
+                    if isinstance(occurrence, dict):
+                        append(occurrence.get("value", direct), {**item, **occurrence}, occurrence.get("evidence") or item.get("evidence") or "", occurrence.get("surface_location") or item.get("surface_location"), structured=True, parent=item)
+            else:
+                append(direct, item, item.get("evidence") or "", item.get("surface_location") or item.get("location"), structured=True)
         else:
             for mention in surface_roughness_mentions(value):
-                append(mention["value"], item, item.get("evidence") or str(value), item.get("surface_location") or mention.get("location"))
+                append(mention["value"], item, item.get("evidence") or str(value), item.get("surface_location") or mention.get("location"), structured=True)
 
     for item in payload.get("technical_requirements") or []:
         if not isinstance(item, dict) or not _is_surface_roughness_type(item.get("type")):
@@ -504,11 +522,11 @@ def _surface_roughness_candidates(payload: dict[str, Any]) -> list[dict[str, Any
         if direct is not None:
             append(direct, item, item.get("evidence") or item.get("content"), item.get("surface_location") or item.get("location"), structured=True)
         for mention in surface_roughness_mentions(item.get("content")):
-            append(mention["value"], item, item.get("evidence") or item.get("content"), item.get("surface_location") or mention.get("location"))
+            append(mention["value"], item, item.get("evidence") or item.get("content"), item.get("surface_location") or mention.get("location"), structured=True)
 
     evidence_texts: list[tuple[str, dict[str, Any]]] = []
-    for item in parameters.values():
-        if isinstance(item, dict) and item.get("evidence"):
+    for field, item in parameters.items():
+        if not _is_surface_roughness_field(field) and isinstance(item, dict) and item.get("evidence"):
             evidence_texts.append((str(item["evidence"]), item))
     notes = str(payload.get("notes") or "").strip()
     if notes:

@@ -101,6 +101,7 @@ from .rules import refresh_compression_material_check
 from .standardizers.stiffness import refresh_compression_spring_rate_freshness
 from .standardizers.design_checks import refresh_design_checks
 from .surface_roughness import ensure_surface_roughness_parameter
+from .roughness_verification import verify_job_candidates, verify_review_roughness
 from .technical_requirements import ensure_technical_requirement_ids
 from .technical_requirement_recognition import collect_technical_requirements, recovery_preview
 from .technical_translation import TechnicalTranslationEngine, prepare_review_translations, translation_snapshot
@@ -1365,6 +1366,8 @@ async def run_recognition_execution(
                 candidate_sources.append("pdf_text_dimension_recovery")
     except Exception:
         LOGGER.exception("PDF dimension evidence recovery failed for %s", job_id)
+    candidates = await run_in_threadpool(verify_job_candidates, job_dir, candidates, raw_payloads,
+                                         lambda path: _artifact_url(job_id, path))
     rules = read_json(project_path("config", "factory_rules.json"))
     review = DrawingReviewWorkflow(rules).run(str(drawing_path), candidates, run_standardization=False)
     apply_generation_defaults(review)
@@ -2171,12 +2174,12 @@ async def translate_technical_requirements(job_id: str, payload: dict[str, Any] 
 
 
 def _load_drawing_annotations(job_id: str, identity: IdentityContext) -> dict[str, Any]:
-    from .drawing_annotations import ALGORITHM_VERSION, failed_annotation_upgrade, merge_annotation_upgrade
+    from .drawing_annotations import ALGORITHM_VERSION, failed_annotation_upgrade, merge_annotation_upgrade, roughness_refresh_key, refresh_roughness_annotations
 
     job_dir = _job_dir(job_id)
     review, _ = _load_persisted_review(job_id, job_dir / "review.json", identity)
     current = review.get("drawing_annotations")
-    if REVIEW_PERSISTENCE.configured and isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION:
+    if REVIEW_PERSISTENCE.configured and isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION and current.get("roughness_evidence_signature") == roughness_refresh_key(review):
         return current
     # Serialize local OCR/cache work, but do not hold a database row lock while
     # recognizing. The final database merge reads the newest manual locations.
@@ -2184,15 +2187,16 @@ def _load_drawing_annotations(job_id: str, identity: IdentityContext) -> dict[st
         path = job_dir / "annotations.json"
         if not REVIEW_PERSISTENCE.configured and path.exists():
             current = read_json(path)
-        if isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION:
+        if isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION and current.get("roughness_evidence_signature") == roughness_refresh_key(review):
             return current
         try:
-            document = build_annotations(review, job_dir, lambda relative: _artifact_url(job_id, relative))
+            document = refresh_roughness_annotations(current, review) if isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION else build_annotations(review, job_dir, lambda relative: _artifact_url(job_id, relative))
         except Exception:
             if not isinstance(current, dict):
                 raise
             LOGGER.exception("Original annotation upgrade failed for %s", job_id)
             document = failed_annotation_upgrade(current)
+        document["roughness_evidence_signature"] = roughness_refresh_key(review)
         if not REVIEW_PERSISTENCE.configured:
             if isinstance(current, dict):
                 document = merge_annotation_upgrade(current, document)
@@ -2237,7 +2241,7 @@ def save_drawing_annotations(job_id: str, body: dict[str, Any] = Body(...), iden
 
 @app.post("/api/reviews/{job_id}/annotations/relocalize", tags=["审图管理"], summary="重新补定位未定位的原图参数")
 def relocalize_drawing_annotations(job_id: str, body: dict[str, Any] = Body(...), identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
-    from .drawing_annotations import validate_annotation_revision, merge_annotation_upgrade
+    from .drawing_annotations import validate_annotation_revision, merge_annotation_upgrade, refresh_roughness_annotations
 
     try:
         if set(body) != {"source_document_id", "expected_annotation_revision"}:
@@ -2246,19 +2250,24 @@ def relocalize_drawing_annotations(job_id: str, body: dict[str, Any] = Body(...)
         validate_annotation_revision(current, body)
         job_dir = _job_dir(job_id)
         with annotation_file_lock(job_dir):
-            review, _ = _load_persisted_review(job_id, job_dir / "review.json", identity)
+            review, review_revision = _load_persisted_review(job_id, job_dir / "review.json", identity)
             latest = review.get("drawing_annotations") if REVIEW_PERSISTENCE.configured else read_json(job_dir / "annotations.json")
             validate_annotation_revision(latest or current, body)
             review = {**review, "drawing_annotations": latest or current}
             rebuilt = build_annotations(review, job_dir, lambda p: _artifact_url(job_id, p), retry_ocr=True)
+            verify_review_roughness(review, job_dir, lambda p: _artifact_url(job_id, p))
+            refreshed = refresh_roughness_annotations(rebuilt, review)
+            rebuilt["annotations"] = refreshed["annotations"]
+            rebuilt["roughness_evidence_signature"] = refreshed["roughness_evidence_signature"]
             if REVIEW_PERSISTENCE.configured:
-                return REVIEW_PERSISTENCE.save_drawing_annotations(job_id, owner_user_id=identity.user_id, initial=rebuilt, relocalize=body)
+                result = REVIEW_PERSISTENCE.save_drawing_annotations(job_id, owner_user_id=identity.user_id, initial=rebuilt, relocalize=body)
+                return {**result, "roughness_update": {"based_on_revision": review_revision, "parameter": review.get("spring_parameters", {}).get("surface_roughness_ra")}}
             path = job_dir / "annotations.json"
             current = read_json(path)
             validate_annotation_revision(current, body)
             result = merge_annotation_upgrade(current, rebuilt, force=True)
             atomic_annotation_write(path, result)
-            return result
+            return {**result, "roughness_update": {"based_on_revision": review_revision, "parameter": review.get("spring_parameters", {}).get("surface_roughness_ra")}}
     except AnnotationConflictError as exc:
         raise HTTPException(status_code=409, detail={"message": str(exc), "annotations": exc.current}) from exc
     except ReviewAccessError as exc:
@@ -2338,6 +2347,7 @@ def _load_persisted_review(
         review = stored["review"]
         ensure_compression_material(review)
         ensure_surface_roughness_parameter(review)
+        verify_review_roughness(review, review_path.parent, lambda path: _artifact_url(job_id, path))
         apply_generation_defaults(review)
         ensure_load_point_ids(review)
         ensure_technical_requirement_ids(review)
@@ -2348,6 +2358,7 @@ def _load_persisted_review(
     review = read_json(review_path)
     ensure_compression_material(review)
     ensure_surface_roughness_parameter(review)
+    verify_review_roughness(review, review_path.parent, lambda path: _artifact_url(job_id, path))
     apply_generation_defaults(review)
     ensure_load_point_ids(review)
     ensure_technical_requirement_ids(review)
@@ -2382,12 +2393,24 @@ def _save_review_persistence(
     identity: IdentityContext,
 ) -> dict[str, Any]:
     previous, _ = _load_persisted_review(job_id, review_path, identity)
+    incoming_ra = (review.get("spring_parameters") or {}).get("surface_roughness_ra") or {}
+    current_ra = (previous.get("spring_parameters") or {}).get("surface_roughness_ra") or {}
+    from .standardizers.calculation_state import human_override, sources
+    if (incoming_ra.get("roughness_verification_adjustment") and not human_override(incoming_ra)
+            and "human_confirmed" not in sources(incoming_ra)
+            and (human_override(current_ra) or "human_confirmed" in sources(current_ra) or current_ra.get("need_human_review") is False)):
+        # Also protect JSON fallback saves, which have no DB revision. An
+        # automatic evidence upgrade cannot replace a newer human decision.
+        import copy
+        review["spring_parameters"]["surface_roughness_ra"] = copy.deepcopy(current_ra)
+        events = [e for e in events or [] if not (e.get("target_field") == "surface_roughness_ra" and e.get("source") == "original_evidence_verification")]
     try:
         validate_material_change(review, previous)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"code": "invalid_material_selection", "message": str(exc)}) from exc
     ensure_compression_material(review)
     ensure_surface_roughness_parameter(review)
+    verify_review_roughness(review, review_path.parent, lambda path: _artifact_url(job_id, path))
     apply_generation_defaults(review)
     ensure_load_point_ids(review)
     ensure_technical_requirement_ids(review)
@@ -2397,6 +2420,13 @@ def _save_review_persistence(
         event = dict(raw_event)
         event["actor"] = identity.as_audit_actor()
         audit_events.append(event)
+    adjustment = (review.get("spring_parameters", {}).get("surface_roughness_ra") or {}).get("roughness_verification_adjustment")
+    if adjustment and not adjustment.get("audit_recorded"):
+        adjustment["audit_recorded"] = True
+        audit_events.append({"client_event_id": f"roughness_{uuid.uuid4().hex}", "event_type": "roughness_evidence_verified",
+                             "target_field": "surface_roughness_ra", "source": "original_evidence_verification",
+                             "before_state": adjustment["before"], "after_state": review["spring_parameters"]["surface_roughness_ra"],
+                             "reason": "按原图独立证据核验粗糙度，保留人工值及原始识别记录", "actor": identity.as_audit_actor()})
     history_status = "saved" if REVIEW_PERSISTENCE.configured else "saved_local"
     fallback_events = _merge_audit_events_into_review_history(review, audit_events, status=history_status)
     try:

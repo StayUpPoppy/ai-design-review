@@ -169,7 +169,7 @@ def cases():
     ])
     add("roughness_legacy_text")
     add("roughness_scoped_text", requirements=[{"type": "surface_roughness", "content": "Ra 3.2 μm", "application_scope": "外圆", "need_human_review": False}])
-    matching_note = {"type": "surface_roughness", "content": "两端面粗糙度 Ra 12.5μm", "need_human_review": False}
+    matching_note = {"type": "surface_roughness", "content": "两端面粗糙度 Ra 12.5μm", "need_human_review": False, "confirmation_source": "human_confirmed"}
     add("roughness_manual_clear", {"surface_roughness_ra": {"value": "", "source": ["human_edited"]}}, requirements=[matching_note])
     add("roughness_pending_note", {"surface_roughness_ra": {"need_human_review": True}}, requirements=[matching_note])
     add("roughness_stale_note", {"surface_roughness_ra": {"derived_value_stale": True}}, requirements=[matching_note])

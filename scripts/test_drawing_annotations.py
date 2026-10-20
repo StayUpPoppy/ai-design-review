@@ -51,8 +51,8 @@ def main():
     conflicted["spring_parameters"]["surface_roughness_ra"].update(value=None, roughness_conflict=True)
     candidates = [{"field": "surface_roughness_ra", "value": value, "source": ["qwen_vision"], "evidence": f"Ra {value}"} for value in (12.5, 6.3)]
     roughness = next(a for a in locate_fields(conflicted, candidates, [block("Ra 12.5"), block("Ra 6.3", x=.5)]) if a["field"] == "surface_roughness_ra")
-    assert not roughness["locations"]
-    assert "不同候选" in roughness["reason"]
+    assert len(roughness["locations"]) == 2
+    assert {l["evidence_value"] for l in roughness["locations"]} == {12.5, 6.3}
     edited = review()
     edited["spring_parameters"]["free_length"].update(value=70, source=["qwen_vision", "human_edited"])
     original = {"field": "free_length", "value": 50, "evidence": "free length 50", "source": "qwen_vision"}

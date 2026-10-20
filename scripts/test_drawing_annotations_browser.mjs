@@ -102,8 +102,24 @@ try {
       const image = document.querySelector("#compareImage"), view = state.compareView;
       const locations = DrawingAnnotations.entry().document.annotations.flatMap((a) => a.locations.filter((l) => l.page === DrawingAnnotations.entry().page));
       const anchors = [...document.querySelectorAll(".annotation-anchor")];
-      return locations.every((l, i) => Math.abs(Number(anchors[i].getAttribute("cx")) - view.x - l.anchor.x * image.naturalWidth * view.scale) < .001 && Math.abs(Number(anchors[i].getAttribute("cy")) - view.y - l.anchor.y * image.naturalHeight * view.scale) < .001);
+      return locations.every((l, i) => {
+        const anchor = anchors[i], bubble = anchor.nextElementSibling;
+        const ax = Number(anchor.getAttribute("cx")), ay = Number(anchor.getAttribute("cy"));
+        const matrix = bubble.transform.baseVal.consolidate().matrix;
+        const distance = Math.hypot(ax - matrix.e, ay - matrix.f);
+        const line = anchor.previousElementSibling;
+        if (distance > 15) {
+          if (line?.tagName !== "line") return false;
+          const x = Number(line.getAttribute("x2")), y = Number(line.getAttribute("y2"));
+          if (Math.abs(Math.hypot(x - matrix.e, y - matrix.f) - 15) > .001
+            || Math.abs(Math.hypot(ax - x, ay - y) + 15 - distance) > .001
+            || Number(line.getAttribute("x1")) !== ax || Number(line.getAttribute("y1")) !== ay) return false;
+        } else if (line?.tagName === "line") return false;
+        return Math.abs(ax - view.x - l.anchor.x * image.naturalWidth * view.scale) < .001
+          && Math.abs(ay - view.y - l.anchor.y * image.naturalHeight * view.scale) < .001;
+      });
     });
+    assert.equal(await verifyAnchors(), true, "Evidence anchors stay fixed and leaders stop at circle edges");
     const verifyColors = async (width) => {
       const beforeDocument = await page.evaluate(() => JSON.stringify(DrawingAnnotations.entry().document));
       const beforeRevision = saved.annotation_revision, beforeSaves = locationSaves;

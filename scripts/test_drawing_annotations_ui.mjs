@@ -6,6 +6,15 @@ const context = { window: {}, console, setTimeout, clearTimeout, Map, JSON };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(new URL("../frontend/drawing-annotations.js", import.meta.url), "utf8"), context);
 const ui = context.window.DrawingAnnotations;
+for (const [dx, dy] of [[40, 0], [-40, 0], [0, 40], [0, -40], [30, 40], [-30, 40], [30, -40], [-30, -40]]) {
+  const bubble = { x: 120, y: 85 }, anchor = { x: bubble.x + dx, y: bubble.y + dy };
+  const endpoint = ui.leaderEndpoint(anchor, bubble);
+  assert.ok(Math.abs(Math.hypot(endpoint.x - bubble.x, endpoint.y - bubble.y) - 15) < 1e-9, "The leader stops on the circle in every direction");
+  assert.ok(Math.abs(Math.hypot(anchor.x - endpoint.x, anchor.y - endpoint.y) + 15 - Math.hypot(dx, dy)) < 1e-9, "The leader remains on the anchor-to-center segment");
+}
+for (const anchor of [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 15, y: 0 }]) {
+  assert.equal(ui.leaderEndpoint(anchor, { x: 0, y: 0 }), null, "No leader is drawn inside or on the circle");
+}
 const document = { source_document_id: "source-1", annotation_revision: 1, pages: [{ page: 1, image_url: "/one.png", width: 1000, height: 800 }, { page: 2, image_url: "/two.png", width: 1000, height: 800 }], annotations: [{ annotation_id: "wire_diameter", field: "wire_diameter", label: "线径", number: 4, original_value: 2, locations: [{ location_id: "wire_diameter-1", page: 2, anchor: { x: .2, y: .3 }, bubble: { x: .25, y: .25 } }] }, { annotation_id: "mean_diameter", field: "mean_diameter", label: "中径", number: 7, original_value: null, locations: [], reason: "无直接标注" }], warnings: [] };
 const params = { wire_diameter: { value: 3 }, mean_diameter: { value: 26 } };
 const beforeParams = JSON.stringify(params);

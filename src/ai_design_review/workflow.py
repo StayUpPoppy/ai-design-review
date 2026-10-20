@@ -320,7 +320,7 @@ class DrawingReviewWorkflow:
             result.update(
                 {
                     key: item[key]
-                    for key in ("surface_location", "roughness_candidates", "roughness_conflict")
+                    for key in ("surface_location", "roughness_candidates", "roughness_conflict", "verification_version", "source_document_id", "recognition_state", "value_verified")
                     if key in item
                 }
             )

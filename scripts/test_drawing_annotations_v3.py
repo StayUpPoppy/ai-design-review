@@ -33,7 +33,7 @@ def numeric_tests():
     unique = _unique_blocks(original)
     assert len(unique) == 1 and unique[0]["recognition_aliases"]
     assert original == before
-    duplicate_roughness = [block("12.5", x=.6453, y=.3543, width=.0189, height=.0501), block("12.5", x=.6455, y=.3594, width=.0298, height=.0311), block("12.5", x=.33, y=.43)]
+    duplicate_roughness = [block("Ra12.5", x=.6453, y=.3543, width=.0189, height=.0501), block("Ra12.5", x=.6455, y=.3594, width=.0298, height=.0311), block("Ra12.5", x=.33, y=.43)]
     assert len(fields(locate_fields(review(surface_roughness_ra=12.5), [], duplicate_roughness))["surface_roughness_ra"]["locations"]) == 2, "different OCR aspect ratios over one glyph are one location"
     assert safe_glyph_run([{"position": {"x": .1, "y": .2, "width": .01, "height": .01}}, {"position": {"x": .115, "y": .2, "width": .01, "height": .01}}])
     assert not safe_glyph_run([{"position": {"x": .1, "y": .2, "width": .01, "height": .01}}, {"position": {"x": .4, "y": .2, "width": .01, "height": .01}}])
@@ -58,7 +58,7 @@ def numeric_tests():
     r["spring_parameters"]["outer_diameter"].update(human_confirmed=True, need_human_review=False)
     saved = copy.deepcopy(r)
     blocks = [block("8 . 2 5", x=.7, y=.4, width=.025, height=.04), block("- 0 . 0 2", x=.71, y=.365, width=.02, height=.025),
-              block("5", x=.713, y=.4, width=.01, height=.01), block("3 0 . 2 5"), block("/12.5", x=.66, width=.02, height=.04)]
+              block("5", x=.713, y=.4, width=.01, height=.01), block("3 0 . 2 5"), block("√12.5", x=.66, width=.02, height=.04)]
     found = locate_fields(r, [], blocks)
     assert fields(found)["outer_diameter"]["original_value"] == 8.25
     assert fields(found)["surface_roughness_ra"]["locations"]
@@ -87,7 +87,7 @@ def cache_tests():
             for i, path in enumerate(paths, 1):
                 with Image.open(path) as image:
                     w, h = image.size
-                results.append({"page": i, "image_path": str(path), "texts": [{"text": "/12.5", "position": {"x": w / 2, "y": h / 2, "width": 40, "height": 12}}]})
+                results.append({"page": i, "image_path": str(path), "texts": [{"text": "√12.5", "position": {"x": w / 2, "y": h / 2, "width": 40, "height": 12}}]})
             return results
         with patch("ai_design_review.annotation_ocr.crop_regions", return_value=regions), patch("ai_design_review.engines.ocr_providers.RapidOcrProvider.recognize", side_effect=RuntimeError("offline")) as mock:
             local_ocr_blocks(p, [{"page": 1}], "doc", r, [], existing)
@@ -134,8 +134,14 @@ def real_tests():
         p = root / job
         review_data = json.loads((p / "annotation_qa_snapshot.json").read_text(encoding="utf-8"))
         payload = json.loads((p / "remapped_candidates.json").read_text(encoding="utf-8"))
+        from ai_design_review import roughness_verification as verification
+        original_read = verification._read
+        urls = {Path(page["image_url"]).name: page["image_url"] for page in review_data["drawing_annotations"]["pages"]}
+        url_for = lambda path: urls[path.name]
+        with patch.object(verification, "_read", side_effect=lambda path: payload if path == p / "candidates.json" else original_read(path)):
+            verification.verify_review_roughness(review_data, p, url_for)
         before = copy.deepcopy(review_data)
-        doc = build_annotations(review_data, p, str, candidates_payload=payload)
+        doc = build_annotations(review_data, p, url_for, candidates_payload=payload)
         (p / "v3.json").write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
         by_field = fields(doc["annotations"])
         for field, (value, region) in expected.items():

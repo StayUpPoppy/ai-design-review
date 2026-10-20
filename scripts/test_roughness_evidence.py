@@ -7,15 +7,23 @@ from copy import deepcopy
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from ai_design_review.surface_roughness import roughness_evidence_assessment, ensure_surface_roughness_parameter
+from ai_design_review.surface_roughness import roughness_evidence_assessment, ensure_surface_roughness_parameter, verify_roughness_candidates
 from ai_design_review.engines.qwen_vision_adapter import qwen_payload_to_candidates
 from ai_design_review.fusion import fuse_candidates
 from ai_design_review.generation_readiness import build_generation_parameter_package
 from test_solidworks_export import base_review
 
 
-def fields(payload):
-    return fuse_candidates(qwen_payload_to_candidates({"spring_type": "compression_spring", **payload}))["fields"]
+def fields(payload, blocks=None):
+    candidates = qwen_payload_to_candidates({"spring_type": "compression_spring", **payload})
+    if blocks is not None:
+        candidates = [c for c in candidates if c.get("field") != "surface_roughness_ra"] + verify_roughness_candidates(
+            [c for c in candidates if c.get("field") == "surface_roughness_ra"], blocks, "fixture-document")
+    return fuse_candidates(candidates)["fields"]
+
+
+def block(text, page=1, x=.1):
+    return {"text": text, "source": "local_ocr", "page": page, "position": {"x": x, "y": .1, "width": .1, "height": .02}}
 
 
 def run():
@@ -33,18 +41,16 @@ def run():
     result = fields({"parameters": {"surface_roughness_ra": {"value": 6.3, "evidence": "无法辨认符号"}}})["surface_roughness_ra"]
     assert result["value"] is None and result["roughness_candidates"][0]["evidence_status"] == "unverified"
     direct = {"value": 12.5, "evidence": "两端面 Ra12.5", "surface_location": "两端面", "page": 2}
-    result = fields({"parameters": {"surface_roughness_ra": direct}, "notes": discussion})["surface_roughness_ra"]
+    result = fields({"parameters": {"surface_roughness_ra": direct}, "notes": discussion}, [block("两端面Ra12.5", 2)])["surface_roughness_ra"]
     assert result["value"] == 12.5 and result["surface_location"] == "两端面"
     assert any(item["value"] == 6.3 and item["evidence_status"] == "unverified" for item in result["roughness_candidates"])
     assert any(record["page"] == 2 for item in result["roughness_candidates"] for record in item["evidence_records"])
-    for text, location in [("左端面Ra12.5，右端面Ra12.5", "两端面"), ("左端面Ra12.5，右端面Ra6.3", None)]:
-        result = fields({"notes": text})["surface_roughness_ra"]
-        if location:
-            assert result["value"] == 12.5 and result["surface_location"] == location
-        else:
-            assert result["value"] is None and result["roughness_conflict"]
-            assert {item["location"] for item in result["roughness_candidates"]} == {"左端面", "右端面"}
-    result = fields({"notes": "外圆Ra12.5；两端面Ra12.5"})["surface_roughness_ra"]
+    for right in (12.5, 6.3):
+        text = f"左端面Ra12.5，右端面Ra{right}"
+        result = fields({"notes": text}, [block("左端面Ra12.5"), block(f"右端面Ra{right}", x=.7)])["surface_roughness_ra"]
+        assert result["value"] is None and result["roughness_conflict"] if right != 12.5 else result["value"] == 12.5 and not result.get("roughness_conflict")
+        assert {item["location"] for item in result["roughness_candidates"]} == {"左端面", "右端面"}
+    result = fields({"notes": "外圆Ra12.5；两端面Ra12.5"}, [block("外圆Ra12.5"), block("两端面Ra12.5", x=.7)])["surface_roughness_ra"]
     assert len(result["roughness_candidates"]) == 2, "Different scopes cannot merge just because Ra is equal"
     assert result["roughness_conflict"]
     # Existing review values and confirmations remain byte-for-byte unchanged.

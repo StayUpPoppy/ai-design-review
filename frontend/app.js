@@ -52,6 +52,7 @@ const state = {
   standardizationInFlight: false,
   recentReviews: [],
   recentReviewsLoading: false,
+  historySidebarCollapsed: readBrowserPreference("aiDesignReviewHistorySidebarCollapsed") === "true",
   recognitionPollers: {},
   recognitionMessageIds: {},
   recognitionRequestSerial: 0,
@@ -486,6 +487,12 @@ const newReviewButton = document.getElementById("newReviewButton");
 const recentReviews = document.getElementById("recentReviews");
 const recentReviewList = document.getElementById("recentReviewList");
 const refreshRecentReviewsButton = document.getElementById("refreshRecentReviewsButton");
+const historySidebarToggle = document.getElementById("toggleHistorySidebar");
+const historySidebarContent = document.getElementById("historySidebarContent");
+let historySidebarScroll = null;
+let historySidebarMotion = null;
+let historySidebarExpandedSize = null;
+const historySidebarReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 const identityProfile = document.getElementById("identityProfile");
 const identityProfileName = document.getElementById("identityProfileName");
 const identityProfileOrg = document.getElementById("identityProfileOrg");
@@ -578,6 +585,15 @@ useVlmInput?.addEventListener("change", syncVlmProviderState);
 demoButton.addEventListener("click", loadDemoReview);
 refreshRecentReviewsButton?.addEventListener("click", () => {
   void loadRecentReviews();
+});
+historySidebarToggle.addEventListener("click", () => {
+  setHistorySidebarCollapsed(!state.historySidebarCollapsed);
+  historySidebarToggle.focus({ preventScroll: true });
+});
+setHistorySidebarCollapsed(state.historySidebarCollapsed, { persist: false, animate: false });
+window.addEventListener("resize", () => { if (historySidebarMotion) finishHistorySidebarMotion(); });
+historySidebarReducedMotion.addEventListener("change", (event) => {
+  if (event.matches && historySidebarMotion) finishHistorySidebarMotion();
 });
 exportButton.addEventListener("click", () => {
   if (!state.review) return;
@@ -2299,6 +2315,111 @@ async function loadDemoReview() {
 
 function readBrowserPreference(key) {
   try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function restoreHistorySidebarScroll() {
+  if (!historySidebarScroll) return;
+  recentReviews.scrollTop = historySidebarScroll.top;
+  recentReviews.scrollLeft = historySidebarScroll.left;
+  recentReviewList.scrollTop = historySidebarScroll.listTop;
+  recentReviewList.scrollLeft = historySidebarScroll.listLeft;
+}
+
+function finishHistorySidebarMotion() {
+  const workspace = recentReviews.closest(".app-workspace");
+  if (historySidebarMotion) {
+    clearTimeout(historySidebarMotion.timer);
+    workspace.removeEventListener("transitionend", historySidebarMotion.onEnd);
+    historySidebarMotion = null;
+  }
+  const collapsed = state.historySidebarCollapsed;
+  newReviewButton.hidden = collapsed;
+  historySidebarContent.hidden = collapsed;
+  newReviewButton.inert = collapsed;
+  historySidebarContent.inert = collapsed;
+  for (const element of [newReviewButton, historySidebarContent]) {
+    if (collapsed) element.setAttribute("aria-hidden", "true");
+    else element.removeAttribute("aria-hidden");
+  }
+  workspace.classList.remove("is-history-animating", "is-history-preparing");
+  recentReviews.classList.remove("is-animating", "is-preparing");
+  if (collapsed) { recentReviews.scrollTop = 0; recentReviews.scrollLeft = 0; }
+  else restoreHistorySidebarScroll();
+}
+
+function prepareHistorySidebarMotion() {
+  const workspace = recentReviews.closest(".app-workspace");
+  const wasCollapsed = recentReviews.classList.contains("is-collapsed");
+  workspace.classList.add("is-history-preparing");
+  recentReviews.classList.add("is-preparing");
+  workspace.classList.remove("is-history-collapsed");
+  recentReviews.classList.remove("is-collapsed");
+  newReviewButton.hidden = false;
+  historySidebarContent.hidden = false;
+  // Measure the normal layout in this frame, before clipping it. No DOM is replaced.
+  const box = recentReviews.getBoundingClientRect(), style = getComputedStyle(recentReviews);
+  historySidebarExpandedSize = { width: box.width, height: box.height };
+  const measures = { "expanded-width": box.width, "expanded-height": box.height,
+    "content-width": historySidebarContent.getBoundingClientRect().width,
+    "new-review-width": newReviewButton.getBoundingClientRect().width,
+    "scrollbar-width": Math.max(0, recentReviews.offsetWidth - recentReviews.clientWidth - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth)) };
+  for (const [name, value] of Object.entries(measures)) recentReviews.style.setProperty(`--history-${name}`, `${value}px`);
+  workspace.classList.toggle("is-history-collapsed", wasCollapsed);
+  recentReviews.classList.toggle("is-collapsed", wasCollapsed);
+  workspace.classList.add("is-history-animating");
+  recentReviews.classList.add("is-animating");
+  restoreHistorySidebarScroll();
+  // Commit the starting geometry with transitions disabled, including a restored closed sidebar.
+  workspace.getBoundingClientRect();
+  workspace.classList.remove("is-history-preparing");
+  recentReviews.classList.remove("is-preparing");
+}
+
+function setHistorySidebarCollapsed(collapsed, { persist = true, animate = true } = {}) {
+  const workspace = recentReviews.closest(".app-workspace");
+  const wasCollapsed = recentReviews.classList.contains("is-collapsed");
+  if (collapsed && !wasCollapsed && !historySidebarMotion) {
+    historySidebarScroll = { top: recentReviews.scrollTop, left: recentReviews.scrollLeft,
+      listTop: recentReviewList.scrollTop, listLeft: recentReviewList.scrollLeft };
+  }
+  state.historySidebarCollapsed = collapsed;
+  const moving = animate && !historySidebarReducedMotion.matches && wasCollapsed !== collapsed;
+  if (moving) {
+    if (newReviewButton === document.activeElement || historySidebarContent.contains(document.activeElement)) historySidebarToggle.focus({ preventScroll: true });
+    newReviewButton.inert = true;
+    historySidebarContent.inert = true;
+    newReviewButton.setAttribute("aria-hidden", "true");
+    historySidebarContent.setAttribute("aria-hidden", "true");
+    if (!historySidebarMotion) prepareHistorySidebarMotion();
+    else {
+      clearTimeout(historySidebarMotion.timer);
+      workspace.removeEventListener("transitionend", historySidebarMotion.onEnd);
+    }
+    const motion = { onEnd: null, timer: null };
+    motion.onEnd = (event) => {
+      if (historySidebarMotion !== motion || event.target !== workspace || !event.propertyName.startsWith("grid-template-")) return;
+      const mobile = window.matchMedia("(max-width: 640px)").matches;
+      const size = recentReviews.getBoundingClientRect()[mobile ? "height" : "width"];
+      const target = collapsed ? 40 : historySidebarExpandedSize[mobile ? "height" : "width"];
+      if (Math.abs(size - target) < 1) finishHistorySidebarMotion();
+    };
+    historySidebarMotion = motion;
+    workspace.addEventListener("transitionend", motion.onEnd);
+    // A fallback also settles interrupted/unsupported transitions; obsolete callbacks cannot win a reversal.
+    motion.timer = setTimeout(() => { if (historySidebarMotion === motion) finishHistorySidebarMotion(); }, 320);
+  }
+  recentReviews.classList.toggle("is-collapsed", collapsed);
+  workspace.classList.toggle("is-history-collapsed", collapsed);
+  historySidebarToggle.setAttribute("aria-expanded", String(!collapsed));
+  const label = collapsed ? "展开历史订单" : "收起历史订单";
+  historySidebarToggle.setAttribute("aria-label", label);
+  historySidebarToggle.title = label;
+  if (!moving && (!historySidebarMotion || !animate || historySidebarReducedMotion.matches)) finishHistorySidebarMotion();
+  else if (!collapsed) restoreHistorySidebarScroll();
+  if (persist) {
+    try { localStorage.setItem("aiDesignReviewHistorySidebarCollapsed", String(collapsed)); }
+    catch { /* Keep the current page usable when preference storage is unavailable. */ }
+  }
 }
 
 function historyRecognitionScope() {
@@ -4156,6 +4277,7 @@ function auditEventLabel(eventType) {
   const labels = {
     parameter_value_updated: "修改数值",
     support_coils_recalculated: "重算单端支承圈数",
+    roughness_evidence_verified: "核验粗糙度原图依据",
     parameter_tolerance_updated: "修改公差",
     parameter_confirmed: "确认参数",
     parameter_reopened: "重新编辑",
@@ -4830,6 +4952,7 @@ function surfaceRoughnessCandidatesHtml(param) {
   const service = typeof SurfaceRoughnessReference !== "undefined" ? SurfaceRoughnessReference : null;
   const seen = new Set();
   const options = candidates.map((item, index) => ({ item, index })).filter(({ item }) => {
+    if (!["direct", "needs_location"].includes(service?.candidateEvidence(item)[0])) return false;
     const key = JSON.stringify([Number(item?.value), item?.unit || "μm", item?.location || ""]);
     if (!Number.isFinite(Number(item?.value)) || Number(item.value) <= 0 || seen.has(key)) return false;
     seen.add(key); return true;
@@ -4844,11 +4967,11 @@ function surfaceRoughnessCandidatesHtml(param) {
           if (!Number.isFinite(value) || value <= 0) return "";
           const location = String(item?.location || "").trim();
           const label = `Ra ${formatCompactNumber(value)} μm · ${location || "部位未明确"}`;
-          const unverified = service?.candidateEvidence(item)[0] === "unverified";
+          const unverified = service?.candidateEvidence(item)[0] === "needs_location";
           return `
             <span class="roughness-candidate-option">
               <button type="button" class="roughness-candidate" data-role="roughness-candidate" data-candidate-index="${index}">${escapeHtml(label)}</button>
-              ${unverified ? '<small>依据不足，需核对</small>' : ""}
+              ${unverified ? '<small>位置待核对，采用后需确认</small>' : ""}
             </span>
           `;
         }).join("")}
@@ -7766,7 +7889,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         activateReviewContext(messageId);
         const candidate = param.roughness_candidates?.[Number(button.dataset.candidateIndex)];
         const value = Number(candidate?.value);
-        if (!Number.isFinite(value) || value <= 0) return;
+        if (!Number.isFinite(value) || value <= 0 || !["direct", "needs_location"].includes(globalThis.SurfaceRoughnessReference?.candidateEvidence(candidate)[0])) return;
         valueInput.value = formatCompactNumber(value);
         valueInput.dispatchEvent(new Event("input", { bubbles: true }));
         param.surface_location = candidate?.location || null;
@@ -10864,6 +10987,21 @@ function applyCompareTransform() {
 
 if (typeof DrawingAnnotations !== "undefined") {
   DrawingAnnotations.configure({
+    beginRelocalize: () => ({ review: state.review, jobId: state.lastJob?.job_id, editSerial: state.reviewEditSerial,
+      navigationSerial: state.reviewNavigationSerial, revision: state.lastJob?.review_revision,
+      roughness: JSON.stringify(state.review?.spring_parameters?.surface_roughness_ra) }),
+    onRelocalized: (payload, context) => {
+      const update = payload.roughness_update;
+      if (!context || !update?.parameter || state.review !== context.review || state.lastJob?.job_id !== context.jobId
+        || state.reviewNavigationSerial !== context.navigationSerial || state.reviewEditSerial !== context.editSerial
+        || String(update.based_on_revision ?? "") !== String(state.lastJob?.review_revision ?? "")
+        || JSON.stringify(state.review?.spring_parameters?.surface_roughness_ra) !== context.roughness) return;
+      const param = state.review.spring_parameters.surface_roughness_ra;
+      for (const key of Object.keys(param)) delete param[key];
+      Object.assign(param, structuredClone(update.parameter));
+      recordRoughnessVerificationAdjustment(state.review);
+      refreshReviewSurfaces();
+    },
     getJobId: () => state.lastJob?.job_id,
     isCompression: () => isCompressionSpringReview(state.review),
     getParameter: (field) => state.review?.spring_parameters?.[field],
@@ -10956,9 +11094,21 @@ function setReview(review, imageUrl, options = {}) {
   applyGenerationDefaults(review);
   if (state.review !== review) state.reasonablenessRefreshError = "";
   state.review = review;
+  recordRoughnessVerificationAdjustment(review);
   state.imageUrl = imageUrl;
   exportButton.disabled = false;
   scheduleTechnicalRequirementTranslation();
+}
+
+function recordRoughnessVerificationAdjustment(review) {
+  const param = review.spring_parameters?.surface_roughness_ra;
+  const adjustment = param?.roughness_verification_adjustment;
+  if (!adjustment || adjustment.audit_recorded || state.review !== review) return;
+  adjustment.audit_recorded = true;
+  queueReviewAuditEvent({ event_type: "roughness_evidence_verified", target_field: "surface_roughness_ra", source: "original_evidence_verification",
+    reason: "按原图独立证据核验粗糙度，保留原识别信息及人工值", before_state: adjustment.before,
+    after_state: parameterAuditState(param), metadata: { verification_version: adjustment.verification_version,
+      candidates: structuredClone(param.roughness_candidates || []) } });
 }
 
 function technicalTranslationService() { return globalThis.window?.TechnicalRequirementTranslation; }
@@ -11841,18 +11991,21 @@ function ensureSurfaceRoughnessParameter(review) {
     });
   });
   const param = review.spring_parameters.surface_roughness_ra;
-  if (legacy.length && SolidWorksExport.canPromoteRoughness(param)) {
+  if (legacy.length && SolidWorksExport.canPromoteRoughness(param) && !param.verification_version) {
     const unique = Array.from(new Map(legacy.map((item) => [JSON.stringify([item.value, item.location]), item])).values());
-    param.roughness_candidates = unique.map(({ item, ...candidate }) => candidate);
+    const confirmedLegacy = legacy.every(({ item }) => item.need_human_review === false && (item.confirmation_source === "human_confirmed"
+      || sourceValues(item.source).some((source) => source.startsWith("human") || ["manual", "manual_input"].includes(source))
+      || review.manual_confirmations?.[`technical_requirement_${item.requirement_id}`]?.confirmed === true));
+    param.roughness_candidates = unique.map(({ item, ...candidate }) => ({ ...candidate, evidence_status: "unverified" }));
     param.evidence = legacy.map((item) => item.evidence).filter(Boolean).join(" | ");
     param.source = Array.from(new Set(["legacy_technical_requirement", ...sourceValues(param.source)]));
-    param.need_human_review = !(unique.length === 1 && legacy.every((item) => item.need_human_review === false));
-    if (unique.length === 1) {
+    param.need_human_review = !(unique.length === 1 && confirmedLegacy);
+    if (unique.length === 1 && confirmedLegacy) {
       param.value = unique[0].value;
       param.surface_location = unique[0].location || null;
       delete param.roughness_conflict;
       if (!param.need_human_review) param.source = Array.from(new Set(["human_confirmed", ...sourceValues(param.source)]));
-    } else if (unique.length > 1) {
+    } else if (unique.length > 1 && confirmedLegacy) {
       param.value = null;
       param.roughness_conflict = true;
     }

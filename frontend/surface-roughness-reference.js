@@ -10,7 +10,8 @@
   function eligible(item) {
     const unit = String(item?.unit || "μm").trim().toLowerCase().replace(/µ/g, "μ");
     return Boolean(item && ["μm", "um"].includes(unit) && empty(item) && !item.roughness_conflict && !item.derived_value_stale
-      && !item.formula_recommendation_stale && !(item.roughness_candidates || []).length);
+      && !item.formula_recommendation_stale && !["located", "needs_location", "unverified", "failed"].includes(item.recognition_state)
+      && !(item.roughness_candidates || []).some((candidate) => candidate.recognition_state !== "excluded"));
   }
   const dismissed = (item) => item?.roughness_reference_dismissed === true || empty(item) && manual(item);
   const adopted = (item) => sources(item).includes(source);
@@ -40,6 +41,8 @@
       item.source = sources(item).filter((s) => s !== source);
     }
     item.roughness_reference_dismissed = empty(item);
+    item.value_verified = !empty(item) && (item.roughness_candidates || []).some((c) =>
+      Number(c.value) === Number(item.value) && ["direct", "needs_location"].includes(candidateEvidence(c)[0]));
   }
   const speculation = /可能|也许|大概|猜测|推测|怀疑|似乎|不确定|无法确认|看不清|假设|例如|比如|举例|推荐|建议|默认|常规|参考|possibly|perhaps|example|recommend|default/iu;
   const negation = /(?:未|没有|无|并无|不含|不存在|未见|不要求|无需|不需要|不涉及).{0,12}(?:粗糙度|Ra|标注)|(?:不是|并非|不属于|不作为|不应作为).{0,8}(?:粗糙度|Ra)|(?:粗糙度|Ra).{0,8}(?:未标注|没有标注|不要求|未出现|没有出现|不适用)|not\s+(?:roughness|Ra)|no\s+(?:roughness|Ra)/iu;
@@ -50,7 +53,7 @@
   };
   function assessEvidence(value, evidence, structured = false) {
     const text = String(evidence || "").trim(), statuses = [];
-    const patterns = [/(?<![A-Za-z])Ra\s*[:：=]?\s*(\d+(?:[.,]\d+)?)/giu, /(?:表面)?粗糙度\s*(?:Ra\s*)?[:：=]?\s*(\d+(?:[.,]\d+)?)/giu, /[▽△▼]\s*(\d+(?:[.,]\d+)?)/gu];
+    const patterns = [/(?<![A-Za-z])Ra\s*[:：=]?\s*(\d+(?:[.,]\d+)?)/giu, /(?:表面)?粗糙度\s*(?:Ra\s*)?[:：=]?\s*(\d+(?:[.,]\d+)?)/giu, /[▽√]\s*(\d+(?:[.,]\d+)?)/gu];
     for (const pattern of patterns) for (const match of text.matchAll(pattern)) {
       if (!positive(value) || Number(match[1].replace(",", ".")) !== Number(String(value).replace(",", "."))) continue;
       const edges = [...text.matchAll(/[。；;\n|，]|(?<!\d),|,(?!\d)|而是|实际为/gu)];
@@ -67,17 +70,30 @@
         ? ["direct", "粗糙度结构化字段保留了对应原图数值。"] : ["unverified", "缺少与候选一致的原图粗糙度文字或符号，请核对。"]);
   }
   function candidateEvidence(candidate) {
-    if (["direct", "unverified"].includes(candidate?.evidence_status)) return [candidate.evidence_status, String(candidate.evidence_reason || "")];
-    const [status, reason] = assessEvidence(candidate?.value, candidate?.evidence, true);
-    return [status === "excluded" ? "unverified" : status, reason]; // Old records are never removed on read.
+    // Recognition prose and old "direct" markers cannot promote themselves.
+    const refs = candidate?.independent_evidence;
+    const direct = candidate?.evidence_status === "direct" && candidate?.verification_version === "roughness_original_evidence/v3"
+      && Boolean(candidate?.source_document_id) && Array.isArray(refs) && refs.length > 0
+      && refs.every((ref) => ["pdf_text", "ocr", "local_ocr"].includes(ref.source) && Number.isInteger(ref.page) && ref.page > 0
+        && ["x", "y", "width", "height"].every((key) => Number.isFinite(ref.position?.[key]))
+        && ref.position.width > 0 && ref.position.height > 0 && Boolean(ref.text));
+    const pending = candidate?.verification_version === "roughness_original_evidence/v3" && candidate?.value_verified === true
+      && Boolean(candidate?.source_document_id) && candidate?.recognition_state === "needs_location" && candidate?.numeric_evidence?.length > 0
+      && candidate.numeric_evidence.every((ref) => ["pdf_text", "ocr", "local_ocr"].includes(ref.source) && Number.isInteger(ref.page) && ref.page > 0
+        && ["x", "y", "width", "height"].every((key) => Number.isFinite(ref.position?.[key])) && ref.position.width > 0 && ref.position.height > 0 && Boolean(ref.text));
+    return [direct ? "direct" : pending ? "needs_location" : "unverified", String((direct || candidate?.evidence_status === "unverified") ? candidate?.evidence_reason || "" : "尚未通过原图独立证据核验。")];
   }
   function summary(item) {
+    if (item?.value_verified && !empty(item) && item?.recognition_state === "needs_location") return "数值已核实，位置待核对";
     if (adopted(item)) return `人工采用项目参考 · 两端面 · ${item.need_human_review ? "待确认" : "已确认"}`;
     if (manual(item) && (item.human_modified || !sources(item).every((s) => s === "human_confirmed"))) return empty(item) ? "已选择不添加粗糙度" : `人工填写 · ${item.need_human_review ? "待确认" : "已确认"}`;
+    if (item?.roughness_verification_warning) return "原图依据不足，已保留历史值，请核对";
     if (item?.derived_value_stale || item?.formula_recommendation_stale) return "原值已失效，请核对";
     if (item?.roughness_conflict) return "存在多个候选，请核对";
+    if (item?.recognition_state === "failed") return "粗糙度核验失败，请重新补定位";
+    if (item?.recognition_state === "needs_location") return "位置待核对，请查看识别依据";
     const candidates = item?.roughness_candidates || [];
-    if (candidates.length && candidates.every((candidate) => candidateEvidence(candidate)[0] !== "direct")) return "候选依据不足，请核对";
+    if (candidates.length && candidates.every((candidate) => candidateEvidence(candidate)[0] !== "direct")) return "粗糙度候选尚未核实，请查看依据或重新补定位";
     if (!empty(item)) return "已有识别值，请核对原图依据";
     return candidates.length ? "存在识别候选，请核对" : "未识别到粗糙度";
   }
@@ -91,7 +107,8 @@
       for (const source of sources(metadata)) if (!entry.sources.includes(source)) entry.sources.push(source);
       if (metadata.page != null && !entry.pages.includes(metadata.page)) entry.pages.push(metadata.page);
       if (candidate) {
-        const label = `Ra ${candidate.value} μm · ${candidate.location || "部位未明确"}`;
+        const status = candidateEvidence(candidate)[0];
+        const label = `${status === "unverified" ? "疑似 " : ""}Ra ${candidate.value} μm · ${candidate.location_conflict ? "部位待核对" : candidate.location || "部位未明确"}${status === "needs_location" ? " · 位置待核对" : ""}`;
         if (!entry.labels.includes(label)) entry.labels.push(label);
         const [, reason] = candidateEvidence(candidate);
         if (reason && !entry.reasons.includes(reason)) entry.reasons.push(reason);
@@ -100,8 +117,10 @@
     for (const candidate of item?.roughness_candidates || []) {
       if (candidate.evidence_records?.length) candidate.evidence_records.forEach((record) => add(record.evidence, record, candidate));
       else add(candidate.evidence, candidate, candidate);
+      for (const ref of candidate.independent_evidence || []) add(ref.text, ref, candidate);
     }
     for (const text of String(item?.evidence || "").split(" | ")) add(text, item);
+    if (item?.roughness_verification_warning) add(item.roughness_verification_warning, { source: "原图核验" });
     return [...entries.values()];
   }
   globalThis.SurfaceRoughnessReference = { eligible, dismissed, adopted, adopt, dismiss, edited, referenceValues,

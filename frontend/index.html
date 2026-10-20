@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>弹簧图纸 AI 审查助手</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="./styles.css?v=20261019-history-actions">
+    <link rel="stylesheet" href="./styles.css?v=20261020-sidebar-slide">
   </head>
   <body>
     <main class="app-shell">
@@ -27,10 +27,16 @@
 
       <div class="app-workspace">
         <aside id="recentReviews" class="history-sidebar" aria-label="历史订单">
-          <button id="newReviewButton" class="history-new-review-button" type="button" title="清空当前审图界面，新建一次审图">
-            <span aria-hidden="true">＋</span>
-            新建审图
-          </button>
+          <div class="history-sidebar-top">
+            <button id="newReviewButton" class="history-new-review-button" type="button" title="清空当前审图界面，新建一次审图">
+              <span aria-hidden="true">＋</span>
+              新建审图
+            </button>
+            <button id="toggleHistorySidebar" class="history-sidebar-toggle" type="button" aria-label="收起历史订单" title="收起历史订单" aria-expanded="true" aria-controls="newReviewButton historySidebarContent">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+            </button>
+          </div>
+          <div id="historySidebarContent">
           <div class="history-sidebar-head">
             <h2>历史订单</h2>
             <button id="historyUnreadCount" class="history-unread-count" type="button" title="定位第一条尚未查看的新识别结果" hidden></button>
@@ -60,6 +66,7 @@
             </div>
           </div>
           <div id="recentReviewList" class="history-order-list"></div>
+          </div>
         </aside>
 
         <div class="chat-stage">
@@ -197,17 +204,17 @@
       </div>
     </main>
 
-    <script src="./drawing-annotations.js?v=20261014-annotation-v3"></script>
+    <script src="./drawing-annotations.js?v=20261020-leader-edge"></script>
     <script src="./technical-requirement-translation.js?v=20261018-direct-translation"></script>
     <script src="./technical-requirement-recovery.js?v=20261013-recognition-aliases"></script>
     <script src="./compression-design-checks.js?v=20261015-support-coils"></script>
     <script src="./formula-candidates.js?v=20261015-formula-candidates"></script>
     <script src="./technical-requirement-equivalence.js?v=20261016-eight-class-dedup"></script>
     <script src="./solidworks-export.js?v=20261016-eight-class-dedup"></script>
-    <script src="./surface-roughness-reference.js?v=20261018-roughness-choices"></script>
-    <script src="./drawing-upload-queue.js?v=20261019-upload-compact"></script>
+    <script src="./surface-roughness-reference.js?v=20261020-roughness-v3"></script>
+    <script src="./drawing-upload-queue.js?v=20261020-repeat-uploads"></script>
     <script src="./history-recognition-unread.js?v=20261019-history-unread"></script>
     <script src="./history-bulk-deletion.js?v=20261019-bulk-delete"></script>
-    <script src="./app.js?v=20261019-history-actions"></script>
+    <script src="./app.js?v=20261020-sidebar-slide"></script>
   </body>
 </html>

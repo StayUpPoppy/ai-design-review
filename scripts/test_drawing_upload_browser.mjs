@@ -109,30 +109,46 @@ try {
   assert.equal(await page.evaluate(() => {
     const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented;
   }), false, 'Clearing unsent files releases the leave-page guard');
+  await page.locator('#drawingInput').setInputFiles([path.join(folder, 'a.pdf'), path.join(folder, 'a.pdf')]); await collected(page, 2);
+  await page.locator('#drawingInput').setInputFiles(path.join(folder, 'a.pdf')); await collected(page, 3);
+  assert.equal(await page.evaluate(() => new Set(drawingUploads.pending.map((item) => item.id)).size), 3, 'Identical native file selections remain independent');
+  await page.locator('.upload-file').first().getByRole('button', { name: '移除', exact: true }).click(); await collected(page, 2); await clear(page);
   await page.locator('#drawingFolderInput').setInputFiles(folder); await collected(page, 4);
   assert.equal(await page.locator('.upload-file[data-status="pending"]').count(), 2);
   assert.ok((await page.locator('#uploadQueueList').innerText()).includes('orders/nested/a.pdf'));
-  await page.locator('#drawingFolderInput').setInputFiles(folder); await collected(page, 4); await clear(page);
+  await page.locator('#drawingFolderInput').setInputFiles(folder); await collected(page, 8);
+  assert.equal(await page.locator('.upload-file[data-status="pending"]').count(), 4, 'Selecting the same folder again adds all valid files again'); await clear(page);
   await page.evaluate(() => {
-    const transfer = new DataTransfer(); transfer.items.add(new File(['pdf'], 'drag-one.pdf')); transfer.items.add(new File(['pdf'], 'drag-two.pdf'));
+    window.repeatedDropFile = new File(['pdf'], 'drag-same.pdf');
+    const transfer = new DataTransfer(); transfer.items.add(repeatedDropFile); transfer.items.add(repeatedDropFile);
     window.dispatchEvent(new DragEvent('drop', { dataTransfer: transfer, cancelable: true }));
   });
-  await collected(page, 2); assert.equal(model.uploads.length, 0); await clear(page);
+  await collected(page, 2);
+  await page.evaluate(() => {
+    const transfer = new DataTransfer(); transfer.items.add(repeatedDropFile); transfer.items.add(repeatedDropFile);
+    window.dispatchEvent(new DragEvent('drop', { dataTransfer: transfer, cancelable: true }));
+  });
+  await collected(page, 4); assert.equal(model.uploads.length, 0); await clear(page);
   assert.equal(await page.evaluate(() => {
     const transfer = new DataTransfer(); transfer.setData('text/plain', 'keep text drag');
     const event = new DragEvent('drop', { dataTransfer: transfer, cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented;
   }), false, 'Do not intercept text dragging');
   await page.evaluate(() => {
-    const f = (name) => ({ name, isFile: true, file: (resolve) => resolve(new File(['pdf'], name)) });
+    const f = (name) => { const value = new File(['pdf'], name); return { name, isFile: true, file: (resolve) => resolve(value) }; };
     const dir = (name, pages) => ({ name, isDirectory: true, createReader: () => { let n = 0; return { readEntries: (resolve) => resolve(pages[n++] || []) }; } });
     const roots = [dir('folder', [[f('a.pdf')], [dir('nested', [[f('b.pdf')]])]]), dir('other', [[f('a.pdf')]]), f('loose.pdf'), dir('empty', [])];
-    const transfer = new DataTransfer();
-    Object.defineProperty(transfer, 'types', { value: ['Files'] });
-    Object.defineProperty(transfer, 'items', { value: roots.map((entry) => ({ kind: 'file', webkitGetAsEntry: () => entry })) });
-    window.dispatchEvent(new DragEvent('drop', { dataTransfer: transfer, cancelable: true }));
+    window.repeatFolderDrop = () => {
+      const transfer = new DataTransfer();
+      Object.defineProperty(transfer, 'types', { value: ['Files'] });
+      Object.defineProperty(transfer, 'items', { value: roots.map((entry) => ({ kind: 'file', webkitGetAsEntry: () => entry })) });
+      window.dispatchEvent(new DragEvent('drop', { dataTransfer: transfer, cancelable: true }));
+    };
+    repeatFolderDrop();
   });
   await collected(page, 5); assert.equal(await page.locator('.upload-file[data-status="pending"]').count(), 4);
-  assert.ok((await page.locator('#uploadQueueList').innerText()).includes('folder/nested/b.pdf')); await clear(page);
+  assert.ok((await page.locator('#uploadQueueList').innerText()).includes('folder/nested/b.pdf'));
+  await page.evaluate(() => repeatFolderDrop()); await collected(page, 10);
+  assert.equal(await page.locator('.upload-file[data-status="pending"]').count(), 8); await clear(page);
   await page.evaluate(() => {
     drawingUploads.collectDrop([{ entry: { name: 'slow.pdf', isFile: true, file: (resolve) => {
       window.resolveOldScan = () => resolve(new File(['pdf'], 'slow.pdf'));
@@ -240,7 +256,7 @@ try {
   await rowFor(page, 'unknown.pdf').getByRole('button', { name: '核对历史订单', exact: true }).click();
   await rowFor(page, 'unknown.pdf').getByRole('button', { name: '核对后重试上传', exact: true }).waitFor();
   assert.equal(model.uploads.length, countBefore, 'Checking uncertain outcomes does not reupload'); await clear(page);
-  await page.locator('#drawingInput').setInputFiles(Array.from({ length: 51 }, (_, i) => input(`limit-${i}.pdf`)));
+  await page.locator('#drawingInput').setInputFiles(Array(51).fill(path.join(folder, 'a.pdf')));
   await page.waitForFunction(() => drawingUploads.tooMany && !drawingUploads.scanning);
   assert.equal(await page.locator('#submitButton').isDisabled(), true); await page.evaluate(() => submitSelectedFile());
   assert.equal(model.uploads.length, countBefore); await clear(page);
@@ -269,6 +285,40 @@ try {
     }
     assert.equal(await page.locator(`[data-history-job-id="${id}"] .history-unread-dot`).isVisible(), guard !== 'none', 'Only a successful automatic view acknowledges the result');
     assert.deepEqual(single.errors, [], guard); await page.close();
+  }
+
+  // Same native file in successive batches creates independent orders while processing and after completion.
+  const repeated = await scenario();
+  {
+    const { page } = repeated;
+    const selectTwice = () => page.locator('#drawingInput').setInputFiles([path.join(folder, 'a.pdf'), path.join(folder, 'a.pdf')]);
+    await selectTwice(); await collected(page, 2); await page.locator('#submitButton').click();
+    await page.waitForFunction(() => !drawingUploads.running && drawingUploads.trackedJobs.size === 2);
+    const initialIds = [...repeated.jobs.keys()];
+    await selectTwice();
+    await page.waitForFunction(() => drawingUploads.pending.length === 2 && !drawingUploads.scanning);
+    await page.locator('#submitButton').click();
+    await page.waitForFunction(() => !drawingUploads.running && drawingUploads.trackedJobs.size === 4);
+    assert.equal(repeated.uploads.length, 4);
+    repeated.update(initialIds[0], { status: 'processing', progress: 71, attempt_count: 1 });
+    repeated.update(initialIds[1], { status: 'processing', progress: 33, attempt_count: 1 });
+    await page.waitForFunction((ids) => drawingUploads.trackedJobs.get(ids[0])?.progress === 71
+      && drawingUploads.trackedJobs.get(ids[1])?.progress === 33, initialIds);
+    assert.equal(await page.evaluate(() => new Set(drawingUploads.entries.map((entry) => entry.id)).size), 4);
+    assert.equal(await page.locator('.history-order-item').count(), 4);
+    await page.locator(`[data-history-job-id="${initialIds[0]}"] [data-role="delete-recent-review"]`).click();
+    await page.locator('[data-role="confirm-delete-review"]').click();
+    await page.waitForFunction((id) => !state.deletedReviewIds.has(id) ? false : !historyDeletion.state.running, initialIds[0]);
+    assert.equal(await page.evaluate((id) => drawingUploads.isTracking(id), initialIds[1]), true, 'Deleting one same-name order leaves the other tracked');
+    assert.equal(await page.evaluate((id) => mergeRecognitionStatus(id, { status: 'completed', attempt_count: 1 }), initialIds[0]), false);
+    for (const id of repeated.jobs.keys()) repeated.update(id, { status: 'completed', progress: 100 });
+    await page.waitForFunction(() => drawingUploads.entries.length === 0 && drawingUploads.completion?.completed === 2);
+    await selectTwice(); await collected(page, 2); await page.locator('#submitButton').click();
+    await page.waitForFunction(() => !drawingUploads.running && drawingUploads.trackedJobs.size === 2);
+    assert.equal(repeated.uploads.length, 6, 'Completed same-file orders do not restrict a fresh upload');
+    assert.equal(await page.locator('.history-order-item').count(), 5);
+    assert.equal(repeated.peak, 1);
+    assert.deepEqual(repeated.errors, []); await page.close();
   }
 
   // Multiple live batches, manual disclosure state and cleanup never share counters.
@@ -301,10 +351,12 @@ try {
     rollover.update(currentIds[0], { status: 'completed', progress: 100 }); rollover.update(currentIds[1], { status: 'failed', error_message: '本批次失败' });
     await page.waitForFunction(() => drawingUploads.entries.length === 0 && drawingUploads.completion?.total === 2);
     assert.equal(await page.locator('#uploadCompletionText').textContent(), '本批2份 · 完成1份 · 失败1份');
-    await page.evaluate(() => drawingUploads.collectFiles(oldBatchFiles));
-    assert.equal(await page.evaluate(() => drawingUploads.pending.length), 0, 'Cleanup preserves page dedup fingerprints');
     await page.locator('#clearUploadCompletion').click();
     await page.waitForFunction(() => document.getElementById('uploadQueue').hidden);
+    await page.evaluate(() => drawingUploads.collectFiles(oldBatchFiles));
+    assert.equal(await page.evaluate(() => drawingUploads.pending.length), 2, 'Completed originals can be selected again after cleanup');
+    assert.equal(await page.locator('#uploadCompletion').isVisible(), false);
+    await clear(page);
     await page.locator('#drawingInput').setInputFiles([input('future-a.pdf')]);
     assert.equal(await page.locator('#uploadCompletion').isVisible(), false);
     assert.equal(await page.locator('#uploadPendingSection').evaluate((element) => element.open), true);
@@ -337,7 +389,7 @@ try {
     if (!process.env.SKIP_UI_QA_SCREENSHOTS) await page.screenshot({ path: path.join(output, `${name}.png`) });
     assert.deepEqual(layout.errors, []); await page.close();
   }
-  console.log('PASS: four upload entries, directory pagination, 50-file queue, pause/retry/auth/network, shared history, editing/late-response protection and responsive layouts.');
+  console.log('PASS: repeated files/folders across all four entries, independent same-name orders/progress/deletion, 50-file queue, pause/retry/auth/network, shared history and editing/late-response protection.');
 } finally {
   await browser.close(); await new Promise((resolve) => server.close(resolve));
   const resolvedTemporary = path.resolve(temporary);

@@ -12,7 +12,7 @@ for (const value of [12.5, 6.3, 0, -1, false, "NaN", "abc", Infinity]) {
   assert.equal(service.adopt(item), false);
   assert.equal(JSON.stringify(item), before, "Existing/invalid values are never replaced");
 }
-for (const extra of [{ unit: "mm" }, { roughness_conflict: true }, { derived_value_stale: true }, { formula_recommendation_stale: true }, { roughness_candidates: [{ value: 6.3 }] }]) {
+for (const extra of [{ unit: "mm" }, { roughness_conflict: true }, { derived_value_stale: true }, { formula_recommendation_stale: true }]) {
   const item = { ...missing(), ...extra };
   assert.equal(service.adopt(item), false);
   assert.equal(item.value, null);
@@ -27,6 +27,7 @@ for (const value of [12.5, 6.3]) {
 }
 for (const value of [0, -1, 3.2, "6.3", NaN, Infinity]) assert.equal(service.adopt(missing(), value), false);
 assert.equal(service.eligible({ ...missing(), source: ["human_edited"], roughness_candidates: [{ value: 6.3 }] }), false);
+assert.equal(service.candidateEvidence({ value: 3.2, evidence: "Ra3.2", evidence_status: "direct" })[0], "unverified", "Old/model direct labels are not proof");
 const evidenceFixtures = JSON.parse(fs.readFileSync("scripts/fixtures/roughness_evidence.json", "utf8"));
 for (const row of evidenceFixtures) assert.equal(service.assessEvidence(row.value, row.text, Boolean(row.structured))[0], row.status, row.text);
 const longEvidence = "Ra12.5或Ra6.3。我们再看，surface_roughness_ra应核对，need_human_review=true。";
@@ -35,7 +36,7 @@ const oldItem = { ...missing(), value: 6.3, source: ["qwen_vision"], evidence: l
 const beforeOld = JSON.stringify(oldItem);
 assert.equal(service.candidateEvidence(oldItem.roughness_candidates[0])[0], "unverified");
 assert.equal(service.evidenceEntries(oldItem).length, 1, "Repeated original evidence renders once");
-assert.ok(service.summary(oldItem).includes("依据不足"));
+assert.ok(service.summary(oldItem).includes("尚未核实"));
 assert.equal(JSON.stringify(oldItem), beforeOld, "Display fallback never rewrites an old value or its confirmation");
 const original = missing();
 original.confirmation_snapshot = { kind: "parameter", value: 12.5, tolerance_upper: null, tolerance_lower: null };

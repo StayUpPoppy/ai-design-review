@@ -24,6 +24,11 @@ def main() -> None:
     _assert_thinking_request_and_retry()
     assert "Ra 12.5" in QWEN_SYSTEM_PROMPT
     assert "H1/H2 只属于 load_points" in QWEN_SYSTEM_PROMPT
+    occurrences = [{"value": 6.3, "page": page, "position": {"x": .3, "y": .4, "width": .02, "height": .03, "coordinate_type": "normalized", "origin": "top_left"}, "evidence": "6.3"} for page in (1, 2)]
+    multiple = qwen_payload_to_candidates({"spring_type": "compression_spring", "parameters": {"surface_roughness_ra": {"value": 6.3, "occurrences": occurrences}}})
+    multiple = [c for c in multiple if c.get("field") == "surface_roughness_ra"]
+    assert len(multiple) == 2 and {c["page"] for c in multiple} == {1, 2}
+    assert all(c["roughness_model_claim"] and c["roughness_page_known"] and c["evidence_status"] == "unverified" for c in multiple)
     payload = parse_qwen_json(
         """
         ```json
@@ -116,7 +121,8 @@ def _assert_surface_roughness_fallbacks(rules: dict) -> None:
     assert roughness[0]["value"] == 12.5
     assert roughness[0]["surface_location"] == "端面"
     notes_review = DrawingReviewWorkflow(rules).run(None, notes_candidates, run_standardization=False)
-    assert notes_review["spring_parameters"]["surface_roughness_ra"]["value"] == 12.5
+    assert notes_review["spring_parameters"]["surface_roughness_ra"]["value"] is None
+    assert roughness[0]["evidence_status"] == "unverified"
     assert notes_review["spring_parameters"]["surface_roughness_ra"]["need_human_review"] is True
 
     bare_candidates = qwen_payload_to_candidates({"notes": "普通尺寸为 12.5，未标注粗糙度。"})
@@ -127,8 +133,8 @@ def _assert_surface_roughness_fallbacks(rules: dict) -> None:
         "notes": "左端面 Ra 12.5，右端面 Ra 12.5。",
     })
     duplicate_review = DrawingReviewWorkflow(rules).run(None, duplicate_candidates, run_standardization=False)
-    assert duplicate_review["spring_parameters"]["surface_roughness_ra"]["value"] == 12.5
-    assert duplicate_review["spring_parameters"]["surface_roughness_ra"]["surface_location"] == "两端面"
+    assert duplicate_review["spring_parameters"]["surface_roughness_ra"]["value"] is None
+    assert not duplicate_review["spring_parameters"]["surface_roughness_ra"].get("roughness_conflict")
 
     conflict_candidates = qwen_payload_to_candidates({
         "spring_type": {"value": "compression_spring", "label": "压缩弹簧"},
@@ -137,7 +143,7 @@ def _assert_surface_roughness_fallbacks(rules: dict) -> None:
     conflict_review = DrawingReviewWorkflow(rules).run(None, conflict_candidates, run_standardization=False)
     conflict = conflict_review["spring_parameters"]["surface_roughness_ra"]
     assert conflict["value"] is None
-    assert conflict["roughness_conflict"] is True
+    assert not conflict.get("roughness_conflict"), "Unverified claims are not a proven drawing conflict"
     assert {item["value"] for item in conflict["roughness_candidates"]} == {6.3, 12.5}
 
 

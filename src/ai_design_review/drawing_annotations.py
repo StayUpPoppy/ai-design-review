@@ -292,6 +292,9 @@ def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], bloc
     annotations = []
     for index, field in enumerate(FIELDS):
         param = params.get(field) or {}
+        if field == "surface_roughness_ra":
+            annotations.append(roughness_annotation(param, candidates, blocks))
+            continue
         sources = param.get("source") or []
         sources = sources if isinstance(sources, list) else [sources]
         edited = any(s in {"human_edited", "manual"} for s in sources)
@@ -381,6 +384,42 @@ def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], bloc
                             "status": "located" if locations else "empty" if empty else "unlocated",
                             "reason": "" if locations else reason})
     return annotations
+
+
+def roughness_annotation(param, candidates, blocks):
+    from .surface_roughness import (ROUGHNESS_VERIFICATION_VERSION, merge_roughness_candidates,
+                                    verified_roughness_candidate, verify_roughness_candidates, roughness_selection, roughness_value_verified)
+    claims = param.get("roughness_candidates") or [c for c in candidates if c.get("field") == "surface_roughness_ra"]
+    from .standardizers.calculation_state import human_override
+    if not claims and _recognized(param) and not human_override(param) and param.get("value") is not None:
+        claims = [param]
+    verified = [c for c in claims if roughness_value_verified(c)]
+    pending = [c for c in claims if not roughness_value_verified(c)]
+    # Raw OCR can resolve a retry before the review draft is saved. Final API
+    # verification uses the same function and the actual document identity.
+    grounded = verify_roughness_candidates(pending, blocks, "annotation-draft", dimension_candidates=candidates)
+    verified = merge_roughness_candidates([*verified, *grounded])
+    accepted, conflict, _ = roughness_selection(verified)
+    locations = []
+    for candidate in accepted:
+        if not verified_roughness_candidate(candidate):
+            continue
+        for ref in candidate["independent_evidence"]:
+            box = ref["position"]
+            if any(l["page"] == ref["page"] and _same_text_box(l["bbox"], box) and l["evidence_value"] == candidate["value"] for l in locations):
+                continue
+            identifier = hashlib.sha256(json.dumps([ref["page"], box, candidate["value"]], sort_keys=True).encode()).hexdigest()[:12]
+            locations.append({"location_id": f"surface_roughness_ra-{identifier}", "page": ref["page"], "bbox": copy.deepcopy(box),
+                              "anchor": {"x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2},
+                              "bubble": {"x": min(.98, box["x"] + box["width"] + .025), "y": max(.02, box["y"] - .025)},
+                              "source": ref["source"], "evidence": ref["text"], "evidence_value": candidate["value"]})
+    value = accepted[0]["value"] if accepted and not conflict else None
+    return {"annotation_id": "surface_roughness_ra", "field": "surface_roughness_ra", "number": 12, "label": LABELS[11],
+            "original_value": value, "evidence": " | ".join(dict.fromkeys(c.get("evidence", "") for c in accepted)),
+            "evidence_pages": sorted({l["page"] for l in locations}) or [1], "locations": locations,
+            "status": "located" if locations else "unlocated" if claims else "empty",
+            "reason": "" if locations else "粗糙度位置或数值待核对，可重新补定位或人工定位。" if claims else "未识别到粗糙度标注。",
+            "verification_version": ROUGHNESS_VERIFICATION_VERSION}
 
 
 def _nominal_outer_evidence(blocks: list[dict[str, Any]]) -> tuple[float, dict[str, Any]] | None:
@@ -473,13 +512,13 @@ def _annotation_diagnostics(review: dict[str, Any], annotations: list[dict[str, 
 
 def _local_ocr_blocks(job_dir: Path, pages: list[dict[str, Any]], document_id: str,
                       review: dict[str, Any], candidates: list[dict[str, Any]], existing: list[dict[str, Any]],
-                      *, retry: bool = False):
+                      *, retry: bool = False, verification_requests: list[dict[str, Any]] | None = None):
     from .annotation_ocr import local_ocr_blocks
-    return local_ocr_blocks(job_dir, pages, document_id, review, candidates, existing, retry=retry)
+    return local_ocr_blocks(job_dir, pages, document_id, review, candidates, existing, retry=retry,
+                            verification_requests=verification_requests)
 
 
-def build_annotations(review: dict[str, Any], job_dir: Path, url_for: Callable[[Path], str],
-                      *, candidates_payload: dict[str, Any] | None = None, allow_ocr: bool = True, retry_ocr: bool = False) -> dict[str, Any]:
+def annotation_source(job_dir: Path, url_for: Callable[[Path], str]) -> tuple[dict[str, Any], Path | None]:
     pages = preview_manifest(job_dir, url_for)
     sources = sorted((job_dir / "inputs").glob("*"))
     source = next((p for p in sources if p.suffix.lower() in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}), None)
@@ -491,6 +530,13 @@ def build_annotations(review: dict[str, Any], job_dir: Path, url_for: Callable[[
     digest.update(json.dumps([(p["page"], p["width"], p["height"], p["image_url"]) for p in pages]).encode())
     document = {"schema_version": "original_annotations/v1", "algorithm_version": ALGORITHM_VERSION, "source_document_id": digest.hexdigest(),
                 "annotation_revision": 1, "pages": pages, "annotations": [], "warnings": []}
+    return document, source
+
+
+def build_annotations(review: dict[str, Any], job_dir: Path, url_for: Callable[[Path], str],
+                      *, candidates_payload: dict[str, Any] | None = None, allow_ocr: bool = True, retry_ocr: bool = False) -> dict[str, Any]:
+    document, source = annotation_source(job_dir, url_for)
+    pages = document["pages"]
     if review.get("drawing_summary", {}).get("spring_type") != "compression_spring":
         return document
     payload = candidates_payload
@@ -510,10 +556,21 @@ def build_annotations(review: dict[str, Any], job_dir: Path, url_for: Callable[[
     blocks.extend(ocr_blocks(payload.get("raw_payloads") or {}, eligible, unavailable_pages=unavailable_pages))
     document["annotations"] = locate_fields(review, candidates, blocks)
     missing = any(a["status"] == "unlocated" and a["original_value"] is not None for a in document["annotations"])
+    from .surface_roughness import ROUGHNESS_VERIFICATION_VERSION, grounded_roughness_evidence, positive_surface_roughness, verified_roughness_candidate, roughness_request_key
+    roughness = (review.get("spring_parameters") or {}).get("surface_roughness_ra") or {}
+    verification_requests = [{"field": "surface_roughness_ra", "original_value": c["value"], "page": c.get("page") or 1,
+                              "evidence_pages": [c.get("page") or 1], "position": c.get("position"), "status": "unlocated",
+                              "request_key": roughness_request_key(c)}
+                             for c in roughness.get("roughness_candidates") or []
+                             if isinstance(c, dict) and positive_surface_roughness(c.get("value")) is not None and not verified_roughness_candidate(c)
+                             and not grounded_roughness_evidence(c, blocks, dimension_candidates=candidates)[0]]
+    for request in verification_requests:
+        request["roughness_claim"] = next(c for c in roughness["roughness_candidates"] if c["value"] == request["original_value"])
     states = {}
-    if allow_ocr and missing and eligible:
+    if allow_ocr and (missing or verification_requests) and eligible:
         try:
-            local, warnings, states = _local_ocr_blocks(job_dir, eligible, document["source_document_id"], review, candidates, blocks, retry=retry_ocr)
+            local, warnings, states = _local_ocr_blocks(job_dir, eligible, document["source_document_id"], review, candidates, blocks,
+                                                       retry=retry_ocr, verification_requests=verification_requests)
             blocks = _unique_blocks(blocks + local)
             document["warnings"].extend(warnings)
             document["annotations"] = locate_fields(review, candidates, blocks)
@@ -536,15 +593,17 @@ def build_annotations(review: dict[str, Any], job_dir: Path, url_for: Callable[[
             # Preserve a reliable field's evidence metadata as well as its
             # coordinates. Legacy metadata contradicting its own saved glyphs
             # is rebuilt instead (parameters themselves are never changed).
-            if automatic and all(_value_matches(prior.get("original_value"), l.get("evidence", ""), annotation["field"]) for l in automatic):
+            if annotation["field"] != "surface_roughness_ra" and automatic and all(_value_matches(prior.get("original_value"), l.get("evidence", ""), annotation["field"]) for l in automatic):
                 document["annotations"][index] = copy.deepcopy(prior)
     document["diagnostics"] = _annotation_diagnostics(review, document["annotations"], states)
+    document["roughness_evidence_signature"] = roughness_refresh_key(review)
     return document
 
 
 def merge_annotation_upgrade(current: dict[str, Any], rebuilt: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
     """Merge while holding the persistence lock, including edits made during OCR."""
-    if not force and current.get("algorithm_version") == ALGORITHM_VERSION:
+    roughness_refresh = rebuilt.get("roughness_only_refresh") is True
+    if not force and not roughness_refresh and current.get("algorithm_version") == ALGORITHM_VERSION:
         return current
     if current.get("source_document_id") != rebuilt.get("source_document_id"):
         failed = copy.deepcopy(current)
@@ -556,7 +615,10 @@ def merge_annotation_upgrade(current: dict[str, Any], rebuilt: dict[str, Any], *
     old = {a["annotation_id"]: a for a in current.get("annotations", [])}
     for annotation in result.get("annotations", []):
         previous = old.get(annotation["annotation_id"], {})
-        if force and previous.get("locations"):
+        if roughness_refresh and annotation["field"] != "surface_roughness_ra":
+            annotation.update(copy.deepcopy(previous))
+            continue
+        if force and previous.get("locations") and annotation["field"] != "surface_roughness_ra":
             annotation.update({k: copy.deepcopy(previous[k]) for k in ("locations", "status", "reason")})
             continue
         available = list(annotation["locations"])
@@ -579,7 +641,8 @@ def merge_annotation_upgrade(current: dict[str, Any], rebuilt: dict[str, Any], *
                     same_page = [l for l in remaining if l["page"] == location["page"]]
                     if same_page:
                         nearest = min(same_page, key=lambda l: -_overlap(l["bbox"], location["bbox"]) if l.get("bbox") and location.get("bbox") else math.hypot(l["anchor"]["x"] - location["anchor"]["x"], l["anchor"]["y"] - location["anchor"]["y"]))
-                        remaining.remove(nearest)
+                        if annotation["field"] != "surface_roughness_ra" or _same_text_box(nearest.get("bbox"), location.get("bbox")) or math.hypot(nearest["anchor"]["x"] - location["anchor"]["x"], nearest["anchor"]["y"] - location["anchor"]["y"]) < .01:
+                            remaining.remove(nearest)
             annotation["locations"] = copy.deepcopy(protected) + remaining
             annotation["status"] = "located"
             annotation["reason"] = ""
@@ -587,6 +650,8 @@ def merge_annotation_upgrade(current: dict[str, Any], rebuilt: dict[str, Any], *
                 annotation["reason"] = "旧位置来源不明，已保留，请核对。"
     result["annotation_revision"] = current.get("annotation_revision", 1) + 1
     for annotation in result.get("annotations", []):
+        if roughness_refresh and annotation["field"] != "surface_roughness_ra":
+            continue
         distinct = []
         for location in annotation["locations"]:
             if location.get("source") in AUTOMATIC_SOURCES and any(
@@ -596,7 +661,37 @@ def merge_annotation_upgrade(current: dict[str, Any], rebuilt: dict[str, Any], *
                 continue
             distinct.append(location)
         annotation["locations"] = distinct
-    _prune_resolved_diagnostics(result)
+    if not roughness_refresh:
+        _prune_resolved_diagnostics(result)
+    return result
+
+
+def roughness_refresh_key(review):
+    from .surface_roughness import ROUGHNESS_VERIFICATION_VERSION
+    item = (review.get("spring_parameters") or {}).get("surface_roughness_ra") or {}
+    # Only evidence that affects locations belongs to this signature. Saving
+    # adds audit/source metadata without changing an annotation revision.
+    evidence = sorted({json.dumps([c.get("value"), c.get("value_verified"), c.get("recognition_state"), c.get("verification_method"), c.get("independent_evidence", []), c.get("numeric_evidence", []), c.get("expected_locations", 1)], sort_keys=True, ensure_ascii=False)
+                       for c in item.get("roughness_candidates", [])})
+    return hashlib.sha256(json.dumps([ROUGHNESS_VERIFICATION_VERSION, item.get("source_document_id"), evidence], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def refresh_roughness_annotations(current, review):
+    """Build a narrow upgrade; persistence merges the latest manual positions."""
+    result = copy.deepcopy(current)
+    param = (review.get("spring_parameters") or {}).get("surface_roughness_ra") or {}
+    if param.get("source_document_id") and param["source_document_id"] != current.get("source_document_id"):
+        result["roughness_evidence_signature"] = roughness_refresh_key(review)
+        result["roughness_only_refresh"] = True
+        warning = "粗糙度核验的原图标识已变化，已保留现有位置，请核对原图。"
+        if warning not in result.setdefault("warnings", []):
+            result["warnings"].append(warning)
+        return result
+    annotation = roughness_annotation(param, [], [])
+    result["annotations"] = [annotation if a.get("field") == "surface_roughness_ra" else a for a in result.get("annotations", [])]
+    result["roughness_evidence_signature"] = roughness_refresh_key(review)
+    result["roughness_only_refresh"] = True
+    result["diagnostics"] = [d for d in result.get("diagnostics", []) if d.get("field") != "surface_roughness_ra"]
     return result
 
 
@@ -679,9 +774,9 @@ def apply_annotation_patch(document: dict[str, Any], body: dict[str, Any]) -> di
 
 
 @contextmanager
-def annotation_file_lock(job_dir: Path):
+def annotation_file_lock(job_dir: Path, filename: str = "annotations.lock"):
     """OS lock works across API processes; parameter JSON never writes this sidecar."""
-    path = job_dir / "annotations.lock"
+    path = job_dir / filename
     with path.open("a+b") as stream:
         if os.name == "nt":
             import msvcrt

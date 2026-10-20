@@ -72,7 +72,14 @@ def crop_regions(image: Image.Image, blocks: list[dict[str, Any]], missing: list
 
 def local_ocr_blocks(job_dir: Path, pages: list[dict[str, Any]], document_id: str,
                      review: dict[str, Any], candidates: list[dict[str, Any]], existing: list[dict[str, Any]],
-                     *, retry: bool = False) -> tuple[list[dict[str, Any]], list[str], dict[str, str]]:
+                     *, retry: bool = False, verification_requests: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], list[str], dict[str, str]]:
+    from .drawing_annotations import annotation_file_lock
+    with annotation_file_lock(job_dir, "annotation_ocr.lock"):
+        return _local_ocr_blocks_locked(job_dir, pages, document_id, review, candidates, existing,
+                                        retry=retry, verification_requests=verification_requests or [])
+
+
+def _local_ocr_blocks_locked(job_dir, pages, document_id, review, candidates, existing, *, retry, verification_requests):
     from .drawing_annotations import ALGORITHM_VERSION, _unique_blocks, atomic_annotation_write, locate_fields, ocr_blocks, page_sort_key
     from .engines.ocr_providers import RapidOcrProvider
 
@@ -84,9 +91,19 @@ def local_ocr_blocks(job_dir: Path, pages: list[dict[str, Any]], document_id: st
     if cache.get("source_document_id") != document_id or cache.get("algorithm_version") != ALGORITHM_VERSION or cache.get("cache_format") != 4:
         cache = {"source_document_id": document_id, "algorithm_version": ALGORITHM_VERSION, "cache_format": 4, "blocks": [], "full": {}, "regions": {}, "handled_fields": {}, "warnings": []}
     cache.setdefault("handled_fields", {})
+    cache.setdefault("errors", {})
     protected = {a["field"] for a in (review.get("drawing_annotations") or {}).get("annotations", []) if a.get("locations")} if retry else set()
-    unresolved = [a for a in locate_fields(review, candidates, _unique_blocks(existing + cache["blocks"]))
-                  if a["status"] == "unlocated" and a["original_value"] is not None and a["field"] not in protected]
+    protected.discard("surface_roughness_ra")
+    def missing_requests(blocks):
+        from .surface_roughness import grounded_roughness_evidence
+        ordinary = [a for a in locate_fields(review, candidates, blocks)
+                    if a["status"] == "unlocated" and a["original_value"] is not None and a["field"] not in protected]
+        for request in verification_requests:
+            claim = request.get("roughness_claim") or {"value": request["original_value"], "page": request["page"]}
+            if not grounded_roughness_evidence(claim, blocks, dimension_candidates=candidates)[0]:
+                ordinary.append(request)
+        return ordinary
+    unresolved = missing_requests(_unique_blocks(existing + cache["blocks"]))
     if not unresolved:
         return cache["blocks"], [], {field: "located" for field in protected}
     requested_pages = {number for a in unresolved for number in a.get("evidence_pages", [1])}
@@ -118,11 +135,12 @@ def local_ocr_blocks(job_dir: Path, pages: list[dict[str, Any]], document_id: st
                 block["source"] = "local_ocr"
                 cache["blocks"].append(block)
             cache["full"][key] = "completed"
-        except Exception:
+        except Exception as exc:
             cache["full"][key] = "failed"
+            cache["errors"][f"full:{key}"] = f"{type(exc).__name__}: {exc}"
 
     combined = _unique_blocks(existing + cache["blocks"])
-    annotations = locate_fields(review, candidates, combined)
+    annotations = missing_requests(combined)
     states = {}
     for page in pages:
         number = page["page"]
@@ -132,7 +150,8 @@ def local_ocr_blocks(job_dir: Path, pages: list[dict[str, Any]], document_id: st
         fields = sorted(a["field"] for a in missing)
         for field in fields:
             states[field] = "not_run"
-        if not retry and set(fields) <= set(cache["handled_fields"].get(str(number), [])):
+        request_keys = sorted({a.get("request_key", a["field"]) for a in missing})
+        if not retry and set(request_keys) <= set(cache["handled_fields"].get(str(number), [])):
             for field in fields:
                 states[field] = cache.get("field_states", {}).get(field, "completed_unmatched")
             continue
@@ -140,15 +159,24 @@ def local_ocr_blocks(job_dir: Path, pages: list[dict[str, Any]], document_id: st
             with Image.open(canonical(number)) as image:
                 width, height = image.size
                 regions = crop_regions(image, combined, missing, number)
+                hints = [a.get("position") for a in missing if a.get("position")]
+                hinted = []
+                for b in hints:
+                    if b.get("coordinate_type") == "normalized":
+                        hinted.extend((max(0, b["x"] - .025), max(0, b["y"] - .025), min(1, b["x"] + b["width"] + .025), min(1, b["y"] + b["height"] + .025), angle) for angle in (0, 90, 270))
+                regions = list(dict.fromkeys([*hinted, *regions]))
                 inputs, transforms, records = [], [], []
-                for x0, y0, x1, y1, angle in regions[:12]:
+                for x0, y0, x1, y1, angle in regions:
+                    if len(inputs) >= 12:
+                        break
                     bounds = (int(x0 * width), int(y0 * height), min(width, math.ceil(x1 * width)), min(height, math.ceil(y1 * height)))
                     signature = hashlib.sha256(json.dumps([number, bounds, angle]).encode()).hexdigest()[:16]
                     record = cache["regions"].get(signature)
-                    if record and not retry:
+                    if record and (not retry or record["status"] == "completed"):
                         for field in fields:
                             states[field] = "failed" if record["status"] == "failed" else "completed_unmatched"
                         continue
+                    # The cap is per invocation/page, not a lifetime cache cap.
                     crop = image.crop(bounds)
                     crop = crop.resize((crop.width * 2, crop.height * 2)).rotate(angle, expand=True)
                     target = folder / f"crop-{signature}.png"
@@ -161,7 +189,7 @@ def local_ocr_blocks(job_dir: Path, pages: list[dict[str, Any]], document_id: st
                     # becomes a completed page. Failures retain their signature.
                     for (_, _, signature), record in zip(transforms, records):
                         cache["regions"][signature] = record
-                    cache["handled_fields"][str(number)] = sorted(set(cache["handled_fields"].get(str(number), []) + fields))
+                    cache["handled_fields"][str(number)] = sorted(set(cache["handled_fields"].get(str(number), []) + request_keys))
                     raw_pages = RapidOcrProvider().recognize(inputs, {})
                     for raw, (bounds, angle, signature) in zip(raw_pages, transforms):
                         cache["regions"][signature]["status"] = "completed"
@@ -179,7 +207,8 @@ def local_ocr_blocks(job_dir: Path, pages: list[dict[str, Any]], document_id: st
                             cache["blocks"].append({"page": number, "text": block["text"], "position": position, "source": "local_ocr", "reading_angle": angle, "region_id": signature})
                     for field in fields:
                         states[field] = "failed" if any(cache["regions"][signature]["status"] == "failed" for _, _, signature in transforms) else "completed_unmatched"
-        except Exception:
+        except Exception as exc:
+            cache["errors"][f"regions:{number}"] = f"{type(exc).__name__}: {exc}"
             for field in fields:
                 states[field] = "failed"
     combined = _unique_blocks(existing + cache["blocks"])
