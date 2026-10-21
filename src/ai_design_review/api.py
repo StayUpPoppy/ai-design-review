@@ -49,6 +49,7 @@ from .io_utils import project_path, read_json, write_json
 from .generation_contract import apply_generation_defaults
 from .generation_persistence import FinalGenerationAlreadySelectedError, GenerationStore, SolidWorksTaskCancelledError
 from .generation_readiness import assess_generation_readiness, build_generation_parameter_package
+from .generation_settings import normalize_generation_settings
 from .generation_schemas import (
     GenerationArtifactListResponse,
     GenerationArtifactResponse,
@@ -425,7 +426,7 @@ def get_generation_package(job_id: str, identity: IdentityContext = Depends(requ
         "review_id": job_id,
         "review_revision": revision,
         "generation_readiness": readiness,
-        "parameter_package": build_generation_parameter_package(review),
+        "parameter_package": _generation_package_for_identity(review, identity),
     }
 
 
@@ -518,7 +519,7 @@ def match_review_generation_template(
 ) -> dict[str, Any]:
     _require_generation_database()
     review, revision = _load_generation_review(job_id, identity)
-    package = build_generation_parameter_package(review)
+    package = _generation_package_for_identity(review, identity)
     match = match_generation_template(
         review,
         package,
@@ -557,7 +558,7 @@ def create_generation_job(
             status_code=409,
             detail={"code": "generation_not_ready", "generation_readiness": readiness},
         )
-    package = build_generation_parameter_package(review)
+    package = _generation_package_for_identity(review, identity)
     store = GenerationStore(REVIEW_PERSISTENCE)
     match = match_generation_template(
         review,
@@ -582,6 +583,7 @@ def create_generation_job(
         "template_version": selected["version"],
         "requested_artifact_types": body.requested_artifact_types,
         "mock_scenario": body.mock_scenario,
+        "generation_settings": package.get("generation_settings"),
     }
     fingerprint = request_fingerprint(normalized_request)
     try:
@@ -2392,6 +2394,11 @@ def _save_review_persistence(
     events: list[dict[str, Any]] | None = None,
     identity: IdentityContext,
 ) -> dict[str, Any]:
+    if "generation_settings" in review:
+        try:
+            review["generation_settings"] = normalize_generation_settings(review["generation_settings"], allow_blank=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail={"code": "generation_settings_invalid", "message": str(exc)}) from exc
     previous, _ = _load_persisted_review(job_id, review_path, identity)
     incoming_ra = (review.get("spring_parameters") or {}).get("surface_roughness_ra") or {}
     current_ra = (previous.get("spring_parameters") or {}).get("surface_roughness_ra") or {}
@@ -3303,8 +3310,18 @@ def _generation_artifact_response(artifact: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _generation_package_for_identity(review: dict[str, Any], identity: IdentityContext) -> dict[str, Any]:
+    try:
+        return build_generation_parameter_package(review, identity=identity.as_public_dict())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "generation_settings_invalid", "message": str(exc)}) from exc
+
+
 def _generation_job_response(job: dict[str, Any]) -> dict[str, Any]:
     result = dict(job)
+    settings = (job.get("parameter_package") or {}).get("generation_settings")
+    if settings is not None:
+        result["generation_settings"] = dict(settings)
     result.pop("parameter_package", None)
     result["artifacts"] = [_generation_artifact_response(item) for item in job.get("artifacts") or []]
     result["is_stale"] = False

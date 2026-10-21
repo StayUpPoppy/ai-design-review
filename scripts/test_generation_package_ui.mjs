@@ -19,6 +19,7 @@ assert.notEqual(handednessStart, -1, "handedness normalizer must exist");
 assert.notEqual(handednessEnd, -1, "handedness normalizer block must be complete");
 
 const context = {
+  validateCurrentGenerationSettings: () => {}, syncGenerationSettingsControls: () => {},
   structuredClone,
   TECH_LABELS: { surface: "表面处理" },
   GENERATION_TECHNICAL_REQUIREMENT_LABELS: {

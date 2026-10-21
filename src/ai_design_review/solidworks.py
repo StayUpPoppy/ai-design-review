@@ -129,7 +129,9 @@ def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str
     roughness = confirmed_surface_roughness(review)
     if roughness is not None:
         title_block["表面粗糙度"] = roughness["value"]
-    return {"modelParameters": build_solidworks_model_parameters(parameter_package, review),
+    settings = parameter_package.get("generation_settings")
+    return {**({"DrawingModel": settings["drawing_model"], "Username": settings["username"]} if settings else {}),
+            "modelParameters": build_solidworks_model_parameters(parameter_package, review),
             "customProperties": {"旋向": handedness_label(_parameter_value(parameters.get("handedness")))},
             "extraProperties": extra, "titleBlockProperties": title_block}
 

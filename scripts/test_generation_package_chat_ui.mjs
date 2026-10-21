@@ -57,6 +57,7 @@ const context = {
   refreshReviewSurfaces: () => { refreshCount += 1; },
   activateReviewContext: () => state.review,
   flushReviewPersistence: async () => true,
+  validateCurrentGenerationSettings: () => {}, syncGenerationSettingsControls: () => {},
   apiFetch: async () => ({
     ok: true,
     json: async () => ({

@@ -2,6 +2,16 @@
 
 新建任务的 SW 请求与 `solidworks_preview` 使用相同模型投影。内部 `spring_generation_parameters/v2` 继续保留结构化材料、载荷点和原图技术要求；`solidworks_preview` 提供最终 SW 专用文本。
 
+## 生图版式及姓名
+
+“生图参数包”按钮上方提供图纸版式及生图人姓名。首次默认横版，姓名优先取 `/api/session` 的 `identity.real_name`，其次为 `username`；按订单恢复上次保存值。姓名主动清空后保持为空，保存草稿允许空值，导出及生图前要求非空且不超过256字符，只去除首尾空格。修改设置不撤销弹簧参数确认，也不改动登录身份或审计操作者。
+
+审图JSON的可选 `generation_settings` 保存 `{"drawing_model":"X型","username":"阿拉伯特"}`。`X型`表示横版，`Y型`表示竖版。前端预览、手动和对话导出，以及新任务冻结参数包使用同一份设置；最终字段为模型对象同级的 `DrawingModel`、`Username`，不放入建模参数或标题栏。旧接口调用缺少设置时，服务端取横版及当前登录姓名；已有冻结包缺少字段时继续原样读取和重试。
+
+任务列表显示冻结的版式和姓名，历史版本不会随输入框修改。“原参数重试”沿用冻结值；真实SW“重新生图”按当前已保存修订创建新TaskId。设置纳入参数哈希和幂等比较；保存失败不创建任务，晚到响应不得覆盖其他订单。无需数据库迁移。离线验证使用 `scripts/test_generation_settings.py` 和 `scripts/test_generation_settings_browser.mjs`，均不调用真实SW或云端模型。
+
+## 请求示例
+
 ```json
 {
   "TaskId": 1000000099,
@@ -9,6 +19,8 @@
     "modelId": 1,
     "modelName": "订单2",
     "modelLabel": "压缩弹簧",
+    "DrawingModel": "X型",
+    "Username": "阿拉伯特",
     "materialCode": null,
     "modelParameters": {
       "线径": 1.8,

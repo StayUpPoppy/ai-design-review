@@ -207,6 +207,7 @@
     const modelParameters = Object.fromEntries([["线径", "wire_diameter"], ["中径", "mean_diameter"], ["自由高度", "free_length"], ["圈数", "total_coils"], ["有效圈数n", "active_coils"], ["是否磨平", "end_grinding"], ["是否并紧", "end_coils_closed"]].map(([label, field]) => [label, parameterValue(parameters[field])]));
     if (modelParameters["是否并紧"] === 0) delete modelParameters["有效圈数n"];
     return {
+      ...(packageData.generation_settings ? { DrawingModel: packageData.generation_settings.drawing_model, Username: packageData.generation_settings.username } : {}),
       modelParameters,
       customProperties: { "旋向": handedness(parameterValue(parameters.handedness)) }, extraProperties: extra, titleBlockProperties: titleBlock,
     };

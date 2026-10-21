@@ -34,6 +34,12 @@ API_DESCRIPTION = """
 4. 创建生图任务后，服务端为真实 SolidWorks 分配十位 `TaskId` 并主动提交冻结参数；前端轮询任务状态并下载生成产物。
 5. SolidWorks 通过可信内网的状态回调上报进度，完成时回传二维 PDF 的纯 Base64 数据。
 6. 修改参数或失败后重新生图时创建新的 `TaskId`；最终确认当前修订对应的完成版本。
+
+### 生图版式与姓名
+
+审图JSON可选 `generation_settings`：`drawing_model`只允许`X型`（横版）或`Y型`（竖版），`username`是输入的图纸署名，去首尾空格，最长256字符。PATCH保存允许空姓名草稿；参数包导出及创建任务要求非空，非法设置返回422及`generation_settings_invalid`。缺少设置的旧客户端默认横版和当前登录身份的`real_name`（其次`username`）。创建任务仍使用`expected_review_revision`读取已保存设置，无需另传一份设置。
+
+新参数包的`generation_settings`、`solidworks_preview.DrawingModel/Username`及实际SW的`models[].DrawingModel/Username`保持一致，设置纳入参数哈希及幂等比较。任务响应提供从该任务冻结参数包读取的可选`generation_settings`；旧任务缺少时不补写，原参数重试保持冻结值，重新生图创建新TaskId。该署名不改变登录用户、权限或审计身份。
 """.strip()
 
 

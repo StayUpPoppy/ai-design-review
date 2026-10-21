@@ -209,8 +209,16 @@ class GenerationExportPolicyV2(BaseModel):
     readiness_is_advisory: bool = Field(description="参数包可导出但创建任务仍必须通过服务端就绪检查。")
 
 
+class GenerationSettings(BaseModel):
+    drawing_model: Literal["X型", "Y型"] = Field(description="图纸版式：X型为横版，Y型为竖版。")
+    username: str = Field(min_length=1, max_length=256, description="本次图纸署名，来自用户输入；不改变登录身份。")
+
+
 class SolidWorksPreviewV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    DrawingModel: Literal["X型", "Y型"] | None = Field(default=None, exclude_if=lambda value: value is None, description="X型横版、Y型竖版；旧冻结预览可缺少。")
+    Username: str | None = Field(default=None, exclude_if=lambda value: value is None, description="本次输入的生图人姓名；旧冻结预览可缺少。")
 
     modelParameters: dict[str, int | float | str | None] = Field(
         description="SolidWorks 建模字段：线径、中径、自由高度、圈数、是否磨平、是否并紧；是否并紧为0时省略有效圈数n，否则保留该键。内部有效圈数及确认规则不变；不含 TaskId。"
@@ -226,10 +234,12 @@ class SolidWorksPreviewV2(BaseModel):
 
 
 class GenerationParameterPackageV2(GenerationParameterPackageV1):
+    generation_settings: GenerationSettings | None = Field(default=None, exclude_if=lambda value: value is None, description="本次版式和姓名快照；历史参数包允许缺少。")
     model_config = ConfigDict(
         extra="forbid",
         json_schema_extra={"examples": [{
             "schema_version": "spring_generation_parameters/v2",
+            "generation_settings": {"drawing_model": "X型", "username": "阿拉伯特"},
             "package_type": "confirmed_compression_spring_generation_input",
             "generated_at": "2026-09-08T08:00:00+00:00",
             "export_policy": {
@@ -319,6 +329,7 @@ class GenerationArtifactView(BaseModel):
 
 
 class GenerationJobView(BaseModel):
+    generation_settings: GenerationSettings | None = Field(default=None, exclude_if=lambda value: value is None, description="仅从该任务冻结参数包读取的版式及姓名。")
     generation_id: str = Field(description="生图任务 ID。")
     review_id: str = Field(description="关联的审图任务 ID。")
     review_revision: int = Field(description="创建任务时固化的审图修订号。")

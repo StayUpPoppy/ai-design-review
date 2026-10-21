@@ -83,10 +83,10 @@ def assess_parameter_change_impact(review: dict[str, Any], actions: list[dict[st
     unchanged_count = sum(1 for key in after_issue_map if key in before_issue_map)
 
     before_generation_parameters = (
-        build_generation_parameter_package(before_review).get("generation_parameters") or {}
+        build_generation_parameter_package({k: v for k, v in before_review.items() if k != "generation_settings"}).get("generation_parameters") or {}
     )
     after_generation_parameters = (
-        build_generation_parameter_package(after_review).get("generation_parameters") or {}
+        build_generation_parameter_package({k: v for k, v in after_review.items() if k != "generation_settings"}).get("generation_parameters") or {}
     )
     before_package = before_generation_parameters.get("spring_parameters") or {}
     after_package = after_generation_parameters.get("spring_parameters") or {}

@@ -1315,6 +1315,9 @@ class GenerationStore:
             "completed_at": record.completed_at.isoformat() if record.completed_at else None,
             "artifacts": [self._artifact(item) for item in artifacts],
         }
+        settings = (record.parameter_package or {}).get("generation_settings")
+        if settings is not None:
+            result["generation_settings"] = copy.deepcopy(settings)
         if include_package:
             result["parameter_package"] = copy.deepcopy(record.parameter_package)
         return result

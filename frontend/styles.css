@@ -180,6 +180,18 @@ button:disabled {
   padding: 18px 12px;
 }
 
+.generation-settings { margin: 16px 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #f8faff; }
+.generation-settings > strong { display: block; margin-bottom: 10px; font-size: 13px; }
+.generation-settings-fields { display: grid; grid-template-columns: minmax(88px, 1fr) minmax(120px, 1.5fr); gap: 12px; }
+.generation-settings-fields label { display: grid; gap: 6px; min-width: 0; color: var(--muted); font-size: 12px; }
+.generation-settings-fields :is(input, select) { width: 100%; min-width: 0; min-height: 36px; color: var(--ink); }
+.generation-settings-fields input[aria-invalid="true"] { border-color: var(--fail); }
+.generation-settings-error { margin: 8px 0 0; color: var(--fail); font-size: 12px; }
+.generation-settings-save { margin-top: 6px; color: var(--muted); font-size: 12px; }
+.generation-settings-save:empty { display: none; }
+.generation-settings-save button { margin-left: 6px; min-height: 28px; padding: 2px 6px; font-size: 12px; }
+@media (max-width: 640px) { .generation-settings-fields { grid-template-columns: minmax(0, 1fr); } }
+
 .history-sidebar-top {
   position: sticky;
   top: 0;

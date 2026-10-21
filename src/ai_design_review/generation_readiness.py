@@ -18,6 +18,7 @@ from .spring_templates import FIELD_LABELS
 from .spring_feasibility import assess_parameter_reasonableness
 from .surface_roughness import confirmed_surface_roughness_requirement, ensure_surface_roughness_parameter
 from .solidworks import build_solidworks_preview
+from .generation_settings import resolve_generation_settings
 from .standardizers.design_checks import FORCE_UNITS, LENGTH_UNITS
 from .load_points import (
     canonical_load_point_label,
@@ -111,7 +112,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]:
+def build_generation_parameter_package(review: dict[str, Any], *, identity: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build a compact drawing package from the fields the reviewer has confirmed."""
 
     ensure_surface_roughness_parameter(review)
@@ -166,6 +167,9 @@ def build_generation_parameter_package(review: dict[str, Any]) -> dict[str, Any]
         },
         "derived_parameters": _export_derived_parameters(review, parameters),
     }
+    settings = resolve_generation_settings(review, identity)
+    if settings is not None:
+        package["generation_settings"] = settings
     package["solidworks_preview"] = build_solidworks_preview(package, review)
     return package
 
