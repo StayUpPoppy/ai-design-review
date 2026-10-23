@@ -392,7 +392,7 @@ def _assert_legacy_surface_roughness_is_promoted() -> None:
         "type": "surface_roughness",
         "content": "两端面粗糙度 Ra 12.5μm",
         "need_human_review": False,
-        "source": ["qwen_vision"],
+        "source": ["qwen_vision", "human_confirmed"],
     })
     assert ensure_surface_roughness_parameter(review) is True
     roughness = review["spring_parameters"]["surface_roughness_ra"]
@@ -457,7 +457,7 @@ def _assert_contract_validation() -> None:
     cases = [
         ("wire_diameter", -1),
         ("mean_diameter", 2),
-        ("total_coils", 10.5),
+        ("total_coils", 0),
         ("active_coils", 13),
         ("handedness", "clockwise"),
         ("end_grinding", 2),

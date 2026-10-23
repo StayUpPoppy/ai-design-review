@@ -25,6 +25,15 @@ def assess_parameter_reasonableness(
 
     parameters = review.get("spring_parameters") or {}
     issues = _compression_issues(parameters, review, include_missing_context=True)
+    linkage = review.get("diameter_linkage") or {}
+    if linkage.get("status") == "invalid":
+        reason = linkage.get("reason") or "三径联动条件无效，请核对线径及直径。"
+        issues.append({"issue_id": "diameter-linkage-invalid", "rule_id": "DIAMETER-LINKAGE",
+                       "severity": "needs_input" if "有效线径" in reason else "blocked",
+                       "fields": ["wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter"],
+                       "message": reason, "basis": reason,
+                       "calculation": "外径＝中径＋线径；内径＝中径－线径。",
+                       "explanation": "关联参数保留最后有效值，当前计算依据无效，不能直接采用。"})
     issues.extend(_standardization_diagnostic_issues(review.get("standardization_results") or []))
     derived = derive_compression_parameters(parameters)
     status = _assessment_status(issues)
@@ -140,6 +149,20 @@ def _compression_issues(
     include_missing_context: bool,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
+    if review.get("diameter_linkage"):
+        # Linked fields retain their display units. Compare their physical
+        # lengths in millimetres without rewriting stored values/tolerances.
+        from .standardizers.calculation_state import LENGTH_UNITS
+        parameters = deepcopy(parameters)
+        for field in ("wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter"):
+            item = parameters.get(field) or {}
+            factor = LENGTH_UNITS.get(str(item.get("unit") or "mm").strip().lower())
+            if factor is not None:
+                for key in ("value", "tolerance_upper", "tolerance_lower"):
+                    value = _number(item.get(key))
+                    if value is not None:
+                        item[key] = value * factor
+                item["unit"] = "mm"
     wire = _number(_value(parameters, "wire_diameter"))
     outer = _number(_value(parameters, "outer_diameter"))
     inner = _number(_value(parameters, "inner_diameter"))

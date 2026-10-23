@@ -102,6 +102,8 @@ async function testSaveAcknowledgementDoesNotReplaceNewerInput() {
   };
   vm.createContext(context);
   translationTestHelpers(context);
+  vm.runInContext(extract("function drawingSummaryValidationError(", "function syncDrawingNoControls("), context);
+  context.rememberSavedHistorySummary = () => {};
   vm.runInContext(extract("function scheduleReviewPersistence()", "function refreshReviewChangeHistory()"), context);
   const saving = context.persistReviewChanges();
   assert.equal(context.state.reviewPersistenceInFlightEvents.length, 1);

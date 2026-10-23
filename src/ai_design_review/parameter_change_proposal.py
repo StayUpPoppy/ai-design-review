@@ -447,6 +447,10 @@ def _resolve_proposal(
     blocking.extend(load_point_blocking)
 
     synchronized_changes, diameter_issues = _solve_diameter_group(review, candidate, actionable)
+    from .diameter_linkage import apply_diameter_linkage, GROUP
+    diameter_actions = [a for a in actionable if a.get("type") == "propose_parameter_patch" and a.get("target_field") in GROUP]
+    if len(diameter_actions) == 1:
+        apply_diameter_linkage(candidate, diameter_actions[0]["target_field"])
     for issue in diameter_issues:
         (questions if issue.get("kind") == "needs_input" else blocking).append(issue.get("message") if issue.get("kind") == "needs_input" else issue)
     synchronized_changes.extend(_solve_end_condition_group(review, candidate, actionable))
@@ -923,6 +927,31 @@ def _solve_diameter_group(
 
     baseline_parameters = baseline_review.get("spring_parameters") or {}
     candidate_parameters = candidate.setdefault("spring_parameters", {})
+    from .diameter_linkage import calculate, supported, DIAMETERS
+    from .standardizers.calculation_state import LENGTH_UNITS
+    if not supported(candidate):
+        return [], []
+    if len(explicit) == 1:
+        edited = next(iter(explicit))
+        driver = edited if edited in DIAMETERS else (baseline_review.get("diameter_linkage") or {}).get("driver_field")
+        if driver in DIAMETERS:
+            calculation = calculate(candidate_parameters, driver)
+            if calculation["status"] != "calculated":
+                return [], [{"kind": "needs_input" if "有效线径" in calculation["reason"] else "blocked", "code": "diameter_geometry_invalid", "fields": list(DIAMETER_FIELDS), "message": calculation["reason"]}]
+            changes = []
+            for field in DIAMETERS:
+                if field in explicit:
+                    continue
+                item = candidate_parameters.get(field) or {}
+                unit = item.get("unit") or "mm"
+                factor = LENGTH_UNITS[str(unit).strip().lower()]
+                after = round(calculation["values_mm"][field] / factor, 4 if factor == 1 else 8)
+                before = _parameter_value(baseline_parameters, field)
+                if _values_equal(before, after):
+                    continue
+                _set_parameter(candidate_parameters, field, after, unit=unit, source=["parameter_change_proposal_derived"], source_fields=[driver, "wire_diameter"])
+                changes.append({"field": field, "label": _field_label(field), "before": before, "after": after, "unit": unit, "change_type": "value", "action_type": "propose_parameter_patch", "confirmation_after": "pending", "source_fields": [driver, "wire_diameter"]})
+            return changes, []
     issues: list[dict[str, Any]] = []
     solved: dict[str, float] | None = None
     fields = set(explicit)
@@ -930,10 +959,16 @@ def _solve_diameter_group(
     if len(fields) == 1:
         field = next(iter(fields))
         if field == "wire_diameter":
+            driver = (baseline_review.get("diameter_linkage") or {}).get("driver_field")
+            if driver in {"outer_diameter", "inner_diameter", "mean_diameter"}:
+                anchor = _parameter_number(candidate_parameters, driver)
+                if anchor is not None:
+                    solved = _diameters_from_pair(driver, anchor, "wire_diameter", explicit[field])
             mean = _parameter_number(candidate_parameters, "mean_diameter")
-            if mean is None:
+            if mean is None and solved is None:
                 return [], [{"kind": "needs_input", "message": "修改线径时还需要明确中径，才能唯一计算外径和内径。"}]
-            solved = _diameters_from_wire_mean(explicit[field], mean)
+            if solved is None:
+                solved = _diameters_from_wire_mean(explicit[field], mean)
         else:
             wire = _parameter_number(candidate_parameters, "wire_diameter")
             if wire is None:
@@ -1312,6 +1347,7 @@ def _apply_action(review: dict[str, Any], action: dict[str, Any], *, confirmatio
                 review.setdefault("manual_confirmations", {}).pop(key, None)
         else:
             item["value"] = after
+            item.pop("derived_value_stale", None)
     if action.get("unit"):
         item["unit"] = action.get("unit")
     item["need_human_review"] = False
@@ -1323,6 +1359,8 @@ def _apply_action(review: dict[str, Any], action: dict[str, Any], *, confirmatio
 
 
 def _apply_resolved_changes(review: dict[str, Any], proposal: dict[str, Any]) -> None:
+    from .diameter_linkage import apply_diameter_linkage, group_state, DIAMETERS
+    diameter_before = group_state(review)
     for action in proposal.get("explicit_actions") or []:
         if action.get("type") == "proposal_constraint" or action.get("type") in TECHNICAL_REQUIREMENT_ACTION_TYPES or action.get("type") in LOAD_POINT_ACTION_TYPES:
             continue
@@ -1330,6 +1368,11 @@ def _apply_resolved_changes(review: dict[str, Any], proposal: dict[str, Any]) ->
             continue
         _apply_action(review, action, confirmation_source="human_confirmed")
         target = str(action.get("target_field") or "")
+        from .accuracy_inference import mark_accuracy_input, select_manual_accuracy
+        if target == "accuracy_grade":
+            select_manual_accuracy(review)
+        else:
+            mark_accuracy_input(review, target, generated=False, tolerance=action.get("type") == "propose_tolerance_patch")
         review.setdefault("manual_confirmations", {})[f"parameter_change_proposal_{target}"] = {
             "confirmed": True,
             "target_field": target,
@@ -1355,6 +1398,11 @@ def _apply_resolved_changes(review: dict[str, Any], proposal: dict[str, Any]) ->
             source=["parameter_change_proposal_derived"],
             source_fields=list(change.get("source_fields") or []),
         )
+    explicit_diameters = [a.get("target_field") for a in proposal.get("explicit_actions") or [] if a.get("type") == "propose_parameter_patch" and a.get("target_field") in {*DIAMETERS, "wire_diameter"}]
+    if len(explicit_diameters) == 1:
+        apply_diameter_linkage(review, explicit_diameters[0])
+        if review.get("diameter_linkage") and not diameter_before["linkage"]:
+            review["diameter_linkage"]["original_parameters"] = diameter_before["parameters"]
     _apply_technical_requirement_changes(review, proposal.get("technical_requirement_changes") or [], proposal)
     _apply_load_point_changes(review, proposal.get("load_point_changes") or [], proposal)
 
@@ -1482,6 +1530,8 @@ def _change(action: dict[str, Any], target: str, before: Any, after: Any, unit: 
 
 def _rollback_state(review: dict[str, Any]) -> dict[str, Any]:
     return {
+        "diameter_linkage": deepcopy(review.get("diameter_linkage")),
+        "accuracy_inference": deepcopy(review.get("accuracy_inference")),
         "spring_parameters": deepcopy(review.get("spring_parameters") or {}),
         "technical_requirements": deepcopy(review.get("technical_requirements") or []),
         "manual_confirmations": deepcopy(review.get("manual_confirmations") or {}),

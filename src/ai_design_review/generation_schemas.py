@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -40,9 +40,16 @@ class GenerationMillimeterParameter(GenerationParameterBase):
     unit: Literal["mm"] = Field(description="固定单位 mm。")
 
 
-class GenerationPositiveIntegerParameter(GenerationParameterBase):
-    value: int = Field(gt=0, description="正整数圈数。", examples=[10])
+class GenerationPositiveCoilParameter(GenerationParameterBase):
+    value: Annotated[int, Field(gt=0)] | Annotated[float, Field(gt=0, allow_inf_nan=False)] = Field(description="有限正数圈数；保留人工输入的小数，不取整或截断。", examples=[10, 10.5, 8.25])
     unit: None = Field(default=None, description="无单位。")
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def numeric_coils(cls, value: Any) -> Any:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("圈数必须为有限正数 JSON 数字")
+        return value
 
 
 class GenerationHandednessParameter(GenerationParameterBase):
@@ -66,8 +73,8 @@ class CompressionSpringGenerationInputsV1(BaseModel):
     wire_diameter: GenerationMillimeterParameter = Field(description="线径，默认候选值 3 mm。")
     mean_diameter: GenerationMillimeterParameter = Field(description="中径，默认候选值 23 mm；SolidWorks据此计算外径和内径。")
     free_length: GenerationMillimeterParameter = Field(description="自由长度，默认候选值 45 mm。")
-    total_coils: GenerationPositiveIntegerParameter = Field(description="总圈数，默认候选值 10。")
-    active_coils: GenerationPositiveIntegerParameter = Field(description="有效圈数，默认候选值 8，且不得大于总圈数。")
+    total_coils: GenerationPositiveCoilParameter = Field(description="总圈数，支持正小数；默认候选值 10。")
+    active_coils: GenerationPositiveCoilParameter = Field(description="有效圈数，支持正小数；默认候选值 8，且不得大于总圈数。")
     handedness: GenerationHandednessParameter = Field(description="旋向，无默认值，必须人工确认。")
     end_grinding: GenerationBinaryParameter = Field(description="两端磨削：1 表示磨削，0 表示不磨削；默认候选值 1。")
     end_coils_closed: GenerationBinaryParameter = Field(description="端圈压并：1 表示压并，0 表示不压并；默认候选值 1。")
@@ -128,7 +135,7 @@ class GenerationExportPolicyV1(BaseModel):
 
 class GenerationSourceV1(BaseModel):
     drawing_no: str | None = Field(default=None, description="原图纸编号；新建任务以字符串写入标题栏客户图号，仅去除首尾空白，保留前导零等内容。")
-    drawing_name: str | None = Field(default=None, description="原图纸名称。")
+    drawing_name: str | None = Field(default=None, description="创建参数包时冻结的已保存图纸名称（可编辑，最多512字符，仅去首尾空白）；空值时SW模型名称回退到弹簧类型。")
     spring_type: str | None = Field(default=None, description="审图识别的弹簧类型代码。")
     spring_type_label: str | None = Field(default=None, description="弹簧类型中文名称。")
 
@@ -157,8 +164,8 @@ class GenerationParameterPackageV1(BaseModel):
                     "wire_diameter": {"label": "线径", "value": 3.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "mean_diameter": {"label": "中径", "value": 23.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "free_length": {"label": "自由长度", "value": 45.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
-                    "total_coils": {"label": "总圈数", "value": 10, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
-                    "active_coils": {"label": "有效圈数", "value": 8, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "total_coils": {"label": "总圈数", "value": 10.5, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "active_coils": {"label": "有效圈数", "value": 8.25, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "handedness": {"label": "旋向", "value": "right", "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "end_grinding": {"label": "两端磨削", "value": 1, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "end_coils_closed": {"label": "端圈压并", "value": 1, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
@@ -254,8 +261,8 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
                     "wire_diameter": {"label": "线径", "value": 3.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "mean_diameter": {"label": "中径", "value": 23.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "free_length": {"label": "自由长度", "value": 45.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
-                    "total_coils": {"label": "总圈数", "value": 10, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
-                    "active_coils": {"label": "有效圈数", "value": 8, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "total_coils": {"label": "总圈数", "value": 10.5, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "active_coils": {"label": "有效圈数", "value": 8.25, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "handedness": {"label": "旋向", "value": "right", "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "end_grinding": {"label": "两端磨削", "value": 1, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "end_coils_closed": {"label": "端圈压并", "value": 1, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
@@ -265,7 +272,7 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
                 "technical_requirements_text": "1.其他要求：两端磨平，表面镀锌。",
             },
             "derived_parameters": {},
-            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10, "有效圈数n": 8, "是否磨平": 1, "是否并紧": 1}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.两端并紧磨平，每端磨270°。\n2.材料：65Mn。\n3.绕制方向：右旋。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn", "客户图号": "SPRING-001"}},
+            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10.5, "有效圈数n": 8.25, "是否磨平": 1, "是否并紧": 1}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.两端并紧磨平，每端磨270°。\n2.材料：65Mn。\n3.绕制方向：右旋。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn", "客户图号": "SPRING-001"}},
         }]},
     )
 

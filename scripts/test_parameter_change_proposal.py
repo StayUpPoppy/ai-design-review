@@ -19,6 +19,7 @@ from ai_design_review.standardization_chat_agent import chat_about_standardizati
 def main() -> None:
     _assert_mean_change_synchronizes_and_applies_atomically()
     _assert_each_diameter_direction_and_multi_change()
+    _assert_linked_units_and_wire_anchor()
     _assert_conflicting_explicit_diameters_are_blocked()
     _assert_vague_request_and_multi_turn_update()
     _assert_design_goal_needs_choice()
@@ -29,6 +30,22 @@ def main() -> None:
     _assert_multi_turn_constraints()
     _assert_dynamic_standardization_does_not_expire_proposal()
     print("parameter change proposal tests passed")
+
+
+def _assert_linked_units_and_wire_anchor() -> None:
+    review = _review()
+    proposal = build_parameter_change_proposal(review, [_patch("outer_diameter", 3.4, "cm")], user_goal="外径改为3.4cm")
+    assert proposal["status"] in {"ready", "warning"}, proposal
+    applied, _ = apply_parameter_change_proposal(review, proposal["proposal_id"], version=proposal["version"])
+    assert applied["spring_parameters"]["outer_diameter"]["value"] == 3.4
+    assert applied["spring_parameters"]["mean_diameter"]["value"] == 28
+    assert applied["spring_parameters"]["inner_diameter"]["value"] == 22
+    proposal = build_parameter_change_proposal(applied, [_patch("wire_diameter", 5, "mm")], user_goal="线径改为5mm")
+    assert proposal["status"] in {"ready", "warning"}, proposal
+    applied, _ = apply_parameter_change_proposal(applied, proposal["proposal_id"], version=proposal["version"])
+    assert applied["spring_parameters"]["outer_diameter"]["value"] == 3.4
+    assert applied["spring_parameters"]["mean_diameter"]["value"] == 29
+    assert applied["spring_parameters"]["inner_diameter"]["value"] == 24
 
 
 def _assert_mean_change_synchronizes_and_applies_atomically() -> None:
@@ -55,8 +72,9 @@ def _assert_mean_change_synchronizes_and_applies_atomically() -> None:
         "wire_diameter", "mean_diameter", "outer_diameter", "inner_diameter"
     )}
     assert values == {"wire_diameter": 6, "mean_diameter": 26, "outer_diameter": 32, "inner_diameter": 20}
-    assert "human_confirmed" in applied["spring_parameters"]["mean_diameter"]["source"]
-    assert "parameter_change_proposal_derived" in applied["spring_parameters"]["outer_diameter"]["source"]
+    assert "human_edited" in applied["spring_parameters"]["mean_diameter"]["source"]
+    assert "diameter_linkage" in applied["spring_parameters"]["outer_diameter"]["source"]
+    assert all(applied["spring_parameters"][f]["need_human_review"] for f in ("outer_diameter", "inner_diameter", "mean_diameter"))
     assert result["proposal"]["status"] == "applied"
     assert review["spring_parameters"] == original_parameters
 

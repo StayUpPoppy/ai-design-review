@@ -879,6 +879,24 @@ button:disabled {
   font-size: 15px;
 }
 
+.drawing-summary-editor input {
+  width: 100%;
+  min-width: 0;
+  margin-top: 5px;
+  padding: 5px 7px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.drawing-summary-editor [data-role$="-save-status"]:empty {
+  display: none;
+}
+
+.drawing-summary-editor [data-role$="-save-status"] {
+  margin-top: 4px;
+  color: #805000;
+}
+
 .drawing-preview,
 .review-block {
   margin-top: 16px;

@@ -33,6 +33,21 @@ def select_standard(
     spring_features: dict[str, Any] | None = None,
     llm_inference: dict[str, Any] | None = None,
     technical_requirements: list[dict[str, Any]] | None = None,
+    *,
+    include_references: bool = True,
+) -> dict[str, Any]:
+    selection = _select_standard(spring_type, spring_parameters, spring_features, llm_inference, technical_requirements)
+    if include_references:
+        selection["references"] = _references(selection.get("selected_standard"))
+    return selection
+
+
+def _select_standard(
+    spring_type: str,
+    spring_parameters: dict[str, Any],
+    spring_features: dict[str, Any] | None = None,
+    llm_inference: dict[str, Any] | None = None,
+    technical_requirements: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     features = spring_features or {}
     inference = _inference_value(llm_inference)
@@ -297,15 +312,19 @@ def _selection(
         "evidence": [item for item in evidence if item],
         "need_human_review": need_human_review,
         "rules_available": bool(standard_info.get("rules_available", False)),
-        "references": _references(selected_standard),
+        "references": [],
         "metadata": metadata or {},
     }
 
 
 def _wire_diameter_rule(spring_parameters: dict[str, Any]) -> dict[str, Any] | None:
     wire = _number(_param_value(spring_parameters, "wire_diameter"))
-    if wire is None:
+    wire_item = spring_parameters.get("wire_diameter") or {}
+    unit = str(wire_item.get("unit") or "mm").strip().lower() if isinstance(wire_item, dict) else "mm"
+    factor = {"mm": 1, "cm": 10, "m": 1000, "in": 25.4, "inch": 25.4, "毫米": 1}.get(unit)
+    if wire is None or factor is None or wire <= 0:
         return None
+    wire *= factor
     method = "hot_coiled" if wire >= WIRE_DIAMETER_THRESHOLD_MM else "cold_coiled"
     operator = ">=" if method == "hot_coiled" else "<"
     method_label = "热卷" if method == "hot_coiled" else "冷卷"

@@ -79,6 +79,9 @@ def main() -> None:
                     "active_coils", "handedness", "end_grinding", "end_coils_closed",
                 }
                 assert "outer_diameter" not in package["generation_parameters"]["spring_parameters"]
+                assert package["generation_parameters"]["spring_parameters"]["total_coils"]["value"] == 10.5
+                assert package["solidworks_preview"]["modelParameters"]["有效圈数n"] == 8.25
+                assert package["source"]["drawing_name"] == "客户 图纸001"
                 assert repository.list_change_events(
                     "package-chat-review", owner_user_id="package-chat-user"
                 ) == initial_events
@@ -110,15 +113,15 @@ def main() -> None:
 
 def _review() -> dict:
     return {
-        "drawing_summary": {"spring_type": "compression_spring", "drawing_no": "CHAT-PACKAGE-001"},
+        "drawing_summary": {"spring_type": "compression_spring", "drawing_no": "CHAT-PACKAGE-001", "drawing_name": "客户 图纸001"},
         "spring_parameters": {
             "wire_diameter": _param(3, "mm"),
             "mean_diameter": _param(23, "mm"),
             "outer_diameter": _param(26, "mm"),
             "inner_diameter": _param(20, "mm"),
             "free_length": _param(45, "mm"),
-            "total_coils": _param(10),
-            "active_coils": _param(8),
+            "total_coils": _param(10.5),
+            "active_coils": _param(8.25),
             "handedness": _param("right"),
             "end_grinding": _param(1),
             "end_coils_closed": _param(1),

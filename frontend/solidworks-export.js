@@ -6,7 +6,7 @@
   const number = (v) => ["number", "string"].includes(typeof v) && String(v).trim() && Number.isFinite(Number(v)) ? Number(v) : null;
   const rounded = (v, digits = 4) => Number(Number(v).toFixed(digits));
   const textNumber = (v) => String(rounded(v));
-  const parameterValue = (item) => number(item?.value) != null ? rounded(item.value, 3) : typeof item?.value === "string" ? item.value.trim() || null : null;
+  const parameterValue = (item, preservePrecision = false) => number(item?.value) != null ? (preservePrecision ? Number(item.value) : rounded(item.value, 3)) : typeof item?.value === "string" ? item.value.trim() || null : null;
   const handedness = (value) => ["right", "right_hand", "r", "右旋"].includes(String(value).toLowerCase()) ? "右旋" : ["left", "left_hand", "l", "左旋"].includes(String(value).toLowerCase()) ? "左旋" : null;
   const solidLabel = (label) => ["fb", "pb", "压并载荷", "压并负荷", "压并力"].includes(String(label || "").replace(/[\s_]/g, "").toLowerCase());
   const sources = (item) => (Array.isArray(item?.source) ? item.source : [item?.source]).filter(Boolean).map((s) => String(s).toLowerCase());
@@ -166,7 +166,7 @@
     }
     for (const [label, field] of [["总圈数", "total_coils"], ["有效圈数", "active_coils"]]) {
       if (field === "active_coils" && parameterValue(parameters.end_coils_closed) === 0) continue;
-      const value = parameterValue(parameters[field]);
+      const value = parameterValue(parameters[field], true);
       if (value != null) append(`${label}：${value} 圈。`);
     }
     const requirementKeys = new Set();
@@ -204,7 +204,7 @@
     if (typeof drawingNo === "string" && drawingNo.trim()) titleBlock["客户图号"] = drawingNo.trim();
     const roughness = confirmedRoughness(review);
     if (roughness != null) titleBlock["表面粗糙度"] = roughness.value;
-    const modelParameters = Object.fromEntries([["线径", "wire_diameter"], ["中径", "mean_diameter"], ["自由高度", "free_length"], ["圈数", "total_coils"], ["有效圈数n", "active_coils"], ["是否磨平", "end_grinding"], ["是否并紧", "end_coils_closed"]].map(([label, field]) => [label, parameterValue(parameters[field])]));
+    const modelParameters = Object.fromEntries([["线径", "wire_diameter"], ["中径", "mean_diameter"], ["自由高度", "free_length"], ["圈数", "total_coils"], ["有效圈数n", "active_coils"], ["是否磨平", "end_grinding"], ["是否并紧", "end_coils_closed"]].map(([label, field]) => [label, parameterValue(parameters[field], ["total_coils", "active_coils"].includes(field))]));
     if (modelParameters["是否并紧"] === 0) delete modelParameters["有效圈数n"];
     return {
       ...(packageData.generation_settings ? { DrawingModel: packageData.generation_settings.drawing_model, Username: packageData.generation_settings.username } : {}),

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .accuracy_inference import refresh_accuracy_inference
+from .load_points import ensure_load_point_ids
 from .balloons import generate_balloons
 from .dimension_roles import apply_compression_dimension_role_ranking
 from .end_conditions import normalize_compression_end_conditions
@@ -103,6 +105,17 @@ class DrawingReviewWorkflow:
         if spring_type == "compression_spring":
             apply_formula_compression_solid_height(spring_parameters)
             apply_formula_compression_spring_rate(spring_parameters, spring_features)
+        accuracy_context = {"drawing_summary": {"spring_type": spring_type}, "spring_parameters": spring_parameters}
+        ensure_load_point_ids(accuracy_context)
+        # Uploads deliberately defer standardization. Accuracy still needs a
+        # local applicability decision, without starting RAG/LLM retrieval.
+        from .standard_selector import select_standard
+        accuracy_context["standard_selection"] = select_standard(
+            spring_type, spring_parameters, spring_features,
+            llm_inference=fused["fields"].get("standard_selection_inference"),
+            technical_requirements=technical_requirements, include_references=False,
+        )
+        refresh_accuracy_inference(accuracy_context, initialize=True)
         if run_standardization:
             standardization = standardize_spring(
                 spring_type,
@@ -110,6 +123,7 @@ class DrawingReviewWorkflow:
                 spring_features=spring_features,
                 standard_selection_inference=fused["fields"].get("standard_selection_inference"),
                 technical_requirements=technical_requirements,
+                accuracy_review=accuracy_context,
             )
             derived_parameters = standardization["derived_parameters"]
             standardization_results = standardization["standardization_results"]
@@ -188,6 +202,8 @@ class DrawingReviewWorkflow:
             "erp_ready": erp_ready,
             "erp_block_reason": erp_block_reason,
         }
+        if accuracy_context.get("accuracy_inference"):
+            review["accuracy_inference"] = accuracy_context["accuracy_inference"]
         refresh_design_checks(review)
         _apply_reasonableness_state(review)
         return review
@@ -501,6 +517,7 @@ def apply_standardization_to_review(
         spring_features=review.get("spring_features") or {},
         standard_selection_inference=standard_selection_inference,
         technical_requirements=review.get("technical_requirements") or [],
+        accuracy_review=review,
     )
     review["standard_selection"] = standardization["standard_selection"]
     review["derived_parameters"] = standardization["derived_parameters"]

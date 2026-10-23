@@ -58,6 +58,7 @@ const state = {
   recognitionMessageIds: {},
   recognitionRequestSerial: 0,
   recognitionStatusVersions: new Map(),
+  historySummaryVersions: new Map(),
   deletedReviewIds: new Set(),
   generationReadiness: null,
   generationJobs: [],
@@ -961,6 +962,13 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
   }
   const requestReview = normalizeReview(structuredClone(state.review));
   const requestEditSerial = state.reviewEditSerial;
+  const requestSourceReview = state.review;
+  const requestJobId = state.lastJob?.job_id;
+  const requestServer = state.apiBaseUrl;
+  const requestNavigation = state.reviewNavigationSerial;
+  const responseIsCurrent = () => state.review === requestSourceReview
+    && state.lastJob?.job_id === requestJobId && state.apiBaseUrl === requestServer
+    && state.reviewNavigationSerial === requestNavigation;
   const accuracyGradeCommit = requestedAccuracyGrade
     ? prepareAccuracyGradeCommit(requestReview, requestedAccuracyGrade)
     : null;
@@ -989,6 +997,7 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
       }),
     });
     const payload = await response.json();
+    if (!responseIsCurrent()) return false;
     if (!response.ok) throw new Error(payload?.detail?.message || payload.detail || "标准化失败");
 
     if (thinkingId) removeMessage(thinkingId);
@@ -1087,6 +1096,13 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
   }
   const requestReview = normalizeReview(structuredClone(state.review));
   const requestEditSerial = state.reviewEditSerial;
+  const requestSourceReview = state.review;
+  const requestJobId = state.lastJob?.job_id;
+  const requestServer = state.apiBaseUrl;
+  const requestNavigation = state.reviewNavigationSerial;
+  const responseIsCurrent = () => state.review === requestSourceReview
+    && state.lastJob?.job_id === requestJobId && state.apiBaseUrl === requestServer
+    && state.reviewNavigationSerial === requestNavigation;
   markSubmittedMissingChatActions(requestReview, options.submittedMissingActions);
   const pendingTurnId = appendPendingStandardizationChatTurn(text, messageId);
   state.standardizationInFlight = true;
@@ -1111,6 +1127,7 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
       }),
     });
     const payload = await response.json();
+    if (!responseIsCurrent()) return false;
     if (!response.ok) throw new Error(payload?.detail?.message || payload.detail || "标准化对话失败");
 
     if (payload.job_id) {
@@ -1351,6 +1368,7 @@ function parameterAuditState(param) {
 }
 
 function queueReviewAuditEvent(event) {
+  if (typeof AccuracyInference !== "undefined" && ["load_point_added", "load_point_deleted", "load_point_restored"].includes(event?.event_type)) syncAccuracyInferenceInput(state.review, null);
   if (!state.review || !event) return null;
   state.reviewEditSerial += 1;
   if (!event.target_field?.startsWith("generation_settings.")) state.generationReadiness = null;
@@ -1399,6 +1417,7 @@ function refreshParameterPersistenceControls(fields = null) {
   refreshReasonablenessSuggestionControls(fields);
   refreshTechnicalTranslationControls();
   syncGenerationSettingsControls();
+  syncDrawingNoControls();
 }
 
 function createAuditEventId() {
@@ -1414,6 +1433,12 @@ function scheduleReviewPersistence() {
 }
 
 async function flushReviewPersistence(options = {}) {
+  document.querySelectorAll('[data-role="drawing-no"], [data-role="drawing-name"]').forEach((input) => input.commitDrawingNo?.());
+  const summaryError = drawingSummaryValidationError(state.review);
+  if (summaryError) {
+    if (options.throwOnError) throw new Error(summaryError);
+    return false;
+  }
   if (Array.from(state.reviewDraftFields || []).some((field) => field.startsWith("generation_settings."))) commitGenerationSettings();
   clearTimeout(state.reviewPersistenceTimer);
   if (state.standardizationInFlight) {
@@ -1440,10 +1465,17 @@ async function persistReviewChanges(options = {}) {
   if (state.reviewPersistenceSaving && state.reviewPersistencePromise) return state.reviewPersistencePromise;
   if (state.standardizationInFlight) return false;
   if (!state.lastJob?.job_id || !state.pendingReviewAuditEvents.length || !state.review) return false;
+  const summaryError = drawingSummaryValidationError(state.review);
+  if (summaryError) {
+    if (options.throwOnError) throw new Error(summaryError);
+    return false;
+  }
   let events = state.pendingReviewAuditEvents.splice(0);
   let reviewSnapshot = normalizeReview(structuredClone(state.review));
   let expectedRevision = state.lastJob?.review_revision ?? undefined;
   const jobId = state.lastJob.job_id;
+  const persistenceScope = typeof historyRecognitionScope === "function" ? historyRecognitionScope() : state.apiBaseUrl;
+  const stillCurrent = () => state.lastJob?.job_id === jobId && persistenceScope === (typeof historyRecognitionScope === "function" ? historyRecognitionScope() : state.apiBaseUrl);
   state.reviewPersistenceSaving = true;
   state.reviewPersistenceInFlightEvents = events;
   events.forEach((event) => { if (event.target_field) delete state.reviewPersistenceFailedFields[event.target_field]; });
@@ -1458,13 +1490,15 @@ async function persistReviewChanges(options = {}) {
           body: JSON.stringify({ review: reviewSnapshot, expected_revision: expectedRevision, events }),
         });
         const payload = await response.json();
-        if (state.lastJob?.job_id !== jobId) return false;
+        if (!stillCurrent()) return false;
         if (response.status === 409 && attempt === 0) {
           const reconciled = await reconcileParameterRevisionConflict(jobId, events);
+          if (!stillCurrent()) return false;
           if (!reconciled) throw new Error("服务器版本已变化；本地参数仍保留，请处理保存冲突后重试。");
           ({ events, review: reviewSnapshot, revision: expectedRevision } = reconciled);
           state.reviewPersistenceInFlightEvents = events;
           if (!events.length) {
+            rememberSavedHistorySummary(jobId, reviewSnapshot.drawing_summary, expectedRevision);
             savedSuccessfully = true;
             return true;
           }
@@ -1474,6 +1508,7 @@ async function persistReviewChanges(options = {}) {
           throw new Error(payload?.detail?.message || (typeof payload.detail === "string" ? payload.detail : "审查数据保存失败"));
         }
         if (payload.review_revision != null) state.lastJob.review_revision = payload.review_revision;
+        rememberSavedHistorySummary(jobId, reviewSnapshot.drawing_summary, payload.review_revision);
         const persistedIds = new Set((payload.events || []).map((item) => item.client_event_id).filter(Boolean));
         (state.review.change_history || []).forEach((entry) => {
           if (events.some((item) => item.client_event_id === entry.client_event_id)) {
@@ -1491,7 +1526,7 @@ async function persistReviewChanges(options = {}) {
       }
       throw new Error("服务器版本再次变化；本地参数仍保留，请重试保存。");
     } catch (error) {
-      if (state.lastJob?.job_id !== jobId) return false;
+      if (!stillCurrent()) return false;
       state.pendingReviewAuditEvents.unshift(...events);
       events.forEach((event) => {
         if (event.target_field) state.reviewPersistenceFailedFields[event.target_field] = error.message || "保存失败";
@@ -1517,6 +1552,7 @@ async function persistReviewChanges(options = {}) {
 }
 
 function parameterConflictFingerprint(item) {
+  if (item?.parameters) return JSON.stringify({ parameters: Object.fromEntries(Object.entries(item.parameters).map(([f, p]) => [f, { state: parameterConflictFingerprint(p), unit: p?.unit ?? null, stale: Boolean(p?.derived_value_stale) }])), driver: item.linkage?.driver_field, inputs: item.linkage?.inputs, status: item.linkage?.status });
   if (item && (item.load_point_id || Object.hasOwn(item, "height") || Object.hasOwn(item, "force"))) return JSON.stringify(loadPointAuditState(item));
   if (item && Object.hasOwn(item, "content")) return JSON.stringify({ content: item.content, type: item.type, need_human_review: item.need_human_review });
   return JSON.stringify({
@@ -1529,6 +1565,7 @@ function parameterConflictFingerprint(item) {
 
 function parameterConflictValue(item, field = "") {
   if (!item) return "未填写";
+  if (field === "diameter_linkage") return ["wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter"].map((f) => `${FIELD_LABELS[f]} ${item.parameters?.[f]?.value ?? "未填写"} ${item.parameters?.[f]?.unit || "mm"}`).join("；");
   if (field === "generation_settings.drawing_model") return item.value === "Y型" ? "竖版" : "横版";
   if (field === "generation_settings.username") return item.value || "未填写";
   if (field.startsWith("load_points.")) return `${item.label || "未编号"}：高度 ${item.height ?? "未填写"} ${item.height_unit || "mm"}，力值 ${item.force ?? "未填写"} ${item.force_unit || "N"}`;
@@ -1574,9 +1611,11 @@ function chooseParameterConflict(field, serverItem, localItem) {
 }
 
 async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
+  const currentScope = () => typeof historyRecognitionScope === "function" ? historyRecognitionScope() : state.apiBaseUrl;
+  const requestScope = currentScope();
   const response = await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}`);
   const payload = await response.json();
-  if (!response.ok || state.lastJob?.job_id !== jobId) return null;
+  if (!response.ok || state.lastJob?.job_id !== jobId || requestScope !== currentScope()) return null;
   const revision = Number(payload.review_revision);
   if (!Number.isInteger(revision) || revision < 1) return null;
   const local = state.review;
@@ -1586,38 +1625,54 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
   const pointIdForEvent = (event) => event?.metadata?.load_point_id || event?.after_state?.load_point_id || event?.before_state?.load_point_id;
   const pointFields = new Map(allEvents.filter((event) => event.target_field?.startsWith("load_points.") && pointIdForEvent(event))
     .map((event) => [event.target_field, `load_points.@${pointIdForEvent(event)}`]));
+  const diameterGroup = typeof DiameterLinkage !== "undefined" && (local.diameter_linkage || allEvents.some((e) => e.target_field === "diameter_linkage"));
+  const groupedField = (field) => diameterGroup && DiameterLinkage.GROUP.includes(field) ? "diameter_linkage" : field;
   const eventField = (event) => event.target_field?.startsWith("load_points.") && pointIdForEvent(event)
-    ? `load_points.@${pointIdForEvent(event)}` : event.target_field;
+    ? `load_points.@${pointIdForEvent(event)}` : groupedField(event.target_field);
   const loadId = (field) => field?.startsWith("load_points.@") ? field.slice("load_points.@".length) : null;
   const fields = Array.from(new Set([
     ...allEvents.map(eventField),
-    ...Array.from(state.reviewDraftFields, (field) => pointFields.get(field) || field),
+    ...Array.from(state.reviewDraftFields, (field) => groupedField(pointFields.get(field) || field)),
   ]));
   const technicalId = (field) => field?.startsWith("technical_requirements.") ? field.slice("technical_requirements.".length) : null;
   const settingKey = (field) => ["generation_settings.drawing_model", "generation_settings.username"].includes(field) ? field.split(".")[1] : null;
-  const fieldItem = (review, field) => settingKey(field) ? { value: review.generation_settings?.[settingKey(field)] ?? null } : loadId(field)
+  const summaryKey = (field) => ["drawing_summary.drawing_no", "drawing_summary.drawing_name"].includes(field) ? field.split(".")[1] : null;
+  const fieldItem = (review, field) => field === "diameter_linkage" ? DiameterLinkage.groupState(review) : summaryKey(field) ? { value: review.drawing_summary?.[summaryKey(field)] ?? "" } : settingKey(field) ? { value: review.generation_settings?.[settingKey(field)] ?? null } : loadId(field)
     ? review.spring_parameters?.load_points?.find((item) => item.load_point_id === loadId(field))
     : technicalId(field) ? review.technical_requirements?.find((item) => item.requirement_id === technicalId(field)) : review.spring_parameters?.[field];
-  if (!fields.length || fields.some((field) => !field || (!settingKey(field) && !loadId(field) && !technicalId(field) && (field.includes(".") || !local?.spring_parameters?.[field])))) {
+  if (!fields.length || fields.some((field) => !field || (field !== "diameter_linkage" && !summaryKey(field) && !settingKey(field) && !loadId(field) && !technicalId(field) && (field.includes(".") || !local?.spring_parameters?.[field])))) {
     return null;
   }
   const server = normalizeReview(payload);
   const chosenServer = new Set();
   for (const field of fields) {
-    const firstEvent = allEvents.find((event) => eventField(event) === field);
+    const firstEvent = allEvents.find((event) => event.target_field === field) || allEvents.find((event) => eventField(event) === field);
     const serverItem = fieldItem(server, field);
     const localItem = fieldItem(local, field);
     const beforeState = firstEvent?.before_state || localItem?.confirmation_snapshot;
     if ((!beforeState || parameterConflictFingerprint(serverItem) !== parameterConflictFingerprint(beforeState))
       && parameterConflictFingerprint(serverItem) !== parameterConflictFingerprint(localItem)) {
       const choice = await chooseParameterConflict(field, serverItem, localItem);
-      if (!choice || state.lastJob?.job_id !== jobId || state.reviewEditSerial !== localEditSerial) return null;
+      if (!choice || state.lastJob?.job_id !== jobId || state.reviewEditSerial !== localEditSerial || requestScope !== currentScope()) return null;
       if (choice === "server") chosenServer.add(field);
     }
   }
+  if (chosenServer.has("diameter_linkage") && local.accuracy_inference?.selection_mode === "auto") chosenServer.add("accuracy_grade");
   const merged = normalizeReview(server);
   for (const field of fields) {
     if (chosenServer.has(field)) continue;
+    if (summaryKey(field)) { merged.drawing_summary[summaryKey(field)] = local.drawing_summary?.[summaryKey(field)] ?? ""; continue; }
+    if (field === "diameter_linkage") {
+      if (local.diameter_linkage) merged.diameter_linkage = structuredClone(local.diameter_linkage);
+      else delete merged.diameter_linkage;
+      for (const f of DiameterLinkage.GROUP) {
+        if (local.spring_parameters[f]) merged.spring_parameters[f] = structuredClone(local.spring_parameters[f]);
+        else delete merged.spring_parameters[f];
+        for (const key of Object.keys(merged.manual_confirmations)) if (confirmationMatchesField(key, merged.manual_confirmations[key], f)) delete merged.manual_confirmations[key];
+        for (const [key, entry] of Object.entries(local.manual_confirmations || {})) if (confirmationMatchesField(key, entry, f)) merged.manual_confirmations[key] = structuredClone(entry);
+      }
+      continue;
+    }
     if (settingKey(field)) {
       merged.generation_settings ||= {};
       merged.generation_settings[settingKey(field)] = local.generation_settings?.[settingKey(field)];
@@ -1659,10 +1714,10 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
       throw new Error(`编号“${point.label}”与服务器上的其他载荷点重复，请修改编号后重试保存。`);
     }
   }
-  if (state.lastJob?.job_id !== jobId) return null;
+  if (state.lastJob?.job_id !== jobId || requestScope !== currentScope()) return null;
   const keepEvent = (event) => !chosenServer.has(eventField(event));
   Array.from(state.reviewDraftFields).forEach((field) => {
-    if (chosenServer.has(pointFields.get(field) || field)) state.reviewDraftFields.delete(field);
+    if (chosenServer.has(groupedField(pointFields.get(field) || field))) state.reviewDraftFields.delete(field);
   });
   const remainingInFlight = inFlightEvents.filter(keepEvent);
   state.pendingReviewAuditEvents = queued.filter(keepEvent);
@@ -1682,6 +1737,17 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
   }
   state.lastJob.review_revision = revision;
   state.generationReadiness = null;
+  if (typeof AccuracyInference !== "undefined" && local.accuracy_inference && merged.accuracy_inference) {
+    const meta = merged.accuracy_inference, localMeta = local.accuracy_inference;
+    if (fields.includes("accuracy_grade") && !chosenServer.has("accuracy_grade")) meta.selection_mode = localMeta.selection_mode;
+    for (const field of fields.flatMap((f) => f === "diameter_linkage" ? DiameterLinkage.GROUP : [f])) {
+      if (chosenServer.has(groupedField(field))) continue;
+      const key = loadId(field) ? `load:${loadId(field)}` : field;
+      if (localMeta.input_snapshot?.[key]) meta.input_snapshot[key] = structuredClone(localMeta.input_snapshot[key]);
+      if (localMeta.observed_inputs?.[key]) meta.observed_inputs[key] = structuredClone(localMeta.observed_inputs[key]);
+    }
+    AccuracyInference.refresh(merged);
+  }
   setReview(merged, state.imageUrl, {
     preserveAccuracyGradeUpdate: true,
     preservePendingAccuracyGrade: true,
@@ -1840,7 +1906,11 @@ function syncParameterReasonablenessSurfaces(messageId = state.activeReviewMessa
   if (!state.review) return;
   refreshDerivedStatus(state.review);
   document.querySelectorAll(".summary-strip").forEach((node) => {
-    node.outerHTML = renderSummaryHtml(state.review);
+    const holder = document.createElement("div"); holder.innerHTML = renderSummaryHtml(state.review);
+    [...holder.firstElementChild.children].forEach((child, index) => {
+      if (child.classList.contains("drawing-summary-editor") && node.children[index]?.classList.contains("drawing-summary-editor")) return;
+      node.children[index]?.replaceWith(child);
+    });
   });
   document.querySelectorAll('[data-kind="parameter-reasonableness"]').forEach((node) => {
     const html = renderParameterReasonablenessHtml(state.review);
@@ -2162,6 +2232,7 @@ function applyReasonablenessSuggestionValue(item) {
       point.tolerance_basis = item.basis || "";
     }
     point.source = Array.from(new Set([`${item.source}_suggestion_applied`, ...sourceValues(point.source)]));
+    if (typeof AccuracyInference !== "undefined") { AccuracyInference.markInput(state.review, target, { generated: true }); AccuracyInference.markInput(state.review, target, { generated: true, tolerance: true }); }
     point.last_applied_suggestion_id = item.suggestion_id;
     confirmParam(point, target);
     return true;
@@ -2179,6 +2250,7 @@ function applyReasonablenessSuggestionValue(item) {
   }
   if (!param.unit && item.unit) param.unit = item.unit;
   param.source = Array.from(new Set([`${item.source}_suggestion_applied`, ...sourceValues(param.source)]));
+  if (typeof AccuracyInference !== "undefined") AccuracyInference.markInput(state.review, target, { generated: true });
   param.last_applied_suggestion_id = item.suggestion_id;
   param.last_applied_suggestion = {
     source: item.source,
@@ -2451,6 +2523,7 @@ function configureHistoryUnread() {
   state.recentReviews = [];
   state.recentReviewsLoading = false;
   state.recognitionStatusVersions.clear();
+  state.historySummaryVersions.clear();
   state.deletedReviewIds.clear();
   historyUnreadScope = scope;
   historyUnread = HistoryRecognitionUnread.create({ service: state.apiBaseUrl, userId: state.identity.user_id,
@@ -2612,6 +2685,10 @@ function historyRecognitionState(item = {}) {
 }
 
 function reconcileRecognitionListItem(previous, incoming, requestSerial, { restart = false } = {}) {
+  const savedSummary = state.historySummaryVersions?.get(incoming.job_id);
+  if (savedSummary && Object.hasOwn(incoming, "drawing_name") && (requestSerial < savedSummary.serial || Number(incoming.revision || 0) < savedSummary.revision)) {
+    incoming = { ...incoming, ...savedSummary.summary };
+  }
   if (!incoming.recognition_status) return { ...previous, ...incoming };
   const version = state.recognitionStatusVersions.get(incoming.job_id);
   const oldAttempt = recognitionNumber(previous?.recognition_attempt_count);
@@ -2639,6 +2716,14 @@ function reconcileRecognitionListItem(previous, incoming, requestSerial, { resta
   }
   state.recognitionStatusVersions.set(incoming.job_id, { serial: requestSerial });
   return next;
+}
+
+function rememberSavedHistorySummary(jobId, summary, revision) {
+  if (!state.historySummaryVersions || !summary) return;
+  const saved = { drawing_name: String(summary.drawing_name ?? "").trim(), drawing_no: String(summary.drawing_no ?? "").trim() };
+  state.historySummaryVersions.set(jobId, { summary: saved, revision: Number(revision || 0), serial: ++state.recognitionRequestSerial });
+  const item = state.recentReviews.find((row) => row.job_id === jobId);
+  if (item) { Object.assign(item, saved); updateRecentReviewRow(item); }
 }
 
 function historyRecognitionIcon(kind) {
@@ -3072,6 +3157,7 @@ function finishHistoryOrderDeletion(item, result) {
   const progressMessageId = state.recognitionMessageIds[item.job_id];
   if (progressMessageId) removeMessage(progressMessageId);
   delete state.recognitionMessageIds[item.job_id];
+  state.historySummaryVersions.delete(item.job_id);
   if (state.pendingUploadAutoOpen?.jobId === item.job_id) state.pendingUploadAutoOpen = null;
   state.recentReviews = state.recentReviews.filter((review) => review.job_id !== item.job_id);
   if (deletedCurrentReview) resetDeletedReviewState();
@@ -3256,13 +3342,85 @@ function renderSummaryHtml(review) {
   return `
     <section class="summary-strip">
       ${metricHtml("类型", SPRING_TYPE_LABELS[springType] || springType || "-")}
-      ${metricHtml("图纸", info.drawing_name || "-")}
-      ${metricHtml("图号", info.drawing_no || "-")}
+      <label class="metric drawing-summary-editor drawing-name-editor">
+        <span>图纸名称</span>
+        <input type="text" data-role="drawing-name" aria-label="图纸名称" placeholder="请输入图纸名称" value="${escapeHtml(String(info.drawing_name ?? ""))}">
+        <span data-role="drawing-name-save-status" role="status"></span>
+        <button type="button" class="secondary-action" data-role="retry-drawing-name-save" hidden>重试保存</button>
+      </label>
+      <label class="metric drawing-summary-editor drawing-no-editor">
+        <span>图号</span>
+        <input type="text" data-role="drawing-no" aria-label="图号" placeholder="请输入图号" value="${escapeHtml(String(info.drawing_no ?? ""))}">
+        <span data-role="drawing-no-save-status" role="status"></span>
+        <button type="button" class="secondary-action" data-role="retry-drawing-no-save" hidden>重试保存</button>
+      </label>
       ${metricHtml("状态", info.overall_status || "-")}
       ${metricHtml("ERP", review.erp_ready ? "允许" : "阻断")}
       ${metricHtml("缺失字段", missing.length ? missing.map((field) => getFieldMeta(field, review).label || field).join("、") : "无")}
     </section>
   `;
+}
+
+function bindDrawingNoEditor(root, review, messageId) {
+  root.querySelectorAll('[data-role="drawing-no"], [data-role="drawing-name"]').forEach((input) => {
+    if (input.commitDrawingNo) return;
+    const role = input.dataset.role;
+    const key = role === "drawing-name" ? "drawing_name" : "drawing_no";
+    const field = `drawing_summary.${key}`;
+    const node = input.closest(".drawing-summary-editor");
+    const status = node.querySelector(`[data-role="${role}-save-status"]`);
+    status.id ||= createAuditEventId();
+    input.setAttribute("aria-describedby", status.id);
+    let before = null;
+    input.addEventListener("input", () => {
+      activateReviewContext(messageId);
+      if (state.review !== review) return;
+      before ||= { value: String(review.drawing_summary?.[key] ?? "") };
+      review.drawing_summary ||= {};
+      review.drawing_summary[key] = input.value;
+      state.reviewEditSerial += 1;
+      state.reviewDraftFields.add(field);
+      state.generationReadiness = null;
+      syncDrawingNoControls();
+    });
+    input.commitDrawingNo = () => {
+      if (!before || state.review !== review) return;
+      if (key === "drawing_name" && drawingSummaryValidationError(review)) { syncDrawingNoControls(); return; }
+      const value = input.value.trim();
+      review.drawing_summary[key] = value;
+      input.value = value;
+      const first = before; before = null;
+      state.reviewDraftFields.delete(field);
+      if (first.value !== value) queueReviewAuditEvent({ event_type: `${key}_updated`, target_field: field, before_state: first, after_state: { value } });
+      else if (state.pendingReviewAuditEvents.length) scheduleReviewPersistence();
+      syncDrawingNoControls();
+    };
+    input.addEventListener("change", input.commitDrawingNo);
+    input.addEventListener("blur", input.commitDrawingNo);
+    node.querySelector(`[data-role="retry-${role}-save"]`).addEventListener("click", () => { void persistReviewChanges(); });
+  });
+  syncDrawingNoControls();
+}
+
+function drawingSummaryValidationError(review) {
+  const value = review?.drawing_summary?.drawing_name;
+  return value != null && Array.from(String(value).trim()).length > 512 ? "图纸名称最长512字符，请缩短后重试" : "";
+}
+
+function syncDrawingNoControls() {
+  if (typeof document === "undefined" || !state.review) return;
+  document.querySelectorAll(".drawing-summary-editor").forEach((node) => {
+    const input = node.querySelector("input");
+    const role = input.dataset.role;
+    const key = role === "drawing-name" ? "drawing_name" : "drawing_no";
+    const persistence = parameterPersistenceState(`drawing_summary.${key}`);
+    const error = key === "drawing_name" ? drawingSummaryValidationError(state.review) : "";
+    if (input !== document.activeElement) input.value = String(state.review.drawing_summary?.[key] ?? "");
+    input.setCustomValidity(error);
+    input.setAttribute("aria-invalid", String(Boolean(error)));
+    node.querySelector(`[data-role="${role}-save-status"]`).textContent = error || (persistence === "failed" ? "保存失败，修改已保留" : persistence === "saving" ? "保存中…" : "");
+    node.querySelector(`[data-role="retry-${role}-save"]`).hidden = persistence !== "failed" || Boolean(error);
+  });
 }
 
 function metricHtml(label, value) {
@@ -3907,6 +4065,7 @@ function applyReasonablenessSuggestionToReview(review, item) {
   }
   targetItem.need_human_review = false;
   targetItem.source = Array.from(new Set([`${item.source}_suggestion_applied`, "human_confirmed", ...sourceValues(targetItem.source)]));
+  if (typeof AccuracyInference !== "undefined") AccuracyInference.markInput(review, target, { generated: true });
   targetItem.last_applied_suggestion_id = item.suggestion_id;
   targetItem.last_applied_suggestion = {
     source: item.source,
@@ -4589,6 +4748,7 @@ function syncDependentFormulaParameterRows(root, review, editedField) {
 }
 
 function formulaCandidateHtml(param) {
+  if (param?.diameter_linkage_error) return `<small>${escapeHtml(param.diameter_linkage_error)}</small>`;
   if (!param?.derived_value_stale && !param?.formula_recommendation_stale && !param?.support_coils_conflict) return param?.support_coils_notice ? `<small>${escapeHtml(param.support_coils_notice)}</small>` : "";
   const candidate = param.formula_recalculation_candidate;
   const value = candidate?.value, waiting = param.support_coils_waiting_confirmation;
@@ -4598,7 +4758,7 @@ function formulaCandidateHtml(param) {
 
 function syncFormulaParameterPresentation(row, field, param) {
   // Replace only labels/notes; the user's active input retains its caret.
-  if (!["active_coils", "support_coils", "pitch", "solid_height"].includes(field)) return;
+  if (!["active_coils", "support_coils", "pitch", "solid_height"].includes(field) && !param.diameter_linkage_managed) return;
   const template = document.createElement("div");
   template.innerHTML = parameterRowHtml(field, param, getFieldMeta(field, state.review));
   const label = row.querySelector(".data-label"), updated = template.querySelector(".data-label");
@@ -4884,7 +5044,7 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
       ${roughnessCandidates}
       ${field === "surface_roughness_ra" && isCompressionSpringReview(state.review) ? `<div class="roughness-reference" data-role="roughness-reference" role="group" aria-label="粗糙度常规参考">${surfaceRoughnessReferenceHtml(param)}</div>` : ""}
       ${materialNotes}
-      <div class="parameter-formula-candidate" data-role="formula-candidate">${["active_coils", "support_coils", "pitch", "solid_height"].includes(field) ? formulaCandidateHtml(param) : ""}</div>
+      <div class="parameter-formula-candidate" data-role="formula-candidate">${["active_coils", "support_coils", "pitch", "solid_height"].includes(field) || param.diameter_linkage_managed ? formulaCandidateHtml(param) : ""}</div>
     </div>
   `;
 }
@@ -5190,6 +5350,7 @@ function applyStandardizedLoadTolerance(point, upper, lower, options = {}) {
     point.load_tolerance_percent = percent;
   }
   point.tolerance_source = "standardization";
+  if (typeof AccuracyInference !== "undefined" && state.review?.spring_parameters?.load_points?.includes(point)) AccuracyInference.markInput(state.review, `load_points.${point.label}.force`, { generated: true, tolerance: true });
   point.tolerance_basis = options.basis || point.tolerance_basis || "";
 }
 
@@ -5215,6 +5376,15 @@ function confirmationControlState(item, options = {}) {
   const kind = options.kind || "parameter";
   const field = options.field || "";
   const review = options.review || state.review;
+  if (kind === "parameter" && item?.diameter_linkage_error) {
+    if (parameterPersistenceState(field) === "failed") return { state: "save_failed", label: "保存失败·重试保存", disabled: false, reason: "本地草稿仍保留，请重试保存。" };
+    return { state: "invalid", label: "原值已失效", disabled: true, reason: item.diameter_linkage_error };
+  }
+  if (kind === "parameter" && (item?.diameter_linkage_managed || review?.diameter_linkage && field === "wire_diameter")) {
+    const persistence = parameterPersistenceState(field);
+    if (persistence === "failed") return { state: "save_failed", label: "保存失败·重试保存", disabled: false, reason: "本地修改仍保留，请重试保存。" };
+    if (persistence === "saving" && state.reviewPersistenceSaving) return { state: "saving", label: "保存中", disabled: true, reason: "正在保存关联直径。" };
+  }
   if (kind === "parameter" && ["active_coils", "support_coils", "pitch", "solid_height"].includes(field) && (item?.derived_value_stale || item?.formula_recommendation_stale)) {
     return { state: "invalid", label: "原值已失效", disabled: true, reason: "请应用新候选值后重新确认，或填写有效的人工值。" };
   }
@@ -5276,8 +5446,9 @@ function parameterPersistenceState(field) {
     ...(state.pendingReviewAuditEvents || []),
     ...(state.reviewPersistenceInFlightEvents || []),
   ];
-  if (!events.some((event) => event.target_field === field)) return null;
-  return state.reviewPersistenceFailedFields?.[field] ? "failed" : "saving";
+  const matches = (event) => event.target_field === field || event.target_field === "diameter_linkage" && ["wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter"].includes(field);
+  if (!events.some(matches)) return null;
+  return state.reviewPersistenceFailedFields?.[field] || events.some((e) => matches(e) && state.reviewPersistenceFailedFields?.[e.target_field]) ? "failed" : "saving";
 }
 
 function confirmationButtonHtml(item, options = {}) {
@@ -5701,7 +5872,7 @@ function generationContractValue(field, rawValue) {
   }
   if (["total_coils", "active_coils"].includes(field)) {
     const value = Number(rawValue);
-    if (!Number.isInteger(value) || value <= 0) throw new Error(`${targetFieldLabel(field)}必须是正整数`);
+    if (!["number", "string"].includes(typeof rawValue) || String(rawValue).trim() === "" || !Number.isFinite(value) || value <= 0) throw new Error(`${targetFieldLabel(field)}必须是有限正数`);
     return value;
   }
   const text = String(rawValue ?? "").trim();
@@ -5793,6 +5964,7 @@ function assessGenerationReadiness(review) {
   const warnings = [];
   let confirmed = 0;
   const contractIssues = [];
+  if (review.diameter_linkage?.status === "invalid") contractIssues.push(generationIssue(review.diameter_linkage.driver_field, review.diameter_linkage.reason || "三径联动条件无效，请核对。"));
   COMPRESSION_GENERATION_CORE_FIELDS.forEach((field) => {
     const state = generationContractState(parameters, field);
     if (state === "missing") missing.push(generationIssue(field, "缺少重新生图所需的核心参数。"));
@@ -7866,6 +8038,9 @@ function canConfirmStandardization(item) {
 }
 
 function targetFieldLabel(targetField) {
+  if (targetField === "diameter_linkage") return "线径与三径联动";
+  if (targetField === "drawing_summary.drawing_no") return "图号";
+  if (targetField === "drawing_summary.drawing_name") return "图纸名称";
   const text = String(targetField || "");
   const loadTarget = parseLoadPointTarget(text);
   if (loadTarget) return `载荷测试点 ${loadTarget.label} ${loadTarget.field === "height" ? "高度" : "力值"}`;
@@ -7911,6 +8086,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   const context = getReviewContext(messageId) || activeReviewContext();
   const review = context?.review || state.review;
   if (!review) return;
+  bindDrawingNoEditor(root, review, messageId);
   bindCompressionDesignDisclosures(root, review);
   if (typeof DrawingAnnotations !== "undefined") DrawingAnnotations.bindFields(root, () => activateReviewContext(messageId));
   bindReasonablenessIssueFocus(root, messageId);
@@ -7937,10 +8113,14 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     }
     if (field === "surface_roughness_ra" && isCompressionSpringReview(review)) bindSurfaceRoughnessReference(row, param, review, messageId, root);
     let valueBeforeState = null;
+    let diameterBeforeState = null;
     const applyValueDraft = (event) => {
       if (field === "accuracy_grade") return;
       activateReviewContext(messageId);
       valueBeforeState ||= parameterAuditState(param);
+      const linkedEdit = typeof DiameterLinkage !== "undefined" && DiameterLinkage.supported(review)
+        && (DiameterLinkage.DIAMETERS.includes(field) || field === "wire_diameter" && review.diameter_linkage);
+      if (linkedEdit) diameterBeforeState ||= DiameterLinkage.groupState(review);
       rememberConfirmedSnapshot(param);
       if (field === "material" && isCompressionSpringReview(review)) {
         if (!applyMaterialSelection(param, event.target.value)) return;
@@ -7956,7 +8136,10 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         row.dataset.roughnessReferenceExpanded = "false";
       }
       if (field === "material" && isCompressionSpringReview(review)) markParamEdited(param, field);
-      else applyEditedConfirmationState(param, field);
+      else if (linkedEdit) {
+        applyEditedConfirmationState(param, field, { skipDependentInvalidation: true });
+        applyDiameterLinkageEdit(review, field, diameterBeforeState);
+      } else applyEditedConfirmationState(param, field, { accuracyPart: "value" });
       syncDependentFormulaParameterRows(root, review, field);
       syncBubbleValue(field, param.value);
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
@@ -8013,7 +8196,13 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       }
       if (!valueBeforeState) applyValueDraft(event);
       const afterState = parameterAuditState(param);
-      if (JSON.stringify(valueBeforeState) !== JSON.stringify(afterState)) {
+      if (diameterBeforeState) {
+        queueReviewAuditEvent({ event_type: "diameter_linkage_updated", target_field: "diameter_linkage",
+          before_state: diameterBeforeState, after_state: DiameterLinkage.groupState(review),
+          metadata: { edited_field: field, affected_fields: DiameterLinkage.GROUP } });
+        for (const f of DiameterLinkage.GROUP) state.reviewDraftFields.delete(f);
+        diameterBeforeState = null;
+      } else if (JSON.stringify(valueBeforeState) !== JSON.stringify(afterState)) {
         queueReviewAuditEvent({
           event_type: "parameter_value_updated",
           target_field: field,
@@ -8048,7 +8237,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       toleranceBeforeState ||= parameterAuditState(param);
       rememberConfirmedSnapshot(param);
       applyTolerance(param, event.target.value);
-      applyEditedConfirmationState(param, field);
+      applyEditedConfirmationState(param, field, { accuracyPart: "tolerance" });
       syncDependentFormulaParameterRows(root, review, field);
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
       refreshCompressionDesignChecks(root, review);
@@ -8260,6 +8449,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         beforeState ||= loadPointAuditState(point);
         rememberConfirmedSnapshot(point);
         applyValue(event);
+        syncAccuracyInferenceInput(review, `load_points.${point.label}.force`, { tolerance: eventType === "load_point_tolerance_updated" });
         applyEditedConfirmationState(point, pointField, { confirmationField });
         syncConfirmationControl(row, point, { kind: "load_point", field: pointField, review });
         refreshCompressionDesignChecks(root, review);
@@ -8726,6 +8916,10 @@ function applyStandardizationResult(item) {
       param.unit = item.unit;
     }
     state.review.spring_parameters[target] = param;
+    if (typeof AccuracyInference !== "undefined") {
+      AccuracyInference.markInput(state.review, target, { generated: true });
+      AccuracyInference.markInput(state.review, target, { generated: true, tolerance: true });
+    }
     if (!applySolidHeightReferenceSuggestion(state.review, target, param, item)) confirmParam(param, `standardization_${target}`);
     syncBubbleValue(target, param.value);
   }
@@ -8999,6 +9193,11 @@ function applyStandardizationChatActions(actions, turn, options = {}) {
 
   const now = new Date().toISOString();
   const rollback = captureStandardizationChatRollback(list, turn, options);
+  const diameterActions = typeof DiameterLinkage === "undefined" ? [] : list.filter((a) => a.type === "propose_parameter_patch" && DiameterLinkage.GROUP.includes(a.target_field));
+  if (diameterActions.length === 1 && /\d/.test(turn?.user || "") && DiameterLinkage.supported(state.review)) {
+    rollback.diameter_group = DiameterLinkage.groupState(state.review);
+    rollback.diameter_accuracy_before = structuredClone(state.review.accuracy_inference || null);
+  }
   const patches = [];
   for (const action of list) {
     const applied = applyStandardizationChatAction(action, turn, {
@@ -9012,6 +9211,10 @@ function applyStandardizationChatActions(actions, turn, options = {}) {
     patches.push(applied.patch);
   }
 
+  if (rollback.diameter_group) {
+    applyDiameterLinkageEdit(state.review, diameterActions[0].target_field);
+    rollback.diameter_group_after = DiameterLinkage.groupState(state.review);
+  }
   const logId = recordStandardizationChatActionLog({
     turn,
     patches,
@@ -9088,6 +9291,11 @@ function applyStandardizationChatAction(action, turn, options = {}) {
     };
   }
 
+  if (typeof AccuracyInference !== "undefined") {
+    const explicit = /\d/.test(turn?.user || "");
+    if (target === "accuracy_grade") AccuracyInference.manual(state.review);
+    else AccuracyInference.markInput(state.review, target, { generated: !explicit });
+  }
   action.status = "applied";
   action.applied_at = now;
   action.applied_value = value;
@@ -9144,6 +9352,8 @@ function applyStandardizationChatToleranceAction(action, turn, options = {}) {
     state.review.spring_parameters[target] = param;
   }
 
+  if (typeof AccuracyInference !== "undefined") AccuracyInference.markInput(state.review, target, {
+    generated: !(/\d/.test(turn?.user || "") && /公差|偏差/.test(turn?.user || "")), tolerance: true });
   state.review.manual_confirmations[`standardization_chat_${target}_tolerance`] = {
     confirmed: true,
     previous_tolerance: previous,
@@ -9281,6 +9491,8 @@ function undoStandardizationChatApplication(logId) {
   if (log.rollback.full_state) {
     const snapshot = log.rollback.full_state;
     state.review.spring_parameters = structuredClone(snapshot.spring_parameters || {});
+    if (snapshot.diameter_linkage) state.review.diameter_linkage = structuredClone(snapshot.diameter_linkage);
+    else delete state.review.diameter_linkage;
     if ((log.technical_requirement_changes || []).length) {
       state.review.technical_requirements = structuredClone(snapshot.technical_requirements || []);
     }
@@ -9320,6 +9532,16 @@ function undoStandardizationChatApplication(logId) {
       delete confirmations[snapshot.confirmation_key];
     }
   }
+  if (log.rollback.diameter_group) {
+    const snapshot = log.rollback.diameter_group;
+    for (const f of DiameterLinkage.GROUP) {
+      if (snapshot.parameters[f]) parameters[f] = structuredClone(snapshot.parameters[f]); else delete parameters[f];
+      for (const key of Object.keys(confirmations)) if (confirmationMatchesField(key, confirmations[key], f)) delete confirmations[key];
+    }
+    Object.assign(confirmations, structuredClone(snapshot.manual_confirmations));
+    if (snapshot.linkage) state.review.diameter_linkage = structuredClone(snapshot.linkage); else delete state.review.diameter_linkage;
+  }
+  restoreDiameterAccuracyInputs(log.rollback.diameter_accuracy_before || log.rollback.full_state?.accuracy_inference);
   const turn = findStandardizationChatTurn(log.rollback);
   if (turn) {
     for (const actionState of log.rollback.action_states || []) {
@@ -9334,7 +9556,19 @@ function undoStandardizationChatApplication(logId) {
   return { ok: true, log_id: log.id };
 }
 
+function restoreDiameterAccuracyInputs(before) {
+  if (!before || typeof AccuracyInference === "undefined" || typeof DiameterLinkage === "undefined" || !state.review.accuracy_inference) return;
+  for (const scope of ["input_snapshot", "observed_inputs"]) {
+    for (const f of DiameterLinkage.GROUP) {
+      if (before[scope]?.[f]) state.review.accuracy_inference[scope][f] = structuredClone(before[scope][f]);
+      else delete state.review.accuracy_inference[scope][f];
+    }
+  }
+  AccuracyInference.refresh(state.review);
+}
+
 function standardizationChatRollbackConflict(log) {
+  if (log.rollback?.diameter_group_after && JSON.stringify(DiameterLinkage.groupState(state.review)) !== JSON.stringify(log.rollback.diameter_group_after)) return "diameter_linkage";
   for (const patch of log.applied_patches || []) {
     const target = String(patch?.target_field || "");
     if (patch?.action_type === "propose_tolerance_patch") {
@@ -9878,8 +10112,8 @@ function parameterConfirmationInvalidReason(field, param) {
   if (param?.tolerance_input_draft) return "公差格式应为 ±0.05 或 +0.1/-0.1";
   if (supplementInputMode(field) === "decimal") {
     if (!isFiniteReviewNumber(value)) return "请输入有效数字";
-    if (["total_coils", "active_coils"].includes(field) && !Number.isInteger(Number(value))) {
-      return "圈数需要填写整数";
+    if (["total_coils", "active_coils"].includes(field)) {
+      try { generationContractValue(field, value); } catch (error) { return error.message; }
     }
     if (field === "surface_roughness_ra" && Number(value) <= 0) return "表面粗糙度 Ra 必须大于 0";
   }
@@ -10382,6 +10616,7 @@ function accuracyGradeStatusLabel(param) {
   if (param?.default_source === "company_default") return "公司默认 / 待确认";
   if (sources.includes("human_selected")) return "人工选择 / 已确认";
   if (sources.includes("human_confirmed")) return "人工确认";
+  if (sources.includes("tolerance_inference")) return param?.need_human_review ? "待确认" : "已确认";
   return param?.need_human_review ? "图纸识别 / 待确认" : "图纸识别";
 }
 
@@ -10655,6 +10890,7 @@ function prepareAccuracyGradeCommit(review, grade) {
   if (!normalized || !param || normalized === normalizeAccuracyGrade(param.value)) return null;
   const beforeState = parameterAuditState(param);
   revokeManualConfirmations("accuracy_grade", "accuracy_grade_selected", review);
+  if (typeof AccuracyInference !== "undefined") AccuracyInference.manual(review);
   param.value = normalized;
   param.need_human_review = false;
   param.confidence = 0.99;
@@ -12109,6 +12345,8 @@ function normalizeReview(review) {
   ensureTechnicalRequirementIds(cloned);
   ensureLoadPointIds(cloned);
   applyGenerationDefaults(cloned);
+  if (typeof DiameterLinkage !== "undefined") DiameterLinkage.apply(cloned);
+  if (typeof AccuracyInference !== "undefined") AccuracyInference.refresh(cloned);
   return cloned;
 }
 
@@ -12374,6 +12612,17 @@ function restoreSnapshotConfirmation(item, confirmationField) {
   };
 }
 
+function syncAccuracyInferenceInput(review, field, options = {}) {
+  if (typeof AccuracyInference === "undefined" || !review) return;
+  const before = parameterAuditState(review.spring_parameters?.accuracy_grade);
+  const changed = field ? AccuracyInference.markInput(review, field, options) : AccuracyInference.refresh(review);
+  if (!changed || review !== state.review) return;
+  state.reviewDraftFields.add("accuracy_grade");
+  queueReviewAuditEvent({ event_type: "accuracy_grade_inferred", target_field: "accuracy_grade", before_state: before,
+    after_state: parameterAuditState(review.spring_parameters.accuracy_grade), metadata: { source: "independent_tolerance_inference" } });
+  if (typeof document !== "undefined") syncAccuracyGradeControls(document, review.spring_parameters.accuracy_grade);
+}
+
 function applyEditedConfirmationState(item, field, options = {}) {
   const confirmationField = options.confirmationField || field;
   if (!item.tolerance_input_draft && confirmationSnapshotMatches(item)) {
@@ -12383,10 +12632,31 @@ function applyEditedConfirmationState(item, field, options = {}) {
     if (!options.skipDependentInvalidation && !field.startsWith("load_points.") && !field.startsWith("technical_requirements.")) {
       markDependentFormulaParametersPending(field);
     }
+    if (options.accuracyPart) syncAccuracyInferenceInput(state.review, field, { tolerance: options.accuracyPart === "tolerance" });
     return "restored";
   }
   markParamEdited(item, field, options);
+  if (options.accuracyPart) syncAccuracyInferenceInput(state.review, field, { tolerance: options.accuracyPart === "tolerance" });
   return "modified";
+}
+
+function applyDiameterLinkageEdit(review, field, originalState = null) {
+  if (typeof DiameterLinkage === "undefined") return null;
+  const result = DiameterLinkage.apply(review, field);
+  if (!review.diameter_linkage) return result;
+  if (!result.before.linkage && originalState) review.diameter_linkage.original_parameters = structuredClone(originalState.parameters);
+  const input = review.spring_parameters?.[field];
+  if (input) input.accuracy_value_source = "human";
+  for (const changed of result.changed_fields) {
+    state.reviewDraftFields.add(changed);
+    invalidateReasonablenessSuggestions(changed);
+    invalidateStandardizationResults(changed);
+    markDependentFormulaParametersPending(changed);
+    syncBubbleValue(changed, review.spring_parameters[changed]?.value);
+  }
+  if (field === "wire_diameter") markDependentFormulaParametersPending(field);
+  syncAccuracyInferenceInput(review, null);
+  return result;
 }
 
 function confirmationAuditEventType(item, field, review = state.review) {
@@ -12404,6 +12674,7 @@ function markDependentFormulaParametersPending(field) {
   while (discovered) {
     discovered = false;
     Object.entries(parameters).forEach(([targetField, target]) => {
+      if (state.review?.diameter_linkage && ["wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter"].includes(targetField)) return;
       if (targetField === field || affected.has(targetField) || !isFormulaCalculatedParameter(target)) return;
       const sourceFields = Array.isArray(target.source_fields) ? target.source_fields : [];
       if (!sourceFields.some((source) => changedSources.has(source))) return;
@@ -12649,8 +12920,7 @@ function invalidateStandardizationResults(field) {
 }
 
 function syncBubbleValue(field, value) {
-  const bubble = (state.review.balloons || []).find((item) => item.field === field);
-  if (bubble) bubble.value = String(value ?? "");
+  (state.review.balloons || []).filter((item) => item.field === field).forEach((bubble) => { bubble.value = String(value ?? ""); });
 }
 
 function makeExportReview() {
@@ -12662,6 +12932,7 @@ function makeExportReview() {
 }
 
 function makeGenerationParameterPackage(review = state.review) {
+  if (Array.from(String(review.drawing_summary?.drawing_name ?? "").trim()).length > 512) throw new Error("图纸名称最长512字符，请缩短后重试");
   const confirmedParameters = {};
   COMPRESSION_GENERATION_EXPORT_FIELDS.forEach((field) => {
     const param = generationSourceParameter(review.spring_parameters || {}, field);
@@ -12710,7 +12981,7 @@ function makeGenerationParameterPackage(review = state.review) {
     },
     source: {
       drawing_no: summary.drawing_no || null,
-      drawing_name: summary.drawing_name || null,
+      drawing_name: String(summary.drawing_name ?? "").trim() || null,
       spring_type: currentSpringType(review),
       spring_type_label: summary.spring_type_label || SPRING_TYPE_LABELS[currentSpringType(review)] || null,
     },

@@ -51,6 +51,11 @@ def assess_parameter_change_impact(review: dict[str, Any], actions: list[dict[st
         if change:
             direct_changes.append(change)
 
+    from .diameter_linkage import apply_diameter_linkage, GROUP
+    diameter_actions = [a for a in applicable if a.get("type") == "propose_parameter_patch" and a.get("target_field") in GROUP]
+    if len(diameter_actions) == 1:
+        apply_diameter_linkage(after_review, diameter_actions[0]["target_field"])
+
     if not direct_changes:
         return _empty_impact(
             "blocked",

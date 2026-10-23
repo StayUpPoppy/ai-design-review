@@ -11,9 +11,9 @@ from ai_design_review.parameter_impact import assess_parameter_change_impact  # 
 
 def main() -> None:
     _assert_mean_diameter_changes_protocol_geometry_without_mutation()
-    _assert_outer_diameter_does_not_override_frozen_mean()
+    _assert_outer_diameter_updates_linked_mean()
     _assert_blocking_and_warning_changes()
-    _assert_pending_field_becomes_confirmed_for_preview()
+    _assert_diameter_edit_remains_pending_for_preview()
     _assert_tolerance_can_change_solid_height_risk()
     _assert_batch_is_simulated_as_one_change_set()
     _assert_non_protocol_field_does_not_change_package()
@@ -48,13 +48,14 @@ def _assert_mean_diameter_changes_protocol_geometry_without_mutation() -> None:
     assert preview["baseline_state"]["spring_parameters"]["mean_diameter"]["value"] == 18
 
 
-def _assert_outer_diameter_does_not_override_frozen_mean() -> None:
+def _assert_outer_diameter_updates_linked_mean() -> None:
     preview = assess_parameter_change_impact(_ready_review(), [_patch("outer_diameter", 22, "mm")])
     assert preview["status"] == "ready", preview
-    assert preview["generation_readiness"]["parameter_package_changed"] is False
-    assert preview["generation_readiness"]["changed_frozen_fields"] == []
-    assert preview["derived_changes"] == []
-    assert "不会改变当前 SolidWorks 建模参数" in preview["summary"]
+    assert preview["generation_readiness"]["parameter_package_changed"] is True
+    assert preview["generation_readiness"]["changed_frozen_fields"] == ["mean_diameter"]
+    derived = {r["field"]: r["after"] for r in preview["derived_changes"]}
+    assert derived["mean_diameter"] == 20
+    assert derived["inner_diameter"] == 18
 
 
 def _assert_blocking_and_warning_changes() -> None:
@@ -64,21 +65,21 @@ def _assert_blocking_and_warning_changes() -> None:
 
     invalid_mean = assess_parameter_change_impact(_ready_review(), [_patch("mean_diameter", 2, "mm")])
     assert invalid_mean["status"] == "blocked"
-    assert any("中径必须大于线径" in item["message"] for item in invalid_mean["risk_delta"]["introduced"])
+    assert any("中径大于线径" in item["message"] for item in invalid_mean["risk_delta"]["introduced"])
 
     warning = assess_parameter_change_impact(_ready_review(), [_patch("free_length", 100, "mm")])
     assert warning["status"] == "warning"
     assert any("细长比" in item["message"] for item in warning["risk_delta"]["introduced"])
 
 
-def _assert_pending_field_becomes_confirmed_for_preview() -> None:
+def _assert_diameter_edit_remains_pending_for_preview() -> None:
     review = _ready_review()
     review["spring_parameters"]["mean_diameter"]["need_human_review"] = True
     preview = assess_parameter_change_impact(review, [_patch("mean_diameter", 18, "mm")])
     readiness = preview["generation_readiness"]
     assert readiness["before_status"] == "needs_confirmation"
-    assert readiness["after_status"] == "ready_with_warnings"
-    assert readiness["parameter_package_changed"] is True
+    assert readiness["after_status"] == "needs_confirmation"
+    assert readiness["parameter_package_changed"] is False
 
 
 def _assert_tolerance_can_change_solid_height_risk() -> None:

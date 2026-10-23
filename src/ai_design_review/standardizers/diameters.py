@@ -24,6 +24,10 @@ def apply_formula_compression_diameter_completion(spring_parameters: dict[str, A
     # Calculate wire first so outer/inner/mean can use a newly completed wire.
     for target in ("wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter"):
         existing = spring_parameters.get(target)
+        if (isinstance(existing, dict) and existing.get("diameter_linkage_managed")) or (
+            target == "wire_diameter" and any(isinstance(spring_parameters.get(f), dict) and spring_parameters[f].get("diameter_linkage_managed") for f in ("outer_diameter", "inner_diameter", "mean_diameter"))
+        ):
+            continue
         if not _can_replace(existing):
             continue
         calculation = _calculation_for(target, _values(working))

@@ -50,6 +50,7 @@ try {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
   await page.goto(process.env.SW_EXPORT_FRONTEND_URL || `http://127.0.0.1:${server.address().port}`);
+  await page.waitForFunction(() => state.identityReady);
   const reopen = () => page.evaluate(async () => { await openPersistedReview("sw-export"); state.compareTab = "parameters"; renderCompareOverlay(); });
   await reopen();
   const preview = () => page.evaluate(() => makeGenerationParameterPackage().solidworks_preview);

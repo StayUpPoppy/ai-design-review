@@ -92,7 +92,7 @@ const context = {
     }
     if (["total_coils", "active_coils"].includes(field)) {
       const value = Number(rawValue);
-      if (!Number.isInteger(value) || value <= 0) throw new Error(`${field}必须是正整数`);
+      if (!Number.isFinite(value) || value <= 0) throw new Error(`${field}必须是有限正数`);
       return value;
     }
     return rawValue;

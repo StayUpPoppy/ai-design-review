@@ -61,6 +61,8 @@ def cases():
         review["design_checks"] = {"metrics": {"solid_stress": {"value": 999999}, "unit_mass": {"value": 999999, "unit": "kg", "status": "estimated"}}}
         result.append({"name": name, "review": review, "end_note": end_note})
     add("book_baseline")
+    add("decimal_coils", {"total_coils": {"value": 10.5}, "active_coils": {"value": 8.25}}, summary={"drawing_name": "客户 弹簧001-A"})
+    add("precise_decimal_coils", {"total_coils": {"value": 10.5123456789}, "active_coils": {"value": 8.25123456789}})
     for closed, ground, note in [
         (1, 1, "两端并紧磨平，每端磨270°。"), (1, 0, "两端并紧，不磨平。"),
         (0, 1, "两端不并紧，端面磨平。"), (0, 0, "两端不并紧，不磨平。"),

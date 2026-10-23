@@ -107,6 +107,7 @@ from .technical_requirements import ensure_technical_requirement_ids
 from .technical_requirement_recognition import collect_technical_requirements, recovery_preview
 from .technical_translation import TechnicalTranslationEngine, prepare_review_translations, translation_snapshot
 from .workflow import DrawingReviewWorkflow, apply_standardization_to_review
+from .accuracy_inference import refresh_accuracy_inference
 from .drawing_annotations import (
     AnnotationConflictError, annotation_file_lock, apply_annotation_patch,
     atomic_annotation_write, build_annotations, page_sort_key,
@@ -2373,6 +2374,9 @@ def _ensure_review_owned(job_id: str, review_path: Path, identity: IdentityConte
 
 
 def _prepare_review_reasonableness(review: dict[str, Any], revision: int | None) -> None:
+    from .diameter_linkage import apply_diameter_linkage
+    apply_diameter_linkage(review)
+    refresh_accuracy_inference(review)
     refresh_design_checks(review)
     refresh_compression_material_check(review, read_json(project_path("config", "factory_rules.json")))
     if (review.get("drawing_summary") or {}).get("spring_type") == "compression_spring":
@@ -2400,6 +2404,32 @@ def _save_review_persistence(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail={"code": "generation_settings_invalid", "message": str(exc)}) from exc
     previous, _ = _load_persisted_review(job_id, review_path, identity)
+    from copy import deepcopy
+    from .diameter_linkage import apply_diameter_linkage, DIAMETERS
+    direct = [e.get("target_field") for e in events or [] if e.get("event_type") == "parameter_value_updated" and e.get("target_field") in DIAMETERS]
+    linkage = apply_diameter_linkage(review, direct[-1] if direct else None)
+    if review.get("diameter_linkage") and not previous.get("diameter_linkage"):
+        from .diameter_linkage import group_state
+        review["diameter_linkage"]["original_parameters"] = group_state(previous)["parameters"]
+    if linkage["changed_fields"] and not any(e.get("target_field") == "diameter_linkage" for e in events or []):
+        from .diameter_linkage import group_state
+        events = [*(events or []), {"client_event_id": f"diameters_{uuid.uuid4().hex}", "event_type": "diameter_linkage_updated", "target_field": "diameter_linkage", "before_state": group_state(previous), "after_state": group_state(review)}]
+    summary = review.setdefault("drawing_summary", {})
+    if "drawing_no" in summary:
+        summary["drawing_no"] = str(summary["drawing_no"]).strip() if summary["drawing_no"] is not None else ""
+    if "drawing_name" in summary:
+        name = summary["drawing_name"]
+        if name is not None and not isinstance(name, str):
+            raise HTTPException(status_code=422, detail={"code": "drawing_name_invalid", "message": "图纸名称必须为文本"})
+        name = (name or "").strip()
+        if len(name) > 512:
+            raise HTTPException(status_code=422, detail={"code": "drawing_name_invalid", "message": "图纸名称最长512字符，请缩短后重试"})
+        summary["drawing_name"] = name
+    before_accuracy = deepcopy((review.get("spring_parameters") or {}).get("accuracy_grade"))
+    if refresh_accuracy_inference(review, previous=previous) and not any(e.get("target_field") == "accuracy_grade" for e in events or []):
+        events = [*(events or []), {"client_event_id": f"accuracy_{uuid.uuid4().hex}", "event_type": "accuracy_grade_inferred",
+            "target_field": "accuracy_grade", "source": "independent_tolerance_inference", "before_state": before_accuracy,
+            "after_state": deepcopy(review["spring_parameters"]["accuracy_grade"])}]
     incoming_ra = (review.get("spring_parameters") or {}).get("surface_roughness_ra") or {}
     current_ra = (previous.get("spring_parameters") or {}).get("surface_roughness_ra") or {}
     from .standardizers.calculation_state import human_override, sources

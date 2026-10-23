@@ -62,8 +62,8 @@ def build_solidworks_model_parameters(
         "线径": _parameter_value(spring_parameters.get("wire_diameter")),
         "中径": _parameter_value(spring_parameters.get("mean_diameter")),
         "自由高度": _parameter_value(spring_parameters.get("free_length")),
-        "圈数": _parameter_value(spring_parameters.get("total_coils")),
-        "有效圈数n": _parameter_value(spring_parameters.get("active_coils")),
+        "圈数": _parameter_value(spring_parameters.get("total_coils"), preserve_precision=True),
+        "有效圈数n": _parameter_value(spring_parameters.get("active_coils"), preserve_precision=True),
         "是否磨平": _parameter_value(spring_parameters.get("end_grinding")),
         "是否并紧": _parameter_value(spring_parameters.get("end_coils_closed")),
     }
@@ -72,9 +72,12 @@ def build_solidworks_model_parameters(
     return model_parameters
 
 
-def _parameter_value(item: Any) -> Any | None:
+def _parameter_value(item: Any, *, preserve_precision: bool = False) -> Any | None:
     if not isinstance(item, dict):
         return None
+    if preserve_precision:
+        number = _number(item.get("value"))
+        return int(number) if number is not None and number.is_integer() else number
     return _finite_or_text(item.get("value"))
 
 
@@ -200,7 +203,7 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
     for label, field in (("总圈数", "total_coils"), ("有效圈数", "active_coils")):
         if field == "active_coils" and _parameter_value(parameters.get("end_coils_closed")) == 0:
             continue
-        value = _parameter_value(parameters.get(field))
+        value = _parameter_value(parameters.get(field), preserve_precision=True)
         if value is not None:
             append(f"{label}：{value} 圈。")
     # Only whole equivalent sentences are removed; composite/conflicting notes survive.

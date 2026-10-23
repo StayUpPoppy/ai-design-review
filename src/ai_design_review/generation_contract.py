@@ -157,9 +157,9 @@ def normalize_generation_value(field: str, value: Any) -> float | int | str:
         return round(number, 3)
     if field in {"total_coils", "active_coils"}:
         number = _finite_number(value, field)
-        if number <= 0 or not number.is_integer():
-            raise ValueError(f"{field} must be a positive integer")
-        return int(number)
+        if number <= 0:
+            raise ValueError(f"{field} must be a finite positive number")
+        return int(number) if number.is_integer() else number
     if field == "handedness":
         return normalize_handedness(value)
     if field == "end_grinding":

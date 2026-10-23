@@ -102,7 +102,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/apply"): _operation("标准化与合理性", "应用完整参数修改方案", "按方案版本和审图修订执行乐观锁校验，重新求解全部关联参数并原子写入。ready 或 warning 方案可以应用；过期、缺信息或存在冲突时返回409。"),
     ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/discard"): _operation("标准化与合理性", "放弃参数修改方案", "关闭尚未应用的方案草稿并保存审计事件，不修改正式参数；已应用或版本已变化时返回409。"),
     ("GET", "/api/reviews/{job_id}/generation-readiness"): _operation("生图准备", "检查审图是否可以生图", "由服务端根据当前审图修订重新计算缺失字段、待确认字段、警告和参数矛盾，是前端启用“生成图纸”的唯一可信依据。标准化为可选功能；未标准化、标准未确认或标准化结果过期只产生警告，不阻止按当前人工确认参数生图。"),
-    ("GET", "/api/reviews/{job_id}/generation-package"): _operation("生图准备", "获取 SolidWorks 生图参数包", "仅 ready 或 ready_with_warnings 状态返回冻结的 spring_generation_parameters/v2 参数快照。spring_parameters 包含线径、中径、自由长度、总圈数、有效圈数、旋向、两端磨削和端圈压并八个必填字段，以及可选的已确认材料字段 material；solidworks_preview.modelParameters 展示实际发送给 SolidWorks 的建模字段映射（不含尚未创建的 TaskId），其中有效圈数n为已确认有效圈数，但是否并紧为0时直接省略该建模键；内部有效圈数及确认要求保留；技术要求在不并紧时不自动生成圈数行，并紧时自动使用“有效圈数”名称。原图或人工填写的圈数要求按现有确认和去重规则保留。是否磨平和其后的是否并紧均为整数 1 或 0；是否并紧的 1 表示两端并紧，0 表示两端不并紧。solidworks_preview.titleBlockProperties 按材料、重量、客户图号、表面粗糙度顺序展示标题栏属性；客户图号来自当前审图drawing_summary.drawing_no创建的source.drawing_no快照，以字符串输出，仅去首尾空白，保留前导零、字母和连字符，缺失时独立省略且不增加确认或拦截；材料为已确认纯牌号，单件重量为数字（kg、最多八位小数），表面粗糙度Ra为数字（μm）；新任务冻结客户图号，历史冻结请求及重试不补入该键；对应独立粗糙度技术要求句移除，其它部位和附加条件保留，缺失键独立省略，都缺失时为空对象；材料继续保留在技术要求中。技术要求首条按最终已确认且有效的端部状态生成，仅并紧且磨平时追加“每端磨270°”；不并紧且磨平时输出“两端不并紧，端面磨平。”；不写入审图技术要求编辑列表。SolidWorks 根据中径和线径计算外径、内径。材料缺失或待确认时仍可生成，但参数包省略 material 并在就绪状态中给出警告。未执行标准化时 standard_context 保持空值，参数包仍可用于生图；其他未就绪状态返回 409 和具体原因。"),
+    ("GET", "/api/reviews/{job_id}/generation-package"): _operation("生图准备", "获取 SolidWorks 生图参数包", "仅 ready 或 ready_with_warnings 状态返回冻结的 spring_generation_parameters/v2 参数快照。总圈数、有效圈数为有限正数，支持小数且不取整或截断；有效圈数不得大于总圈数。source.drawing_name冻结已保存图纸名称，SW models[].modelName使用该快照，空值回退弹簧类型；名称编辑最多512字符，允许清空，仅去首尾空白。历史冻结任务及原参数重试保持原名称和圈数。spring_parameters 包含线径、中径、自由长度、总圈数、有效圈数、旋向、两端磨削和端圈压并八个必填字段，以及可选的已确认材料字段 material；solidworks_preview.modelParameters 展示实际发送给 SolidWorks 的建模字段映射（不含尚未创建的 TaskId），其中有效圈数n为已确认有效圈数，但是否并紧为0时直接省略该建模键；内部有效圈数及确认要求保留；技术要求在不并紧时不自动生成圈数行，并紧时自动使用“有效圈数”名称。原图或人工填写的圈数要求按现有确认和去重规则保留。是否磨平和其后的是否并紧均为整数 1 或 0；是否并紧的 1 表示两端并紧，0 表示两端不并紧。solidworks_preview.titleBlockProperties 按材料、重量、客户图号、表面粗糙度顺序展示标题栏属性；客户图号来自当前审图drawing_summary.drawing_no创建的source.drawing_no快照，以字符串输出，仅去首尾空白，保留前导零、字母和连字符，缺失时独立省略且不增加确认或拦截；材料为已确认纯牌号，单件重量为数字（kg、最多八位小数），表面粗糙度Ra为数字（μm）；新任务冻结客户图号，历史冻结请求及重试不补入该键；对应独立粗糙度技术要求句移除，其它部位和附加条件保留，缺失键独立省略，都缺失时为空对象；材料继续保留在技术要求中。技术要求首条按最终已确认且有效的端部状态生成，仅并紧且磨平时追加“每端磨270°”；不并紧且磨平时输出“两端不并紧，端面磨平。”；不写入审图技术要求编辑列表。SolidWorks 根据中径和线径计算外径、内径。材料缺失或待确认时仍可生成，但参数包省略 material 并在就绪状态中给出警告。未执行标准化时 standard_context 保持空值，参数包仍可用于生图；其他未就绪状态返回 409 和具体原因。"),
     ("POST", "/api/reviews/{job_id}/generation-template-match"): _operation("生图准备", "匹配 SolidWorks 生图模板", "根据图纸类型、必填字段、匹配规则和优先级返回模板候选；可指定 template_code，也可由后端自动选择。"),
     ("GET", "/api/generation-templates"): _operation("模板查询", "查询启用的生图模板", "返回当前启用的模板及匹配规则、参数映射和 Worker 能力要求；不返回已禁用版本。"),
     ("GET", "/api/generation-templates/{template_code}/versions"): _operation("模板查询", "查询模板的启用版本", "返回指定 template_code 当前所有启用版本；模板代码可包含斜杠。"),
@@ -171,6 +171,10 @@ class ReviewParameterValue(BaseModel):
     tolerance_upper: float | None = Field(default=None, description="上偏差；没有标注时为 null。")
     tolerance_lower: float | None = Field(default=None, description="下偏差；没有标注时为 null。")
     source: list[str] = Field(default_factory=list, description="参数来源，例如 OCR、视觉模型、公式计算或人工确认。")
+    tolerance_source: str | None = Field(default=None, description="可选公差来源；human为直接人工输入，standardization/system_generated/human_suggestion_applied为系统生成，不作为新的独立反推依据。")
+    accuracy_value_source: Literal["human", "system"] | None = Field(default=None, description="精度反推的可选数值来源标记，独立于人工确认状态。")
+    diameter_linkage_managed: bool | None = Field(default=None, description="人工启用三径联动后由统一规则管理，旧公式补全不得覆盖。")
+    diameter_linkage_error: str | None = Field(default=None, description="三径联动输入或几何失效原因；保留最后有效的关联值，重新确认前需修正输入。")
     evidence: str | None = Field(default=None, description="支持该参数值的图纸文字或计算依据。")
     confidence: float | None = Field(default=None, ge=0, le=1, description="识别置信度，范围为 0 至 1。")
     need_human_review: bool | None = Field(default=None, description="是否仍需人工核对。")
@@ -200,8 +204,8 @@ class ReviewMaterialValue(ReviewParameterValue):
 class DrawingSummaryDocument(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    drawing_name: str | None = Field(default=None, description="图纸名称。")
-    drawing_no: str | None = Field(default=None, description="图号。")
+    drawing_name: str | None = Field(default=None, max_length=512, description="可编辑的图纸名称；仅去首尾空白，允许清空。保存后同步历史标题，新参数包冻结至source.drawing_name及SW modelName。")
+    drawing_no: str | None = Field(default=None, description="可人工纠正或补填的图号；仅去首尾空白，保留前导零、字母、连字符和内部空格。空值不阻止生图；新任务冻结为source.drawing_no并输出客户图号。")
     version: str | None = Field(default=None, description="图纸版本号。")
     spring_type: str | None = Field(default=None, description="标准化弹簧类型代码，当前生图支持 compression_spring。")
     spring_type_label: str | None = Field(default=None, description="弹簧类型中文名称。")
@@ -228,6 +232,8 @@ class ReviewLoadPointDocument(BaseModel):
     force_unit: str = Field(default="N", description="测试力值单位，支持N/kN/kgf；界面人工新增使用N。")
     load_tolerance_upper: float | None = Field(default=None, description="可选力值上偏差，单位N。", examples=[6.0])
     load_tolerance_lower: float | None = Field(default=None, description="可选力值下偏差，单位N。", examples=[-6.0])
+    tolerance_source: str | None = Field(default=None, description="载荷公差来源，系统生成公差不更新独立反推快照。")
+    accuracy_value_source: Literal["human", "system"] | None = Field(default=None, description="载荷数值的可选反推来源标记。")
     need_human_review: bool = Field(default=True, description="是否待人工确认；仅false且内容完整的测试点写入生图参数包。")
     source_context: dict[str, Any] = Field(default_factory=dict, description="原图标注或表格的表头、对应行及单位依据；不发送给SW。")
 
@@ -262,8 +268,8 @@ class SpringParametersDocument(BaseModel):
     free_length: ReviewParameterValue | None = Field(default=None, description="自由长度。")
     body_length: ReviewParameterValue | None = Field(default=None, description="弹簧体长度。")
     solid_height: ReviewParameterValue | None = Field(default=None, description="压并高度。")
-    total_coils: ReviewParameterValue | None = Field(default=None, description="总圈数。")
-    active_coils: ReviewParameterValue | None = Field(default=None, description="有效圈数。")
+    total_coils: ReviewParameterValue | None = Field(default=None, description="总圈数，有限正数，支持小数并完整传至SW。")
+    active_coils: ReviewParameterValue | None = Field(default=None, description="有效圈数，有限正数，支持小数，不得大于总圈数。")
     support_coils: ReviewSupportCoilsValue | None = Field(default=None, description="单端支承圈数；自动值统一为(总圈数－有效圈数)/2，人工改圈数后两项均确认时重算，结果仍待单独确认。")
     surface_roughness_ra: ReviewParameterValue | None = Field(
         default=None,
@@ -385,6 +391,8 @@ class ReviewDocument(BaseModel):
     derived_parameters: dict[str, Any] = Field(default_factory=dict, description="根据已知参数计算出的派生参数。")
     standard_selection: dict[str, Any] = Field(default_factory=dict, description="标准选择、适用性和人工确认信息。")
     parameter_reasonableness: ParameterReasonablenessAssessment | None = Field(default=None, description="最近一次参数合理性诊断和可选建议。")
+    accuracy_inference: dict[str, Any] | None = Field(default=None, description="可选内部精度反推元数据：selection_mode(auto/manual/drawing/legacy)、rules_version、input_snapshot、observed_inputs、results、inferred_grade、complete及calculation_fingerprint。仅独立原图/人工公差参与反推，整体报价取最严格项；不进入SW请求。")
+    diameter_linkage: dict[str, Any] | None = Field(default=None, description="可选三径联动元数据：version、driver_field、inputs、status、reason及original_parameters。首次人工编辑直径后固定线径、以最后编辑项为主控，联动三径并撤销变化项确认；旧订单打开不自动启用。不进入SW请求。")
     parameter_reasonableness_stale: bool = Field(default=False, description="参数变化后合理性结果是否已经过期。")
     conflicts: list[dict[str, Any]] = Field(default_factory=list, description="不同识别来源之间的参数冲突。")
     load_point_diagnostics: list[LoadPointDiagnosticDocument] = Field(default_factory=list, description="疑似载荷及公差表排除记录；不参与计算或SW输出。旧记录可省略。")

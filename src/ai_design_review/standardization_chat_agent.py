@@ -551,6 +551,8 @@ def select_general_accuracy_grade(review: dict[str, Any], requested_grade: str) 
     item.pop("default_source", None)
     item.pop("default_reason", None)
     parameters["accuracy_grade"] = item
+    from .accuracy_inference import select_manual_accuracy
+    select_manual_accuracy(review)
     review.setdefault("manual_confirmations", {})["accuracy_grade"] = {
         "confirmed": True,
         "value": grade,

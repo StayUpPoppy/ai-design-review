@@ -20,7 +20,11 @@ def standardize_spring(
     spring_features: dict[str, Any] | None = None,
     standard_selection_inference: dict[str, Any] | None = None,
     technical_requirements: list[dict[str, Any]] | None = None,
+    accuracy_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if accuracy_review is not None:
+        from ..diameter_linkage import apply_diameter_linkage
+        apply_diameter_linkage(accuracy_review)
     if spring_type == "compression_spring":
         normalize_compression_end_conditions(spring_parameters)
         apply_company_simple_active_coils(spring_type, spring_parameters)
@@ -34,6 +38,9 @@ def standardize_spring(
         llm_inference=standard_selection_inference,
         technical_requirements=technical_requirements,
     )
+    if accuracy_review is not None:
+        from ..accuracy_inference import refresh_accuracy_inference
+        refresh_accuracy_inference(accuracy_review, standard=standard_selection.get("selected_standard"))
     if spring_type == "compression_spring":
         if standard_selection.get("selected_standard") == COLD_COILED_STANDARD:
             payload = standardize_compression_spring(spring_parameters, spring_features)
