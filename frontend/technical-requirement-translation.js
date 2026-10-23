@@ -96,6 +96,11 @@
     if (!recovered) item.source = [...new Set([...(Array.isArray(item.source) ? item.source : [item.source].filter(Boolean)), "machine_translation"])];
     // Preserve raw_content: it records terminology normalization, not translation.
     if (item.type === "surface") {
+      if (item.surface_mapping && typeof CompanySurfaceMapping !== "undefined" && result.translation_status === "translated") {
+        const mode = item.surface_mapping.selection_mode;
+        CompanySurfaceMapping.edited(item);
+        item.surface_mapping.selection_mode = mode;
+      }
       if (result.translation_status === "translated") item.standard_content = item.content;
       if (result.translation_status === "translated" || item.normalization_status === "human_confirmed") item.normalization_status = "needs_confirmation";
     }
@@ -114,7 +119,10 @@
     const review = hooks.getReview?.(), jobId = hooks.getJobId?.();
     if (!review || !jobId || session(review).running) return false;
     const entry = session(review);
+    const suppressed = new Set(typeof CompanySurfaceMapping !== "undefined" ? CompanySurfaceMapping.sourceLinks(review).suppressed_ids : []);
     const operation = (item) => {
+      if (suppressed.has(item.requirement_id)) return null;
+      if (!retryId && item.surface_mapping?.selection_mode === "auto" && item.surface_mapping?.conversion_status !== "converted") return null;
       if (isCurrent(item)) return null;
       if (retryId && item.requirement_id !== retryId) return null;
       if (retryId && modeOverride === "revalidate") return item.translation_status === "failed" ? "revalidate" : null;

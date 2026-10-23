@@ -1,0 +1,202 @@
+{
+  "version": "company-surface-treatments-v1-20261023",
+  "source": "辅助资料_2026102314193226_499625.xlsx",
+  "items": [
+    {
+      "id": "sfc_c9a9ebf90594",
+      "name": "特氟龙"
+    },
+    {
+      "id": "sfc_7bf07026ab92",
+      "name": "油漆-清漆"
+    },
+    {
+      "id": "sfc_823af965fa34",
+      "name": "喷塑-银白色"
+    },
+    {
+      "id": "sfc_f13cfe78a874",
+      "name": "喷塑-黑色"
+    },
+    {
+      "id": "sfc_304faae6e8d6",
+      "name": "喷塑-黄色"
+    },
+    {
+      "id": "sfc_0d0077c40265",
+      "name": "喷塑-红色"
+    },
+    {
+      "id": "sfc_7c2d387c9b47",
+      "name": "喷塑-蓝色"
+    },
+    {
+      "id": "sfc_fcf84023e502",
+      "name": "喷塑-绿色"
+    },
+    {
+      "id": "sfc_5c6d9813007f",
+      "name": "喷塑-橙色"
+    },
+    {
+      "id": "sfc_a5876e3f31ea",
+      "name": "喷塑-白色"
+    },
+    {
+      "id": "sfc_c139405530b1",
+      "name": "喷塑-紫色"
+    },
+    {
+      "id": "sfc_cf5911381e86",
+      "name": "喷塑-银色"
+    },
+    {
+      "id": "sfc_abc393e819b7",
+      "name": "电镀-镀白锌"
+    },
+    {
+      "id": "sfc_4bb8ac3a8a39",
+      "name": "喷砂"
+    },
+    {
+      "id": "sfc_136016c5ac89",
+      "name": "达克罗"
+    },
+    {
+      "id": "sfc_b268dc39cbee",
+      "name": "达克罗-泰克锈"
+    },
+    {
+      "id": "sfc_8463f4a22a89",
+      "name": "电泳-黑色"
+    },
+    {
+      "id": "sfc_03aabd8eaafc",
+      "name": "电泳-黄色"
+    },
+    {
+      "id": "sfc_2b48c46fe8ff",
+      "name": "电泳-红色"
+    },
+    {
+      "id": "sfc_092d4dd77a52",
+      "name": "电泳-蓝色"
+    },
+    {
+      "id": "sfc_da725774f4c2",
+      "name": "电泳-绿色"
+    },
+    {
+      "id": "sfc_3e93f82d1852",
+      "name": "电镀-镀彩锌"
+    },
+    {
+      "id": "sfc_a7e43d1200b0",
+      "name": "电泳-橙色"
+    },
+    {
+      "id": "sfc_9060a32446d5",
+      "name": "电泳-紫色"
+    },
+    {
+      "id": "sfc_fac4ba2c24b8",
+      "name": "电泳-银色"
+    },
+    {
+      "id": "sfc_630f45a36cd4",
+      "name": "电泳-白色"
+    },
+    {
+      "id": "sfc_e98cc7d7609e",
+      "name": "植绒"
+    },
+    {
+      "id": "sfc_e7ef497460eb",
+      "name": "发黑"
+    },
+    {
+      "id": "sfc_1e5a080e22ec",
+      "name": "上油"
+    },
+    {
+      "id": "sfc_7981914ac309",
+      "name": "钝化"
+    },
+    {
+      "id": "sfc_c8261e0ccac5",
+      "name": "磷化"
+    },
+    {
+      "id": "sfc_713af2d1e200",
+      "name": "清洗"
+    },
+    {
+      "id": "sfc_9651e637b072",
+      "name": "电镀-镀铝"
+    },
+    {
+      "id": "sfc_3819abda86b9",
+      "name": "本色"
+    },
+    {
+      "id": "sfc_c636e1b777bc",
+      "name": "抛丸"
+    },
+    {
+      "id": "sfc_e381c4a1c64e",
+      "name": "电镀-镀铬"
+    },
+    {
+      "id": "sfc_a7db8dd065ae",
+      "name": "电镀-镀铜"
+    },
+    {
+      "id": "sfc_fde3c8e35ea5",
+      "name": "电镀-镀镍"
+    },
+    {
+      "id": "sfc_557fb46f7821",
+      "name": "电镀-镀蓝锌"
+    },
+    {
+      "id": "sfc_aa77c0be9db5",
+      "name": "电镀-镀镍磷硼"
+    },
+    {
+      "id": "sfc_2ac2e3394004",
+      "name": "抛光"
+    },
+    {
+      "id": "sfc_22add28b98ab",
+      "name": "油漆-黑色"
+    },
+    {
+      "id": "sfc_6cd7e072757d",
+      "name": "电镀-镀镉"
+    },
+    {
+      "id": "sfc_ae7bb62a2d21",
+      "name": "喷塑-褐色"
+    },
+    {
+      "id": "sfc_1fa3b1f28e75",
+      "name": "发蓝"
+    },
+    {
+      "id": "sfc_33922c0e856c",
+      "name": "锡青铜粉+PTFE"
+    },
+    {
+      "id": "sfc_db8053b2f213",
+      "name": "喷塑-灰色"
+    },
+    {
+      "id": "sfc_8d26123c489c",
+      "name": "SERMAGARD"
+    },
+    {
+      "id": "sfc_436876e5d124",
+      "name": "二硫化钼"
+    }
+  ]
+}

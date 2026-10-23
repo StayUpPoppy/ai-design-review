@@ -34,6 +34,7 @@ from .api_documentation import (
     SCALAR_ASSET_FILENAME,
     apply_chinese_openapi_documentation,
 )
+from .api_documentation import SurfaceTreatmentCatalogDocument
 from .engines.geometry_adapter import GeometryEngine
 from .engines.ocr_adapter import OcrJsonEngine
 from .engines.ocr_providers import (
@@ -338,6 +339,12 @@ def get_session(identity: IdentityContext = Depends(require_identity)) -> dict[s
 def get_material_catalog(_: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     """Read-only material choices and fixed company shear modulus reference values."""
     return load_material_catalog()
+
+
+@app.get("/api/surface-treatment-catalog", response_model=SurfaceTreatmentCatalogDocument, tags=["审图管理"], summary="获取公司表面处理目录")
+def get_surface_treatment_catalog(_: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    from .surface_catalog import load_surface_catalog
+    return load_surface_catalog()
 
 
 @app.get("/api/samples/mixed-review")
@@ -2404,6 +2411,22 @@ def _save_review_persistence(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail={"code": "generation_settings_invalid", "message": str(exc)}) from exc
     previous, _ = _load_persisted_review(job_id, review_path, identity)
+    from .surface_catalog import synchronize_surface_review
+    confirmed_surface_ids = {e.get("metadata", {}).get("requirement_id") for e in events or [] if e.get("event_type") == "technical_requirement_confirmed" and isinstance(e.get("metadata"), dict)}
+    for event in events or []:
+        if event.get("event_type") == "safe_fields_confirmed":
+            confirmed_surface_ids.update(str(field).split(".", 1)[1] for field in (event.get("metadata") or {}).get("fields", []) if str(field).startswith("technical_requirements."))
+        if event.get("event_type") == "parameter_change_proposal_applied":
+            confirmed_surface_ids.update(change.get("requirement_id") for change in (event.get("metadata") or {}).get("technical_requirement_changes", []) if isinstance(change, dict) and (change.get("after") or {}).get("need_human_review") is False)
+    synchronize_surface_review(review, previous, confirmed_ids=confirmed_surface_ids)
+    from .surface_source_links import bind_surface_sources
+    bind_surface_sources(review)
+    previous_sources = {v.get("requirement_id"): (v.get("surface_mapping") or {}).get("source_requirement_ids", []) for v in previous.get("technical_requirements") or [] if isinstance(v, dict)}
+    source_changes = [{"requirement_id": v.get("requirement_id"), "before": previous_sources.get(v.get("requirement_id"), []), "after": (v.get("surface_mapping") or {}).get("source_requirement_ids", [])}
+                      for v in review.get("technical_requirements") or [] if isinstance(v, dict)
+                      and previous_sources.get(v.get("requirement_id"), []) != (v.get("surface_mapping") or {}).get("source_requirement_ids", [])]
+    if source_changes:
+        events = [*(events or []), {"event_type": "surface_requirement_sources_linked", "source": "source_association", "metadata": {"changes": source_changes}}]
     from copy import deepcopy
     from .diameter_linkage import apply_diameter_linkage, DIAMETERS
     direct = [e.get("target_field") for e in events or [] if e.get("event_type") == "parameter_value_updated" and e.get("target_field") in DIAMETERS]

@@ -132,7 +132,7 @@ def _merge_field(field: str, ordered: list[dict[str, Any]]) -> dict[str, Any]:
         "suggested_region": best.get("suggested_region", ""),
         "need_human_review": _needs_human_review(best, ordered),
     }
-    for key in (*NORMALIZATION_KEYS, *TRANSLATION_KEYS):
+    for key in (*NORMALIZATION_KEYS, *TRANSLATION_KEYS, "surface_mapping", "raw_content", "standard_content"):
         if key in best:
             merged[key] = best[key]
     if field == "support_coils":

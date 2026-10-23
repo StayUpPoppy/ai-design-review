@@ -120,10 +120,13 @@ def build_generation_parameter_package(review: dict[str, Any], *, identity: dict
     ensure_load_point_ids(review)
     parameters = review.get("spring_parameters") or {}
     confirmed_parameters = export_generation_parameters(parameters)
+    from .surface_source_links import surface_source_links
+    surface_links = surface_source_links(review)
+    suppressed_surface_sources = set(surface_links["suppressed_ids"])
     technical_requirements = [
-        _generation_requirement(item)
+        _generation_requirement(item, surface_links["sources_by_target"].get(item.get("requirement_id"), []))
         for item in review.get("technical_requirements") or []
-        if _technical_requirement_is_confirmed(item)
+        if item.get("requirement_id") not in suppressed_surface_sources and _technical_requirement_is_confirmed(item)
     ]
     roughness_requirement = confirmed_surface_roughness_requirement(review)
     if roughness_requirement:
@@ -218,12 +221,23 @@ def _append_standardization_warnings(
 
 
 def _append_technical_requirement_state(review: dict[str, Any], pending: list[dict[str, Any]], warnings: list[dict[str, Any]] | None = None) -> None:
+    from .surface_source_links import surface_source_links
+    suppressed = set(surface_source_links(review)["suppressed_ids"])
     seen: list[dict[str, Any]] = []
     for index, item in enumerate(review.get("technical_requirements") or [], start=1):
         if not isinstance(item, dict):
             continue
+        if item.get("requirement_id") in suppressed:
+            continue
         content = str(item.get("content") or "").strip()
         requirement_type = str(item.get("type") or "other")
+        from .surface_catalog import mapping_reason
+        surface_reason = mapping_reason(item)
+        if surface_reason:
+            issue = _field_issue(f"technical_requirements.{item.get('requirement_id') or index}", surface_reason + "，未写入本次图纸。", label="表面处理")
+            issue["requirement_id"] = item.get("requirement_id")
+            (warnings if warnings is not None else pending).append(issue)
+            continue
         if translation_blocks_export(item):
             issue = _field_issue(f"technical_requirements.{item.get('requirement_id') or index}", "外文技术要求尚未完成中文翻译，未写入本次图纸；请重试翻译或人工填写中文。", label=_technical_label(requirement_type))
             issue["requirement_id"] = item.get("requirement_id")
@@ -382,10 +396,18 @@ def _export_derived_parameter(
     }
 
 
-def _generation_requirement(item: dict[str, Any]) -> dict[str, Any]:
+def _generation_requirement(item: dict[str, Any], source_ids: list[str] | None = None) -> dict[str, Any]:
+    mapping = deepcopy(item.get("surface_mapping"))
+    if mapping:
+        mapping["catalog_ids"] = mapping.get("catalog_ids", [])[:1]
+        if source_ids:
+            mapping["source_requirement_ids"] = source_ids
+        else:
+            mapping.pop("source_requirement_ids", None)
     return {
         "type": item.get("type"),
         "content": technical_requirement_output_content(item),
+        **({"surface_mapping": mapping} if mapping else {}),
         **({"application_scope": item["application_scope"]} if item.get("application_scope") else {}),
         "confirmation_source": "human_confirmed",
     }

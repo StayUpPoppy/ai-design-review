@@ -101,10 +101,11 @@ def main() -> None:
     assert review["spring_parameters"]["bend_radius"]["value"] == 3.5
     assert any(item["key"] == "bend_radius" and item["label"] == "折弯半径" for item in review["spring_template"]["fields"])
     surface = next(item for item in review["technical_requirements"] if item["type"] == "surface")
-    assert surface["content"] == "电镀-镀彩锌"
+    assert surface["content"] == "镀锌五彩", "Missing company conversion must retain the observed original"
     assert surface["raw_content"] == "镀锌五彩"
-    assert surface["standard_content"] == "电镀-镀彩锌"
-    assert surface["normalization_status"] == "alias_matched"
+    assert surface["standard_content"] == "镀锌五彩"
+    assert surface["normalization_status"] == "needs_confirmation"
+    assert surface["need_human_review"] is True
     assert not any(item["type"] == "surface_roughness" for item in review["technical_requirements"])
     _assert_surface_roughness_fallbacks(rules)
     print("qwen vision adapter test passed")

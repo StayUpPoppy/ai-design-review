@@ -145,8 +145,12 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
     lines: list[str] = []
     keys: set[tuple[str, str, str]] = set()
     roughness = confirmed_surface_roughness(review)
+    from .surface_source_links import surface_output_source_keys, surface_source_key, surface_scope_key
+    converted_sources = surface_output_source_keys(review)
 
     def append(line: str, scope: Any = None) -> None:
+        if (surface_source_key(line), surface_scope_key(scope)) in converted_sources:
+            return
         if surface_roughness_matches({"content": line, "application_scope": scope}, roughness):
             return
         key = _sentence_key(line, scope)

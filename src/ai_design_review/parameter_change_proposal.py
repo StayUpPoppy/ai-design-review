@@ -729,9 +729,25 @@ def _confirmed_technical_requirement(
         "normalization_confidence",
         "normalization_reason",
         "standard_candidates",
+        "surface_mapping",
     )
     if requirement_type == "surface":
-        normalized = normalize_surface_requirement(content)
+        if item.get("surface_mapping"):
+            from .surface_catalog import names_in_content, mapping_reason
+            mapping = item["surface_mapping"]
+            ids = names_in_content(content)
+            if mapping.get("selection_mode") != "none" and ids:
+                mapping["catalog_ids"] = ids[:1]
+            if mapping.get("selection_mode") != "none":
+                mapping["selection_mode"] = "manual"
+            mapping["input_snapshot"] = {"content": content, "type": "surface"}
+            mapping["conversion_status"] = "converted"
+            mapping["conflict"] = mapping_reason(item) == "公司类型与正文不一致"
+            if mapping_reason(item):
+                item["need_human_review"] = True
+            normalized = {}
+        else:
+            normalized = normalize_surface_requirement(content)
         item.update(
             {
                 "raw_content": str(current.get("raw_content") or current.get("content") or content),

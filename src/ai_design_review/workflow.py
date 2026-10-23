@@ -261,7 +261,10 @@ class DrawingReviewWorkflow:
             content = item.get("value", "")
             extra: dict[str, Any] = {key: item[key] for key in TRANSLATION_KEYS if key in item}
             need_human_review = item.get("need_human_review", True)
-            if requirement_type == "surface":
+            if requirement_type == "surface" and "surface_mapping" in item:
+                extra.update({key: item[key] for key in ("surface_mapping", "raw_content", "standard_content", "normalization_status", "normalization_source") if key in item})
+                need_human_review = True
+            elif requirement_type == "surface":
                 normalized = normalize_surface_requirement(content)
                 content = normalized["content"]
                 extra.update({

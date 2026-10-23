@@ -123,7 +123,8 @@ class QwenVisionEngine(RecognitionEngine):
         import httpx
 
         endpoint = _chat_completions_endpoint(self.base_url)
-        content: list[dict[str, Any]] = [{"type": "text", "text": QWEN_SYSTEM_PROMPT}]
+        from ..surface_catalog import surface_catalog_prompt
+        content: list[dict[str, Any]] = [{"type": "text", "text": QWEN_SYSTEM_PROMPT + surface_catalog_prompt()}]
         for page_number, image_path in enumerate(image_paths, start=1):
             content.append({"type": "text", "text": f"以下是原图第{page_number}页，请在识别参数中保留对应page。"})
             content.append(
@@ -357,6 +358,11 @@ def qwen_payload_to_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if _is_compression_spring_type(spring_type) and _is_surface_roughness_type(item.get("type")):
             continue
+        from ..surface_catalog import accept_recognized_surface
+        if (item.get("type") in {"surface", "surface_treatment", "surface_requirement"}
+                or isinstance(item.get("surface_mapping"), dict) and bool(item["surface_mapping"].get("catalog_ids"))
+                or re.match(r"^\s*(?:\d+[.、]\s*)?表面处理\s*[:：]", str(item.get("content") or ""))):
+            item = accept_recognized_surface(item)
         field = _technical_type_to_field(str(item.get("type") or "other"))
         content = item.get("content")
         if content in (None, ""):
@@ -366,6 +372,8 @@ def qwen_payload_to_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if item.get("application_scope"):
             candidate["application_scope"] = item["application_scope"]
         candidate.update({key: item[key] for key in TRANSLATION_KEYS if key in item})
+        if "surface_mapping" in item:
+            candidate.update({key: item[key] for key in ("surface_mapping", "raw_content", "standard_content", "normalization_status", "normalization_source") if key in item})
         candidate.update(recognition_metadata(item, source_order))
         candidates.append(candidate)
 

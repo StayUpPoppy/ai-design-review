@@ -95,6 +95,9 @@ def can_recover_translation_failure(item: dict[str, Any]) -> bool:
 
 
 def translation_blocks_export(item: dict[str, Any]) -> bool:
+    from .surface_catalog import mapping_reason
+    if mapping_reason(item):
+        return True
     if "⟦ENG_" in str(item.get("content") or ""):
         return True
     if translation_is_current(item):
@@ -346,8 +349,14 @@ def prepare_review_translations(review: dict[str, Any], engine: TechnicalTransla
     from .technical_requirements import ensure_technical_requirement_ids
     ensure_technical_requirement_ids(review)
     translator = engine or TechnicalTranslationEngine()
+    from .surface_source_links import surface_source_links
+    suppressed = set(surface_source_links(review)["suppressed_ids"])
     pending, results = [], []
     for item in review.get("technical_requirements") or []:
+        if item.get("requirement_id") in suppressed:
+            continue
+        if (item.get("surface_mapping") or {}).get("selection_mode") == "auto" and item["surface_mapping"].get("conversion_status") != "converted":
+            continue
         if translation_is_current(item):
             item.setdefault("translation_output_snapshot", translation_snapshot(item))
             # Initial recognition still needs its translation audit result.

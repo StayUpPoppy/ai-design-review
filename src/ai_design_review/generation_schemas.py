@@ -86,6 +86,7 @@ class GenerationTechnicalRequirementV1(BaseModel):
     type: str | None = Field(default=None, description="技术要求分类代码。")
     application_scope: str | None = Field(default=None, exclude_if=lambda value: value is None, description="可选明确作用范围；不同范围的要求不会合并输出。")
     content: str = Field(min_length=1, description="已人工确认、写入二维图固定区域的中文技术要求。", examples=["两端磨平，表面镀锌。"])
+    surface_mapping: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None, description="可选单项公司表面处理选择、目录版本及source_requirement_ids来源关联快照；内部追溯使用，SW只输出content，不拼接目录名称或原代号。")
     confirmation_source: Literal["human_confirmed"] = Field(description="技术要求已经人工确认的固定标记。")
 
 

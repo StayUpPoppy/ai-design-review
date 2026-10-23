@@ -321,11 +321,14 @@ def ensure_technical_requirement_ids(review: dict[str, Any]) -> bool:
 
 
 def technical_requirement_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+    from copy import deepcopy
     return {
         "requirement_id": str(item.get("requirement_id") or ""),
         "type": normalize_technical_requirement_type(item.get("type"), default="other"),
         "content": str(item.get("content") or "").strip(),
         "need_human_review": bool(item.get("need_human_review", True)),
+        **({"application_scope": item["application_scope"]} if item.get("application_scope") else {}),
+        **({"surface_mapping": deepcopy(item["surface_mapping"])} if item.get("surface_mapping") else {}),
     }
 
 

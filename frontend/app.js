@@ -73,11 +73,14 @@ const state = {
   identityReady: false,
   identityError: "",
   materialCatalog: { status: "idle", items: [], version: "", source: "", error: "", apiBaseUrl: "" },
+  surfaceCatalog: { status: "idle", items: [], version: "", error: "", apiBaseUrl: "" },
   technicalRequirementUndo: null,
   loadPointUndo: null,
   loadPointLabelDrafts: new Map(),
 };
 let materialCatalogPromise = null;
+let surfaceCatalogPromise = null;
+let surfaceCatalogRequestSerial = 0;
 let materialCatalogRequestSerial = 0;
 
 window.addEventListener("beforeunload", (event) => {
@@ -1370,6 +1373,7 @@ function parameterAuditState(param) {
 function queueReviewAuditEvent(event) {
   if (typeof AccuracyInference !== "undefined" && ["load_point_added", "load_point_deleted", "load_point_restored"].includes(event?.event_type)) syncAccuracyInferenceInput(state.review, null);
   if (!state.review || !event) return null;
+  const surfaceSourceChanges = typeof CompanySurfaceMapping !== "undefined" ? CompanySurfaceMapping.bindSources(state.review) : [];
   state.reviewEditSerial += 1;
   if (!event.target_field?.startsWith("generation_settings.")) state.generationReadiness = null;
   const entry = {
@@ -1380,7 +1384,7 @@ function queueReviewAuditEvent(event) {
     reason: event.reason || "人工在审查界面修改",
     before_state: event.before_state || null,
     after_state: event.after_state || null,
-    metadata: event.metadata || {},
+    metadata: { ...(event.metadata || {}), ...(surfaceSourceChanges.length ? { surface_source_links: surfaceSourceChanges } : {}) },
     created_at: new Date().toISOString(),
     sync_status: state.lastJob?.job_id ? "pending" : "local_only",
   };
@@ -1554,7 +1558,7 @@ async function persistReviewChanges(options = {}) {
 function parameterConflictFingerprint(item) {
   if (item?.parameters) return JSON.stringify({ parameters: Object.fromEntries(Object.entries(item.parameters).map(([f, p]) => [f, { state: parameterConflictFingerprint(p), unit: p?.unit ?? null, stale: Boolean(p?.derived_value_stale) }])), driver: item.linkage?.driver_field, inputs: item.linkage?.inputs, status: item.linkage?.status });
   if (item && (item.load_point_id || Object.hasOwn(item, "height") || Object.hasOwn(item, "force"))) return JSON.stringify(loadPointAuditState(item));
-  if (item && Object.hasOwn(item, "content")) return JSON.stringify({ content: item.content, type: item.type, need_human_review: item.need_human_review });
+  if (item && Object.hasOwn(item, "content")) return JSON.stringify({ content: item.content, type: item.type, need_human_review: item.need_human_review, application_scope: item.application_scope || "", ...(item.surface_mapping ? { surface_mapping: typeof CompanySurfaceMapping !== "undefined" ? CompanySurfaceMapping.fingerprint(item) : item.surface_mapping } : {}) });
   return JSON.stringify({
     value: item?.value ?? null,
     tolerance_upper: item?.tolerance_upper ?? null,
@@ -5393,6 +5397,8 @@ function confirmationControlState(item, options = {}) {
     const persistence = options.allowQueuedSave && persistenceState === "saving" && !state.reviewPersistenceSaving ? null : persistenceState;
     if (persistence === "failed") return { state: "save_failed", label: "保存失败·重试保存", disabled: false, reason: "当前文本和译文仍保留，请重试保存。" };
     if (technicalTranslationService()?.isPending(review, item)) return { state: "validating", label: "正在翻译", disabled: true, reason: "翻译完成后请核对中文并确认。" };
+    const surfaceReason = typeof CompanySurfaceMapping !== "undefined" ? CompanySurfaceMapping.reason(item) : "";
+    if (surfaceReason) return { state: "invalid", label: "无法确认", disabled: true, reason: surfaceReason };
     if (technicalRequirementBlocksExport(item)) return { state: "invalid", label: "待中文化", disabled: true, reason: "外文说明需翻译或人工填写中文后确认；当前不会写入本次图纸。" };
     if (persistence === "saving") return { state: "saving", label: "保存中", disabled: true, reason: "正在保存技术要求。" };
   }
@@ -5419,7 +5425,7 @@ function confirmationControlState(item, options = {}) {
     else if (isDuplicateLoadPointLabel(review, item.label, item.load_point_id)) invalidReason = "载荷点编号重复，请先修改编号";
   } else if (kind === "technical") {
     if (!String(item?.content || "").trim()) invalidReason = "技术要求内容不能为空";
-    else if (item?.type === "surface" && item.translation_status !== "translated" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item?.normalization_status)) {
+    else if (item?.type === "surface" && !item.surface_mapping && item.translation_status !== "translated" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item?.normalization_status)) {
       invalidReason = "请先明确表面处理标准术语";
     }
   } else {
@@ -6020,11 +6026,14 @@ function assessGenerationReadiness(review) {
     warnings.push(generationIssue("reasonableness", "参数合理性结果待服务端重新计算；创建任务前服务端会使用当前参数重新核对。", "参数合理性"));
   }
   const seenTechnicalRequirements = [];
+  const suppressedSurfaceSources = new Set(surfaceSourceLinks(review).suppressed_ids);
   (review.technical_requirements || []).forEach((item, index) => {
+    if (suppressedSurfaceSources.has(item?.requirement_id)) return;
     const label = TECH_LABELS[item.type] || item.type || "技术要求";
     const content = String(item?.content || "").trim();
     if (technicalRequirementBlocksExport(item)) {
-      warnings.push({ ...generationIssue(technicalRequirementField(item, index), "外文说明尚未完成中文化，未写入本次图纸；请重试或人工填写中文。", label), requirement_id: item.requirement_id });
+      const surfaceReason = typeof CompanySurfaceMapping !== "undefined" ? CompanySurfaceMapping.reason(item) : "";
+      warnings.push({ ...generationIssue(technicalRequirementField(item, index), surfaceReason ? `${surfaceReason}，未写入本次图纸。` : "外文说明尚未完成中文化，未写入本次图纸；请重试或人工填写中文。", label), requirement_id: item.requirement_id });
       return;
     }
     const duplicate = Boolean(content) && seenTechnicalRequirements.some((previous) => technicalRequirementsAreDuplicates(item, previous));
@@ -7513,6 +7522,7 @@ function technicalRequirementAuditState(item, extra = {}) {
     original_number: item.original_number ?? null,
     source_order: item.source_order ?? null,
     application_scope: item.application_scope || null,
+    ...(item.surface_mapping ? { surface_mapping: structuredClone(item.surface_mapping) } : {}),
     ...extra,
   };
 }
@@ -7525,8 +7535,20 @@ function technicalRequirementCounts(review) {
 }
 
 function technicalRequirementGroups(review) {
-  return TechnicalRequirementEquivalence.groups(review?.technical_requirements, (item) =>
+  const notes = review?.technical_requirements || [], links = surfaceSourceLinks(review), suppressed = new Set(links.suppressed_ids);
+  const groups = TechnicalRequirementEquivalence.groups(notes.filter((item) => !suppressed.has(item?.requirement_id)), (item) =>
     Boolean(String(item?.content || "").trim()) && item.need_human_review === false && !technicalRequirementBlocksExport(item));
+  for (const group of groups) {
+    group.members.forEach((member) => { member.index = notes.indexOf(member.item); });
+    const sourceIds = new Set(group.ids.flatMap((id) => links.sources_by_target[id] || []));
+    group.sources = [...group.members, ...notes.map((item, index) => ({ item, index })).filter(({ item }) => sourceIds.has(item.requirement_id))]
+      .sort((a, b) => a.index - b.index);
+  }
+  return groups;
+}
+
+function surfaceSourceLinks(review) {
+  return typeof CompanySurfaceMapping !== "undefined" ? CompanySurfaceMapping.sourceLinks(review) : { sources_by_target: {}, suppressed_ids: [] };
 }
 
 function technicalRowIds(row) {
@@ -7596,6 +7618,7 @@ function captureTechnicalRequirementViewState() {
     return { ids: technicalRowIds(row), messageId: row.closest('[data-review-message-id]')?.dataset.reviewMessageId || "",
       compare: compareOverlay.contains(row), open: Boolean(row.querySelector('[data-role="technical-group-sources"]')?.open),
       activeRole: active?.dataset.role, selectionStart: active?.selectionStart, selectionEnd: active?.selectionEnd,
+      companyIndex: [...row.querySelectorAll('[data-role="surface-company-select"]')].indexOf(active), companySearch: row.querySelector('[data-role="surface-company-search"]')?.value || "",
       editingIds: row.technicalEditingIds, editingScope: row.technicalEditingScope, beforeStates: row.technicalEditBeforeStates };
   });
 }
@@ -7607,12 +7630,14 @@ function restoreTechnicalRequirementViewState(snapshot) {
     const previous = snapshot.filter((entry) => entry.messageId === messageId && entry.compare === compareOverlay.contains(row) && entry.ids.some((id) => ids.includes(id)));
     const details = row.querySelector('[data-role="technical-group-sources"]');
     if (details) details.open = previous.some((entry) => entry.open);
+    const search = row.querySelector('[data-role="surface-company-search"]');
+    if (search && previous.length) { search.value = previous[0].companySearch || ""; filterSurfaceCompanyOptions(row, search.value); }
     const focused = previous.find((entry) => entry.activeRole);
     if (!focused) continue;
     if (focused.editingIds) row.technicalEditingIds = focused.editingIds;
     if (focused.editingScope !== undefined) row.technicalEditingScope = focused.editingScope;
     if (focused.beforeStates) row.technicalEditBeforeStates = focused.beforeStates;
-    const input = row.querySelector(`[data-role="${focused.activeRole}"]`);
+    const input = focused.activeRole === "surface-company-select" ? row.querySelectorAll('[data-role="surface-company-select"]')[Math.max(0, focused.companyIndex)] : row.querySelector(`[data-role="${focused.activeRole}"]`);
     input?.focus({ preventScroll: true });
     if (typeof input?.setSelectionRange === "function" && Number.isInteger(focused.selectionStart)) input.setSelectionRange(focused.selectionStart, focused.selectionEnd);
   }
@@ -7691,11 +7716,15 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
           item.type = normalizeTechnicalRequirementType(value);
         }
         else item.content = value.trim();
-        if (item.type === "surface") applyManualSurfaceNormalization(item, "人工统一编辑当前技术要求");
+        if (item.type === "surface") {
+          if (typeof CompanySurfaceMapping !== "undefined" && state.surfaceCatalog.status === "ready") CompanySurfaceMapping.edited(item);
+          applyManualSurfaceNormalization(item, "人工统一编辑当前技术要求");
+        }
         else if (previousType === "surface") clearSurfaceNormalization(item);
         markTechnicalRequirementEdited(item, technicalRequirementField(item, index), technicalRequirementConfirmationKey(item, index), changedField);
       }
       syncTechnicalGroupControl(row, review); syncTechnicalRequirementSummary(root, review);
+      syncSurfaceCompanyControls(row, review);
     };
     const commitEdit = (changedField, event) => {
       const ids = [...(row.technicalEditingIds || technicalRowIds(row))];
@@ -7715,6 +7744,27 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
     });
     row.querySelector('[data-role="type"]')?.addEventListener("change", (event) => {
       applyDraft(event.target.value, "type"); commitEdit("type", event);
+    });
+    row.addEventListener("change", (event) => {
+      if (!event.target.matches('[data-role="surface-company-select"]')) return;
+      activateReviewContext(messageId); beginEdit();
+      const selects = [...row.querySelectorAll('[data-role="surface-company-select"]')];
+      const ids = selects.map((select) => select.value).filter(Boolean);
+      for (const { item, index } of technicalRowMembers(row, review, true)) {
+        CompanySurfaceMapping.choose(item, ids);
+        applyManualSurfaceNormalization(item, "人工选择公司表面处理类型");
+        markTechnicalRequirementEdited(item, technicalRequirementField(item, index), technicalRequirementConfirmationKey(item, index), "surface_mapping");
+      }
+      contentInput.value = TechnicalRequirementEquivalence.format(technicalRowMembers(row, review, true)[0].item);
+      syncSurfaceCompanyControls(row, review); syncTechnicalGroupControl(row, review);
+      commitEdit("surface_mapping", event);
+    });
+    row.addEventListener("input", (event) => {
+      if (!event.target.matches('[data-role="surface-company-search"]')) return;
+      filterSurfaceCompanyOptions(row, event.target.value);
+    });
+    row.addEventListener("click", (event) => {
+      if (event.target.closest('[data-role="surface-catalog-retry"]')) { void ensureSurfaceCatalog({ force: true }); return; }
     });
     row.querySelector('[data-role="confirm"]')?.addEventListener("click", async () => {
       activateReviewContext(messageId);
@@ -7737,6 +7787,7 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
         if (item.need_human_review === false) continue;
         const before = technicalRequirementAuditState(item), field = technicalRequirementField(item, index);
         const key = technicalRequirementConfirmationKey(item, index);
+        if (typeof CompanySurfaceMapping !== "undefined") CompanySurfaceMapping.singleSelection(item);
         if (item.type === "surface") applyManualSurfaceNormalization(item, "人工统一确认当前技术要求");
         confirmParam(item, key);
         Object.assign(review.manual_confirmations[key], { requirement_id: item.requirement_id, target_field: field, type: item.type });
@@ -7749,7 +7800,8 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
     });
     row.querySelector('[data-role="delete-technical-requirement"]')?.addEventListener("click", () => {
       activateReviewContext(messageId);
-      const members = technicalRowMembers(row, review), ids = members.map(({ item }) => item.requirement_id);
+      const members = technicalRequirementGroups(review).find((group) => group.ids.some((id) => technicalRowIds(row).includes(id)))?.sources || technicalRowMembers(row, review);
+      const ids = members.map(({ item }) => item.requirement_id);
       const entries = members.map(({ item, index }) => {
         const key = technicalRequirementConfirmationKey(item, index);
         const confirmations = Object.fromEntries(Object.entries(review.manual_confirmations || {}).filter(([name, value]) =>
@@ -7813,7 +7865,7 @@ function clearSurfaceNormalization(item) {
   if (!item) return;
   [
     "raw_content", "standard_content", "normalization_status", "normalization_source",
-    "normalization_confidence", "normalization_reason", "standard_candidates",
+    "normalization_confidence", "normalization_reason", "standard_candidates", "surface_mapping",
   ].forEach((field) => delete item[field]);
 }
 
@@ -7828,6 +7880,11 @@ function markTechnicalRequirementEdited(item, technicalField, confirmationField,
     item.translation_error = "";
     item.translation_error_code = "";
     item.translation_error_details = {};
+  }
+  if (item.surface_mapping && typeof CompanySurfaceMapping !== "undefined" && !technicalTranslationService()?.needsTranslation(CompanySurfaceMapping.withoutNames(item.content))) {
+    item.translation_status = "translated";
+    item.translation_output_snapshot = { content: String(item.content || "").trim(), type: item.type || "surface" };
+    item.translation_error = ""; item.translation_error_code = ""; item.translation_error_details = {};
   }
   rememberConfirmedSnapshot(item);
   item.need_human_review = true;
@@ -7845,7 +7902,84 @@ function syncTechnicalRequirementSummary(root, review) {
   });
 }
 
+function surfaceCompanySelectHtml(selected = "", index = 0) {
+  return `<select data-role="surface-company-select" aria-label="公司类型"${state.surfaceCatalog?.status === "ready" ? "" : " disabled"}>
+    <option value="">未指定公司类型</option>${(state.surfaceCatalog?.items || []).map((v) => `<option value="${escapeHtml(v.id)}"${v.id === selected ? " selected" : ""}>${escapeHtml(v.name)}</option>`).join("")}</select>`;
+}
+
+function surfaceCompanyControlsHtml(item) {
+  if (typeof CompanySurfaceMapping === "undefined") return "";
+  const ids = item.surface_mapping?.catalog_ids || CompanySurfaceMapping.namesInContent(item.content);
+  const selected = [ids[0] || ""];
+  const error = state.surfaceCatalog?.status === "error";
+  return `<div class="surface-company-controls" data-role="surface-company-controls"${item.type === "surface" ? "" : " hidden"}>
+    <label>公司名称<input type="search" data-role="surface-company-search" aria-label="搜索公司类型" placeholder="搜索公司类型" autocomplete="off"></label>
+    <div class="surface-company-choices" data-role="surface-company-choices">${selected.map(surfaceCompanySelectHtml).join("")}</div>
+    <div class="surface-company-actions"${error ? "" : " hidden"}><button type="button" class="secondary-action" data-role="surface-catalog-retry">重试加载目录</button></div>
+    <small data-role="surface-catalog-status" role="status">${escapeHtml(error ? "公司目录加载失败，可继续编辑正文" : state.surfaceCatalog?.status === "ready" ? "" : "正在读取公司类型…")}</small></div>`;
+}
+
+function filterSurfaceCompanyOptions(row, search) {
+  const query = String(search || "").trim().toLocaleLowerCase();
+  row.querySelectorAll('[data-role="surface-company-select"] option').forEach((option) => {
+    option.hidden = Boolean(option.value && !option.selected && query && !option.textContent.toLocaleLowerCase().includes(query));
+  });
+}
+
+function syncSurfaceCompanyControls(row, review) {
+  if (typeof CompanySurfaceMapping === "undefined") return;
+  const item = technicalRowMembers(row, review, true)[0]?.item;
+  const node = row.querySelector('[data-role="surface-company-controls"]');
+  if (!node || !item) return;
+  node.hidden = item.type !== "surface";
+  const ids = item.surface_mapping?.catalog_ids || CompanySurfaceMapping.namesInContent(item.content);
+  const desired = [ids[0] || ""];
+  const holder = node.querySelector('[data-role="surface-company-choices"]');
+  const old = [...holder.querySelectorAll("select")];
+  const active = old.indexOf(document.activeElement);
+  if (old.length !== desired.length || old.some((select) => select.options.length !== (state.surfaceCatalog?.items.length || 0) + 1)) {
+    holder.innerHTML = desired.map(surfaceCompanySelectHtml).join("");
+    if (active >= 0) holder.querySelectorAll("select")[Math.min(active, desired.length - 1)]?.focus({ preventScroll: true });
+  } else old.forEach((select, i) => { select.value = desired[i]; select.disabled = state.surfaceCatalog?.status !== "ready"; });
+  node.querySelector('.surface-company-actions').hidden = state.surfaceCatalog?.status !== "error";
+  node.querySelector('[data-role="surface-catalog-status"]').textContent = state.surfaceCatalog?.status === "error" ? "公司目录加载失败，可继续编辑正文" : state.surfaceCatalog?.status === "ready" ? "" : "正在读取公司类型…";
+  filterSurfaceCompanyOptions(row, node.querySelector('[data-role="surface-company-search"]').value);
+}
+
+async function ensureSurfaceCatalog({ force = false } = {}) {
+  const base = state.apiBaseUrl;
+  if (!force && state.surfaceCatalog?.apiBaseUrl === base) {
+    if (state.surfaceCatalog.status === "ready") return true;
+    if (state.surfaceCatalog.status === "loading") return surfaceCatalogPromise;
+    if (state.surfaceCatalog.status === "error") return false;
+  }
+  const request = ++surfaceCatalogRequestSerial;
+  state.surfaceCatalog = { status: "loading", items: [], version: "", apiBaseUrl: base };
+  surfaceCatalogPromise = (async () => {
+    try {
+      const response = await apiFetch("/api/surface-treatment-catalog");
+      const payload = await response.json();
+      if (request !== surfaceCatalogRequestSerial || base !== state.apiBaseUrl) return false;
+      if (!response.ok) throw new Error("公司目录读取失败");
+      CompanySurfaceMapping.setCatalog(payload);
+      state.surfaceCatalog = { ...payload, status: "ready", apiBaseUrl: base };
+      return true;
+    } catch (error) {
+      if (request !== surfaceCatalogRequestSerial || base !== state.apiBaseUrl) return false;
+      state.surfaceCatalog = { status: "error", items: [], version: "", error: error.message, apiBaseUrl: base };
+      return false;
+    } finally {
+      if (request === surfaceCatalogRequestSerial && base === state.apiBaseUrl) {
+        surfaceCatalogPromise = null;
+        if (state.review) document.querySelectorAll('.requirement-row[data-kind="technical"]').forEach((row) => { syncSurfaceCompanyControls(row, state.review); syncTechnicalGroupControl(row, state.review); });
+      }
+    }
+  })();
+  return surfaceCatalogPromise;
+}
+
 function renderRequirementsHtml(review) {
+  if (state.identityReady && typeof CompanySurfaceMapping !== "undefined" && (state.surfaceCatalog.status === "idle" || state.surfaceCatalog.apiBaseUrl !== state.apiBaseUrl)) void ensureSurfaceCatalog();
   configureTechnicalRequirementRecovery();
   ensureTechnicalRequirementIds(review);
   const groups = technicalRequirementGroups(review);
@@ -7889,19 +8023,22 @@ function renderRequirementsHtml(review) {
             return `
             <div class="requirement-row" data-kind="technical" data-index="${index}" data-requirement-id="${escapeHtml(item.requirement_id)}" data-requirement-ids="${escapeHtml(JSON.stringify(group.ids))}">
               <div class="requirement-editor">
-                <div class="technical-group-meta"><small>对应 ${group.members.length} 条原始记录</small><small data-role="technical-group-status">${escapeHtml(technicalGroupStatus(group.members, review))}</small></div>
+                <div class="technical-group-meta"><small>对应 ${group.sources.length} 条原始记录</small><small data-role="technical-group-status">${escapeHtml(technicalGroupStatus(group.members, review))}</small></div>
                 <label>类型
                   <select data-role="type">${technicalRequirementTypeOptionsHtml(item.type)}</select>
                 </label>
+                ${surfaceCompanyControlsHtml(item)}
                 <label>中文技术要求
                   <textarea data-role="content">${escapeHtml(TechnicalRequirementEquivalence.format(item))}</textarea>
                 </label>
                 <small class="technical-group-reason" data-role="technical-group-reason" role="status"${control.disabled && control.state !== "confirmed" ? "" : " hidden"}>${escapeHtml(control.disabled && control.state !== "confirmed" ? control.reason : "")}</small>
                 ${group.members.map(({ item: member, index: memberIndex }) => `<div data-role="technical-translation-feedback" data-translation-requirement-id="${escapeHtml(member.requirement_id)}">${technicalTranslationFeedbackHtml(review, member, memberIndex)}</div>`).join("")}
-                <details class="technical-original technical-group-sources" data-role="technical-group-sources"><summary>查看识别来源（${group.members.length} 条原始记录）</summary>
-                  ${group.members.map(({ item: member, index: memberIndex }) => `
+                <details class="technical-original technical-group-sources" data-role="technical-group-sources"><summary>查看识别来源（${group.sources.length} 条原始记录）</summary>
+                  ${group.sources.map(({ item: member, index: memberIndex }) => `
                     <div class="technical-source-record" data-source-requirement-id="${escapeHtml(member.requirement_id)}">
-                      <small>原始记录 ${memberIndex + 1} · 第 ${escapeHtml(member.page || 1)} 页 · ${member.need_human_review === false ? "已确认" : "待确认"}</small>
+                      <small>原始记录 ${memberIndex + 1} · 第 ${escapeHtml(member.page || 1)} 页 · ${!group.ids.includes(member.requirement_id) ? "原文来源" : member.need_human_review === false ? "已确认" : "待确认"}</small>
+                      <small>记录ID：${escapeHtml(member.requirement_id)}</small>
+                      <small>来源：${escapeHtml(sourceValues(member.source).join("、"))}${member.position ? ` · 位置：${escapeHtml(JSON.stringify(member.position))}` : ""}</small>
                       ${member.original_number != null ? `<small class="technical-original-number">原图第 ${escapeHtml(member.original_number)} 条</small>` : ""}
                       <p>${escapeHtml(member.original_content || member.recognized_content || member.content || "")}</p>
                       ${member.evidence ? `<p>${escapeHtml(member.evidence)}</p>` : ""}
@@ -7911,7 +8048,7 @@ function renderRequirementsHtml(review) {
               </div>
               <div class="requirement-actions">
                 ${technicalGroupButtonHtml(group, review)}
-                <button type="button" class="secondary-action requirement-delete-button" data-role="delete-technical-requirement" title="删除此项对应的 ${group.members.length} 条原始记录">删除${group.members.length > 1 ? `（${group.members.length}条）` : ""}</button>
+                <button type="button" class="secondary-action requirement-delete-button" data-role="delete-technical-requirement" title="删除此项对应的 ${group.sources.length} 条原始记录">删除${group.sources.length > 1 ? `（${group.sources.length}条）` : ""}</button>
               </div>
             </div>
           `; }).join("")}
@@ -10066,7 +10203,14 @@ function buildSafeConfirmationPlan(review) {
     items.push({ kind: "load_point", group: "load_point", field, index, point, label, load_point_id: point.load_point_id || null });
   });
 
+  const suppressedSurfaceSources = new Set(surfaceSourceLinks(review).suppressed_ids);
   (review?.technical_requirements || []).forEach((item, index) => {
+    if (suppressedSurfaceSources.has(item?.requirement_id)) return;
+    const surfaceReason = typeof CompanySurfaceMapping !== "undefined" ? CompanySurfaceMapping.reason(item) : "";
+    if (surfaceReason) {
+      skip("technical", technicalRequirementField(item, index), "表面处理", surfaceReason, { requirement_id: item.requirement_id || null });
+      return;
+    }
     if (technicalRequirementBlocksExport(item) || technicalTranslationService()?.isPending(review, item)) {
       skip("technical", technicalRequirementField(item, index), TECH_LABELS[item.type] || "技术要求", "外文说明需完成中文化后再确认", { requirement_id: item.requirement_id || null });
       return;
@@ -10078,7 +10222,7 @@ function buildSafeConfirmationPlan(review) {
       skip("technical", field, label, "技术要求内容为空", { requirement_id: item.requirement_id || null });
       return;
     }
-    if (item.type === "surface" && item.translation_status !== "translated" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item.normalization_status)) {
+    if (item.type === "surface" && !item.surface_mapping && item.translation_status !== "translated" && !["matched", "alias_matched", "llm_auto_matched", "human_confirmed"].includes(item.normalization_status)) {
       skip("technical", field, label, "表面处理术语尚未明确匹配", { requirement_id: item.requirement_id || null });
       return;
     }
@@ -10190,6 +10334,7 @@ function confirmSafeConfirmationItem(item) {
   }
   else if (item.kind === "technical") {
     const confirmationKey = technicalRequirementConfirmationKey(item.item, item.index);
+    if (typeof CompanySurfaceMapping !== "undefined") CompanySurfaceMapping.singleSelection(item.item);
     if (item.item.type === "surface") applyManualSurfaceNormalization(item.item, "人工批量确认当前表面处理术语");
     confirmParam(item.item, confirmationKey);
     state.review.manual_confirmations[confirmationKey] = {
@@ -11505,7 +11650,7 @@ function configureTechnicalRequirementRecovery() {
   });
 }
 
-function technicalRequirementBlocksExport(item) { return technicalTranslationService()?.blocksExport(item) || false; }
+function technicalRequirementBlocksExport(item) { return Boolean((typeof CompanySurfaceMapping !== "undefined" && CompanySurfaceMapping.reason(item)) || technicalTranslationService()?.blocksExport(item)); }
 
 function scheduleTechnicalRequirementTranslation() {
   const service = technicalTranslationService();
@@ -12575,6 +12720,8 @@ function confirmationSnapshotFor(item) {
       kind: "technical",
       type: normalizeTechnicalRequirementType(item.type),
       content: String(item.content || "").trim(),
+      ...(item.application_scope ? { application_scope: item.application_scope } : {}),
+      ...(item.surface_mapping ? { surface_mapping: typeof CompanySurfaceMapping !== "undefined" ? CompanySurfaceMapping.fingerprint(item) : item.surface_mapping } : {}),
     };
   }
   return {
@@ -12948,11 +13095,13 @@ function makeGenerationParameterPackage(review = state.review) {
       confirmation_source: "human_confirmed",
     };
   });
+  const surfaceLinks = surfaceSourceLinks(review), suppressedSurfaceSources = new Set(surfaceLinks.suppressed_ids);
   const requirements = (review.technical_requirements || [])
-    .filter((item) => item?.content && item.need_human_review === false && !technicalRequirementBlocksExport(item))
+    .filter((item) => !suppressedSurfaceSources.has(item?.requirement_id) && item?.content && item.need_human_review === false && !technicalRequirementBlocksExport(item))
     .map((item) => ({
       type: item.type,
       content: technicalRequirementOutputContent(item),
+      ...(item.surface_mapping ? { surface_mapping: CompanySurfaceMapping.mappingSnapshot(item, surfaceLinks) } : {}),
       ...(item.application_scope ? { application_scope: item.application_scope } : {}),
       confirmation_source: "human_confirmed",
     }));

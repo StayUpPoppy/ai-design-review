@@ -132,8 +132,10 @@
     const generation = packageData.generation_parameters || {}, parameters = generation.spring_parameters || {};
     const lines = [], remaining = [], material = parameterValue(parameters.material), direction = handedness(parameterValue(parameters.handedness));
     const roughness = confirmedRoughness(review);
+    const convertedSources = new Set(typeof CompanySurfaceMapping !== "undefined" ? CompanySurfaceMapping.outputSourceKeys(review).map((key) => JSON.stringify(key)) : []);
     const keys = new Set();
     const append = (line, scope) => {
+      if (typeof CompanySurfaceMapping !== "undefined" && convertedSources.has(JSON.stringify([CompanySurfaceMapping.sourceKey(line), CompanySurfaceMapping.scopeKey(scope)]))) return;
       if (roughnessMatches({ content: line, application_scope: scope }, roughness)) return;
       const key = sentenceKey(line, catalog, scope);
       if (line && !keys.has(key)) { keys.add(key); lines.push(line); }

@@ -73,6 +73,19 @@ def collect_technical_requirements(candidates: list[dict[str, Any]], *, preserve
                 "recognition_aliases": [],
                 "suggested_region": candidate.get("suggested_region") or "", **metadata,
                 **{key: deepcopy(candidate[key]) for key in TRANSLATION_KEYS if key in candidate}}
+        if "surface_mapping" in candidate:
+            item.update({key: deepcopy(candidate[key]) for key in ("surface_mapping", "raw_content", "standard_content", "normalization_status", "normalization_source") if key in candidate})
+            item["need_human_review"] = True
+        else:
+            # A duplicate parameter channel may repeat the original code rather
+            # than the converted note. Inherit only a unique same-page source.
+            matches = [note for note in notes if "surface_mapping" in note and _same_original(note, item)
+                       and not (note.get("position") and item.get("position") and note["position"] != item["position"])]
+            if len(matches) == 1:
+                note = matches[0]
+                item.update({key: deepcopy(note[key]) for key in ("type", "content", "surface_mapping", "raw_content", "standard_content", "normalization_status", "normalization_source", *TRANSLATION_KEYS) if key in note})
+                kind = "surface"
+                item["need_human_review"] = True
         existing = next((note for note in notes if _same_occurrence(note, item)), None)
         if existing is None and item["recognition_channel"] == "parameters":
             matches = [note for note in notes if note.get("recognition_channel") == "technical_requirements"
@@ -87,13 +100,26 @@ def collect_technical_requirements(candidates: list[dict[str, Any]], *, preserve
                 existing["recognition_aliases"].append({key: deepcopy(item.get(key)) for key in
                     (*RECOGNITION_KEYS, "original_content", "page", "position", "source", "evidence", "recognition_channel")})
             continue
-        if kind == "surface":
-            normalized = normalize_surface_requirement(content, enable_llm=None if preserve_confirmation_policy else False)
-            item.update({key: deepcopy(value) for key, value in normalized.items() if key not in {"need_human_review"}})
-            item["content"] = normalized["content"]
-            # Keep the incumbent recognition policy. Historical recovery never
-            # adopts a machine decision as a fresh confirmation.
-            item["need_human_review"] = bool(normalized["need_human_review"]) if preserve_confirmation_policy else True
+        if kind == "surface" and "surface_mapping" not in item:
+            from .surface_source_links import surface_source_links
+            item["requirement_id"] = "techreq_" + hashlib.sha256(item["recognition_key"].encode()).hexdigest()[:24]
+            linked = item["requirement_id"] in surface_source_links({"technical_requirements": [*notes, item]})["suppressed_ids"]
+            if linked:
+                # Retain OCR source text; it has already been converted in the
+                # explicit note channel and needs no legacy matching call.
+                pass
+            elif "qwen_vision" in source:
+                # A model may omit the note array and return only the parameter
+                # channel. Keep it pending instead of invoking the old matcher.
+                from .surface_catalog import accept_recognized_surface
+                item = accept_recognized_surface(item)
+            else:
+                normalized = normalize_surface_requirement(content, enable_llm=None if preserve_confirmation_policy else False)
+                item.update({key: deepcopy(value) for key, value in normalized.items() if key not in {"need_human_review"}})
+                item["content"] = normalized["content"]
+                # Keep the incumbent recognition policy. Historical recovery never
+                # adopts a machine decision as a fresh confirmation.
+                item["need_human_review"] = bool(normalized["need_human_review"]) if preserve_confirmation_policy else True
         if item["original_content"] != item["content"] and requires_translation(item["original_content"]):
             diagnostic, warnings = assess_translation(item["original_content"], item["content"])
             if diagnostic:
@@ -108,7 +134,10 @@ def collect_technical_requirements(candidates: list[dict[str, Any]], *, preserve
                 item.update(translation_warning_fields(warnings, item["content"], kind))
         item["requirement_id"] = "techreq_" + hashlib.sha256(item["recognition_key"].encode()).hexdigest()[:24]
         notes.append(item)
-    return sorted(notes, key=lambda item: (_number(item.get("page"), 1), item["source_order"]))
+    notes = sorted(notes, key=lambda item: (_number(item.get("page"), 1), item["source_order"]))
+    from .surface_source_links import bind_surface_sources
+    bind_surface_sources({"technical_requirements": notes})
+    return notes
 
 
 def _same_occurrence(left: dict[str, Any], right: dict[str, Any]) -> bool:

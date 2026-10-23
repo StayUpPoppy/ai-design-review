@@ -897,6 +897,15 @@ button:disabled {
   color: #805000;
 }
 
+.surface-company-controls { display: grid; gap: 6px; min-width: 0; }
+.surface-company-controls[hidden] { display: none; }
+.surface-company-controls input, .surface-company-controls select { width: 100%; min-width: 0; }
+.surface-company-choices { display: grid; gap: 6px; }
+.surface-company-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.surface-company-actions[hidden] { display: none; }
+.surface-company-controls small:empty { display: none; }
+.surface-company-controls small { color: #805000; }
+
 .drawing-preview,
 .review-block {
   margin-top: 16px;

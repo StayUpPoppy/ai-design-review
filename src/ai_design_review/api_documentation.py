@@ -71,6 +71,7 @@ def _operation(tag: str, summary: str, description: str) -> dict[str, str]:
 
 
 OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
+    ("GET", "/api/surface-treatment-catalog"): _operation("审图管理", "获取公司表面处理目录", "按当前ERP身份返回无备注版公司目录的版本及49项稳定ID、名称；只读，不调用模型、不修改审图。每条要求关联一个公司类型，复合工艺取原顺序第一项、正文完整保留；关联原代号仅在识别来源展示，不再独立确认及输出。content为唯一成图正文，主动未指定保留正文；新任务冻结结果，历史请求不变。"),
     ("GET", "/api/material-catalog"): _operation("审图管理", "获取公司压缩弹簧材料目录", "按当前 ERP 身份返回15种材料的稳定ID、完整名称、标准牌号、明确别名和公司表内固定剪切模量及目录版本。只读，不调用模型、不保存审图；新材料选择限定目录，历史人工原值兼容保留，确认后的完整名称用于参数包及SW材料字段。"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): _operation("审图管理", "预览并核对遗漏技术要求", "按订单归属和当前修订读取原始识别列表，返回未保留的独立条目；不调用识别模型、不保存、不覆盖人工内容。客户端选择补回后使用既有保存接口，仍须逐条确认。"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): _operation("审图管理", "翻译或恢复技术要求译文", "校验订单归属、稳定ID及已保存文本快照。有效非空译文直接填入正文，不检查外文残留、中文充分性或工程内容差异，不生成差异警告；保留网络、空结果、格式、ID及无法还原占位符异常。mode=translate调用现有Qwen；mode=revalidate仅恢复实际保存的候选，不调用模型。translation_output_snapshot防止成功结果重复送译。返回自动恢复或待用户选择的候选；不保存、不代替人工确认，客户端通过现有串行保存持久化。"),
@@ -284,6 +285,17 @@ class SpringParametersDocument(BaseModel):
     load_points: list[ReviewLoadPointDocument] = Field(default_factory=list, description="载荷测试点；人工确认后会同步进入生图参数包二维图标注区。")
 
 
+class SurfaceTreatmentCatalogItemDocument(BaseModel):
+    id: str = Field(description="公司表面处理稳定ID。")
+    name: str = Field(description="公司正式名称。")
+
+
+class SurfaceTreatmentCatalogDocument(BaseModel):
+    version: str = Field(description="公司表面处理目录版本。")
+    source: str = Field(description="无备注版Excel来源名称。")
+    items: list[SurfaceTreatmentCatalogItemDocument] = Field(description="49项公司名称，前端与识别共用；不含旧默认映射。")
+
+
 class TechnicalRequirementDocument(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -309,6 +321,7 @@ class TechnicalRequirementDocument(BaseModel):
     )
     content: str = Field(default="", description="当前技术要求编辑及输出文本；译文放在此字段，送译原文另存original_content。热处理、表面处理、盐雾、寿命、环保、硬度、工艺及其他要求共用完整正文等价规则，前端与新建SW请求仅去除正文、范围及全部工程条件等价的重复；不同条件和未解析文字保留，原始记录不删除。", examples=["表面镀锌。"])
     original_content: str | None = Field(default=None, description="保留的图纸原文；历史缺原文时保留已有文本，不伪造原文。")
+    surface_mapping: dict[str, Any] | None = Field(default=None, description="可选公司表面处理映射：catalog_version、catalog_ids(新结果最多一项，复合工艺采用第一项，兼容旧多项)、selection_mode(auto/manual/none)、conversion_status(converted/unmatched/needs_input)、input_snapshot、conflict及可选source_requirement_ids。来源ID由服务端按原文、页码、范围及位置复核，原记录保留且不独立确认/输出。主动none保留正文且不自动恢复；content是唯一成图文字。")
     original_number: str | None = Field(default=None, description="原图条目序号，仅用于核对，可重复；无编号时为空。")
     source_order: float | None = Field(default=None, description="原图阅读顺序，不是SW输出编号。")
     recognition_key: str | None = Field(default=None, description="原图识别条目标识，用于去重和安全补回。")
@@ -962,6 +975,7 @@ class ApiErrorResponse(BaseModel):
 
 
 DOCUMENTATION_MODELS: tuple[type[BaseModel], ...] = (
+    SurfaceTreatmentCatalogItemDocument, SurfaceTreatmentCatalogDocument,
     TechnicalRecoveryRequest, TechnicalRecoveryItem, TechnicalRecoveryResponse,
     TechnicalTranslationSnapshot, TechnicalTranslationItemRequest, TechnicalTranslationRequest, TechnicalTranslationResult, TechnicalTranslationResponse,
     AnnotationPoint, AnnotationPositionChange, RelocalizeDrawingAnnotationsRequest, SaveDrawingAnnotationsRequest, DrawingAnnotationsResponse,
@@ -1017,6 +1031,7 @@ REQUEST_MODELS: dict[tuple[str, str], type[BaseModel]] = {
 }
 
 RESPONSE_MODELS: dict[tuple[str, str], tuple[str, type[BaseModel]]] = {
+    ("GET", "/api/surface-treatment-catalog"): ("200", SurfaceTreatmentCatalogDocument),
     ("GET", "/api/material-catalog"): ("200", MaterialCatalogResponse),
     ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): ("200", TechnicalRecoveryResponse),
     ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): ("200", TechnicalTranslationResponse),
