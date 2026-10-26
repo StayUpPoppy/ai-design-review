@@ -16,6 +16,9 @@ const state = {
   compareTab: "workbench",
   compareView: {
     initialized: false,
+    rotation: 0,
+    rotations: new Map(),
+    rotationOwner: null,
     scale: 1,
     x: 0,
     y: 0,
@@ -525,7 +528,7 @@ const drawingUploads = DrawingUploadQueue.create({
 const historyDeletion = HistoryBulkDeletion.create({
   getScope: historyRecognitionScope,
   save: () => flushReviewPersistence({ throwOnError: true }),
-  requestDelete: (item, scope) => fetch(`${JSON.parse(scope)[0]}/api/reviews/${encodeURIComponent(item.job_id)}`, {
+  requestDelete: (item, scope) => fetch(`${JSON.parse(scope)[0]}/api/reviews/${encodeURIComponent(item.job_id)}${item.record_kind === "source" ? `?expected_source_revision=${item.source_revision}` : ""}`, {
     method: "DELETE", credentials: "include", signal: AbortSignal.timeout(30000),
   }),
   onDeleted: finishHistoryOrderDeletion,
@@ -537,6 +540,20 @@ const historyDeletion = HistoryBulkDeletion.create({
     setBusy(running);
   },
 });
+
+const multiSpecUI = MultiSpecReview.create({
+  request: (path, options) => apiFetch(path, options), scope: historyRecognitionScope,
+  save: () => flushReviewPersistence({ throwOnError: true }), openReview: openPersistedReview,
+  assetUrl: toBackendAssetUrl, deleted: id => state.deletedReviewIds.has(id),
+  changed: renderRecentReviews, renderRow: createHistoryRow,
+  viewed: (id, round) => {
+    if (round) historyUnread.markRead(id, round);
+    renderRecentReviews();
+  },
+});
+
+function historyItems() { const roots = new Set(state.recentReviews.map(v => v.job_id)); return [...state.recentReviews, ...multiSpecUI.items().filter(v => roots.has(v.parent_review_id))]; }
+function findHistoryItem(id) { return state.recentReviews.find(v => v.job_id === id) || multiSpecUI.find(id); }
 
 apiBaseInput.value = state.apiBaseUrl;
 
@@ -2588,7 +2605,7 @@ async function loadRecentReviews() {
   const scope = historyRecognitionScope();
   if (refreshRecentReviewsButton) refreshRecentReviewsButton.disabled = true;
   try {
-    const response = await apiFetch("/api/reviews?limit=100");
+    const response = await apiFetch("/api/reviews?limit=100&root_only=true");
     const payload = await response.json();
     if (scope !== historyRecognitionScope()) return;
     if (!response.ok) throw new Error(payload.detail || "无法读取已保存的审图记录");
@@ -2726,7 +2743,7 @@ function rememberSavedHistorySummary(jobId, summary, revision) {
   if (!state.historySummaryVersions || !summary) return;
   const saved = { drawing_name: String(summary.drawing_name ?? "").trim(), drawing_no: String(summary.drawing_no ?? "").trim() };
   state.historySummaryVersions.set(jobId, { summary: saved, revision: Number(revision || 0), serial: ++state.recognitionRequestSerial });
-  const item = state.recentReviews.find((row) => row.job_id === jobId);
+  const item = findHistoryItem(jobId);
   if (item) { Object.assign(item, saved); updateRecentReviewRow(item); }
 }
 
@@ -2786,6 +2803,7 @@ function updateRecentReviewRow(item, row = null) {
   progress.hidden = status.progress == null;
   if (progress.textContent !== value) progress.textContent = value;
   if (typeof applyHistoryManagementToRow === "function") applyHistoryManagementToRow(item, row);
+  if (item.record_kind === "source") multiSpecUI.decorate(item, row);
 }
 
 function trackRecognitionJob(jobId, messageId = null) {
@@ -2862,6 +2880,7 @@ function mergeRecognitionStatus(jobId, recognition, { requestSerial = ++state.re
     updated_at: recognition.updated_at || previous?.updated_at,
   };
   if (!previous) incoming.drawing_name = recognition.drawing_name;
+  if (recognition.record_kind) Object.assign(incoming, { record_kind: recognition.record_kind, variant_count: recognition.variant_count, created_count: recognition.created_count });
   const next = reconcileRecognitionListItem(previous, incoming, requestSerial, { restart });
   if (next === previous) return false;
   historyUnread?.observe(next, { restart, submission });
@@ -2886,10 +2905,20 @@ function renderRecentReviews() {
     if (typeof historyDeletion !== "undefined") historyDeletion.updateVisible([]);
     return;
   }
-  const existing = new Map(Array.from(recentReviewList.querySelectorAll('.history-order-item')).map((row) => [row.dataset.historyJobId, row]));
+  const existing = new Map(Array.from(recentReviewList.querySelectorAll(':scope > .history-order-item')).map((row) => [row.dataset.historyJobId, row]));
   recentReviewList.querySelector('.history-empty')?.remove();
   reviews.forEach((item, index) => {
-    let row = existing.get(item.job_id);
+    const row = createHistoryRow(item, existing.get(item.job_id));
+    multiSpecUI.decorate(item, row);
+    if (recentReviewList.children[index] !== row) recentReviewList.insertBefore(row, recentReviewList.children[index] || null);
+    existing.delete(item.job_id);
+  });
+  existing.forEach((row) => row.remove());
+  updateHistoryUnreadCount();
+  if (typeof historyDeletion !== "undefined") historyDeletion.updateVisible(historyItems());
+}
+
+function createHistoryRow(item, row) {
     if (!row) {
       row = document.createElement('article');
       row.className = 'history-order-item';
@@ -2920,17 +2949,12 @@ function renderRecentReviews() {
       });
       row.querySelector('[data-role="retry-recognition"]').addEventListener('click', () => { void retryRecognitionJob(item.job_id); });
       row.querySelector('[data-role="delete-recent-review"]').addEventListener('click', () => {
-        const current = state.recentReviews.find((review) => review.job_id === item.job_id);
+        const current = findHistoryItem(item.job_id);
         if (current) showDeleteReviewDialog(current);
       });
     }
     updateRecentReviewRow(item, row);
-    if (recentReviewList.children[index] !== row) recentReviewList.insertBefore(row, recentReviewList.children[index] || null);
-    existing.delete(item.job_id);
-  });
-  existing.forEach((row) => row.remove());
-  updateHistoryUnreadCount();
-  if (typeof historyDeletion !== "undefined") historyDeletion.updateVisible(reviews);
+    return row;
 }
 
 async function openPersistedReview(jobId, options = {}) {
@@ -2943,7 +2967,7 @@ async function openPersistedReview(jobId, options = {}) {
     return;
   }
   if (scope !== historyRecognitionScope() || navigationSerial !== state.reviewNavigationSerial || (options.uploadAutoOpen && !uploadAutoOpenIsCurrent(jobId))) return;
-  const item = state.recentReviews.find((review) => review.job_id === jobId);
+  const item = findHistoryItem(jobId);
   const loadedRound = controller?.capture(item);
   if (["queued", "processing", "cancel_requested"].includes(item?.recognition_status)) {
     const messageId = appendAssistantText(recognitionProgressText(item), false);
@@ -2969,6 +2993,11 @@ async function openPersistedReview(jobId, options = {}) {
       removeMessage(thinkingId); return;
     }
     removeMessage(thinkingId);
+    if (payload.record_kind === "source") {
+      if (item) { item.record_kind = "source"; item.variant_count = payload.multi_spec.variants.length; }
+      await multiSpecUI.open(jobId, loadedRound);
+      return;
+    }
     resetGenerationState();
     state.lastJob = {
       job_id: jobId,
@@ -2978,7 +3007,7 @@ async function openPersistedReview(jobId, options = {}) {
     state.compareTab = "workbench";
     state.reviewPersistenceFailedFields = {};
     state.reviewDraftFields.clear();
-    setReview(normalizeReview(payload), toBackendAssetUrl(item?.image_url));
+    setReview(normalizeReview(payload), toBackendAssetUrl(payload.image_url || item?.image_url));
     displayedRecognitionRounds.set(state.review, { scope, controller, jobId, round: loadedRound });
     await loadGenerationState(jobId, { render: false, silent: true });
     if (scope !== historyRecognitionScope() || navigationSerial !== state.reviewNavigationSerial || state.lastJob?.job_id !== jobId) return;
@@ -3096,23 +3125,33 @@ function renderHistoryManagement() {
   document.getElementById("historyClearDeletionResults").disabled = management.running;
   recentReviews.classList.toggle("is-managing", management.managing);
   const rows = new Map([...recentReviewList.querySelectorAll('.history-order-item')].map((row) => [row.dataset.historyJobId, row]));
-  for (const item of state.recentReviews) {
+  for (const item of historyItems()) {
     const row = rows.get(item.job_id);
     if (row) applyHistoryManagementToRow(item, row);
   }
 }
 
-function showHistoryDeletionDialog(items, { bulk = true } = {}) {
+async function showHistoryDeletionDialog(items, { bulk = true } = {}) {
   if (!items.length || state.busy || !state.identityReady || historyDeletion.state.running || document.querySelector(".delete-review-dialog[open]")) return;
   const scope = historyRecognitionScope();
-  const captured = items.map((item) => ({ ...item }));
+  const selectedIds = new Set(items.map(item => item.job_id));
+  const captured = items.filter(item => !selectedIds.has(item.parent_review_id)).map((item) => ({ ...item }));
+  try {
+    for (const item of captured) if (item.record_kind === "source") {
+      const value = await multiSpecUI.load(item.job_id);
+      item.source_revision = value.source_revision; item.created_count = value.created_count;
+    }
+  } catch (error) { appendAssistantText(error.message, true); return; }
+  if (scope !== historyRecognitionScope() || state.busy) return;
+  const actualCount = captured.reduce((n, item) => n + (item.record_kind === "source" ? item.created_count : 1), 0);
+  if (actualCount > 100) { appendAssistantText("含来源组内子记录，一次最多删除100条实际审图记录，请分批处理。", true); return; }
   const activeCount = captured.filter((item) => ["queued", "processing"].includes(item.recognition_status)).length;
   const dialog = document.createElement("dialog");
   dialog.className = "delete-review-dialog";
   dialog.innerHTML = `
     <div class="delete-review-dialog-content">
       <h2>${bulk ? `删除所选${captured.length}条订单？` : "删除历史订单？"}</h2>
-      <p>将删除服务器订单及关联数据库记录，删除后无法恢复。${activeCount ? `其中${activeCount}条正在排队或识别，将先请求取消。` : ""}</p>
+      <p>将删除服务器订单及关联数据库记录，删除后无法恢复。${captured.some(v => v.record_kind === "source") ? `包括来源组及其全部子记录，共${actualCount}条实际审图记录。` : ""}${activeCount ? `其中${activeCount}条正在排队或识别，将先请求取消。` : ""}</p>
       <ul class="delete-review-order-list">${captured.map((item) => `<li>${escapeHtml(item.drawing_name || item.drawing_no || item.job_id)}</li>`).join("")}</ul>
       <p class="delete-review-dialog-note">订单目录会尝试清理；独立SW生成文件不在本次清理范围。</p>
       <p class="delete-review-dialog-error" data-role="delete-review-error" hidden></p>
@@ -3152,6 +3191,10 @@ function showHistoryDeletionDialog(items, { bulk = true } = {}) {
 }
 
 function finishHistoryOrderDeletion(item, result) {
+  const ids = result.deletedIds || [item.job_id];
+  ids.forEach(id => historyDeletion.state.selected.delete(id));
+  multiSpecUI.remove(ids);
+  for (const id of ids.filter(id => id !== item.job_id)) finishHistoryOrderDeletion({ job_id: id }, { ...result, deletedIds: [id], suppressNotice: true });
   const title = item.drawing_name || item.drawing_no || item.job_id;
   const deletedCurrentReview = state.lastJob?.job_id === item.job_id;
   state.deletedReviewIds.add(item.job_id);
@@ -3166,7 +3209,7 @@ function finishHistoryOrderDeletion(item, result) {
   state.recentReviews = state.recentReviews.filter((review) => review.job_id !== item.job_id);
   if (deletedCurrentReview) resetDeletedReviewState();
   renderRecentReviews();
-  if (!historyDeletion.state.managing) appendAssistantText(`${result.message}：${title}${result.cleanupPending ? "（服务器文件清理未完成）" : ""}`);
+  if (!historyDeletion.state.managing && !result.suppressNotice) appendAssistantText(`${result.message}：${title}${result.cleanupPending ? "（服务器文件清理未完成）" : ""}`);
 }
 
 function resetDeletedReviewState() {
@@ -3341,7 +3384,6 @@ function renderTypeSelectorHtml(review) {
 
 function renderSummaryHtml(review) {
   const info = review.drawing_summary || {};
-  const missing = review.missing_fields || [];
   const springType = currentSpringType(review);
   return `
     <section class="summary-strip">
@@ -3358,9 +3400,6 @@ function renderSummaryHtml(review) {
         <span data-role="drawing-no-save-status" role="status"></span>
         <button type="button" class="secondary-action" data-role="retry-drawing-no-save" hidden>重试保存</button>
       </label>
-      ${metricHtml("状态", info.overall_status || "-")}
-      ${metricHtml("ERP", review.erp_ready ? "允许" : "阻断")}
-      ${metricHtml("缺失字段", missing.length ? missing.map((field) => getFieldMeta(field, review).label || field).join("、") : "无")}
     </section>
   `;
 }
@@ -9909,6 +9948,7 @@ function updateLatestReviewMessage(title = "已更新结构化尺寸数据，请
 function openCompareOverlay(messageId = state.activeReviewMessageId) {
   if (messageId) activateReviewContext(messageId);
   if (!state.review) return;
+  if (!state.compareOpen) resetCompareRotation();
   state.compareOpen = true;
   state.compareView.initialized = false;
   document.body.classList.add("compare-open");
@@ -9919,6 +9959,7 @@ function openCompareOverlay(messageId = state.activeReviewMessageId) {
 
 function closeCompareOverlay() {
   state.compareOpen = false;
+  resetCompareRotation();
   document.body.classList.remove("compare-open");
   compareOverlay.hidden = true;
 }
@@ -11383,6 +11424,10 @@ function renderCompareViewerHtml() {
         <span id="compareZoomLabel">100%</span>
         <button type="button" data-view-action="zoom-in">放大</button>
         <button type="button" data-view-action="actual">100%</button>
+        <span class="compare-rotation-tools" role="group" aria-label="旋转原图">
+          <button type="button" data-view-action="rotate-left" aria-label="原图向左旋转90度" disabled>左转90°</button>
+          <button type="button" data-view-action="rotate-right" aria-label="原图向右旋转90度" disabled>右转90°</button>
+        </span>
       </div>
       ${typeof DrawingAnnotations !== "undefined" ? DrawingAnnotations.toolsHtml() : ""}
       <div id="compareViewport" class="compare-viewport">
@@ -11398,8 +11443,11 @@ function initializeCompareViewer() {
   const viewport = compareOverlay.querySelector("#compareViewport");
   const image = compareOverlay.querySelector("#compareImage");
   if (!viewport || !image) return;
+  syncCompareRotation();
+  updateCompareRotationButtons();
 
   const setup = () => {
+    updateCompareRotationButtons();
     if (!image.naturalWidth || !image.naturalHeight) return;
     if (!state.compareView.initialized) {
       fitCompareImage();
@@ -11413,6 +11461,7 @@ function initializeCompareViewer() {
   } else {
     image.addEventListener("load", setup, { once: true });
   }
+  image.addEventListener("error", updateCompareRotationButtons, { once: true });
 
   compareOverlay.querySelector('[data-view-action="fit"]').addEventListener("click", fitCompareImage);
   compareOverlay.querySelector('[data-view-action="actual"]').addEventListener("click", () => {
@@ -11424,6 +11473,8 @@ function initializeCompareViewer() {
   compareOverlay.querySelector('[data-view-action="zoom-out"]').addEventListener("click", () => {
     zoomCompareImage(1 / 1.2);
   });
+  compareOverlay.querySelector('[data-view-action="rotate-left"]').addEventListener("click", () => rotateCompareImage(-90));
+  compareOverlay.querySelector('[data-view-action="rotate-right"]').addEventListener("click", () => rotateCompareImage(90));
 
   viewport.addEventListener("wheel", (event) => {
     event.preventDefault();
@@ -11440,6 +11491,7 @@ function initializeCompareViewer() {
     state.compareView.startY = state.compareView.y;
     viewport.setPointerCapture(event.pointerId);
     viewport.classList.add("dragging");
+    updateCompareRotationButtons();
   });
   viewport.addEventListener("pointermove", (event) => {
     if (!state.compareView.dragging) return;
@@ -11451,25 +11503,73 @@ function initializeCompareViewer() {
     viewport.addEventListener(eventName, () => {
       state.compareView.dragging = false;
       viewport.classList.remove("dragging");
+      updateCompareRotationButtons();
     });
   });
   if (typeof DrawingAnnotations !== "undefined") DrawingAnnotations.bindViewer(compareOverlay);
+}
+
+function resetCompareRotation() {
+  state.compareView.rotation = 0;
+  state.compareView.rotations.clear();
+  state.compareView.rotationOwner = null;
+  state.compareView.initialized = false;
+  state.compareView.dragging = false;
+}
+
+function syncCompareRotation() {
+  const view = state.compareView;
+  const owner = `${state.apiBaseUrl}:${state.identity?.user_id || "local"}:${state.lastJob?.job_id || state.activeReviewMessageId || "local"}:${state.imageUrl || ""}`;
+  if (view.rotationOwner !== owner) {
+    resetCompareRotation();
+    view.rotationOwner = owner;
+  }
+  const page = typeof DrawingAnnotations !== "undefined" ? DrawingAnnotations.entry()?.page || 1 : 1;
+  view.rotation = view.rotations.get(String(page)) || 0;
+  return String(page);
+}
+
+function updateCompareRotationButtons() {
+  const image = compareOverlay.querySelector("#compareImage");
+  const transform = typeof DrawingAnnotations !== "undefined" && DrawingAnnotations.viewTransform;
+  const annotationDrag = typeof DrawingAnnotations !== "undefined" && DrawingAnnotations.entry()?.drag;
+  const disabled = !transform || !image?.complete || !image.naturalWidth || !image.naturalHeight || state.compareView.dragging || Boolean(annotationDrag);
+  compareOverlay.querySelectorAll('[data-view-action="rotate-left"], [data-view-action="rotate-right"]').forEach(button => { button.disabled = disabled; });
+}
+
+function rotateCompareImage(degrees) {
+  const viewport = compareOverlay.querySelector("#compareViewport"), image = compareOverlay.querySelector("#compareImage");
+  const transform = typeof DrawingAnnotations !== "undefined" && DrawingAnnotations.viewTransform;
+  if (!transform || !viewport || !image?.complete || !image.naturalWidth || !image.naturalHeight || state.compareView.dragging || DrawingAnnotations.entry()?.drag) return;
+  const page = syncCompareRotation(), view = state.compareView;
+  const center = { x: viewport.clientWidth / 2, y: viewport.clientHeight / 2 };
+  const source = transform.unproject(center, image.naturalWidth, image.naturalHeight, view);
+  view.rotation = transform.normalize(view.rotation + degrees);
+  view.rotations.set(page, view.rotation);
+  const point = transform.oriented(source, image.naturalWidth, image.naturalHeight, view.rotation);
+  view.x = center.x - point.x * view.scale;
+  view.y = center.y - point.y * view.scale;
+  view.initialized = true;
+  applyCompareTransform();
 }
 
 function fitCompareImage() {
   const viewport = compareOverlay.querySelector("#compareViewport");
   const image = compareOverlay.querySelector("#compareImage");
   if (!viewport || !image || !image.naturalWidth || !image.naturalHeight) return;
+  syncCompareRotation();
+  const transform = typeof DrawingAnnotations !== "undefined" && DrawingAnnotations.viewTransform;
+  const size = transform ? transform.size(image.naturalWidth, image.naturalHeight, state.compareView.rotation) : { width: image.naturalWidth, height: image.naturalHeight };
   const padding = 28;
   const viewportWidth = Math.max(1, viewport.clientWidth - padding * 2);
   const viewportHeight = Math.max(1, viewport.clientHeight - padding * 2);
   const scale = clamp(Math.min(
-    viewportWidth / image.naturalWidth,
-    viewportHeight / image.naturalHeight,
+    viewportWidth / size.width,
+    viewportHeight / size.height,
   ), 0.03, 4);
   state.compareView.scale = scale;
-  state.compareView.x = (viewport.clientWidth - image.naturalWidth * scale) / 2;
-  state.compareView.y = (viewport.clientHeight - image.naturalHeight * scale) / 2;
+  state.compareView.x = (viewport.clientWidth - size.width * scale) / 2;
+  state.compareView.y = (viewport.clientHeight - size.height * scale) / 2;
   state.compareView.initialized = true;
   applyCompareTransform();
 }
@@ -11502,11 +11602,13 @@ function applyCompareTransform() {
   const image = compareOverlay.querySelector("#compareImage");
   const label = compareOverlay.querySelector("#compareZoomLabel");
   if (!image) return;
-  image.style.transform = `translate(${state.compareView.x}px, ${state.compareView.y}px) scale(${state.compareView.scale})`;
+  const transform = typeof DrawingAnnotations !== "undefined" && DrawingAnnotations.viewTransform;
+  image.style.transform = transform ? transform.css(image.naturalWidth, image.naturalHeight, state.compareView) : `translate(${state.compareView.x}px, ${state.compareView.y}px) scale(${state.compareView.scale})`;
   if (label) {
     label.textContent = `${Math.round(state.compareView.scale * 100)}%`;
   }
   if (typeof DrawingAnnotations !== "undefined") DrawingAnnotations.renderLayer();
+  updateCompareRotationButtons();
 }
 
 if (typeof DrawingAnnotations !== "undefined") {
@@ -11533,6 +11635,7 @@ if (typeof DrawingAnnotations !== "undefined") {
     fetch: (...args) => apiFetch(...args),
     assetUrl: toBackendAssetUrl,
     getView: () => state.compareView,
+    onGestureChange: updateCompareRotationButtons,
     getImage: () => compareOverlay.querySelector("#compareImage"),
     getViewport: () => compareOverlay.querySelector("#compareViewport"),
     openViewer: () => { if (!state.compareOpen) openCompareOverlay(); },
@@ -11558,9 +11661,11 @@ if (typeof DrawingAnnotations !== "undefined") {
       const center = () => {
         const viewport = compareOverlay.querySelector("#compareViewport");
         if (!viewport || !image?.naturalWidth || image !== compareOverlay.querySelector("#compareImage")) return;
+        syncCompareRotation();
         state.compareView.scale = Math.max(.35, state.compareView.scale);
-        state.compareView.x = viewport.clientWidth / 2 - anchor.x * image.naturalWidth * state.compareView.scale;
-        state.compareView.y = viewport.clientHeight / 2 - anchor.y * image.naturalHeight * state.compareView.scale;
+        const point = DrawingAnnotations.viewTransform.oriented(anchor, image.naturalWidth, image.naturalHeight, state.compareView.rotation);
+        state.compareView.x = viewport.clientWidth / 2 - point.x * state.compareView.scale;
+        state.compareView.y = viewport.clientHeight / 2 - point.y * state.compareView.scale;
         state.compareView.initialized = true;
         applyCompareTransform();
       };

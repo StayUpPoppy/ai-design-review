@@ -108,6 +108,8 @@ from .technical_requirements import ensure_technical_requirement_ids
 from .technical_requirement_recognition import collect_technical_requirements, recovery_preview
 from .technical_translation import TechnicalTranslationEngine, prepare_review_translations, translation_snapshot
 from .workflow import DrawingReviewWorkflow, apply_standardization_to_review
+from .multi_spec import MultiSpecError
+from . import multi_spec_store
 from .accuracy_inference import refresh_accuracy_inference
 from .drawing_annotations import (
     AnnotationConflictError, annotation_file_lock, apply_annotation_patch,
@@ -1232,8 +1234,26 @@ async def run_recognition_execution(
             raw_payloads["qwen_vision"] = qwen_payload
             candidate_sources.append("qwen_vision")
             write_json(job_dir / "qwen_vision_raw.json", qwen_payload)
+        except MultiSpecError:
+            raise
         except Exception as exc:
+            raw_payloads["qwen_vision_failure"] = {"error_type": type(exc).__name__, "message": str(exc)}
             warnings.append(f"Qwen vision extraction failed: {type(exc).__name__}: {exc}")
+
+    multi_payload = raw_payloads.get("qwen_vision") or {}
+    if multi_payload.get("multi_spec"):
+        from .multi_spec import source_review
+        if uploaded_file_info.get("page_count", 1) > int(os.getenv("QWEN_MAX_PAGES", "3")):
+            raise MultiSpecError("多规格文件超过当前识别页数上限，请拆分后上传。")
+        review = source_review(multi_payload["parsed"], multi_payload["multi_spec"])
+        write_json(job_dir / "review.json", review)
+        write_json(job_dir / "file_info.json", uploaded_file_info)
+        write_json(job_dir / "owner.json", identity.as_owner_dict())
+        write_json(job_dir / "candidates.json", {"candidates": [], "raw_payloads": raw_payloads})
+        _report_recognition_progress(progress_callback, "saving_result", 95)
+        persistence = _create_review_persistence(job_id, review, file_info=uploaded_file_info, artifact_dir=str(job_dir), identity=identity)
+        return {"job_id": job_id, "record_kind": "source", "variant_count": len(review["multi_spec"]["variants"]), "image_url": image_url,
+                "review": review, "persistence": _persistence_response(persistence)}
 
     if _needs_dimension_grounding_ocr(candidates, uploaded_file_info, candidate_sources):
         _report_recognition_progress(progress_callback, "dimension_ocr", 55)
@@ -1354,6 +1374,18 @@ async def run_recognition_execution(
             warnings.append(f"RapidOCR fallback failed: {exc}; diagnostics_url={diagnostics_url}")
         except Exception as exc:
             warnings.append(f"RapidOCR fallback failed: {type(exc).__name__}: {exc}")
+
+    from .multi_spec import local_multi_spec_hint
+    multi_hint = local_multi_spec_hint(raw_payloads, candidates)
+    if multi_hint:
+        # Do not label an OCR-only merge as successful recognition of a family.
+        # Preserve diagnostics for retry without saving a misleading review.
+        write_json(job_dir / "candidates.json", {"candidates": candidates, "raw_payloads": raw_payloads})
+        write_json(job_dir / "warnings.json", {"warnings": warnings})
+        write_json(job_dir / "multi_spec_diagnostics.json", multi_hint)
+        failure = raw_payloads.get("qwen_vision_failure") or {}
+        reason = "Qwen请求超时" if "Timeout" in failure.get("error_type", "") else "未取得完整的多规格识别结果"
+        raise MultiSpecError(f"检测到多规格图纸（{multi_hint['reason']}），但{reason}。已停止单规格OCR兜底，避免混合参数；请重试或拆分文件。")
 
     business_candidates = [
         candidate
@@ -1541,11 +1573,11 @@ async def create_review(
 
 
 @app.get("/api/reviews")
-def list_reviews(limit: int = 20, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+def list_reviews(limit: int = 20, root_only: bool = False, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     bounded_limit = min(max(limit, 1), 100)
     if REVIEW_PERSISTENCE.configured:
         try:
-            reviews = REVIEW_PERSISTENCE.list_reviews(limit=bounded_limit, owner_user_id=identity.user_id)
+            reviews = REVIEW_PERSISTENCE.list_reviews(limit=bounded_limit, owner_user_id=identity.user_id, root_only=root_only)
             recognition_jobs = REVIEW_PERSISTENCE.list_recognition_jobs(limit=bounded_limit, owner_user_id=identity.user_id)
         except PersistenceError as exc:
             raise _persistence_http_error(exc) from exc
@@ -1978,8 +2010,24 @@ def save_existing_review(
 
 
 @app.delete("/api/reviews/{job_id}")
-def delete_existing_review(job_id: str, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+def delete_existing_review(job_id: str, expected_source_revision: int | None = None, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     job_dir = _job_dir(job_id)
+    if REVIEW_PERSISTENCE.configured:
+        record = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id)
+        if record and record.get("record_kind") in {"source", "variant"}:
+            try:
+                result = multi_spec_store.delete_family(REVIEW_PERSISTENCE, job_id, identity.user_id, expected_source_revision)
+            except multi_spec_store.VariantStoreError as exc:
+                raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+            pending = False
+            for folder in result.pop("paths"):
+                if not folder: continue
+                path = Path(folder).resolve()
+                if API_RUN_ROOT.resolve() not in path.parents: raise HTTPException(status_code=500, detail="文件清理路径无效。")
+                try: shutil.rmtree(path, ignore_errors=False) if path.exists() else None
+                except OSError: pending = True
+            return {"job_id": job_id, "deleted": True, "deleted_ids": result["deleted_ids"],
+                    "status": "cancelling" if result["cancelling"] else "deleted", "artifact_cleanup": "pending" if pending or result["cancelling"] else "deleted"}
     if REVIEW_PERSISTENCE.configured:
         try:
             task_result = REVIEW_PERSISTENCE.request_recognition_job_deletion(job_id, owner_user_id=identity.user_id)
@@ -2032,6 +2080,12 @@ def get_recognition_status(job_id: str, identity: IdentityContext = Depends(requ
     # before its history refresh has supplied the preview URL.
     if job.get("status") == "completed":
         job["image_url"] = _review_preview_url(job_id)
+        record = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id)
+        if record:
+            job["record_kind"] = record.get("record_kind", "single")
+            multi = record["review"].get("multi_spec") or {}
+            job["variant_count"] = len(multi.get("variants", []))
+            job["created_count"] = multi.get("created_count", 0)
     return {"job_id": job_id, "recognition": job}
 
 
@@ -2091,10 +2145,33 @@ def get_review(job_id: str, identity: IdentityContext = Depends(require_identity
             raise _persistence_http_error(exc) from exc
         if job is not None and job.get("status") != "completed":
             raise HTTPException(status_code=409, detail={"message": "Recognition is not complete.", "recognition": job})
-    review, revision = _load_persisted_review(job_id, review_path, identity)
+    review, revision = _load_persisted_review(job_id, review_path, identity, allow_source=True)
     if revision is not None:
         review["review_revision"] = revision
+    review["image_url"] = _review_preview_url(job_id)
     return review
+
+
+@app.get("/api/reviews/{source_id}/variants")
+def get_review_variants(source_id: str, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    try:
+        result = multi_spec_store.describe(REVIEW_PERSISTENCE, source_id, identity.user_id)
+        result["image_url"] = _review_preview_url(source_id)
+        from .drawing_annotations import preview_manifest
+        result["pages"] = preview_manifest(API_RUN_ROOT / source_id, lambda p: _artifact_url(source_id, p))
+        return result
+    except multi_spec_store.VariantStoreError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+
+@app.post("/api/reviews/{source_id}/variants/create-reviews")
+def create_variant_reviews(source_id: str, payload: dict[str, Any] = Body(...), identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    try:
+        return multi_spec_store.create_children(REVIEW_PERSISTENCE, source_id, identity.user_id, payload, identity.as_audit_actor(), API_RUN_ROOT)
+    except multi_spec_store.VariantStoreError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    except MultiSpecError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/reviews/{job_id}/candidates")
@@ -2305,7 +2382,7 @@ def get_review_artifact(
     identity: IdentityContext = Depends(require_identity),
 ) -> FileResponse:
     job_dir = _job_dir(job_id)
-    _ensure_review_owned(job_id, job_dir / "review.json", identity)
+    _ensure_review_owned(job_id, job_dir / "review.json", identity, allow_source=True)
     requested = (job_dir / relative_path).resolve()
     try:
         requested.relative_to(job_dir.resolve())
@@ -2324,6 +2401,8 @@ def _create_review_persistence(
     artifact_dir: str,
     identity: IdentityContext,
 ) -> dict[str, Any]:
+    if review.get("record_kind") == "source":
+        return REVIEW_PERSISTENCE.create_review(job_id, review, file_info=file_info, artifact_dir=artifact_dir, owner=identity.as_owner_dict(), actor=identity.as_audit_actor())
     ensure_compression_material(review)
     ensure_surface_roughness_parameter(review)
     apply_generation_defaults(review)
@@ -2346,6 +2425,7 @@ def _load_persisted_review(
     job_id: str,
     review_path: Path,
     identity: IdentityContext,
+    *, allow_source: bool = False,
 ) -> tuple[dict[str, Any], int | None]:
     if REVIEW_PERSISTENCE.configured:
         try:
@@ -2355,6 +2435,12 @@ def _load_persisted_review(
         if stored is None:
             raise HTTPException(status_code=404, detail="Review not found.")
         review = stored["review"]
+        if stored.get("record_kind") == "source":
+            if not allow_source: raise HTTPException(status_code=409, detail="来源记录只读，请从规格核对表创建并打开子审图记录。")
+            return review, stored["revision"]
+        if stored.get("record_kind") == "variant":
+            try: multi_spec_store.materialize(REVIEW_PERSISTENCE, job_id, identity.user_id, API_RUN_ROOT)
+            except multi_spec_store.VariantStoreError as exc: raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
         ensure_compression_material(review)
         ensure_surface_roughness_parameter(review)
         verify_review_roughness(review, review_path.parent, lambda path: _artifact_url(job_id, path))
@@ -2376,11 +2462,14 @@ def _load_persisted_review(
     return review, None
 
 
-def _ensure_review_owned(job_id: str, review_path: Path, identity: IdentityContext) -> None:
-    _load_persisted_review(job_id, review_path, identity)
+def _ensure_review_owned(job_id: str, review_path: Path, identity: IdentityContext, *, allow_source: bool = False) -> None:
+    # Source records are read-only engineering records, but their owner may
+    # still read the original drawing. Only file-reading callers opt in.
+    _load_persisted_review(job_id, review_path, identity, allow_source=allow_source)
 
 
 def _prepare_review_reasonableness(review: dict[str, Any], revision: int | None) -> None:
+    if review.get("record_kind") == "source": return
     from .diameter_linkage import apply_diameter_linkage
     apply_diameter_linkage(review)
     refresh_accuracy_inference(review)
@@ -2411,6 +2500,8 @@ def _save_review_persistence(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail={"code": "generation_settings_invalid", "message": str(exc)}) from exc
     previous, _ = _load_persisted_review(job_id, review_path, identity)
+    if review.get("record_kind", "single") != previous.get("record_kind", "single") or review.get("multi_spec_origin") != previous.get("multi_spec_origin"):
+        raise HTTPException(status_code=422, detail="不能更改审图记录的来源关系。")
     from .surface_catalog import synchronize_surface_review
     confirmed_surface_ids = {e.get("metadata", {}).get("requirement_id") for e in events or [] if e.get("event_type") == "technical_requirement_confirmed" and isinstance(e.get("metadata"), dict)}
     for event in events or []:

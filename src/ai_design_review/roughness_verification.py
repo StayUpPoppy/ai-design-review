@@ -103,7 +103,8 @@ def _verify_locked(job_dir, candidates, raw_payloads, url_for, review):
             if claim.get("page") is None or claim.get("roughness_page_known") is False:
                 claim["page"] = None
     cache_path = job_dir / "roughness_verification.json"
-    ocr_path = job_dir / "annotation_ocr_v3.json"
+    from .multi_spec import shared_ocr_dir, restrict_blocks
+    ocr_path = shared_ocr_dir(job_dir) / "annotation_ocr_v3.json"
     signature = hashlib.sha256(json.dumps([ROUGHNESS_VERIFICATION_VERSION, document_id, claims,
                                            raw_payloads, historical_locations, dimensions, ocr_path.stat().st_mtime_ns if ocr_path.exists() else None],
                                           sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
@@ -126,6 +127,7 @@ def _verify_locked(job_dir, candidates, raw_payloads, url_for, review):
         shared = _read(ocr_path)
         if shared.get("source_document_id") == document_id and shared.get("cache_format") == 4:
             blocks.extend(shared.get("blocks", []))
+        blocks = restrict_blocks(review or {}, blocks, SURFACE_ROUGHNESS_FIELD)
         requests = []
         for claim in claims:
             page = claim.get("page") or 1
@@ -141,9 +143,9 @@ def _verify_locked(job_dir, candidates, raw_payloads, url_for, review):
                 # suppress this request. Both consumers share actual OCR runs.
                 stub = review or {"drawing_summary": {"spring_type": "compression_spring"},
                                   "spring_parameters": {c["field"]: c for c in candidates if c.get("field") != SURFACE_ROUGHNESS_FIELD}}
-                local, warnings, states = local_ocr_blocks(job_dir, pages, document_id, stub, candidates, blocks,
-                                                          verification_requests=requests)
-                blocks.extend(local)
+                from .drawing_annotations import _local_ocr_blocks
+                local, warnings, states = _local_ocr_blocks(job_dir, pages, document_id, stub, candidates, blocks, verification_requests=requests)
+                blocks.extend(restrict_blocks(review or {}, local, SURFACE_ROUGHNESS_FIELD))
                 if states.get(SURFACE_ROUGHNESS_FIELD) == "failed":
                     errors.append("本地OCR核验失败，可使用重新补定位重试。")
                 if states.get(SURFACE_ROUGHNESS_FIELD) == "budget_exhausted":

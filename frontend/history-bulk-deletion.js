@@ -65,6 +65,9 @@
     async function run(items, { bulk = true } = {}) {
       if (state.running || !items.length || items.length > 100 || !getScope()) return false;
       const captured = items.map((item) => ({ ...item })), current = { scope: getScope() };
+      if (captured.reduce((n, item) => n + (item.record_kind === "source" ? item.created_count || 0 : 1), 0) > 100) {
+        state.notice = "一次最多删除100条实际审图记录，请分批处理。"; changed(); return false;
+      }
       operation = current; state.running = true; state.notice = "正在保存当前修改…";
       state.progress = { current: 0, total: captured.length };
       const active = () => operation === current && getScope() === current.scope;
@@ -97,7 +100,7 @@
             } else {
               result = { item, kind: payload.status === "cancelling" ? "cancelling" : "deleted",
                 message: payload.status === "cancelling" ? "已提交取消，后台清理中" : "已删除",
-                cleanupPending: payload.artifact_cleanup === "pending" };
+                cleanupPending: payload.artifact_cleanup === "pending", deletedIds: payload.deleted_ids || [item.job_id] };
             }
           } catch {
             if (!active()) return false;

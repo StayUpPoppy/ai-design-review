@@ -71,6 +71,8 @@ def _operation(tag: str, summary: str, description: str) -> dict[str, str]:
 
 
 OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
+    ("GET", "/api/reviews/{source_id}/variants"): _operation("审图管理", "读取多规格核对清单", "返回来源修订、按原顺序排列的候选、区域证据、问题及已创建子记录；不调用模型，不修改参数。来源仅供核对，不能编辑或生图。"),
+    ("POST", "/api/reviews/{source_id}/variants/create-reviews"): _operation("审图管理", "创建所选规格的独立审图记录", "variant_ids选择1至50种规格，expected_source_revision校验来源修订，idempotency_key保证重试不重复建单。同键不同选择返回409；事务内整批创建，已有规格返回原ID。已删除规格不因原键重试恢复。子记录独立确认、保存和生图，不重新调用模型。"),
     ("GET", "/api/surface-treatment-catalog"): _operation("审图管理", "获取公司表面处理目录", "按当前ERP身份返回无备注版公司目录的版本及49项稳定ID、名称；只读，不调用模型、不修改审图。每条要求关联一个公司类型，复合工艺取原顺序第一项、正文完整保留；关联原代号仅在识别来源展示，不再独立确认及输出。content为唯一成图正文，主动未指定保留正文；新任务冻结结果，历史请求不变。"),
     ("GET", "/api/material-catalog"): _operation("审图管理", "获取公司压缩弹簧材料目录", "按当前 ERP 身份返回15种材料的稳定ID、完整名称、标准牌号、明确别名和公司表内固定剪切模量及目录版本。只读，不调用模型、不保存审图；新材料选择限定目录，历史人工原值兼容保留，确认后的完整名称用于参数包及SW材料字段。"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): _operation("审图管理", "预览并核对遗漏技术要求", "按订单归属和当前修订读取原始识别列表，返回未保留的独立条目；不调用识别模型、不保存、不覆盖人工内容。客户端选择补回后使用既有保存接口，仍须逐条确认。"),
@@ -395,6 +397,9 @@ class ReviewDocument(BaseModel):
         }]},
     )
 
+    record_kind: Literal["single", "source", "variant"] = Field(default="single", description="普通记录、只读来源或独立规格子记录；旧记录默认single。")
+    multi_spec: dict[str, Any] | None = Field(default=None, description="来源保存的完整共用信息及稳定ID候选集合。仅来源包含，不能作为弹簧参数编辑或生图。")
+    multi_spec_origin: dict[str, Any] | None = Field(default=None, description="规格子记录的不可变来源ID、候选ID、序号、原图/公共区域和字段区域、问题及计算参考；不进入SW。")
     drawing_summary: DrawingSummaryDocument = Field(default_factory=DrawingSummaryDocument, description="图纸基本信息与总体审查结论。")
     spring_parameters: SpringParametersDocument = Field(default_factory=SpringParametersDocument, description="识别、推导和人工确认的弹簧参数。")
     technical_requirements: list[TechnicalRequirementDocument] = Field(
@@ -491,6 +496,30 @@ class RecognitionStatusResponse(BaseModel):
 
     job_id: str = Field(description="审图任务 ID。")
     recognition: dict[str, Any] = Field(description="识别状态、阶段、进度、错误和预览地址。")
+
+
+class VariantCreateRequest(BaseModel):
+    """多规格事务建单输入。"""
+    variant_ids: list[str] = Field(min_length=1, max_length=50, description="本次选择的稳定规格ID，不重复。")
+    expected_source_revision: int = Field(ge=1, description="核对时读取的来源修订。")
+    idempotency_key: str = Field(min_length=1, max_length=128, description="本次操作唯一键；响应丢失时原键原选择重试。")
+
+
+class VariantsResponse(BaseModel):
+    """只读规格核对投影，不触发模型识别。"""
+    source_id: str = Field(description="来源记录ID。")
+    source_revision: int = Field(description="来源当前修订。")
+    drawing_summary: dict[str, Any] = Field(description="整图图名、图号，不从规格代号推断图号。")
+    variants: list[dict[str, Any]] = Field(description="原顺序候选：variant_id/order/code/page/region/parameters/source_context/issues/reference_values/review。review为空表示未创建；参数单元保留value/unit/tolerance及evidence。")
+    created_count: int = Field(description="现存子记录数量。")
+    pages: list[dict[str, Any]] = Field(default_factory=list, description="共享原图各页的页码、尺寸和有权限的预览地址。")
+
+
+class VariantCreateResponse(BaseModel):
+    """整批事务建单回执。"""
+    source_id: str = Field(description="来源记录ID。")
+    source_revision: int = Field(description="操作后的来源修订。")
+    reviews: list[dict[str, Any]] = Field(description="job_id、variant_id、drawing_name、existing；原键重试附deleted，已删除项不重新建单。")
 
 
 class ReviewListResponse(BaseModel):
@@ -975,6 +1004,7 @@ class ApiErrorResponse(BaseModel):
 
 
 DOCUMENTATION_MODELS: tuple[type[BaseModel], ...] = (
+    VariantCreateRequest, VariantCreateResponse, VariantsResponse,
     SurfaceTreatmentCatalogItemDocument, SurfaceTreatmentCatalogDocument,
     TechnicalRecoveryRequest, TechnicalRecoveryItem, TechnicalRecoveryResponse,
     TechnicalTranslationSnapshot, TechnicalTranslationItemRequest, TechnicalTranslationRequest, TechnicalTranslationResult, TechnicalTranslationResponse,
@@ -1016,6 +1046,7 @@ DOCUMENTATION_MODELS: tuple[type[BaseModel], ...] = (
 
 
 REQUEST_MODELS: dict[tuple[str, str], type[BaseModel]] = {
+    ("POST", "/api/reviews/{source_id}/variants/create-reviews"): VariantCreateRequest,
     ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): TechnicalRecoveryRequest,
     ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): TechnicalTranslationRequest,
     ("PATCH", "/api/reviews/{job_id}/annotations"): SaveDrawingAnnotationsRequest,
@@ -1031,6 +1062,8 @@ REQUEST_MODELS: dict[tuple[str, str], type[BaseModel]] = {
 }
 
 RESPONSE_MODELS: dict[tuple[str, str], tuple[str, type[BaseModel]]] = {
+    ("GET", "/api/reviews/{source_id}/variants"): ("200", VariantsResponse),
+    ("POST", "/api/reviews/{source_id}/variants/create-reviews"): ("200", VariantCreateResponse),
     ("GET", "/api/surface-treatment-catalog"): ("200", SurfaceTreatmentCatalogDocument),
     ("GET", "/api/material-catalog"): ("200", MaterialCatalogResponse),
     ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): ("200", TechnicalRecoveryResponse),
@@ -1057,6 +1090,9 @@ RESPONSE_MODELS: dict[tuple[str, str], tuple[str, type[BaseModel]]] = {
 
 
 PARAMETER_DOCUMENTATION = {
+    "source_id": ("多规格来源记录 ID。", "source-123"),
+    "root_only": ("仅查询顶层单规格及多规格来源组。", True),
+    "expected_source_revision": ("删除来源组前确认的来源修订，变化后返回409。", 2),
     "job_id": ("审图任务 ID。", "review-123"),
     "generation_id": ("生图任务 ID。", "generation-123"),
     "artifact_id": ("生成产物 ID。", "artifact-123"),

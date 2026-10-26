@@ -37,6 +37,8 @@ def apply_compression_dimension_role_ranking(candidates: list[dict[str, Any]]) -
     original candidates as conflict evidence.
     """
     enriched = [deepcopy(candidate) for candidate in candidates]
+    if any(candidate.get("structured_specification") for candidate in enriched):
+        return enriched  # Table headers already define roles; do not rank cells by magnitude.
     if not _looks_like_compression_spring(enriched):
         return enriched
 

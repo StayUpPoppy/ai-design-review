@@ -290,7 +290,10 @@ def _unique_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     params = review.get("spring_parameters") or {}
     annotations = []
+    from .multi_spec import restrict_blocks
+    all_blocks = blocks
     for index, field in enumerate(FIELDS):
+        blocks = restrict_blocks(review, all_blocks, field)
         param = params.get(field) or {}
         if field == "surface_roughness_ra":
             annotations.append(roughness_annotation(param, candidates, blocks))
@@ -514,8 +517,11 @@ def _local_ocr_blocks(job_dir: Path, pages: list[dict[str, Any]], document_id: s
                       review: dict[str, Any], candidates: list[dict[str, Any]], existing: list[dict[str, Any]],
                       *, retry: bool = False, verification_requests: list[dict[str, Any]] | None = None):
     from .annotation_ocr import local_ocr_blocks
-    return local_ocr_blocks(job_dir, pages, document_id, review, candidates, existing, retry=retry,
-                            verification_requests=verification_requests)
+    from .multi_spec import shared_ocr_dir
+    shared = shared_ocr_dir(job_dir)
+    with annotation_file_lock(shared, "shared_local_ocr.lock"):
+        return local_ocr_blocks(shared, pages, document_id, review, candidates, existing, retry=retry,
+                                verification_requests=verification_requests)
 
 
 def annotation_source(job_dir: Path, url_for: Callable[[Path], str]) -> tuple[dict[str, Any], Path | None]:
@@ -527,7 +533,9 @@ def annotation_source(job_dir: Path, url_for: Callable[[Path], str]) -> tuple[di
         with source.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
-    digest.update(json.dumps([(p["page"], p["width"], p["height"], p["image_url"]) for p in pages]).encode())
+    from .multi_spec import shared_ocr_dir
+    source_id = shared_ocr_dir(job_dir).name
+    digest.update(json.dumps([(p["page"], p["width"], p["height"], p["image_url"].replace(f"/reviews/{job_dir.name}/", f"/reviews/{source_id}/")) for p in pages]).encode())
     document = {"schema_version": "original_annotations/v1", "algorithm_version": ALGORITHM_VERSION, "source_document_id": digest.hexdigest(),
                 "annotation_revision": 1, "pages": pages, "annotations": [], "warnings": []}
     return document, source

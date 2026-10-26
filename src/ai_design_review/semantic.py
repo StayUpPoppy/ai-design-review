@@ -23,7 +23,7 @@ def apply_spring_semantic_mapping(
     note_anchor = _first_note(enriched)
     dimensions = [
         candidate for candidate in enriched
-        if candidate.get("feature_type") == "dimension" and isinstance(candidate.get("value"), (int, float))
+        if candidate.get("feature_type") == "dimension" and isinstance(candidate.get("value"), (int, float)) and not candidate.get("structured_specification")
     ]
 
     # Compression material selection uses the company catalogue after fusion.

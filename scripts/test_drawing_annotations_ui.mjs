@@ -6,6 +6,26 @@ const context = { window: {}, console, setTimeout, clearTimeout, Map, JSON };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(new URL("../frontend/drawing-annotations.js", import.meta.url), "utf8"), context);
 const ui = context.window.DrawingAnnotations;
+const transforms = ui.viewTransform;
+const sourcePoint = { x: .2, y: .3 };
+const knownPixels = [[200,240],[560,200],[800,560],[240,800]];
+for (const [index, rotation] of [0,90,180,270].entries()) {
+  const expected = knownPixels[index], point = transforms.oriented(sourcePoint,1000,800,rotation);
+  assert.equal(point.x,expected[0]); assert.equal(point.y,expected[1]);
+  const size = transforms.size(1000,800,rotation);
+  assert.equal(size.width,rotation%180?800:1000); assert.equal(size.height,rotation%180?1000:800);
+  for (const scale of [.03,.5,1,8]) {
+    const view = { rotation, scale, x: -31, y: 27 };
+    for (const original of [sourcePoint,{x:0,y:0},{x:1,y:1},{x:-.2,y:1.4}]) {
+      const projected = transforms.project(original,1000,800,view), roundtrip = transforms.unproject(projected,1000,800,view);
+      assert.ok(Math.abs(roundtrip.x-original.x)<1e-12 && Math.abs(roundtrip.y-original.y)<1e-12,"All orientations roundtrip without clamping the viewport center");
+      const [a,b,c,d,e,f] = transforms.css(1000,800,view).slice(7,-1).split(',').map(Number);
+      assert.ok(Math.abs(a*original.x*1000+c*original.y*800+e-projected.x)<1e-9);
+      assert.ok(Math.abs(b*original.x*1000+d*original.y*800+f-projected.y)<1e-9);
+    }
+  }
+}
+assert.equal(transforms.normalize(-90),270); assert.equal(transforms.normalize(450),90); assert.equal(transforms.normalize(360),0);
 for (const [dx, dy] of [[40, 0], [-40, 0], [0, 40], [0, -40], [30, 40], [-30, 40], [30, -40], [-30, -40]]) {
   const bubble = { x: 120, y: 85 }, anchor = { x: bubble.x + dx, y: bubble.y + dy };
   const endpoint = ui.leaderEndpoint(anchor, bubble);

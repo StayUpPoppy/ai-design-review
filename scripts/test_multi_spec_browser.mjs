@@ -1,0 +1,93 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import http from 'node:http';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+const { chromium } = createRequire(import.meta.url)('C:/Users/29580/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const frontend = path.resolve('frontend'), output = path.resolve('outputs/multi-spec-qa');
+fs.mkdirSync(output, { recursive: true });
+const server = http.createServer((req,res) => {
+  const file = path.resolve(frontend, new URL(req.url,'http://localhost').pathname.slice(1) || 'index.html');
+  if (!file.startsWith(frontend + path.sep) || !fs.existsSync(file)) return res.writeHead(404).end();
+  res.setHeader('Content-Type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html'); res.end(fs.readFileSync(file));
+});
+await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
+const browser = await chromium.launch({ headless:true, channel:'msedge' });
+const page = await browser.newPage({viewport:{width:1440,height:1000}}), errors = [], calls = [], receipts = new Map();
+page.on('pageerror',e => errors.push(e.message));
+const material = JSON.parse(fs.readFileSync('config/compression_material_catalog.json','utf8'));
+let revision = 1, childCounter = 0, loseResponse = false;
+const variants = Array.from({length:13},(_,i) => ({variant_id:`v${i}`,order:i+1,code:`FTA-${10+i}/85-260`,page:1,region:{x:.22,y:.22+i*.033,width:.72,height:.03},
+  parameters:{wire_diameter:{value:10+i},mean_diameter:{value:85+i},free_length:{value:260},total_coils:{value:12-i*.25},active_coils:{value:10-i*.25}},issues:i===2?['部位及单位待核对']:[],review:null}));
+const source = {job_id:'source',record_kind:'source',drawing_name:'弹簧多规格图纸',recognition_status:'completed',revision:1,variant_count:13,created_count:0};
+const checklist = () => ({source_id:'source',source_revision:revision,drawing_summary:{drawing_name:source.drawing_name},created_count:variants.filter(v=>v.review).length,variants,pages:[{page:1,width:2048,height:1243,image_url:'/api/spec-image'}]});
+await page.route('**/api/**', async route => {
+  const req=route.request(), url=new URL(req.url()), p=url.pathname, method=req.method(); calls.push({p,method,body:req.postDataJSON?.()});
+  if(p==='/api/session') return route.fulfill({json:{identity:{user_id:'spec-test',username:'离线验收'}}});
+  if(p==='/api/material-catalog') return route.fulfill({json:material});
+  if(p==='/api/surface-treatment-catalog') return route.fulfill({json:{version:'test',items:[]}});
+  if(p==='/api/spec-image') return route.fulfill({path:'C:/Users/29580/Desktop/多规格2.jpg',contentType:'image/jpeg'});
+  if(p==='/api/reviews') return route.fulfill({json:{reviews:[source]}});
+  if(p==='/api/reviews/source/variants') return route.fulfill({json:checklist()});
+  if(p.endsWith('/create-reviews')) {
+    const body=req.postDataJSON();
+    if(receipts.has(body.idempotency_key)) return route.fulfill({json:receipts.get(body.idempotency_key)});
+    if(body.expected_source_revision!==revision) return route.fulfill({status:409,json:{detail:'来源版本已变化，请刷新。'}});
+    const reviews=body.variant_ids.map(id=>{const v=variants.find(v=>v.variant_id===id); v.review ||= {job_id:`child${++childCounter}`,parent_review_id:'source',record_kind:'variant',variant_id:id,drawing_name:`弹簧 · ${v.code}`,recognition_status:'completed',revision:1}; return v.review;});
+    source.created_count=variants.filter(v=>v.review).length;
+    const result={reviews,source_revision:++revision};receipts.set(body.idempotency_key,result);
+    if(loseResponse){loseResponse=false;return route.abort('connectionfailed');} return route.fulfill({json:result});
+  }
+  if(p==='/api/reviews/source'&&method==='GET') return route.fulfill({json:{record_kind:'source',review_revision:revision,drawing_summary:{drawing_name:source.drawing_name},multi_spec:{variants}}});
+  if(p==='/api/reviews/source'&&method==='DELETE') return route.fulfill({json:{deleted:true,status:'deleted',deleted_ids:['source',...variants.filter(v=>v.review).map(v=>v.review.job_id)],artifact_cleanup:'deleted'}});
+  const child=variants.find(v=>p===`/api/reviews/${v.review?.job_id}`);
+  if(child) return route.fulfill({json:{record_kind:'variant',review_revision:1,drawing_summary:{drawing_name:child.review.drawing_name,spring_type:'compression_spring'},spring_parameters:{},technical_requirements:[]}});
+  if(p.endsWith('/generation-jobs')) return route.fulfill({json:{generation_jobs:[],generation_queue_available:false}});
+  if(p.endsWith('/annotations')) return route.fulfill({json:{pages:[],annotations:[],warnings:[]}});
+  if(p.endsWith('/changes')) return route.fulfill({json:{events:[]}});
+  if(p.endsWith('/reasonableness')) return route.fulfill({json:{parameter_reasonableness:{status:'ok',issues:[],suggestions:[]}}});
+  return route.fulfill({json:{status:'ok',generation_runtime:{status:'not_configured'},recognition_queue_runtime:{status:'not_configured'}}});
+});
+const dialog=page.locator('.specification-workbench');
+try {
+  await page.goto(`http://127.0.0.1:${server.address().port}`); await page.waitForFunction(()=>state.identityReady && state.recentReviews.length===1);
+  await page.locator('[data-history-job-id="source"] [data-role="open-recent-review"]').click(); await dialog.waitFor();
+  assert.equal(await dialog.locator('tbody tr').count(),13); assert.equal(await dialog.locator('input:checked').count(),0);
+  assert.equal(await dialog.locator('[data-action="create"]').isDisabled(),true);
+  await dialog.locator('tbody tr').nth(2).locator('.specification-locate').click(); assert.equal(await dialog.locator('rect').getAttribute('y'),'28.6');
+  await dialog.locator('img').evaluate(img=>img.decode());
+  // An unknown source region must hide the SVG, not leave the previous rect.
+  variants[1].region = null;
+  await dialog.locator('[data-action="refresh"]').click(); await page.waitForFunction(()=>document.querySelector('.specification-message').textContent.includes('已刷新'));
+  await dialog.locator('tbody tr').nth(1).locator('.specification-locate').click();
+  assert.equal(await dialog.locator('svg').evaluate(el=>getComputedStyle(el).display),'none');
+  await dialog.locator('tbody tr').nth(2).locator('.specification-locate').click();
+  assert.notEqual(await dialog.locator('svg').evaluate(el=>getComputedStyle(el).display),'none');
+  await page.screenshot({path:path.join(output,'desktop.png')});
+  await page.setViewportSize({width:390,height:844}); await page.screenshot({path:path.join(output,'mobile.png')});
+  assert.equal(await dialog.evaluate(d=>d.scrollWidth<=d.clientWidth+1),true); await page.setViewportSize({width:1440,height:1000});
+  await dialog.locator('tbody input').nth(0).check(); await dialog.locator('tbody input').nth(2).check();
+  await page.evaluate(()=>{window.originalFlush=flushReviewPersistence;flushReviewPersistence=async()=>false;});
+  await dialog.locator('[data-action="create"]').click(); await page.waitForFunction(()=>document.querySelector('.specification-message').textContent.includes('未保存'));
+  assert.equal(calls.filter(c=>c.p.endsWith('/create-reviews')).length,0);
+  await page.evaluate(()=>{flushReviewPersistence=window.originalFlush;}); loseResponse=true;
+  await dialog.locator('[data-action="create"]').click(); await page.waitForFunction(()=>document.querySelector('.specification-message').textContent.includes('网络结果不明'));
+  await dialog.locator('[data-action="create"]').click(); await page.waitForFunction(()=>document.querySelector('.specification-message').textContent.includes('已创建或找到2'));
+  const creates=calls.filter(c=>c.p.endsWith('/create-reviews')); assert.equal(creates[0].body.idempotency_key,creates[1].body.idempotency_key);assert.equal(childCounter,2);
+  assert.equal(await dialog.locator('tbody input:disabled').count(),2);assert.equal(await dialog.locator('input:checked').count(),0);
+  assert.equal(await page.evaluate(()=>state.review),null,'creating does not open a child');
+  await dialog.locator('[data-action="close"]').click();
+  await page.locator('[data-role="expand-specifications"]').click(); await page.waitForFunction(()=>document.querySelectorAll('.history-source-children .history-order-item').length===2);
+  const nodes=await page.locator('.history-source-children').evaluate(n=>n.children.length);assert.equal(nodes,2);
+  await page.reload(); await page.waitForFunction(()=>state.identityReady && state.recentReviews.length===1);
+  await page.locator('[data-history-job-id="source"] [data-role="open-recent-review"]').click(); await dialog.waitFor();
+  assert.equal(await dialog.locator('input:checked').count(),0); assert.equal(await dialog.getByRole('button',{name:'打开审图',exact:true}).count(),2);
+  await dialog.getByRole('button',{name:'打开审图',exact:true}).first().click(); await page.waitForFunction(()=>state.lastJob?.job_id==='child1');
+  assert.equal(await dialog.count(),0);assert.equal(calls.some(c=>c.p.endsWith('/generation-jobs')&&c.method==='POST'),false);
+  await page.evaluate(()=>closeCompareOverlay()); await page.locator('[data-role="expand-specifications"]').click();
+  await page.locator('#enterHistoryManagement').click(); await page.locator('#historySelectAll').click(); await page.locator('#historyDeleteSelected').click();
+  await page.locator('.delete-review-dialog').waitFor(); assert.match(await page.locator('.delete-review-dialog').innerText(),/共2条实际审图记录/);
+  await page.locator('[data-role="confirm-delete-review"]').click(); await page.waitForFunction(()=>state.deletedReviewIds.has('child2'));
+  assert.equal(calls.filter(c=>c.method==='DELETE').length,1,'parent/child selection deduplicates');
+  assert.deepEqual(errors,[]); console.log('PASS multi-spec checklist, no auto-selection/open/confirm, save guard, lost-response retry, reload, grouped history, parent deletion, desktop/mobile');
+} finally {await browser.close();server.close();}

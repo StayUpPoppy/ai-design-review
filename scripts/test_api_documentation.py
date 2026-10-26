@@ -26,6 +26,9 @@ from ai_design_review.api_documentation import (  # noqa: E402
 
 
 EXPECTED_OPERATION_KEYS = {
+    ("GET", "/api/surface-treatment-catalog"),
+    ("GET", "/api/reviews/{source_id}/variants"),
+    ("POST", "/api/reviews/{source_id}/variants/create-reviews"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/translate"),
     ("GET", "/api/reviews/{job_id}/annotations"),
@@ -84,6 +87,9 @@ EXPECTED_OPERATION_KEYS = {
 }
 
 EXPECTED_OPERATION_IDS = {
+    "get_surface_treatment_catalog_api_surface_treatment_catalog_get",
+    "get_review_variants_api_reviews__source_id__variants_get",
+    "create_variant_reviews_api_reviews__source_id__variants_create_reviews_post",
     "get_material_catalog_api_material_catalog_get",
     "preview_technical_requirement_recovery_api_reviews__job_id__technical_requirements_recover_preview_post",
     "translate_technical_requirements_api_reviews__job_id__technical_requirements_translate_post",
@@ -190,7 +196,7 @@ def main() -> None:
                 operations[key] = operation
 
     assert set(operations) == EXPECTED_OPERATION_KEYS
-    assert len(operations) == 55
+    assert len(operations) == len(EXPECTED_OPERATION_KEYS)
     assert {operation["operationId"] for operation in operations.values()} == EXPECTED_OPERATION_IDS
 
     for key, operation in operations.items():

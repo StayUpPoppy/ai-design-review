@@ -56,7 +56,9 @@ class QwenVisionEngine(RecognitionEngine):
         self.api_key = api_key or os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         self.model = model or os.getenv("QWEN_MODEL") or DEFAULT_QWEN_MODEL
         self.base_url = (base_url or os.getenv("QWEN_BASE_URL") or DEFAULT_QWEN_BASE_URL).rstrip("/")
-        self.timeout_seconds = timeout_seconds or float(os.getenv("QWEN_TIMEOUT_SECONDS", "90"))
+        # A complete multi-row reply is longer than the former single-spring
+        # response. Keep this independent from chat/translation timeouts.
+        self.timeout_seconds = timeout_seconds or float(os.getenv("QWEN_VISION_TIMEOUT_SECONDS") or max(360, float(os.getenv("QWEN_TIMEOUT_SECONDS", "90"))))
         self.work_dir = Path(work_dir) if work_dir else None
         self.max_pages = max_pages or int(os.getenv("QWEN_MAX_PAGES", "3"))
         if enable_thinking is None:
@@ -81,14 +83,25 @@ class QwenVisionEngine(RecognitionEngine):
 
         path = Path(file_path)
         prepared_images = [Path(item) for item in image_paths] if image_paths else self._prepare_images(path)
+        total_pages = len(prepared_images)
         prepared_images = prepared_images[: self.max_pages]
         if not prepared_images:
             raise QwenVisionError("No rendered page images are available for Qwen vision recognition.")
 
         started = time.monotonic()
         raw_response = self._call_qwen(prepared_images)
+        if self.work_dir:
+            self.work_dir.mkdir(parents=True, exist_ok=True)
+            (self.work_dir / "response.json").write_text(json.dumps(raw_response, ensure_ascii=False), encoding="utf-8")
         content = _message_content(raw_response)
+        from ..multi_spec import MultiSpecError
+        if (raw_response.get("choices") or [{}])[0].get("finish_reason") == "length":
+            raise MultiSpecError("图纸识别响应被截断，未取得完整结果。请重试或拆分文件，不能使用部分参数。")
         parsed = parse_qwen_json(content)
+        from ..multi_spec import parse_multi_spec
+        if parsed.get("document_mode") == "multi" and total_pages > self.max_pages:
+            raise MultiSpecError("多规格文件超过当前识别页数上限，请拆分文件，不能仅使用部分页面。")
+        multi_spec = parse_multi_spec(parsed, page_count=total_pages)
         candidates = qwen_payload_to_candidates(parsed)
         return {
             "engine": self.name,
@@ -99,6 +112,7 @@ class QwenVisionEngine(RecognitionEngine):
             "parsed": parsed,
             "candidates": candidates,
             "raw": raw_response,
+            "multi_spec": multi_spec,
         }
 
     def _prepare_images(self, file_path: Path) -> list[Path]:
@@ -124,7 +138,8 @@ class QwenVisionEngine(RecognitionEngine):
 
         endpoint = _chat_completions_endpoint(self.base_url)
         from ..surface_catalog import surface_catalog_prompt
-        content: list[dict[str, Any]] = [{"type": "text", "text": QWEN_SYSTEM_PROMPT + surface_catalog_prompt()}]
+        from ..multi_spec import MULTI_SPEC_PROMPT
+        content: list[dict[str, Any]] = [{"type": "text", "text": QWEN_SYSTEM_PROMPT + surface_catalog_prompt() + MULTI_SPEC_PROMPT}]
         for page_number, image_path in enumerate(image_paths, start=1):
             content.append({"type": "text", "text": f"以下是原图第{page_number}页，请在识别参数中保留对应page。"})
             content.append(
@@ -151,7 +166,7 @@ class QwenVisionEngine(RecognitionEngine):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        with httpx.Client(timeout=self.timeout_seconds) as client:
+        with httpx.Client(timeout=httpx.Timeout(self.timeout_seconds, connect=min(20, self.timeout_seconds))) as client:
             response = _post_qwen_request(client, endpoint, headers, payload)
             response.raise_for_status()
             return response.json()
@@ -229,6 +244,8 @@ JSON 结构：
 
 
 def qwen_payload_to_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if payload.get("document_mode") in {"multi", "uncertain"}:
+        return []
     candidates: list[dict[str, Any]] = []
     spring_type = _spring_type_payload(payload.get("spring_type"))
     if spring_type:

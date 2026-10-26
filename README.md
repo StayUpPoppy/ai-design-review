@@ -385,3 +385,7 @@ docker compose --profile mock-solidworks up -d
 docker compose --profile mock-solidworks stop mock-solidworks
 
 docker compose logs -f --tail 100 web api
+
+## 多规格图纸
+
+图片/PDF支持按参数区块或规格表行核对并创建独立审图记录，旧单规格流程保留。使用及含数据库迁移的部署步骤见 [多规格审图说明](docs/multi-spec-reviews.md)。

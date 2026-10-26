@@ -39,9 +39,14 @@ class Base(DeclarativeBase):
 
 class ReviewRecord(Base):
     __tablename__ = "drawing_reviews"
-    __table_args__ = (Index("ix_drawing_reviews_owner_updated", "owner_erp_user_id", "updated_at"),)
+    __table_args__ = (Index("ix_drawing_reviews_owner_updated", "owner_erp_user_id", "updated_at"),
+                     Index("ix_drawing_reviews_parent", "parent_review_id"),
+                     UniqueConstraint("parent_review_id", "variant_id", name="uq_review_source_variant"))
 
     job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    record_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="single", server_default="single")
+    parent_review_id: Mapped[str | None] = mapped_column(ForeignKey("drawing_reviews.job_id", ondelete="CASCADE"), nullable=True)
+    variant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     drawing_no: Mapped[str | None] = mapped_column(String(128), nullable=True)
     drawing_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
     spring_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -222,6 +227,8 @@ class ReviewPersistence:
                     "review": copy.deepcopy(record.review_snapshot),
                     "revision": record.revision,
                     "file_info": copy.deepcopy(record.file_info),
+                    "record_kind": record.record_kind,
+                    "parent_review_id": record.parent_review_id,
                 }
         except SQLAlchemyError as exc:
             raise PersistenceError(f"Unable to read review: {_safe_error(exc)}") from exc
@@ -247,6 +254,8 @@ class ReviewPersistence:
             try:
                 record = session.execute(select(ReviewRecord).where(ReviewRecord.job_id == job_id).with_for_update()).scalar_one_or_none()
                 if record is None:
+                    if review.get("record_kind") in {"source", "variant"}:
+                        raise ReviewAccessError("Review not found.")
                     if prepare_review is not None:
                         prepare_review(review, 1)
                     record = self._new_record(job_id, review, file_info=file_info, artifact_dir=artifact_dir, owner=owner)
@@ -350,7 +359,7 @@ class ReviewPersistence:
         except SQLAlchemyError as exc:
             raise PersistenceError(f"Unable to read audit events: {_safe_error(exc)}") from exc
 
-    def list_reviews(self, *, limit: int = 30, owner_user_id: str | None = None) -> list[dict[str, Any]]:
+    def list_reviews(self, *, limit: int = 30, owner_user_id: str | None = None, root_only: bool = False) -> list[dict[str, Any]]:
         """Return lightweight review metadata for the resume list, newest first."""
         if not self.configured:
             return []
@@ -360,6 +369,7 @@ class ReviewPersistence:
                 rows = session.execute(
                     select(ReviewRecord)
                     .where(*_owner_filter_clauses(owner_user_id))
+                    .where(ReviewRecord.parent_review_id.is_(None) if root_only else text("true"))
                     .order_by(ReviewRecord.updated_at.desc())
                     .limit(bounded_limit)
                 ).scalars()
@@ -749,6 +759,9 @@ class ReviewPersistence:
         summary = review.get("drawing_summary") if isinstance(review.get("drawing_summary"), dict) else {}
         return ReviewRecord(
             job_id=job_id,
+            record_kind=review.get("record_kind", "single"),
+            parent_review_id=(review.get("multi_spec_origin") or {}).get("source_review_id"),
+            variant_id=(review.get("multi_spec_origin") or {}).get("variant_id"),
             drawing_no=_optional_text(summary.get("drawing_no")),
             drawing_name=_optional_text(summary.get("drawing_name")),
             spring_type=_optional_text(summary.get("spring_type")),
@@ -815,6 +828,11 @@ class ReviewPersistence:
         summary = snapshot.get("drawing_summary") if isinstance(snapshot.get("drawing_summary"), dict) else {}
         return {
             "job_id": record.job_id,
+            "record_kind": record.record_kind,
+            "parent_review_id": record.parent_review_id,
+            "variant_id": record.variant_id,
+            "variant_count": len((snapshot.get("multi_spec") or {}).get("variants", [])),
+            "created_count": (snapshot.get("multi_spec") or {}).get("created_count", 0),
             "drawing_no": record.drawing_no,
             "drawing_name": record.drawing_name,
             "spring_type": record.spring_type,
