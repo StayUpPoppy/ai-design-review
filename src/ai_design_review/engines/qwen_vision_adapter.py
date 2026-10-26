@@ -93,6 +93,24 @@ class QwenVisionEngine(RecognitionEngine):
         if self.work_dir:
             self.work_dir.mkdir(parents=True, exist_ok=True)
             (self.work_dir / "response.json").write_text(json.dumps(raw_response, ensure_ascii=False), encoding="utf-8")
+        try:
+            payload = self.parse_response(raw_response, prepared_images, total_pages=total_pages,
+                                          duration_ms=int((time.monotonic() - started) * 1000))
+        except Exception as exc:
+            from ..multi_spec import MultiSpecError, LAYOUT_RULE_VERSION
+            if self.work_dir and isinstance(exc, MultiSpecError):
+                from ..io_utils import write_json
+                write_json(self.work_dir.parent / "multi_spec_diagnostics.json", {
+                    "reason": str(exc), "layout_rules_version": LAYOUT_RULE_VERSION,
+                    **getattr(exc, "layout_diagnostics", {}),
+                    "raw_response_path": "qwen_pages/response.json"})
+            raise
+        return payload
+
+    def parse_response(self, raw_response, image_paths, *, total_pages=None, duration_ms=0):
+        """Decode a real saved response without a model request or credentials."""
+        prepared_images = [Path(item) for item in image_paths]
+        total_pages = len(prepared_images) if total_pages is None else total_pages
         content = _message_content(raw_response)
         from ..multi_spec import MultiSpecError
         if (raw_response.get("choices") or [{}])[0].get("finish_reason") == "length":
@@ -101,14 +119,19 @@ class QwenVisionEngine(RecognitionEngine):
         from ..multi_spec import parse_multi_spec
         if parsed.get("document_mode") == "multi" and total_pages > self.max_pages:
             raise MultiSpecError("多规格文件超过当前识别页数上限，请拆分文件，不能仅使用部分页面。")
-        multi_spec = parse_multi_spec(parsed, page_count=total_pages)
+        try:
+            multi_spec = parse_multi_spec(parsed, page_count=total_pages)
+        except MultiSpecError as exc:
+            exc.layout_diagnostics = {"original_layout": parsed.get("layout"), "spec_count": parsed.get("spec_count"),
+                                      "variant_count": len(parsed["variants"]) if isinstance(parsed.get("variants"), list) else None}
+            raise
         candidates = qwen_payload_to_candidates(parsed)
         return {
             "engine": self.name,
-            "model": self.model,
+            "model": raw_response.get("model") or self.model,
             "thinking_enabled": self.enable_thinking,
             "image_paths": [str(item) for item in prepared_images],
-            "duration_ms": int((time.monotonic() - started) * 1000),
+            "duration_ms": duration_ms,
             "parsed": parsed,
             "candidates": candidates,
             "raw": raw_response,

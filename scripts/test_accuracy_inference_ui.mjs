@@ -8,6 +8,7 @@ const scope = vm.createContext({});
 vm.runInContext(fs.readFileSync('frontend/compression-design-checks.js', 'utf8'), scope);
 vm.runInContext(fs.readFileSync('frontend/accuracy-inference.js', 'utf8'), scope);
 const engine = scope.AccuracyInference;
+assert.deepEqual(JSON.parse(JSON.stringify(engine.HOT_RULES)), JSON.parse(fs.readFileSync('config/spring_standards/gbt_23934_2015.json', 'utf8')));
 assert.deepEqual(JSON.parse(JSON.stringify(engine.RULES)), JSON.parse(fs.readFileSync('config/spring_standards/gbt_1239_2_2009.json', 'utf8')));
 for (const test of cases) {
   const review = structuredClone(test.review);

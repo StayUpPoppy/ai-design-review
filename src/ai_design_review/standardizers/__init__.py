@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..end_conditions import normalize_compression_end_conditions
-from ..standard_selector import COLD_COILED_STANDARD, select_standard
+from ..standard_selector import COLD_COILED_STANDARD, HOT_COILED_STANDARD, select_standard
 from .coil_counts import apply_company_simple_active_coils, derive_active_coils
 from .compression import (
     apply_formula_compression_solid_height,
@@ -42,6 +42,16 @@ def standardize_spring(
         from ..accuracy_inference import refresh_accuracy_inference
         refresh_accuracy_inference(accuracy_review, standard=standard_selection.get("selected_standard"))
     if spring_type == "compression_spring":
+        if standard_selection.get("selected_standard") == HOT_COILED_STANDARD:
+            from .hot_coiled import standardize
+            payload = standardize(spring_parameters)
+            _attach_standard_references(payload["standardization_results"], standard_selection)
+            if _uses_company_default_accuracy(spring_parameters):
+                _mark_results_using_default_accuracy(payload["standardization_results"], spring_parameters)
+            if standard_selection.get("need_human_review"):
+                _mark_results_need_standard_review(payload["standardization_results"], standard_selection)
+            payload["standard_selection"] = standard_selection
+            return payload
         if standard_selection.get("selected_standard") == COLD_COILED_STANDARD:
             payload = standardize_compression_spring(spring_parameters, spring_features)
             _attach_standard_references(payload["standardization_results"], standard_selection)
@@ -64,6 +74,7 @@ def standardize_spring(
 
 
 DEFAULT_ACCURACY_RULE_IDS = {
+    "GBT23934-DIA", "GBT23934-FREE", "GBT23934-LOAD",
     "GBT1239.2-DIA",
     "GBT1239.2-FREE",
     "GBT1239.2-PERP",

@@ -184,8 +184,8 @@ def parse_accuracy_standardization_request(message: str) -> dict[str, Any] | Non
     if any(term in normalized for term in ACCURACY_EXPLANATION_TERMS):
         return None
 
-    grade_map = {"一": "1级", "二": "2级", "三": "3级", "1": "1级", "2": "2级", "3": "3级"}
-    tokens = re.findall(r"([一二三123])\s*级", normalized)
+    grade_map = {"一": "1级", "二": "2级", "三": "3级", "1": "1级", "2": "2级", "3": "3级", "T": "T级", "t": "T级"}
+    tokens = re.findall(r"([一二三Tt123])\s*级", normalized)
     grades = list(dict.fromkeys(grade_map[token] for token in tokens))
     invalid_tokens = re.findall(r"([四五六七八九零4567890])\s*级", normalized)
     specialized_terms = [term for term in ACCURACY_SPECIALIZED_TERMS if term in normalized]
@@ -196,7 +196,7 @@ def parse_accuracy_standardization_request(message: str) -> dict[str, Any] | Non
             "requested_grade": None,
             "requested_grades": grades,
             "scope": "general",
-            "message": "当前仅支持1级、2级或3级精度，请重新指定。",
+            "message": "冷卷支持1、2、3级；热卷支持T、1、2、3级，请重新指定。",
         }
     if len(grades) > 1:
         return {
@@ -212,7 +212,7 @@ def parse_accuracy_standardization_request(message: str) -> dict[str, Any] | Non
             "requested_grade": None,
             "requested_grades": [],
             "scope": "general",
-            "message": "请明确选择1级、2级或3级精度后再进行标准化。",
+            "message": "请明确选择精度等级（冷卷1、2、3级；热卷另支持T级）后再进行标准化。",
         }
     if specialized_terms:
         return {
@@ -520,8 +520,14 @@ def select_general_accuracy_grade(review: dict[str, Any], requested_grade: str) 
     """Apply the same confirmed general-grade selection used by the manual UI."""
 
     grade = str(requested_grade or "").strip()
-    if grade not in {"1级", "2级", "3级"}:
-        raise ValueError("requested_grade must be 1级, 2级, or 3级.")
+    if grade not in {"T级", "1级", "2级", "3级"}:
+        raise ValueError("requested_grade must be T级, 1级, 2级, or 3级.")
+    if grade == "T级":
+        from .standardizers.hot_coiled import is_hot
+        from .standard_selector import select_standard
+        selection = select_standard("compression_spring", review.get("spring_parameters") or {}, review.get("spring_features"), include_references=False)
+        if not is_hot(selection.get("selected_standard")):
+            raise ValueError("T级仅适用于已接入的热卷标准。")
     parameters = review.setdefault("spring_parameters", {})
     current = parameters.get("accuracy_grade")
     item = dict(current) if isinstance(current, dict) else {}
@@ -578,8 +584,8 @@ def select_general_accuracy_grade(review: dict[str, Any], requested_grade: str) 
 
 def _normalized_accuracy_grade(value: Any) -> str | None:
     normalized = str(value or "").replace("級", "级")
-    matched = re.search(r"([123])\s*级", normalized)
-    return f"{matched.group(1)}级" if matched else None
+    matched = re.search(r"([Tt123])\s*级", normalized)
+    return f"{matched.group(1).upper()}级" if matched else None
 
 
 def standardization_chat_context_needs_refresh(review: dict[str, Any], message: str) -> dict[str, Any]:
@@ -927,7 +933,7 @@ def _handle_accuracy_standardization_request(
         message = "已识别精度标准化指令，但当前调用未执行标准化，请重新提交。"
         status = "execution_required"
     else:
-        message = str(request.get("message") or "请明确选择1级、2级或3级精度。")
+        message = str(request.get("message") or "请明确选择精度等级（冷卷1、2、3级；热卷另支持T级）。")
         status = request_status
     result = _response(
         message,
@@ -1377,8 +1383,8 @@ def _coerce_supplement_value(target: str, raw_value: Any) -> Any | None:
     if not text:
         return None
     if target.endswith("accuracy_grade"):
-        grade = re.search(r"([123])\s*级", text)
-        return f"{grade.group(1)}级" if grade else None
+        grade = re.search(r"([Tt123])\s*级", text)
+        return f"{grade.group(1).upper()}级" if grade else None
     if target == "end_grinding":
         return normalize_end_grinding(text)
     if target == "end_type":
@@ -1826,9 +1832,9 @@ def _matching_standardization_results(review: dict[str, Any], target: str | None
 
 def _extract_requested_value(text: str, target: str) -> tuple[Any | None, str | None]:
     if target.endswith("accuracy_grade"):
-        grade = re.search(r"([123])\s*级", text)
+        grade = re.search(r"([Tt123])\s*级", text)
         if grade:
-            return f"{grade.group(1)}级", None
+            return f"{grade.group(1).upper()}级", None
     if target == "end_grinding":
         binary = re.search(r"(?:改成|改为|设置为|设为|调整到|为)?\s*([01])(?:\D|$)", text)
         if binary:

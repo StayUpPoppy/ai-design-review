@@ -41,10 +41,17 @@ def describe(store, source_id, user):
         if root.record_kind != "source": raise VariantStoreError(409, "此记录不是多规格来源。")
         existing = {v.variant_id: v for v in children(session, source_id)}
         multi = root.review_snapshot["multi_spec"]
+        from .multi_spec_evidence import resolve
+        evidence=resolve(root.review_snapshot,Path(root.artifact_dir)) if root.artifact_dir else {}
         result = []
         for candidate in multi["variants"]:
             value = {k: deepcopy(candidate.get(k)) for k in ("variant_id", "order", "code", "page", "region", "issues", "source_context", "reference_values")}
             value["parameters"] = {**deepcopy(multi["common"].get("parameters") or {}), **deepcopy(candidate.get("parameters") or {})}
+            entry=evidence.get("variants",{}).get(candidate["variant_id"],{})
+            if evidence:
+                value.update(model_region=value.get("region"),region=entry.get("region"),region_verification=entry.get("status","unverified"))
+                from .multi_spec_evidence import apply_parameters
+                value["parameters"]=apply_parameters(value["parameters"],entry)
             child = existing.get(candidate["variant_id"])
             value["review"] = store._serialize_review_list_item(child) if child else None
             result.append(value)
@@ -64,7 +71,9 @@ def materialize(store, job_id, user, run_root):
         target = run_root / job_id
         if not (target / "candidates.json").exists():
             candidate = next(v for v in source.review_snapshot["multi_spec"]["variants"] if v["variant_id"] == item.variant_id)
-            _, candidates = child_review(source.review_snapshot, candidate, source_id)
+            from .multi_spec_evidence import resolve
+            evidence=resolve(source.review_snapshot,Path(source.artifact_dir))
+            _, candidates = child_review(source.review_snapshot, candidate, source_id,evidence=evidence)
             link_assets(Path(source.artifact_dir), target, candidates)
 
 
@@ -76,6 +85,10 @@ def create_children(store, source_id, user, body, actor, run_root):
     if not isinstance(ids, list) or not ids or len(ids) > 50 or any(not isinstance(v, str) for v in ids) or len(set(ids)) != len(ids):
         raise VariantStoreError(422, "请选择1至50个不同规格。")
     if not isinstance(key, str) or not key.strip() or len(key) > 128: raise VariantStoreError(422, "建单幂等键无效。")
+    from .multi_spec_evidence import resolve
+    with store._session() as session:
+        source=owned(session,source_id,user)
+        evidence=resolve(source.review_snapshot,Path(source.artifact_dir)) if source.artifact_dir else {}
     with lock(source_id), store._session() as session, session.begin():
         root = owned(session, source_id, user, write=True)
         if root.record_kind != "source": raise VariantStoreError(409, "此记录不是多规格来源。")
@@ -100,7 +113,7 @@ def create_children(store, source_id, user, body, actor, run_root):
         for variant_id in ids:
             record = existing.get(variant_id)
             if record is None:
-                review, candidates = child_review(root.review_snapshot, available[variant_id], source_id)
+                review, candidates = child_review(root.review_snapshot, available[variant_id], source_id,evidence=evidence)
                 child_id = uuid.uuid4().hex[:12]
                 record = store._new_record(child_id, review, file_info=root.file_info, artifact_dir=str(run_root / child_id), owner=owner)
                 session.add(record)

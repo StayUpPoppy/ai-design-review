@@ -63,14 +63,61 @@ def fixtures():
     r["accuracy_inference"]["standard_selection_source"] = "wire_diameter_threshold"
     r["standard_selection"] = {"selected_standard": None, "status": "not_started"}
     add("deferred upload retains applicability", r, "1级")
-    r = base(.2); r["standard_selection"]["selected_standard"] = "GB/T 23934-2015"
+    r = base(.2); r["standard_selection"]["selected_standard"] = "GB/T 99999-2000"
     add("unsupported standard", r, None, "not_applicable")
     r = base(.2); r["spring_parameters"]["free_length"]["tolerance_source"] = "standardization"
     add("generated tolerance is not evidence", r, None, "generated_tolerance")
     r = base(); r["spring_parameters"]["free_length"].update(tolerance_upper=None, tolerance_lower=None)
     r["spring_parameters"]["spring_rate"] = {"value": 10, "unit": "N/mm", "tolerance_upper": 1, "tolerance_lower": -1}
     add("stiffness", r, "2级")
+    hot_fixtures(add)
     return cases
+
+
+def hot_base():
+    def p(value, unit="mm", **extra):
+        return {"value": value, "unit": unit, "source": ["qwen_vision"], "need_human_review": True, **extra}
+    return {"drawing_summary": {"spring_type": "compression_spring"},
+        "standard_selection": {"selected_standard": "GB/T 23934-2015"},
+        "spring_parameters": {"wire_diameter": p(28), "inner_diameter": p(75, tolerance_upper=1, tolerance_lower=0),
+            "mean_diameter": p(103), "outer_diameter": p(131), "free_length": p(274, tolerance_upper=4.5, tolerance_lower=-4.5),
+            "active_coils": p(6, "turns"), "total_coils": p(7.5, "turns"), "pitch": p(41), "spring_rate": p(878.9, "N/mm"),
+            "controlled_diameter_field": p("inner_diameter", "")}}
+
+
+def hot_fixtures(add):
+    r = hot_base(); add("hot row13 strictest T", r, "T级", "matched")
+    # Independent expected limits around each actual height-band boundary.
+    for height, minimum in [(250, .8), (250.0001, 1), (500, 1.6), (500.0001, 1.6)]:
+        for tolerance, expected in [(minimum, "T级"), (minimum+.0002, "1级")]:
+            r = hot_base(); p = r["spring_parameters"]
+            p["wire_diameter"]["value"] = 40; p["mean_diameter"]["value"] = 200
+            p["inner_diameter"].update(value=160, tolerance_upper=tolerance, tolerance_lower=0)
+            p["free_length"].update(value=height, tolerance_upper=None, tolerance_lower=None)
+            # At mean200 factors dominate at <=250 as well.
+            if height <= 250: p["mean_diameter"]["value"] = 100; p["wire_diameter"]["value"] = 28
+            elif height <= 500 and height < 400: p["mean_diameter"]["value"] = 103; p["wire_diameter"]["value"] = 28
+            add(f"hot band {height} tolerance {tolerance}", r, expected)
+    for field, value in [("wire_diameter", 7.9), ("mean_diameter", 80), ("active_coils", 2.9), ("pitch", 52), ("free_length", 420)]:
+        r = hot_base(); r["spring_parameters"][field]["value"] = value
+        add(f"hot outside scope {field}", r, None, "outside_scope")
+    for field in ("pitch", "active_coils", "wire_diameter"):
+        r = hot_base(); r["spring_parameters"].pop(field)
+        add(f"hot missing context {field}", r, None, "missing_context")
+    r = hot_base(); r["spring_parameters"]["inner_diameter"].update(tolerance_upper=None, tolerance_lower=None)
+    add("hot free height grade2", r, "2级")
+    for upper, lower, expected in [(1, 0, "T级"), (0, -1, "T级"), (1.01, -1, "1级"), (3, -3, None), (1, None, None)]:
+        r = hot_base(); p=r["spring_parameters"]; p["inner_diameter"].update(tolerance_upper=upper, tolerance_lower=lower)
+        p["free_length"].update(tolerance_upper=None,tolerance_lower=None)
+        add(f"hot single/asymmetric {upper}/{lower}",r,expected)
+    for force, stiffness, tolerance, expected in [(100, 10, 15, "T级"), (100, 10, 15.0001, "1级"), (1000, 1, 30, "T级"), (1000, 1, 50, "1级"), (1000, 1, 100, "2级"), (1000, 1, 151, None)]:
+        r=hot_base(); p=r["spring_parameters"]
+        for field in ("inner_diameter","free_length"): p[field].update(tolerance_upper=None,tolerance_lower=None)
+        p["spring_rate"]["value"]=stiffness
+        p["load_points"]=[{"label":"F1","height":200,"force":force,"force_unit":"N","load_tolerance_upper":tolerance,"load_tolerance_lower":-tolerance}]
+        add(f"hot load {force}/{stiffness}/{tolerance}",r,expected)
+    r=hot_base(); r["spring_parameters"]["inner_diameter"].update(value=7.5,unit="cm",tolerance_upper=.1,tolerance_lower=0)
+    add("hot units",r,"T级")
 
 
 def lifecycle():

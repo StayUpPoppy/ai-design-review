@@ -77,10 +77,10 @@ def main():
             # Transaction rollback after the first of two child inserts.
             repo.create_review("rollback", source, owner=OWNER)
             real_child = store.child_review; seen = []
-            def fail_second(*args):
+            def fail_second(*args, **kwargs):
                 seen.append(1)
                 if len(seen) == 2: raise MultiSpecError("injected second-spec failure")
-                return real_child(*args)
+                return real_child(*args, **kwargs)
             rollback_ids = [v["variant_id"] for v in multi["variants"]][:2]
             with patch.object(store, "child_review", side_effect=fail_second):
                 try: store.create_children(repo,"rollback",OWNER["user_id"],{"variant_ids":rollback_ids,"expected_source_revision":1,"idempotency_key":"rollback"},OWNER,runs)

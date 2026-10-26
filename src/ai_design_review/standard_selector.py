@@ -22,7 +22,7 @@ SUPPORTED_STANDARDS = {
     HOT_COILED_STANDARD: {
         "label": HOT_COILED_LABEL,
         "manufacturing_method": "hot_coiled",
-        "rules_available": False,
+        "rules_available": True,
     },
 }
 
@@ -108,15 +108,15 @@ def _select_standard(
             conflicts = _method_conflicts("hot_coiled", wire_rule=wire_rule, auxiliary=auxiliary)
             return _selection(
                 selected_standard=HOT_COILED_STANDARD,
-                status="rules_pending",
+                status="need_review" if conflicts else "applicable",
                 confidence=0.96,
                 selection_source="drawing_standard_no",
                 reason=_reason_with_conflicts(
-                    "图纸标准号指向热卷圆柱螺旋压缩弹簧标准；热卷 JSON 规则包尚未接入，暂不计算公差。",
+                    "图纸标准号指向热卷圆柱螺旋压缩弹簧标准，采用已接入的分级公差规则。",
                     conflicts,
                 ),
                 evidence=[*evidence, *auxiliary["evidence"]],
-                need_human_review=True,
+                need_human_review=bool(conflicts),
                 candidate_standards=candidate_standards,
                 metadata=_selection_metadata(wire_rule, auxiliary, conflicts),
             )

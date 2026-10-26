@@ -88,7 +88,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/api/standard-knowledge/search"): _operation("标准知识库", "检索弹簧标准知识", "按标准号、弹簧类型、目标字段和自然语言问题检索标准条款；结果仅用于审图辅助，最终仍需人工确认。"),
     ("POST", "/api/reviews"): _operation("图纸识别", "上传图纸并创建识别任务", "以 multipart/form-data 上传图纸和可选识别结果，持久化输入后加入异步识别队列。成功返回 202 和 job_id，不代表识别已经完成。"),
     ("GET", "/api/reviews/{job_id}/recognition-status"): _operation("图纸识别", "查询图纸识别进度", "查询指定审图任务的排队位置、处理阶段、进度和错误信息；前端可定时轮询，完成后再获取审图结果。"),
-    ("POST", "/api/reviews/{job_id}/retry"): _operation("图纸识别", "重试失败的识别任务", "仅允许重试 failed 状态的识别任务；成功后任务重新进入队列并返回 202。"),
+    ("POST", "/api/reviews/{job_id}/retry"): _operation("图纸识别", "重试失败的识别任务", "仅允许重试 failed 状态的识别任务；成功后任务重新进入队列并返回202。布局兼容错误存在有效完整缓存时由worker本地恢复，校验原文件及响应指纹，不新增Qwen调用；缓存不可用沿用显式重试流程。任务options中的恢复信息不对外返回。"),
     ("GET", "/api/reviews/{job_id}/candidates"): _operation("图纸识别", "获取识别候选参数", "返回 OCR、视觉模型和几何识别产生的候选数据，用于追溯参数来源和人工复核。"),
     ("GET", "/api/reviews"): _operation("审图管理", "查询审图记录列表", "按当前 ERP 用户隔离并返回最近的审图及识别任务；limit 范围为 1 至 100。"),
     ("GET", "/api/reviews/{job_id}"): _operation("审图管理", "获取完整审图结果", "返回指定任务当前修订的完整审图 JSON。识别尚未完成时返回 409，其他用户的数据按不存在处理。"),
@@ -259,7 +259,7 @@ class SpringParametersDocument(BaseModel):
 
     material: ReviewMaterialValue | None = Field(default=None, description="当前材料及原图证据；压缩弹簧新选择采用公司目录完整名称。")
     standard_no: ReviewParameterValue | None = Field(default=None, description="执行标准号。")
-    accuracy_grade: ReviewParameterValue | None = Field(default=None, description="通用精度等级。")
+    accuracy_grade: ReviewParameterValue | None = Field(default=None, description="通用精度等级。冷卷1/2/3级；GB/T 23934-2015热卷T/1/2/3级。")
     diameter_accuracy_grade: ReviewParameterValue | None = Field(default=None, description="直径专项精度等级；存在时优先于通用精度。")
     free_length_accuracy_grade: ReviewParameterValue | None = Field(default=None, description="自由高度专项精度等级；存在时优先于通用精度。")
     load_accuracy_grade: ReviewParameterValue | None = Field(default=None, description="载荷专项精度等级；存在时优先于通用精度。")
@@ -398,8 +398,9 @@ class ReviewDocument(BaseModel):
     )
 
     record_kind: Literal["single", "source", "variant"] = Field(default="single", description="普通记录、只读来源或独立规格子记录；旧记录默认single。")
-    multi_spec: dict[str, Any] | None = Field(default=None, description="来源保存的完整共用信息及稳定ID候选集合。仅来源包含，不能作为弹簧参数编辑或生图。")
-    multi_spec_origin: dict[str, Any] | None = Field(default=None, description="规格子记录的不可变来源ID、候选ID、序号、原图/公共区域和字段区域、问题及计算参考；不进入SW。")
+    multi_spec: dict[str, Any] | None = Field(default=None, description="来源保存的完整共用信息及稳定ID候选集合。layout统一为rows/blocks，输入columns兼容为blocks；可选layout_normalization记录original/normalized/version，原始响应不改写。仅来源包含，不能作为弹簧参数编辑或生图。")
+    multi_spec_origin: dict[str, Any] | None = Field(default=None, description="规格子记录的不可变来源ID、候选ID、序号、原图/公共区域和字段来源、布局、规格区域集合、问题及计算参考；旧记录兼容读取，不进入SW。")
+    multi_spec_reconciliation: dict[str, Any] | None = Field(default=None, description="可选多规格原图核实修正：version、before/after、evidence及pending_save草稿标记；仅未人工修改或确认的自动错误直径可修正，沿用修订和审计，不进入SW。")
     drawing_summary: DrawingSummaryDocument = Field(default_factory=DrawingSummaryDocument, description="图纸基本信息与总体审查结论。")
     spring_parameters: SpringParametersDocument = Field(default_factory=SpringParametersDocument, description="识别、推导和人工确认的弹簧参数。")
     technical_requirements: list[TechnicalRequirementDocument] = Field(
@@ -409,7 +410,7 @@ class ReviewDocument(BaseModel):
     derived_parameters: dict[str, Any] = Field(default_factory=dict, description="根据已知参数计算出的派生参数。")
     standard_selection: dict[str, Any] = Field(default_factory=dict, description="标准选择、适用性和人工确认信息。")
     parameter_reasonableness: ParameterReasonablenessAssessment | None = Field(default=None, description="最近一次参数合理性诊断和可选建议。")
-    accuracy_inference: dict[str, Any] | None = Field(default=None, description="可选内部精度反推元数据：selection_mode(auto/manual/drawing/legacy)、rules_version、input_snapshot、observed_inputs、results、inferred_grade、complete及calculation_fingerprint。仅独立原图/人工公差参与反推，整体报价取最严格项；不进入SW请求。")
+    accuracy_inference: dict[str, Any] | None = Field(default=None, description="可选内部精度反推元数据：selection_mode(auto/manual/drawing/legacy)、rules_version、input_snapshot、observed_inputs、results、inferred_grade、complete及calculation_fingerprint。热卷附standard_rules_version/source_document/applicability，T优先于1/2/3；仅独立原图/人工公差参与反推，当前有效刚度用于载荷最低限值，人工模式不回写；不进入SW请求。")
     diameter_linkage: dict[str, Any] | None = Field(default=None, description="可选三径联动元数据：version、driver_field、inputs、status、reason及original_parameters。首次人工编辑直径后固定线径、以最后编辑项为主控，联动三径并撤销变化项确认；旧订单打开不自动启用。不进入SW请求。")
     parameter_reasonableness_stale: bool = Field(default=False, description="参数变化后合理性结果是否已经过期。")
     conflicts: list[dict[str, Any]] = Field(default_factory=list, description="不同识别来源之间的参数冲突。")
@@ -510,7 +511,7 @@ class VariantsResponse(BaseModel):
     source_id: str = Field(description="来源记录ID。")
     source_revision: int = Field(description="来源当前修订。")
     drawing_summary: dict[str, Any] = Field(description="整图图名、图号，不从规格代号推断图号。")
-    variants: list[dict[str, Any]] = Field(description="原顺序候选：variant_id/order/code/page/region/parameters/source_context/issues/reference_values/review。review为空表示未创建；参数单元保留value/unit/tolerance及evidence。")
+    variants: list[dict[str, Any]] = Field(description="原顺序候选：variant_id/order/code/page/region/parameters/source_context/issues/reference_values/review。可选model_region保留原区域，region_verification表示独立证据核实；region使用有效行，无法核实时为空。review为空表示未创建；参数单元保留value/unit/tolerance及evidence。")
     created_count: int = Field(description="现存子记录数量。")
     pages: list[dict[str, Any]] = Field(default_factory=list, description="共享原图各页的页码、尺寸和有权限的预览地址。")
 
@@ -703,7 +704,7 @@ class ParameterChangeProposalResponse(BaseModel):
 
 class AccuracyStandardizationResult(BaseModel):
     status: str = Field(description="执行状态；完成时为 completed。", examples=["completed"])
-    requested_grade: str | None = Field(default=None, description="用户要求的通用精度等级，仅允许1级、2级或3级。", examples=["1级"])
+    requested_grade: str | None = Field(default=None, description="用户要求的通用精度等级：冷卷1/2/3级，热卷支持T/1/2/3级。", examples=["T级"])
     previous_grade: str | None = Field(default=None, description="执行前的通用精度等级。", examples=["2级"])
     scope: str = Field(default="general", description="精度作用范围；第一版仅执行 general。")
     selection_changed: bool | None = Field(default=None, description="精度值、来源或确认状态是否实际发生变化。")
@@ -928,10 +929,11 @@ class SaveDrawingAnnotationsRequest(RelocalizeDrawingAnnotationsRequest):
 class DrawingAnnotationsResponse(BaseModel):
     schema_version: str = Field(description="原图标注格式版本original_annotations/v1。")
     algorithm_version: str | None = Field(default=None, description="定位算法版本；旧订单首次读取时升级自动位置，保留人工位置。")
+    multi_spec_location: dict[str, str] | None = Field(default=None, description="仅多规格子记录携带的定位策略版本与区域指纹；旧标注按策略升级，不改变审图参数修订。")
     source_document_id: str = Field(description="原图及预览页面标识。")
     annotation_revision: int = Field(description="独立标注版本，不影响生图参数修订。")
     pages: list[dict[str, Any]] = Field(description="原图实际页码、图片地址、宽度和高度。")
-    annotations: list[dict[str, Any]] = Field(description="15个主参数的编号、原始识别值、位置及未定位原因；空模板项不展示。")
+    annotations: list[dict[str, Any]] = Field(description="15个主参数的编号、原始识别值、位置及未定位原因；空模板项不展示。位置可携带anchor_kind=cell和evidence_value，表示已核实尺寸单元格锚点而非估算数字框。")
     text_obstacles: list[dict[str, Any]] = Field(default_factory=list, description="原图文字框的页码和相对坐标，供前端气泡避让，不参与参数计算。")
     diagnostics: list[dict[str, Any]] = Field(default_factory=list, description="可选定位诊断：字段、证据值、当前值、原图页码/坐标、差异原因及补定位状态。参数值不因此自动更新。")
     warnings: list[str] = Field(default_factory=list, description="不阻断审图的定位提示。")

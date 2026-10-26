@@ -88,7 +88,8 @@
           input.addEventListener("change", () => { input.checked ? state.selected.add(v.variant_id) : state.selected.delete(v.variant_id); state.key = null; controls(); });
           const locate = tr.querySelector("button"); locate.textContent = `${v.order}. ${v.code || `规格${v.order}`}`; locate.title = v.source_context?.row_text || "定位原图区域";
           locate.addEventListener("click", () => { showRegion(v); body.querySelectorAll("tr").forEach(row => row.classList.toggle("is-located", row === tr)); });
-          tr.cells[2].textContent = `d ${valueOf("wire_diameter")} · Dm ${valueOf("mean_diameter")} · H₀ ${valueOf("free_length")}`;
+          const diameter = [["mean_diameter", "Dm"], ["inner_diameter", "内径"], ["outer_diameter", "外径"]].find(([key]) => valueOf(key) !== "—") || ["mean_diameter", "Dm"];
+          tr.cells[2].textContent = `d ${valueOf("wire_diameter")} · ${diameter[1]} ${valueOf(diameter[0])} · H₀ ${valueOf("free_length")}`;
           tr.cells[3].textContent = `总 ${valueOf("total_coils")} · 有效 ${valueOf("active_coils")}`;
           tr.cells[4].textContent = (v.issues || []).join("；") || "待人工核对";
           if (v.review) { const button = document.createElement("button"); button.type = "button"; button.textContent = "打开审图"; button.addEventListener("click", () => { dialog.close(); void openReview(v.review.job_id); }); tr.cells[4].append(button); }

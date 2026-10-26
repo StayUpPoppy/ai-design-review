@@ -11,7 +11,7 @@ from ai_design_review.standardizers import standardize_spring
 
 def main() -> None:
     _assert_cold_standard_no_selects_local_rules()
-    _assert_hot_standard_no_is_rules_pending()
+    _assert_hot_standard_has_local_rules()
     _assert_wire_diameter_threshold_selects_standard()
     _assert_wire_diameter_boundary()
     _assert_standard_no_conflict_requires_review()
@@ -78,11 +78,12 @@ def _assert_cold_standard_no_selects_local_rules() -> None:
     assert payload["standardization_results"]
 
 
-def _assert_hot_standard_no_is_rules_pending() -> None:
+def _assert_hot_standard_has_local_rules() -> None:
     payload = standardize_spring("compression_spring", _base_parameters("GB/T 23934-2014"), _features())
     assert payload["standard_selection"]["selected_standard"] == "GB/T 23934-2015"
-    assert payload["standard_selection"]["status"] == "rules_pending"
-    assert payload["standardization_results"] == []
+    assert payload["standard_selection"]["status"] == "need_review"  # d2 conflicts with explicit hot standard.
+    assert payload["standard_selection"]["rules_available"] is True
+    assert payload["standardization_results"] and all(r["status"] == "not_applicable" for r in payload["standardization_results"])
     assert payload["derived_parameters"]["mean_diameter"]["value"] == 18
 
 
@@ -101,7 +102,7 @@ def _assert_wire_diameter_boundary() -> None:
     hot = select_standard("compression_spring", _base_parameters(wire_diameter=12), _features())
     assert cold["selected_standard"] == "GB/T 1239.2-2009"
     assert hot_at_boundary["selected_standard"] == "GB/T 23934-2015"
-    assert hot_at_boundary["status"] == "rules_pending"
+    assert hot_at_boundary["status"] == "applicable"
     assert hot["selected_standard"] == "GB/T 23934-2015"
 
 
@@ -122,7 +123,7 @@ def _assert_material_standard_does_not_override_wire_rule() -> None:
     parameters["standard_no"]["evidence"] = "材料：弹簧钢丝 GB/T 4357-2009 SH"
     selection = select_standard("compression_spring", parameters, _features())
     assert selection["selected_standard"] == "GB/T 23934-2015"
-    assert selection["status"] == "rules_pending"
+    assert selection["status"] == "applicable"
     assert selection["selection_source"] == "wire_diameter_threshold"
     assert selection["metadata"]["ignored_material_standard_no"] == "GB/T 4357-2009"
 

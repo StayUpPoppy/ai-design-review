@@ -33,7 +33,7 @@ await page.route('**/api/**', async (route) => {
   if (api === '/api/session') return route.fulfill({ json: { identity: { user_id: 'accuracy-browser', username: 'accuracy-browser' } } });
   if (api === '/api/material-catalog') return route.fulfill({ json: catalog });
   if (api === '/api/reviews') return route.fulfill({ json: { reviews: [...models].map(([id, m]) => ({ job_id: id, drawing_name: `测试图纸${id}`, revision: m.revision, recognition_status: 'completed' })) } });
-  const match = api.match(/^\/api\/reviews\/(a|b)(?:\/(.*))?$/);
+  const match = api.match(/^\/api\/reviews\/(a|b|hot)(?:\/(.*))?$/);
   if (match) {
     const [, id, action] = match, model = models.get(id);
     if (!action) {
@@ -119,6 +119,31 @@ try {
   assert.equal(await page.evaluate(() => state.lastJob.job_id), 'a');
   assert.equal(await page.evaluate(() => state.review.accuracy_inference.selection_mode), 'manual');
   assert.equal(await page.evaluate(() => state.review.spring_parameters.accuracy_grade.value), '3级');
+  // Real hot rule output and native T selector, with current manual-mode rules.
+  const hot = review(), fixture = fixtures.find(f => f.name === 'hot row13 strictest T').expected;
+  hot.spring_parameters = { ...hot.spring_parameters, ...fixture.spring_parameters, load_points: [] };
+  hot.standard_selection = fixture.standard_selection; hot.accuracy_inference = fixture.accuracy_inference;
+  hot.standardization_results = [];
+  models.set('hot', { review: hot, revision: 1 });
+  await open('hot'); await tab('workbench');
+  assert.equal(await grade().inputValue(), 'T级');
+  assert.deepEqual(await grade().locator('option').evaluateAll(xs => xs.filter(x => x.value).map(x => x.value)), ['T级', '1级', '2级', '3级']);
+  await grade().selectOption('2级');
+  await root.locator('[data-action="run-workbench-standardization"]:visible').click();
+  await page.waitForFunction(() => !state.standardizationInFlight && state.review.accuracy_inference.selection_mode === 'manual');
+  await page.evaluate(() => {
+    const items = state.review.standardization_results.filter(r => ['inner_diameter','free_length'].includes(r.target_field));
+    const before = Object.fromEntries(items.map(r => [r.target_field, parameterAuditState(state.review.spring_parameters[r.target_field])]));
+    applyStandardizationResults(items);
+    for (const item of items) queueReviewAuditEvent({ event_type: 'parameter_tolerance_updated', target_field: item.target_field,
+      before_state: before[item.target_field], after_state: parameterAuditState(state.review.spring_parameters[item.target_field]) });
+  }); await saved();
+  assert.equal(models.get('hot').review.spring_parameters.inner_diameter.tolerance_upper, 2);
+  assert.equal(models.get('hot').review.spring_parameters.free_length.tolerance_upper, 5.48);
+  assert.equal(models.get('hot').review.accuracy_inference.inferred_grade, 'T级');
+  await open('a'); await open('hot'); await tab('parameters');
+  assert.equal(await root.locator('[data-field="accuracy_grade"] select:visible').inputValue(), '2级');
+  await page.screenshot({ path: path.join(output, 'hot-manual-grade.png') });
   assert.deepEqual(errors, []);
   console.log('Accuracy inference browser: native inputs, manual selection, applying real rule output, no loop, reopen, failure/retry, conflict merge, focus and mobile passed');
 } finally { await browser.close(); await new Promise((resolve) => server.close(resolve)); }

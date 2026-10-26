@@ -1164,6 +1164,7 @@ async def run_recognition_execution(
     identity: IdentityContext | None = None,
     job_id: str | None = None,
     progress_callback: Callable[[str, int], None] | None = None,
+    qwen_replay: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if identity is None:
         raise RuntimeError("Recognition execution requires an identity context.")
@@ -1188,11 +1189,26 @@ async def run_recognition_execution(
     _report_recognition_progress(progress_callback, "rendering_preview", 15)
     images = _make_preview_images(drawing_path, page_dir, warnings)
     uploaded_file_info = probe_file(drawing_path)
+    if images:
+        uploaded_file_info["page_count"] = len(images)
     image_url = _artifact_url(job_id, Path(images[0]).relative_to(job_dir)) if images else None
 
     candidates: list[dict[str, Any]] = []
     candidate_sources: list[str] = []
     raw_payloads: dict[str, Any] = {}
+
+    if qwen_replay is not None:
+        _report_recognition_progress(progress_callback, "qwen_vision", 35)
+        page_count = qwen_replay["metadata"]["page_count"]
+        if not images or len(images) != page_count:
+            raise MultiSpecError("本地恢复失败：预览页数与原文件不一致；未重新调用Qwen。")
+        qwen_payload = QwenVisionEngine().parse_response(qwen_replay["raw_response"], images or [],
+            total_pages=page_count)
+        if not qwen_payload.get("multi_spec"):
+            raise MultiSpecError("本地恢复失败：缓存不是完整多规格结果；未重新调用Qwen。")
+        qwen_payload["local_recovery"] = qwen_replay["metadata"]
+        write_json(job_dir / "qwen_vision_raw.json", qwen_payload)
+        return _persist_multi_spec_source(job_id, qwen_payload, uploaded_file_info, identity, image_url, progress_callback)
 
     if candidate_json is not None and candidate_json.filename:
         candidate_json_path = input_dir / _safe_filename(candidate_json.filename)
@@ -1242,18 +1258,8 @@ async def run_recognition_execution(
 
     multi_payload = raw_payloads.get("qwen_vision") or {}
     if multi_payload.get("multi_spec"):
-        from .multi_spec import source_review
-        if uploaded_file_info.get("page_count", 1) > int(os.getenv("QWEN_MAX_PAGES", "3")):
-            raise MultiSpecError("多规格文件超过当前识别页数上限，请拆分后上传。")
-        review = source_review(multi_payload["parsed"], multi_payload["multi_spec"])
-        write_json(job_dir / "review.json", review)
-        write_json(job_dir / "file_info.json", uploaded_file_info)
-        write_json(job_dir / "owner.json", identity.as_owner_dict())
-        write_json(job_dir / "candidates.json", {"candidates": [], "raw_payloads": raw_payloads})
-        _report_recognition_progress(progress_callback, "saving_result", 95)
-        persistence = _create_review_persistence(job_id, review, file_info=uploaded_file_info, artifact_dir=str(job_dir), identity=identity)
-        return {"job_id": job_id, "record_kind": "source", "variant_count": len(review["multi_spec"]["variants"]), "image_url": image_url,
-                "review": review, "persistence": _persistence_response(persistence)}
+        return _persist_multi_spec_source(job_id, multi_payload, uploaded_file_info, identity, image_url,
+                                          progress_callback, raw_payloads=raw_payloads)
 
     if _needs_dimension_grounding_ocr(candidates, uploaded_file_info, candidate_sources):
         _report_recognition_progress(progress_callback, "dimension_ocr", 55)
@@ -2094,7 +2100,9 @@ def retry_recognition_job(job_id: str, identity: IdentityContext = Depends(requi
     if not REVIEW_PERSISTENCE.configured:
         raise HTTPException(status_code=404, detail="Recognition job not found.")
     try:
-        job = REVIEW_PERSISTENCE.retry_recognition_job(job_id, owner_user_id=identity.user_id)
+        from .multi_spec_replay import prepare_retry_options
+        job = REVIEW_PERSISTENCE.retry_recognition_job(job_id, owner_user_id=identity.user_id,
+            prepare_options=lambda value: prepare_retry_options(value, API_RUN_ROOT))
     except PersistenceError as exc:
         raise _persistence_http_error(exc) from exc
     if job is None:
@@ -2262,11 +2270,14 @@ async def translate_technical_requirements(job_id: str, payload: dict[str, Any] 
 
 def _load_drawing_annotations(job_id: str, identity: IdentityContext) -> dict[str, Any]:
     from .drawing_annotations import ALGORITHM_VERSION, failed_annotation_upgrade, merge_annotation_upgrade, roughness_refresh_key, refresh_roughness_annotations
+    from .multi_spec import annotation_context, location_policy
 
     job_dir = _job_dir(job_id)
     review, _ = _load_persisted_review(job_id, job_dir / "review.json", identity)
+    review = annotation_context(review, job_dir)
+    policy = location_policy(review)
     current = review.get("drawing_annotations")
-    if REVIEW_PERSISTENCE.configured and isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION and current.get("roughness_evidence_signature") == roughness_refresh_key(review):
+    if REVIEW_PERSISTENCE.configured and isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION and current.get("multi_spec_location") == policy and current.get("roughness_evidence_signature") == roughness_refresh_key(review):
         return current
     # Serialize local OCR/cache work, but do not hold a database row lock while
     # recognizing. The final database merge reads the newest manual locations.
@@ -2274,15 +2285,17 @@ def _load_drawing_annotations(job_id: str, identity: IdentityContext) -> dict[st
         path = job_dir / "annotations.json"
         if not REVIEW_PERSISTENCE.configured and path.exists():
             current = read_json(path)
-        if isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION and current.get("roughness_evidence_signature") == roughness_refresh_key(review):
+        if isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION and current.get("multi_spec_location") == policy and current.get("roughness_evidence_signature") == roughness_refresh_key(review):
             return current
         try:
-            document = refresh_roughness_annotations(current, review) if isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION else build_annotations(review, job_dir, lambda relative: _artifact_url(job_id, relative))
+            document = refresh_roughness_annotations(current, review) if isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION and current.get("multi_spec_location") == policy else build_annotations(review, job_dir, lambda relative: _artifact_url(job_id, relative))
         except Exception:
             if not isinstance(current, dict):
                 raise
             LOGGER.exception("Original annotation upgrade failed for %s", job_id)
             document = failed_annotation_upgrade(current)
+            if policy:
+                document["multi_spec_location"] = policy
         document["roughness_evidence_signature"] = roughness_refresh_key(review)
         if not REVIEW_PERSISTENCE.configured:
             if isinstance(current, dict):
@@ -2441,6 +2454,8 @@ def _load_persisted_review(
         if stored.get("record_kind") == "variant":
             try: multi_spec_store.materialize(REVIEW_PERSISTENCE, job_id, identity.user_id, API_RUN_ROOT)
             except multi_spec_store.VariantStoreError as exc: raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+            from .multi_spec_evidence import reconcile_review
+            reconcile_review(review,review_path.parent)
         ensure_compression_material(review)
         ensure_surface_roughness_parameter(review)
         verify_review_roughness(review, review_path.parent, lambda path: _artifact_url(job_id, path))
@@ -2500,6 +2515,30 @@ def _save_review_persistence(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail={"code": "generation_settings_invalid", "message": str(exc)}) from exc
     previous, _ = _load_persisted_review(job_id, review_path, identity)
+    # Derive repair metadata from server evidence, never from a client's claim.
+    from copy import deepcopy
+    repair = previous.get("multi_spec_reconciliation") or {}
+    if repair.get("pending_save"):
+        review.pop("multi_spec_reconciliation", None)
+        from .multi_spec_evidence import reconcile_review
+        reconcile_review(review, review_path.parent)
+        review["multi_spec_reconciliation"] = deepcopy(repair)
+        if not any(e.get("event_type") == "multi_spec_diameter_reconciled" for e in events or []):
+            from .diameter_linkage import group_state
+            after = group_state(review)
+            before = deepcopy(after)
+            for field in ("outer_diameter", "inner_diameter", "mean_diameter"):
+                before["parameters"][field] = deepcopy(repair["before"][field])
+            events = [*(events or []), {"event_type": "multi_spec_diameter_reconciled", "target_field": "diameter_linkage",
+                "source": "original_table_verification", "before_state": before, "after_state": after,
+                "metadata": {"verification_version": repair["version"], "evidence": repair["evidence"]}}]
+    elif "multi_spec_reconciliation" in previous:
+        review["multi_spec_reconciliation"] = deepcopy(previous["multi_spec_reconciliation"])
+    else:
+        review.pop("multi_spec_reconciliation", None)
+    if isinstance(review.get("multi_spec_reconciliation"), dict):
+        review["multi_spec_reconciliation"].pop("pending_save", None)
+        review["multi_spec_reconciliation"]["audit_recorded"] = True
     if review.get("record_kind", "single") != previous.get("record_kind", "single") or review.get("multi_spec_origin") != previous.get("multi_spec_origin"):
         raise HTTPException(status_code=422, detail="不能更改审图记录的来源关系。")
     from .surface_catalog import synchronize_surface_review
@@ -2724,6 +2763,65 @@ def _persistence_http_error(exc: PersistenceError) -> HTTPException:
     )
 
 
+def _source_recognition_response(job_id, review, revision, image_url):
+    return {"job_id": job_id, "record_kind": "source", "variant_count": len(review["multi_spec"]["variants"]),
+            "image_url": image_url, "review": review,
+            "persistence": {"mode": "postgresql" if REVIEW_PERSISTENCE.configured else "json_fallback", "revision": revision}}
+
+
+def _reuse_multi_spec_source(job_id, identity, progress_callback):
+    stored = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id)
+    if not stored or stored.get("record_kind") != "source":
+        return None
+    _report_recognition_progress(progress_callback, "saving_result", 95)
+    directory = _job_dir(job_id)
+    write_json(directory / "review.json", stored["review"])
+    write_json(directory / "file_info.json", stored.get("file_info") or {})
+    write_json(directory / "owner.json", identity.as_owner_dict())
+    if not (directory / "candidates.json").exists():
+        try:
+            raw = read_json(directory / "qwen_vision_raw.json")
+        except (OSError, ValueError):
+            raw = {}
+        write_json(directory / "candidates.json", {"candidates": [], "raw_payloads": {"qwen_vision": raw}})
+    return _source_recognition_response(job_id, stored["review"], stored["revision"], _review_preview_url(job_id))
+
+
+def _persist_multi_spec_source(job_id, payload, file_info, identity, image_url, progress_callback, *, raw_payloads=None):
+    """Normal requests and cached replies publish through the same source path."""
+    from .multi_spec import source_review, normalize_layout
+    if file_info.get("page_count", 1) > int(os.getenv("QWEN_MAX_PAGES", "3")):
+        raise MultiSpecError("多规格文件超过当前识别页数上限，请拆分后上传。")
+    existing = _reuse_multi_spec_source(job_id, identity, progress_callback)
+    if existing is not None:
+        return existing
+    directory = _job_dir(job_id)
+    review = source_review(payload["parsed"], payload["multi_spec"])
+    recovery = payload.get("local_recovery")
+    diagnostic = {"layout_normalization": payload["multi_spec"].get("layout_normalization") or normalize_layout(payload["multi_spec"].get("layout")),
+                  "variant_count": len(payload["multi_spec"]["variants"])}
+    if recovery:
+        diagnostic["recovery"] = recovery
+        review["change_history"].append({"event_type": "multi_spec_layout_recovered", "source": "saved_qwen_response",
+            "reason": "从已保存响应恢复多规格布局", "metadata": diagnostic})
+    _report_recognition_progress(progress_callback, "saving_result", 95)
+    persistence = _create_review_persistence(job_id, review, file_info=file_info, artifact_dir=str(directory), identity=identity)
+    # A redelivered worker must mirror the authoritative stable IDs, including
+    # any children created since the first commit, rather than its fresh parse.
+    stored = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id)
+    if stored:
+        if stored.get("record_kind") != "source":
+            raise MultiSpecError("该订单已存在其他审图结果，未覆盖原记录。")
+        review, file_info = stored["review"], stored.get("file_info") or file_info
+    write_json(directory / "review.json", review)
+    write_json(directory / "file_info.json", file_info)
+    write_json(directory / "owner.json", identity.as_owner_dict())
+    if not (directory / "candidates.json").exists():
+        write_json(directory / "candidates.json", {"candidates": [], "raw_payloads": raw_payloads or {"qwen_vision": payload}})
+    write_json(directory / ("multi_spec_recovery.json" if recovery else "multi_spec_diagnostics.json"), diagnostic)
+    return _source_recognition_response(job_id, review, stored["revision"] if stored else persistence.get("revision"), image_url)
+
+
 async def run_recognition_job_record(
     job: dict[str, Any],
     *,
@@ -2744,6 +2842,12 @@ async def run_recognition_job_record(
     )
     if not all((identity.user_id, identity.username, identity.org_id, identity.org_name)):
         raise RuntimeError("Recognition job is missing its ERP ownership context.")
+
+    existing = _reuse_multi_spec_source(job_id, identity, progress_callback)
+    if existing is not None:
+        return existing
+    from .multi_spec_replay import load_replay
+    qwen_replay = load_replay(job, job_dir)
 
     drawing_path = _job_relative_input_path(job_dir, options.get("drawing_path"))
     candidate_path = _job_relative_input_path(job_dir, options.get("candidate_json_path"), required=False)
@@ -2786,6 +2890,7 @@ async def run_recognition_job_record(
             identity=identity,
             job_id=job_id,
             progress_callback=progress_callback,
+            qwen_replay=qwen_replay,
         )
     finally:
         for upload in uploads:

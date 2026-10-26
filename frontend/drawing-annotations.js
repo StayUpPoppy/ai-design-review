@@ -235,7 +235,7 @@ window.DrawingAnnotations = (() => {
       const bubble = screenPoint({ x: p.x / width, y: p.y / height });
       const end = leaderEndpoint(anchor, bubble);
       return `${end ? `<line x1="${anchor.x}" y1="${anchor.y}" x2="${end.x}" y2="${end.y}"/>` : ""}<circle class="annotation-anchor" cx="${anchor.x}" cy="${anchor.y}" r="3"/>
-        <g class="annotation-bubble ${item.selected === a.field ? "selected" : ""}" transform="translate(${bubble.x} ${bubble.y})" role="button" tabindex="0" aria-label="${esc(`${a.number} ${a.label}，定位参数${item.editing ? '，方向键移动气泡' : ''}`)}" data-annotation-id="${esc(a.field)}" data-location-id="${esc(l.location_id)}"><title>${esc(a.label)}：原图 ${esc(l.evidence_value ?? a.original_value ?? "人工定位")}；当前 ${esc(config.getParameter(a.field)?.value ?? "未填写")}</title><circle r="${bubbleRadius}"/><text text-anchor="middle" dy=".35em">${a.number}</text></g>`;
+        <g class="annotation-bubble ${item.selected === a.field ? "selected" : ""}" transform="translate(${bubble.x} ${bubble.y})" role="button" tabindex="0" aria-label="${esc(`${a.number} ${a.label}，定位参数${item.editing ? '，方向键移动气泡' : ''}`)}" data-annotation-id="${esc(a.field)}" data-location-id="${esc(l.location_id)}"><title>${l.anchor_kind === "cell" ? "尺寸单元格；" : ""}${esc(a.label)}：原图 ${esc(l.evidence_value ?? a.original_value ?? "人工定位")}；当前 ${esc(config.getParameter(a.field)?.value ?? "未填写")}</title><circle r="${bubbleRadius}"/><text text-anchor="middle" dy=".35em">${a.number}</text></g>`;
     }).join("");
     const viewport = config.getViewport();
     const warning = viewport.parentElement?.querySelector(".annotation-layout-warning");

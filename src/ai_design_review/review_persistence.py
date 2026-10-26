@@ -204,7 +204,7 @@ class ReviewPersistence:
                 session.add(event)
                 initial_events = [event]
                 for payload in review.get("change_history") or []:
-                    if payload.get("event_type") not in {"technical_requirement_translated", "technical_requirement_translation_failed"}:
+                    if payload.get("event_type") not in {"technical_requirement_translated", "technical_requirement_translation_failed", "multi_spec_layout_recovered"}:
                         continue
                     translated_event = self._make_event(record, revision_before=0, revision_after=record.revision, payload={**payload, "actor": actor})
                     session.add(translated_event)
@@ -636,7 +636,8 @@ class ReviewPersistence:
         except SQLAlchemyError as exc:
             raise PersistenceError(f"Unable to finalize cancelled recognition job: {_safe_error(exc)}") from exc
 
-    def retry_recognition_job(self, job_id: str, *, owner_user_id: str | None = None) -> dict[str, Any] | None:
+    def retry_recognition_job(self, job_id: str, *, owner_user_id: str | None = None,
+                              prepare_options: Callable[[dict[str, Any]], dict[str, Any]] | None = None) -> dict[str, Any] | None:
         if not self.configured:
             return None
         now = _utcnow()
@@ -649,6 +650,8 @@ class ReviewPersistence:
                 ).scalar_one_or_none()
                 if record is None or record.status != "failed":
                     return None
+                if prepare_options is not None:
+                    record.options = prepare_options(self._serialize_recognition_job(record, include_execution_details=True))
                 record.status = "queued"
                 record.stage = "queued"
                 record.progress = 0

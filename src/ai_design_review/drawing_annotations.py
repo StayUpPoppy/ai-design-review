@@ -51,7 +51,9 @@ def preview_manifest(job_dir: Path, url_for: Callable[[Path], str]) -> list[dict
             continue
         try:
             with Image.open(path) as image:
-                width, height = ImageOps.exif_transpose(image).size
+                width, height = image.size
+                if image.getexif().get(274) in (5, 6, 7, 8):
+                    width, height = height, width
             pages.append({"page": page_sort_key(path)[0], "image_url": url_for(path.relative_to(job_dir)),
                           "width": width, "height": height})
         except (OSError, ValueError):
@@ -234,7 +236,7 @@ def _identity(field: str, text: str) -> bool:
     # Labels used for table pairing must establish the actual dimension role.
     if field == "end_grinding":
         return _value_matches("两端磨削", text, field) or _value_matches("两端不磨削", text, field)
-    strict = {"wire_diameter": r"线径|钢丝直径|wire\s*(?:diameter|dia)",
+    strict = {"wire_diameter": r"线径|[钢簧]丝直径|wire\s*(?:diameter|dia)",
               "outer_diameter": r"外径|外圆|outer|\bOD\b|\bDo\b",
               "inner_diameter": r"内径|inner|\bDi\b", "mean_diameter": r"中径|mean|\bDm\b"}
     return bool(re.search(strict.get(field, PATTERNS[FIELDS.index(field)]), text, re.I))
@@ -287,16 +289,136 @@ def _unique_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _scoped_cells(blocks):
+    """Use actual token boxes, never estimate a digit's position in a sentence."""
+    result = list(blocks)
+    for block in blocks:
+        numeric = re.findall(r"(?<![a-zA-Z\d_.])-?\d+(?:\.\d+)?(?![\d.])", dimension_text(block["text"]))
+        for token in block.get("tokens", []):
+            if token.get("position"):
+                result.append({**block, "text": token["text"], "position": token["position"], "tokens": [],
+                               "cell_label": block["text"] if len(numeric) == 1 else "", "cell_label_position": block["position"]})
+    return result
+
+
+def _scalar_cell(block):
+    return bool(re.fullmatch(r"[+\-]?\d+(?:\.\d+)?\s*(?:mm|cm|μm|um|N|圈|turns)?", dimension_text(block["text"]).strip(), re.I))
+
+
+def _specification_headers(review, blocks):
+    origin = review["multi_spec_origin"]
+    region = origin.get("region")
+    if origin.get("layout") != "rows" or not region:
+        return []
+    rows = [r for r in origin.get("specification_regions") or [] if r.get("page", 1) == region.get("page", 1)]
+    if not rows:
+        return []
+    top = min(r["y"] for r in rows)
+    left, right = min(r["x"] for r in rows), max(r["x"] + r["width"] for r in rows)
+    headers = [b for b in _scoped_cells(blocks) if b.get("position") and b.get("page", 1) == region.get("page", 1)
+               and b["position"]["y"] + b["position"]["height"] <= top + 1e-6
+               and b["position"]["y"] >= max(0, top - .25)
+               and left <= b["position"]["x"] and b["position"]["x"] + b["position"]["width"] <= right]
+    # Stacked table headings (有效 / 圈数 / n) retain their common column.
+    joined = []
+    for b in headers:
+        p = b["position"]
+        column = sorted((h for h in headers if abs(h["position"]["x"] + h["position"]["width"]/2 - p["x"] - p["width"]/2) <= .01
+                         and abs(h["position"]["y"] - p["y"]) <= .1), key=lambda h: h["position"]["y"])
+        text = "".join(dict.fromkeys(h["text"] for h in column))
+        joined.append({**b, "text": text})
+    return headers + joined
+
+
+def _column_label(field, block, headers):
+    p = block["position"]
+    matches = []
+    for header in headers:
+        if not _identity(field, header["text"]):
+            continue
+        if sum(_identity(f, header["text"]) for f in ("wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "active_coils", "total_coils")) > 1:
+            continue
+        h = header["position"]
+        overlap = min(p["x"]+p["width"], h["x"]+h["width"]) - max(p["x"], h["x"])
+        if overlap >= min(p["width"], h["width"]) * .5:
+            matches.append(h["x"] + h["width"]/2)
+    return bool(matches) and max(matches) - min(matches) < .02
+
+
+def _scoped_matches(review, field, value, all_blocks):
+    from .multi_spec import restrict_blocks, location_regions, block_in_region
+    headers = _specification_headers(review, all_blocks)
+    cell=(review.get("multi_spec_origin",{}).get("location_evidence",{}).get("cells") or {}).get(field)
+    if cell and cell.get("evidence_value")==value and restrict_blocks(review,[cell],field,public=False):
+        digits=[b for b in _unique_blocks(_scoped_cells(all_blocks)) if b["page"]==cell["page"] and
+                _scalar_cell(b) and _value_matches(value,b["text"],field) and block_in_region(b,{"page":cell["page"],**cell["position"]})]
+        if len(digits)==1:
+            return [(7,{k:v for k,v in digits[0].items() if k != "anchor_kind"})]
+        return [(7,cell)]
+    for public in (False, True):
+        # Split PDF words before clipping so a multi-cell line cannot supply a
+        # label or anchor across a specification boundary.
+        blocks = restrict_blocks(review, _scoped_cells(all_blocks), field, public=public)
+        matches = []
+        for block in blocks:
+            if block.get("numeric_join_unsafe") or not _value_matches(value, block["text"], field):
+                continue
+            if field in {"material", "standard_no", "handedness", "end_type", "end_grinding"}:
+                # These textual values themselves establish identity.
+                matches.append((7, block))
+                continue
+            if not _scalar_cell(block):
+                continue
+            regions = location_regions(review, field)[1 if public else 0]
+            label_box = {**block, "position": block.get("cell_label_position")}
+            inline = block.get("cell_label") and _identity(field, block["cell_label"]) and any(block_in_region(label_box, r) for r in regions)
+            if inline or _row_label(field, block, blocks) or not public and _column_label(field, block, headers):
+                matches.append((7, block))
+        if matches:
+            return matches  # Own repeated labels take precedence over common notes.
+    return []
+
+
+def _specification_region_conflict(review, blocks):
+    """An independently read specification code may disprove model coordinates."""
+    origin = review.get("multi_spec_origin") or {}
+    code, region = str(origin.get("code") or "").strip(), origin.get("region")
+    if not code or not region:
+        return False
+    pattern = re.compile(r"(?<![\w])" + re.escape(code) + r"(?![\w])", re.I)
+    matches = [b for b in blocks if b.get("position") and pattern.search(str(b.get("text") or ""))]
+    if not matches:
+        return False  # Absence of a readable code is not a contradictory code.
+    return not any(b.get("page", 1) == region.get("page", 1) and
+                   region["x"] <= b["position"]["x"]+b["position"]["width"]/2 <= region["x"]+region["width"] and
+                   region["y"] <= b["position"]["y"]+b["position"]["height"]/2 <= region["y"]+region["height"] for b in matches)
+
+
 def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     params = review.get("spring_parameters") or {}
+    role = ((review.get("multi_spec_origin") or {}).get("location_evidence") or {}).get("diameter_role") or {}
+    if role.get("field") == "inner_diameter":
+        # A legacy candidate was labelled outer by the model. Once the original
+        # D1 cell is verified, use its actual role for locations and diagnostics.
+        candidates = [{**c, "field": "inner_diameter", "original_field": "outer_diameter"}
+                      if c.get("field") == "outer_diameter" and c.get("value") == role["value"] and _recognized(c) else c for c in candidates]
     annotations = []
-    from .multi_spec import restrict_blocks
+    from .multi_spec import restrict_blocks, location_regions
+    scoped = bool(review.get("multi_spec_origin"))
+    region_conflict = scoped and _specification_region_conflict(review, blocks)
     all_blocks = blocks
     for index, field in enumerate(FIELDS):
         blocks = restrict_blocks(review, all_blocks, field)
         param = params.get(field) or {}
         if field == "surface_roughness_ra":
-            annotations.append(roughness_annotation(param, candidates, blocks))
+            annotation = roughness_annotation(param, candidates, blocks)
+            if scoped:
+                refs = [{**l, "position": l["bbox"]} for l in annotation["locations"]]
+                allowed = [] if region_conflict else restrict_blocks(review, refs, field, public=False) or restrict_blocks(review, refs, field, public=True)
+                annotation["locations"] = [{k: v for k, v in l.items() if k != "position"} for l in allowed]
+                if not allowed and annotation["status"] == "located":
+                    annotation.update(status="unlocated", reason="粗糙度证据不在本规格或明确公共区域内，可人工定位。")
+            annotations.append(annotation)
             continue
         sources = param.get("source") or []
         sources = sources if isinstance(sources, list) else [sources]
@@ -328,6 +450,9 @@ def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], bloc
         pages = {c["page"] for c in originals if c.get("page") is not None}
         if not pages and (original or {}).get("page") is not None:
             pages.add(original["page"])
+        if scoped:
+            own, public = location_regions(review, field)
+            pages = {r.get("page", 1) for r in own + public}
         for block in blocks:
             text = block["text"]
             if block.get("numeric_join_unsafe"):
@@ -355,6 +480,8 @@ def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], bloc
                 score = 0
             if score:
                 matches.append((score, block))
+        if scoped:
+            matches = _scoped_matches(review, field, value, all_blocks) if original and not region_conflict else []
         strong = [block for score, block in matches if score >= 6]
         winners = _unique_blocks(strong or [block for score, block in matches if score == 2])
         distinct = []
@@ -364,7 +491,7 @@ def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], bloc
             if not any(b["page"] == block["page"] and _same_text_box(b["position"], block["position"]) for b in distinct):
                 distinct.append(block)
         winners = distinct
-        ambiguous = not strong and len(winners) > 1 and field != "surface_roughness_ra"
+        ambiguous = (scoped or not strong) and len(winners) > 1 and field != "surface_roughness_ra"
         if ambiguous:
             winners = []
         locations = []
@@ -380,8 +507,11 @@ def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], bloc
             locations.append({"location_id": f"{field}-{identifier}", "page": block["page"], "bbox": box,
                               "anchor": {"x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2},
                               "bubble": {"x": min(.98, box["x"] + box["width"] + .025), "y": max(.02, box["y"] - .025)},
-                              "source": block["source"], "evidence": block["text"]})
+                              "source": block["source"], "evidence": block["text"],
+                              **({"anchor_kind":"cell","evidence_value":value} if block.get("anchor_kind")=="cell" else {})})
         reason = "粗糙度存在不同候选，请先核对并人工定位" if roughness_conflict else "多个原图位置存在歧义，请核对后定位" if ambiguous else "OCR未读出对应标注或缺少可靠位置" if original else "此值没有原图直接标注，可人工定位"
+        if region_conflict and original:
+            reason = "规格区域与原图代号位置不一致，已暂停自动定位，可核对后人工定位。"
         annotations.append({"annotation_id": field, "field": field, "number": index + 1, "label": LABELS[index],
                             "original_value": value, "evidence": evidence, "evidence_pages": sorted(pages or {(original or {}).get("page") or 1}), "locations": locations,
                             "status": "located" if locations else "empty" if empty else "unlocated",
@@ -543,7 +673,11 @@ def annotation_source(job_dir: Path, url_for: Callable[[Path], str]) -> tuple[di
 
 def build_annotations(review: dict[str, Any], job_dir: Path, url_for: Callable[[Path], str],
                       *, candidates_payload: dict[str, Any] | None = None, allow_ocr: bool = True, retry_ocr: bool = False) -> dict[str, Any]:
+    from .multi_spec import annotation_context, location_policy
+    review = annotation_context(review, job_dir, retry=retry_ocr)
     document, source = annotation_source(job_dir, url_for)
+    if location_policy(review):
+        document["multi_spec_location"] = location_policy(review)
     pages = document["pages"]
     if review.get("drawing_summary", {}).get("spring_type") != "compression_spring":
         return document
@@ -601,7 +735,7 @@ def build_annotations(review: dict[str, Any], job_dir: Path, url_for: Callable[[
             # Preserve a reliable field's evidence metadata as well as its
             # coordinates. Legacy metadata contradicting its own saved glyphs
             # is rebuilt instead (parameters themselves are never changed).
-            if annotation["field"] != "surface_roughness_ra" and automatic and all(_value_matches(prior.get("original_value"), l.get("evidence", ""), annotation["field"]) for l in automatic):
+            if not review.get("multi_spec_origin") and annotation["field"] != "surface_roughness_ra" and automatic and all(_value_matches(prior.get("original_value"), l.get("evidence", ""), annotation["field"]) for l in automatic):
                 document["annotations"][index] = copy.deepcopy(prior)
     document["diagnostics"] = _annotation_diagnostics(review, document["annotations"], states)
     document["roughness_evidence_signature"] = roughness_refresh_key(review)
@@ -611,11 +745,14 @@ def build_annotations(review: dict[str, Any], job_dir: Path, url_for: Callable[[
 def merge_annotation_upgrade(current: dict[str, Any], rebuilt: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
     """Merge while holding the persistence lock, including edits made during OCR."""
     roughness_refresh = rebuilt.get("roughness_only_refresh") is True
-    if not force and not roughness_refresh and current.get("algorithm_version") == ALGORITHM_VERSION:
+    scoped = bool(rebuilt.get("multi_spec_location"))
+    if not force and not roughness_refresh and current.get("algorithm_version") == ALGORITHM_VERSION and current.get("multi_spec_location") == rebuilt.get("multi_spec_location"):
         return current
     if current.get("source_document_id") != rebuilt.get("source_document_id"):
         failed = copy.deepcopy(current)
         failed["algorithm_version"] = ALGORITHM_VERSION
+        if scoped:
+            failed["multi_spec_location"] = copy.deepcopy(rebuilt["multi_spec_location"])
         failed.setdefault("warnings", []).append("原图或预览标识发生变化，已保留旧位置，请核对后人工定位。")
         failed["annotation_revision"] = current.get("annotation_revision", 1) + 1
         return failed
@@ -626,7 +763,7 @@ def merge_annotation_upgrade(current: dict[str, Any], rebuilt: dict[str, Any], *
         if roughness_refresh and annotation["field"] != "surface_roughness_ra":
             annotation.update(copy.deepcopy(previous))
             continue
-        if force and previous.get("locations") and annotation["field"] != "surface_roughness_ra":
+        if force and not scoped and previous.get("locations") and annotation["field"] != "surface_roughness_ra":
             annotation.update({k: copy.deepcopy(previous[k]) for k in ("locations", "status", "reason")})
             continue
         available = list(annotation["locations"])

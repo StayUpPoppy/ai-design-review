@@ -103,10 +103,14 @@ def _verify_locked(job_dir, candidates, raw_payloads, url_for, review):
             if claim.get("page") is None or claim.get("roughness_page_known") is False:
                 claim["page"] = None
     cache_path = job_dir / "roughness_verification.json"
-    from .multi_spec import shared_ocr_dir, restrict_blocks
+    from .multi_spec import shared_ocr_dir, restrict_blocks, annotation_context, location_policy
+    review = annotation_context(review, job_dir) if review else review
     ocr_path = shared_ocr_dir(job_dir) / "annotation_ocr_v3.json"
-    signature = hashlib.sha256(json.dumps([ROUGHNESS_VERIFICATION_VERSION, document_id, claims,
-                                           raw_payloads, historical_locations, dimensions, ocr_path.stat().st_mtime_ns if ocr_path.exists() else None],
+    signature_inputs = [ROUGHNESS_VERIFICATION_VERSION, document_id, claims,
+                        raw_payloads, historical_locations, dimensions, ocr_path.stat().st_mtime_ns if ocr_path.exists() else None]
+    if location_policy(review or {}):
+        signature_inputs.append(location_policy(review))
+    signature = hashlib.sha256(json.dumps(signature_inputs,
                                           sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
     cache = _read(cache_path)
     if cache.get("signature") == signature:

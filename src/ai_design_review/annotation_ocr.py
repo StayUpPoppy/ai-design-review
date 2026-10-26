@@ -82,6 +82,8 @@ def local_ocr_blocks(job_dir: Path, pages: list[dict[str, Any]], document_id: st
 def _local_ocr_blocks_locked(job_dir, pages, document_id, review, candidates, existing, *, retry, verification_requests):
     from .drawing_annotations import ALGORITHM_VERSION, _unique_blocks, atomic_annotation_write, locate_fields, ocr_blocks, page_sort_key
     from .engines.ocr_providers import RapidOcrProvider
+    from .multi_spec import location_policy, location_regions
+    policy = location_policy(review)
 
     path = job_dir / "annotation_ocr_v3.json"
     try:
@@ -92,7 +94,8 @@ def _local_ocr_blocks_locked(job_dir, pages, document_id, review, candidates, ex
         cache = {"source_document_id": document_id, "algorithm_version": ALGORITHM_VERSION, "cache_format": 4, "blocks": [], "full": {}, "regions": {}, "handled_fields": {}, "warnings": []}
     cache.setdefault("handled_fields", {})
     cache.setdefault("errors", {})
-    protected = {a["field"] for a in (review.get("drawing_annotations") or {}).get("annotations", []) if a.get("locations")} if retry else set()
+    protected = {a["field"] for a in (review.get("drawing_annotations") or {}).get("annotations", []) if a.get("locations") and
+                 (not policy or any(l.get("source") not in {"ocr", "pdf_text", "candidate", "local_ocr"} for l in a["locations"]))} if retry else set()
     protected.discard("surface_roughness_ra")
     def missing_requests(blocks):
         from .surface_roughness import grounded_roughness_evidence
@@ -150,7 +153,7 @@ def _local_ocr_blocks_locked(job_dir, pages, document_id, review, candidates, ex
         fields = sorted(a["field"] for a in missing)
         for field in fields:
             states[field] = "not_run"
-        request_keys = sorted({a.get("request_key", a["field"]) for a in missing})
+        request_keys = sorted({(policy["version"] + ":" + policy["fingerprint"] + ":" if policy else "") + a.get("request_key", a["field"]) for a in missing})
         if not retry and set(request_keys) <= set(cache["handled_fields"].get(str(number), [])):
             for field in fields:
                 states[field] = cache.get("field_states", {}).get(field, "completed_unmatched")
@@ -165,6 +168,12 @@ def _local_ocr_blocks_locked(job_dir, pages, document_id, review, candidates, ex
                     if b.get("coordinate_type") == "normalized":
                         hinted.extend((max(0, b["x"] - .025), max(0, b["y"] - .025), min(1, b["x"] + b["width"] + .025), min(1, b["y"] + b["height"] + .025), angle) for angle in (0, 90, 270))
                 regions = list(dict.fromkeys([*hinted, *regions]))
+                if policy:
+                    allowed = [r for field in fields for group in location_regions(review, field) for r in group if r.get("page", 1) == number]
+                    clipped = [(max(x0, r["x"]), max(y0, r["y"]), min(x1, r["x"]+r["width"]), min(y1, r["y"]+r["height"]), angle)
+                               for x0, y0, x1, y1, angle in regions for r in allowed]
+                    scoped = [(*bounds, angle) for r in allowed for bounds in [(r["x"], r["y"], r["x"]+r["width"], r["y"]+r["height"])] for angle in (0, 90, 270)]
+                    regions = list(dict.fromkeys(scoped + [r for r in clipped if r[2] > r[0] and r[3] > r[1]]))
                 inputs, transforms, records = [], [], []
                 for x0, y0, x1, y1, angle in regions:
                     if len(inputs) >= 12:

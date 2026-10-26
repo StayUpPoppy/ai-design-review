@@ -7,10 +7,12 @@ import { execFileSync } from "node:child_process";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.CODEX_NODE_MODULES ? path.join(process.env.CODEX_NODE_MODULES, "playwright") : "C:/Users/29580/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright");
-const v3 = process.argv.includes("--v3"), real = v3 || process.argv.includes("--real"), qa = path.resolve(v3 ? "outputs/annotation-v3-qa" : "outputs/annotation-qa");
+const rows = process.argv.includes("--rows"), multi = rows || process.argv.includes("--multi"), v3 = process.argv.includes("--v3"), real = multi || v3 || process.argv.includes("--real"), qa = path.resolve(multi ? "outputs/multi-spec-annotation-qa" : v3 ? "outputs/annotation-v3-qa" : "outputs/annotation-qa");
 const catalog = JSON.parse(fs.readFileSync("config/compression_material_catalog.json", "utf8"));
 let fixtures;
-if (v3) {
+if (multi) {
+  fixtures = JSON.parse(fs.readFileSync(path.join(qa, rows ? "rows-browser.json" : "browser.json"), "utf8")).map(f => ({...f, mime:"image/png", image:fs.readFileSync(path.join(qa,rows ? "rows.png" : "source.png"))}));
+} else if (v3) {
   fixtures = ["94372f98ae61", "c90288992d76", "0a96d83d903c", "a5730d90908d", "137090949f86"].map((id) => ({
     id, image: fs.readFileSync(path.join(qa, id, "annotation_ocr_pages/page-1.png")), mime: "image/png",
     review: JSON.parse(fs.readFileSync(path.join(qa, id, "annotation_qa_snapshot.json"), "utf8")),
@@ -97,6 +99,7 @@ try {
       throw error;
     }
     const expected = saved.annotations.reduce((n, a) => n + a.locations.length, 0);
+    await page.evaluate(async () => { await document.querySelector('#compareImage').decode(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
     assert.equal(await page.locator(".annotation-bubble").count(), expected);
     const verifyAnchors = () => page.evaluate(() => {
       const image = document.querySelector("#compareImage"), view = state.compareView;

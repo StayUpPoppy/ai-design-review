@@ -1,0 +1,16 @@
+{
+  "version": "hot-coiled-tolerances/v1",
+  "standard_no": "GB/T 23934-2015",
+  "source_document": "热卷圆柱螺旋压缩弹簧公差标准摘录.md",
+  "source": "RAGFlow已核对摘录，计算采用此版本快照",
+  "accuracy_grades": ["T", "1", "2", "3"],
+  "scope": {"wire_min": 8, "wire_max": 60, "mean_max": 460, "height_max": 9000, "index_min": 3, "index_max": 12, "slenderness_min": 0.8, "slenderness_max": 4, "active_min": 3, "pitch_mean_ratio_max": 0.5},
+  "diameter_tolerance": [
+    {"height_max": 250, "grades": {"T": {"factor": 0.008, "minimum": 0.8}, "1": {"factor": 0.01, "minimum": 1}, "2": {"factor": 0.015, "minimum": 1.5}, "3": {"factor": 0.02, "minimum": 2}}},
+    {"height_max": 500, "grades": {"T": {"factor": 0.008, "minimum": 1}, "1": {"factor": 0.01, "minimum": 1.5}, "2": {"factor": 0.015, "minimum": 2}, "3": {"factor": 0.02, "minimum": 2.5}}},
+    {"height_max": null, "grades": {"T": {"factor": 0.008, "minimum": 1.5}, "1": {"factor": 0.01, "minimum": 2}, "2": {"factor": 0.015, "minimum": 2.5}, "3": {"factor": 0.02, "minimum": 3}}}
+  ],
+  "free_length_tolerance": {"T": {"factor": 0.01, "minimum": 1.5}, "1": {"factor": 0.015, "minimum": 2}, "2": {"factor": 0.02, "minimum": 3}, "3": {"factor": 0.03, "minimum": 4}},
+  "load_tolerance": {"T": {"factor": 0.03, "minimum_deflection": 1.5}, "1": {"factor": 0.05, "minimum_deflection": 2.5}, "2": {"factor": 0.1, "minimum_deflection": 5}, "3": {"factor": 0.15, "minimum_deflection": 7.5}},
+  "references": {"diameter": "2.1，表4-8：D为中径，按自由高度分段", "free_length": "2.2，表4-9", "load": "2.6，表4-12：指定高度下负荷公差", "scope": "2，适用条件"}
+}

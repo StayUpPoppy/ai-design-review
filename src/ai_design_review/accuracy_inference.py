@@ -12,8 +12,8 @@ import re
 import struct
 from typing import Any
 
-VERSION = "compression-accuracy/v1"
-FIELDS = ("wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "active_coils", "total_coils", "support_coils", "end_type", "end_grinding", "spring_rate", "controlled_diameter_field", "diameter_accuracy_grade", "free_length_accuracy_grade", "load_accuracy_grade", "stiffness_accuracy_grade")
+VERSION = "compression-accuracy/v2"
+FIELDS = ("wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "active_coils", "total_coils", "support_coils", "end_type", "end_grinding", "spring_rate", "controlled_diameter_field", "diameter_accuracy_grade", "free_length_accuracy_grade", "load_accuracy_grade", "stiffness_accuracy_grade", "pitch")
 SPECIFIC = {"diameter": "diameter_accuracy_grade", "free_length": "free_length_accuracy_grade", "load": "load_accuracy_grade", "stiffness": "stiffness_accuracy_grade"}
 LENGTH = {"mm": 1, "cm": 10, "m": 1000, "in": 25.4, "inch": 25.4, "毫米": 1}
 FORCE = {"n": 1, "kn": 1000, "kgf": 9.80665}
@@ -34,8 +34,8 @@ def number(value: Any) -> float | None:
 def grade(value: Any) -> str | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool) and value in (1, 2, 3):
         return f"{int(value)}级"
-    match = re.fullmatch(r"\s*([123])\s*[级級]?\s*", str(value or ""))
-    return f"{match[1]}级" if match else None
+    match = re.fullmatch(r"\s*([Tt123])\s*[级級]?\s*", str(value or ""))
+    return f"{match[1].upper()}级" if match else None
 
 
 def _item(item: dict, *, load: bool = False) -> dict:
@@ -52,6 +52,7 @@ def _item(item: dict, *, load: bool = False) -> dict:
         "invalid": bool(item.get("tolerance_input_draft") or item.get("derived_value_stale")),
         "system_value": item.get("accuracy_value_source") == "system" or formula and item.get("accuracy_value_source") != "human",
         "system_tolerance": item.get("tolerance_source") in GENERATED or formula and item.get("tolerance_source") != "human",
+        **({"height": item.get("height"), "height_unit": item.get("height_unit") or "mm"} if load else {}),
     }
 
 
@@ -92,9 +93,11 @@ def _scaled(item: dict, kind: str) -> tuple[float | None, float | None]:
 
 def analyze(snapshot: dict, standard: str | None, geometry_driver: str | None = None) -> dict:
     from .standardizers.compression import CompressionSpringStandardizer, load_compression_rules
+    from .standardizers import hot_coiled
     rules = load_compression_rules()
     calculator = CompressionSpringStandardizer(rules)
-    supported = bool(re.fullmatch(r"GB\s*/?\s*T\s*1239\.2(?:-2009)?", str(standard or ""), re.I))
+    hot = hot_coiled.is_hot(standard)
+    supported = hot or bool(re.fullmatch(r"GB\s*/?\s*T\s*1239\.2(?:-2009)?", str(standard or ""), re.I))
     def value(field, kind="length"):
         return _scaled(snapshot.get(field) or {}, kind)[0]
     wire, mean = value("wire_diameter"), value("mean_diameter")
@@ -122,6 +125,9 @@ def analyze(snapshot: dict, standard: str | None, geometry_driver: str | None = 
         inputs = {f: {"value": p.get("value"), "unit": p.get("unit") or None, "derived_value_stale": p.get("invalid", False)} for f, p in snapshot.items() if not f.startswith("load:")}
         inputs.pop("active_coils", None)
         active = number((derive_active_coils("compression_spring", inputs).get("active_coils") or {}).get("value"))
+    context = {"wire_diameter": wire, "mean_diameter": mean, "free_length": value("free_length"), "active_coils": active,
+               "pitch": value("pitch"), "spring_rate": value("spring_rate", "stiffness")}
+    applicability = hot_coiled.scope(context) if hot else None
     selected_diameter = (snapshot.get("controlled_diameter_field") or {}).get("value")
     diameter_fields = [selected_diameter] if selected_diameter in {"outer_diameter", "inner_diameter"} else ["outer_diameter", "inner_diameter"]
     targets = [(f, "diameter") for f in diameter_fields] + [("free_length", "free_length"), ("spring_rate", "stiffness")] + [(f, "load") for f in snapshot if f.startswith("load:")]
@@ -133,6 +139,7 @@ def analyze(snapshot: dict, standard: str | None, geometry_driver: str | None = 
         if upper is None and lower is None and percent is None and not explicit and item.get("value") in (None, ""):
             continue
         nominal, factor = _scaled(item, "load" if kind == "load" else "stiffness" if kind == "stiffness" else "length")
+        load_height = _scaled({"value": item.get("height"), "unit": item.get("height_unit")}, "length")[0] if kind == "load" else None
         if kind == "diameter" and geometry is not None:
             nominal = geometry.get(field)
             factor = LENGTH.get(str(item.get("unit") or "mm").strip().lower())
@@ -141,12 +148,20 @@ def analyze(snapshot: dict, standard: str | None, geometry_driver: str | None = 
         result = {"field": field, "kind": kind, "grade": None, "status": "missing_context", "limits": {}, "stricter_than_first": False}
         if not supported:
             result["status"] = "not_applicable"
+        elif hot and kind == "stiffness":
+            result["status"] = "not_graded"
+        elif hot and applicability["status"] != "applicable":
+            result.update(status=applicability["status"], applicability=applicability)
+        elif explicit == "T级" and not hot:
+            result["status"] = "not_applicable"
         elif explicit:
             result.update(grade=explicit, status="drawing_grade")
         elif item.get("system_tolerance"):
             result["status"] = "generated_tolerance"
         elif upper is None and lower is None and percent is None:
             result["status"] = "missing_tolerance"
+        elif hot and kind == "load" and (load_height is None or load_height > context["free_length"]):
+            result["status"] = "missing_context"
         elif nominal is not None:
             if kind == "load" and upper is None and lower is None and percent is not None and percent >= 0:
                 upper, lower = nominal * percent / 100, -nominal * percent / 100
@@ -154,8 +169,10 @@ def analyze(snapshot: dict, standard: str | None, geometry_driver: str | None = 
                 upper = upper * factor if upper is not None else None
                 lower = lower * factor if lower is not None else None
             if upper is not None and lower is not None and lower <= upper:
-                for g in ("1", "2", "3"):
-                    if kind in {"diameter", "free_length"}:
+                for g in (("T", "1", "2", "3") if hot else ("1", "2", "3")):
+                    if hot:
+                        limit = hot_coiled.limit(kind, g, context, nominal)
+                    elif kind in {"diameter", "free_length"}:
                         band = calculator._band_rule(f"{kind}_tolerance", spring_index) if spring_index is not None else None
                         limit = calculator._factor_tolerance(band, g, nominal) if band else None
                     else:
@@ -173,7 +190,11 @@ def analyze(snapshot: dict, standard: str | None, geometry_driver: str | None = 
                 result["status"] = "invalid_tolerance"
         results.append(result)
     grades = [r["grade"] for r in results if r["grade"]]
-    return {"results": results, "inferred_grade": min(grades) if grades else None, "complete": bool(results) and all(r["grade"] for r in results), "standard_no": standard}
+    order = {"T级": 0, "1级": 1, "2级": 2, "3级": 3}
+    answer = {"results": results, "inferred_grade": min(grades, key=lambda g: order[g]) if grades else None, "complete": bool(grades) and all(r["grade"] for r in results if r["status"] != "not_graded"), "standard_no": standard}
+    if hot:
+        answer.update(applicability=applicability, standard_rules_version=hot_coiled.rules()["version"], source_document=hot_coiled.rules()["source_document"])
+    return answer
 
 
 def refresh_accuracy_inference(review: dict, *, initialize: bool = False, standard: Any = _UNSET, previous: dict | None = None) -> bool:
@@ -207,6 +228,12 @@ def refresh_accuracy_inference(review: dict, *, initialize: bool = False, standa
         if not item["system_value"]:
             for key in ("value", "unit", "invalid", "system_value"):
                 saved[key] = item[key]
+            if field.startswith("load:"):
+                for key in ("height", "height_unit"):
+                    saved[key] = item[key]
+            if field.startswith("load:"):
+                for key in ("height", "height_unit"):
+                    saved[key] = item[key]
         if not item["system_tolerance"]:
             for key in ("upper", "lower", "percent", "invalid", "system_tolerance"):
                 saved[key] = item[key]
@@ -221,8 +248,12 @@ def refresh_accuracy_inference(review: dict, *, initialize: bool = False, standa
             standard = "GB/T 1239.2-2009" if wire_mm is not None and wire_mm < 8 else "GB/T 23934-2015" if wire_mm is not None else None
     previous_inferred = meta.get("inferred_grade")
     geometry_driver = (review.get("diameter_linkage") or {}).get("driver_field")
-    analysis = analyze(snapshot, standard, geometry_driver)
+    from .standardizers.hot_coiled import is_hot
+    effective = {f: current[f] for f in ("pitch", "spring_rate") if current[f]["system_value"]} if is_hot(standard) else {}
+    analysis = analyze({**snapshot, **effective}, standard, geometry_driver)
     fingerprint_input = {"snapshot": snapshot, "standard": standard, "version": VERSION}
+    if effective:
+        fingerprint_input["effective_context"] = effective
     if geometry_driver:
         fingerprint_input["geometry_driver"] = geometry_driver
     meta.update(analysis, rules_version=VERSION, calculation_fingerprint=_fingerprint(fingerprint_input))
@@ -248,7 +279,10 @@ def refresh_accuracy_inference(review: dict, *, initialize: bool = False, standa
         accuracy.pop("default_source", None)
         accuracy.pop("default_reason", None)
     elif accuracy.get("need_human_review") is not False:
-        accuracy.update(default_source="company_default", default_reason="无可用独立公差反推，按公司默认二级精度生成标准化建议。", evidence="无可用独立公差反推，按公司默认二级精度生成标准化建议。")
+        statuses = {r["status"] for r in analysis["results"]}
+        reason = "超出规则适用范围" if "outside_scope" in statuses else "标准规则未覆盖" if statuses == {"not_applicable"} else "缺少有效计算依据" if "missing_context" in statuses else "无可用独立公差反推"
+        message = f"{reason}，按公司默认二级精度生成标准化建议。"
+        accuracy.update(default_source="company_default", default_reason=message, evidence=message)
         accuracy["source"] = [s for s in accuracy.get("source", []) if s != "tolerance_inference"]
         if "company_default" not in accuracy["source"]:
             accuracy["source"].append("company_default")

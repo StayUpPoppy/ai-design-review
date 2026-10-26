@@ -4497,6 +4497,7 @@ function auditEventLabel(eventType) {
     generation_settings_updated: "修改生图设置",
     support_coils_recalculated: "重算单端支承圈数",
     roughness_evidence_verified: "核验粗糙度原图依据",
+    multi_spec_diameter_reconciled: "核实规格表直径角色",
     parameter_tolerance_updated: "修改公差",
     parameter_confirmed: "确认参数",
     parameter_reopened: "重新编辑",
@@ -5072,6 +5073,7 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
         <strong title="${escapeHtml(displayLabel.text)}">${parameterUnitLabelHtml(displayLabel)}${escapeHtml(requiredMark)}</strong>
         ${compactEvidence ? `<small${field === "surface_roughness_ra" ? ' data-role="roughness-source-summary"' : ` title="${escapeHtml(compactEvidence)}"`}>${escapeHtml(compactEvidence)}</small>` : ""}
         ${field === "spring_rate" && param.formula_material_catalog_stale ? `<small class="parameter-formula-reference-note">${escapeHtml(param.formula_calculation_reason || "公司材料表剪切模量已更新，请核对最新刚度建议。")}</small>` : ""}
+        ${param.recognition_role_notice ? `<small class="parameter-default-candidate-note">${escapeHtml(param.recognition_role_notice)}</small>` : ""}
         ${defaultCandidateNotice ? `<small class="parameter-default-candidate-note">${escapeHtml(defaultCandidateNotice)}</small>` : ""}
         ${badges.length || accuracyGradeStatus ? `<div class="parameter-badges">${accuracyGradeStatus ? `<span class="accuracy-grade-source ${accuracyGradeStatusClass(param)}" data-accuracy-grade-source>${escapeHtml(accuracyGradeStatus)}</span>` : ""}${badges.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       </div>
@@ -10793,8 +10795,14 @@ async function applyChatStandardizationBatch(batch, messageId = state.activeRevi
 }
 
 function normalizeAccuracyGrade(value) {
-  const match = String(value ?? "").match(/([123])\s*级?/);
-  return match ? `${match[1]}级` : "";
+  const match = String(value ?? "").trim().match(/^([T123])\s*级?$/i);
+  return match ? `${match[1].toUpperCase()}级` : "";
+}
+
+function compressionAccuracyGradeOptions(review = state.review) {
+  const p = review?.spring_parameters || {};
+  const standard = review?.standard_selection?.selected_standard || p.standard_no?.value || review?.accuracy_inference?.standard_no || (Number(p.wire_diameter?.value) >= 8 ? "GB/T 23934-2015" : "");
+  return /23934/.test(standard) ? ["T级", ...COMPRESSION_ACCURACY_GRADE_OPTIONS] : COMPRESSION_ACCURACY_GRADE_OPTIONS;
 }
 
 function accuracyGradeStatusLabel(param) {
@@ -10826,10 +10834,11 @@ function renderAccuracyGradeFeedbackHtml(param) {
   `;
 }
 
-function accuracyGradeOptionsHtml(param) {
+function accuracyGradeOptionsHtml(param, review = state.review) {
   const selected = displayedAccuracyGrade(param);
-  const placeholder = selected ? "" : '<option value="" selected disabled>请选择</option>';
-  return `${placeholder}${COMPRESSION_ACCURACY_GRADE_OPTIONS.map((grade) => `
+  const options = compressionAccuracyGradeOptions(review);
+  const placeholder = selected && !options.includes(selected) ? `<option value="${escapeHtml(selected)}" selected disabled>原有${escapeHtml(selected)}（需核对标准）</option>` : selected ? "" : '<option value="" selected disabled>请选择</option>';
+  return `${placeholder}${options.map((grade) => `
     <option value="${grade}"${grade === selected ? " selected" : ""}>${grade}</option>
   `).join("")}`;
 }
@@ -11063,7 +11072,7 @@ function renderWorkbenchAccuracyGradeSelectorHtml(review) {
     <label class="workbench-accuracy-grade">
       <span>通用精度等级</span>
       <select data-action="select-workbench-accuracy-grade" data-accuracy-grade-selector aria-label="通用精度等级">
-        ${accuracyGradeOptionsHtml(param)}
+        ${accuracyGradeOptionsHtml(param, review)}
       </select>
       ${renderAccuracyGradeFeedbackHtml(param)}
     </label>
@@ -11073,7 +11082,7 @@ function renderWorkbenchAccuracyGradeSelectorHtml(review) {
 function prepareAccuracyGradeCommit(review, grade) {
   const normalized = normalizeAccuracyGrade(grade);
   const param = review?.spring_parameters?.accuracy_grade;
-  if (!normalized || !param || normalized === normalizeAccuracyGrade(param.value)) return null;
+  if (!normalized || !param || !compressionAccuracyGradeOptions(review).includes(normalized) || normalized === normalizeAccuracyGrade(param.value)) return null;
   const beforeState = parameterAuditState(param);
   revokeManualConfirmations("accuracy_grade", "accuracy_grade_selected", review);
   if (typeof AccuracyInference !== "undefined") AccuracyInference.manual(review);
@@ -11098,6 +11107,7 @@ function syncAccuracyGradeControls(root, param) {
   const scope = root?.closest?.("#compareOverlay") || root || document;
   const value = displayedAccuracyGrade(param);
   scope.querySelectorAll("[data-accuracy-grade-selector]").forEach((select) => {
+    select.innerHTML = accuracyGradeOptionsHtml(param);
     select.value = value;
   });
   scope.querySelectorAll("[data-accuracy-grade-source]").forEach((element) => {
@@ -11139,7 +11149,7 @@ function selectAccuracyGrade(root, review, grade, messageId) {
   const param = review?.spring_parameters?.accuracy_grade;
   if (!param) return false;
   const selected = normalizeAccuracyGrade(grade);
-  if (!selected) return false;
+  if (!selected || !compressionAccuracyGradeOptions(review).includes(selected)) return false;
   const committed = normalizeAccuracyGrade(param.value);
   state.pendingAccuracyGrade = selected === committed ? "" : selected;
   setAccuracyGradeUpdate(
@@ -11724,6 +11734,7 @@ function setReview(review, imageUrl, options = {}) {
   if (state.review !== review) state.reasonablenessRefreshError = "";
   state.review = review;
   recordRoughnessVerificationAdjustment(review);
+  recordMultiSpecReconciliation(review);
   state.imageUrl = imageUrl;
   exportButton.disabled = false;
   scheduleTechnicalRequirementTranslation();
@@ -11741,6 +11752,18 @@ function recordRoughnessVerificationAdjustment(review) {
 }
 
 function technicalTranslationService() { return globalThis.window?.TechnicalRequirementTranslation; }
+
+function recordMultiSpecReconciliation(review) {
+  const repair = review.multi_spec_reconciliation;
+  if (!repair?.pending_save || repair.audit_recorded || state.review !== review) return;
+  repair.audit_recorded = true;
+  const after = DiameterLinkage.groupState(review);
+  const before = structuredClone(after);
+  for (const field of DiameterLinkage.DIAMETERS) before.parameters[field] = structuredClone(repair.before[field] ?? null);
+  queueReviewAuditEvent({ event_type: "multi_spec_diameter_reconciled", target_field: "diameter_linkage",
+    source: "original_table_verification", reason: "按原图表头及规格行核实D1为内径，刷新派生直径及精度分析",
+    before_state: before, after_state: after, metadata: { verification_version: repair.version, evidence: repair.evidence } });
+}
 
 function configureTechnicalRequirementRecovery() {
   globalThis.window?.TechnicalRequirementRecovery?.configure({

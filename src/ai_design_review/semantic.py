@@ -235,15 +235,15 @@ def _parse_standard_context(text: str, note_anchor: dict[str, Any] | None) -> li
     if re.search(r"(变节距|不等节距|variable\s*pitch)", text, re.IGNORECASE):
         mapped.append(_from_note("pitch_type", "variable", note_anchor, "变节距关键词", confidence=0.72))
 
-    general_grade = re.search(r"(?:精度等级|精度|等级|级别)\s*[:：]?\s*([123])\s*级?", text)
+    general_grade = re.search(r"(?:精度等级|精度|等级|级别)\s*[:：]?\s*([Tt123])\s*级?", text)
     if general_grade:
         mapped.append(_from_note("accuracy_grade", f"{general_grade.group(1)}级", note_anchor, general_grade.group(0), confidence=0.68))
 
     grade_rules = [
-        ("diameter_accuracy_grade", r"(?:直径|外径|内径|中径)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([123])\s*级?"),
-        ("free_length_accuracy_grade", r"(?:自由长|自由长度|自由高度|H0)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([123])\s*级?"),
-        ("load_accuracy_grade", r"(?:负荷|载荷|力值|负载)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([123])\s*级?"),
-        ("stiffness_accuracy_grade", r"(?:刚度|剛度)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([123])\s*级?"),
+        ("diameter_accuracy_grade", r"(?:直径|外径|内径|中径)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([Tt123])\s*级?"),
+        ("free_length_accuracy_grade", r"(?:自由长|自由长度|自由高度|H0)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([Tt123])\s*级?"),
+        ("load_accuracy_grade", r"(?:负荷|载荷|力值|负载)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([Tt123])\s*级?"),
+        ("stiffness_accuracy_grade", r"(?:刚度|剛度)\s*(?:精度等级|精度|等级)\s*[:：]?\s*([Tt123])\s*级?"),
     ]
     for field, pattern in grade_rules:
         match = re.search(pattern, text)
