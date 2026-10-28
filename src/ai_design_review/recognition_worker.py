@@ -94,7 +94,18 @@ class RecognitionWorker:
             if REVIEW_PERSISTENCE.recognition_job_cancel_requested(job_id, worker_id=self.worker_id):
                 self._finalize_cancelled(job)
                 return
-            completed = REVIEW_PERSISTENCE.complete_recognition_job(job_id, worker_id=self.worker_id)
+            completed = None
+            if (job.get("options") or {}).get("auto_create_variants"):
+                from .multi_spec_store import complete_automatic
+                try:
+                    completed = complete_automatic(REVIEW_PERSISTENCE, job_id, str(job["owner"]["user_id"]),
+                        self.worker_id, job["owner"], API_RUN_ROOT, report)
+                except RecognitionCancelled:
+                    raise
+                except Exception as exc:
+                    raise RuntimeError(f"创建规格审图失败，识别结果已保存，可重试补建：{exc}") from exc
+            if completed is None:
+                completed = REVIEW_PERSISTENCE.complete_recognition_job(job_id, worker_id=self.worker_id)
             if not completed:
                 self._finalize_cancelled(job)
                 return
@@ -118,8 +129,11 @@ class RecognitionWorker:
         job_id = str(job.get("job_id") or "")
         owner = job.get("owner") if isinstance(job.get("owner"), dict) else {}
         try:
-            REVIEW_PERSISTENCE.delete_review(job_id, owner_user_id=str(owner.get("user_id") or ""))
             artifact_dir = REVIEW_PERSISTENCE.finalize_cancelled_recognition_job(job_id, worker_id=self.worker_id)
+            # A lost lease is not authorization to erase another worker's result.
+            if not artifact_dir:
+                return
+            REVIEW_PERSISTENCE.delete_review(job_id, owner_user_id=str(owner.get("user_id") or ""))
             self._remove_artifacts(artifact_dir)
         except PersistenceError:
             LOGGER.exception("Unable to finalize cancelled recognition job %s", job_id)

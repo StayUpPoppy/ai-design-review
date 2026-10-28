@@ -1,0 +1,102 @@
+[
+  {
+    "name": "right_template_and_both_labels",
+    "direction": "right",
+    "requirements": [
+      {"type": "other", "content": "绕制方向：右旋。"},
+      {"type": "other", "content": "旋向：右旋。"}
+    ],
+    "expected": ["旋向：右旋。"]
+  },
+  {
+    "name": "left_template_keeps_conflicting_requirement",
+    "direction": "left",
+    "requirements": [
+      {"type": "other", "content": "其他要求：绕制方向：左旋。"},
+      {"type": "process", "content": "旋向：左旋。"},
+      {"type": "other", "content": "绕制方向：右旋。"}
+    ],
+    "expected": ["旋向：左旋。", "旋向：右旋。"]
+  },
+  {
+    "name": "structured_direction_without_parameter",
+    "requirements": [
+      {"type": "other", "content": "其他要求：绕制方向：左旋。"},
+      {"type": "other", "content": "旋向：左旋。"}
+    ],
+    "expected": ["旋向：左旋。"]
+  },
+  {
+    "name": "direction_beneath_process_label",
+    "requirements": [{"type": "process", "content": "工艺要求：绕制方向:左旋，端部按原图。"}],
+    "expected": ["工艺要求：旋向:左旋，端部按原图。"]
+  },
+  {
+    "name": "both_colons_and_repeated_other_labels",
+    "requirements": [
+      {"type": "other", "content": "其他要求：展开长度：约268mm。"},
+      {"type": "other", "content": "其他要求:展开长度：约268mm。"},
+      {"type": "other", "content": "其他要求：其他要求:其他要求：展开长度：约268mm。"}
+    ],
+    "expected": ["展开长度：约268mm。"]
+  },
+  {
+    "name": "engineering_conditions_and_other_types_unchanged",
+    "requirements": [
+      {"type": "other", "content": "其他要求：镀层厚度≥15 μm，先除氢后检验；不得漏镀。", "application_scope": "两端面"},
+      {"type": "surface", "content": "表面处理：电镀-镀彩锌，镀层厚度≥15 μm，并进行除氢处理。"},
+      {"type": "heat_treatment", "content": "热处理：300℃+10℃/20min+1min。"},
+      {"type": "hardness", "content": "硬度要求：HRC45-50。"}
+    ],
+    "expected": [
+      "镀层厚度≥15 μm，先除氢后检验；不得漏镀（作用范围：两端面）",
+      "表面处理：电镀-镀彩锌，镀层厚度≥15 μm，并进行除氢处理。",
+      "热处理：300℃+10℃/20min+1min。",
+      "硬度要求：HRC45-50。"
+    ]
+  },
+  {
+    "name": "prose_and_nonlabel_words_preserved",
+    "requirements": [
+      {"type": "other", "content": "其他要求：客户有其他要求：请先沟通，绕制方向需按原图执行。"},
+      {"type": "other", "content": "其他要求不得省略，按原图执行。"},
+      {"type": "other", "content": "请核对绕制方向：左旋，以及端部状态。"}
+    ],
+    "expected": ["客户有其他要求：请先沟通，绕制方向需按原图执行。", "其他要求不得省略，按原图执行。", "请核对绕制方向：左旋，以及端部状态。"]
+  },
+  {
+    "name": "empty_labels_omitted",
+    "requirements": [
+      {"type": "other", "content": "其他要求："},
+      {"type": "other", "content": "其他要求 : 其他要求：  "},
+      {"type": "other", "content": ""},
+      {"type": "other", "content": "保留本条。"}
+    ],
+    "expected": ["保留本条。"]
+  },
+  {
+    "name": "different_scopes_and_values_retained",
+    "requirements": [
+      {"type": "other", "content": "其他要求：厚度≥15 μm。", "application_scope": "端面"},
+      {"type": "other", "content": "其他要求:厚度≥15 μm。", "application_scope": "外圆"},
+      {"type": "other", "content": "其他要求：厚度≥20 μm。", "application_scope": "端面"}
+    ],
+    "expected": ["厚度≥15 μm（作用范围：端面）", "厚度≥15 μm（作用范围：外圆）", "厚度≥20 μm（作用范围：端面）"]
+  },
+  {
+    "name": "legacy_numbered_text_and_empty_line",
+    "legacy": "技术要求\n1.绕制方向:左旋。\n2.其他要求：展开长度：约268mm。\n3.其他要求：\n4.其他要求:其他要求：不得漏镀。",
+    "expected": ["旋向:左旋。", "展开长度：约268mm。", "不得漏镀。"]
+  },
+  {
+    "name": "legacy_template_dedup",
+    "direction": "right",
+    "legacy": "绕制方向：右旋。\n旋向：右旋。\n其他要求：禁止漏镀。\n其他要求:禁止漏镀。",
+    "expected": ["旋向：右旋。", "禁止漏镀。"]
+  },
+  {
+    "name": "legacy_labels_only",
+    "legacy": "1.其他要求：\n2.其他要求:其他要求：",
+    "expected": []
+  }
+]

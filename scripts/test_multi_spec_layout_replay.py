@@ -126,6 +126,11 @@ def queue_tests(replies):
                     return r.json()["job_id"]
                 def old_failed(raw,name="blocks.png",content=None):
                     job=submit(name,content)
+                    # Simulate a task queued before automatic child creation existed.
+                    from ai_design_review.review_persistence import RecognitionJobRecord
+                    with repo._session() as session, session.begin():
+                        record=session.get(RecognitionJobRecord,job)
+                        options=deepcopy(record.options);options.pop("auto_create_variants",None);record.options=options
                     with patch("ai_design_review.multi_spec.normalize_layout",side_effect=MultiSpecError("无法确定规格表格/区块布局。")),patch.object(QwenVisionEngine,"_call_qwen",return_value=raw) as model:
                         runner._process_job(repo.claim_next_recognition_job(runner.worker_id))
                         assert model.call_count==1
@@ -139,6 +144,7 @@ def queue_tests(replies):
                 with patch.object(QwenVisionEngine,"_call_qwen",return_value=replies[0]) as model:
                     runner._process_job(repo.claim_next_recognition_job(runner.worker_id));assert model.call_count==1
                 assert repo.get_review(job,owner_user_id=OWNER["user_id"])["review"]["multi_spec"]["layout"]=="blocks"
+                assert client.get(f"/api/reviews/{job}/variants").json()["created_count"]==3
                 for raw in replies:
                     job=old_failed(raw);d=api.API_RUN_ROOT/job;raw_hash=fingerprint(d/"qwen_pages/response.json")
                     prior_diagnostic=(d/"multi_spec_diagnostics.json").read_bytes()

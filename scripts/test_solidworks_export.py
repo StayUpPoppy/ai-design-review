@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ai_design_review.generation_readiness import build_generation_parameter_package, assess_generation_readiness
 from ai_design_review.generation_contract import COMPRESSION_GENERATION_INPUT_FIELDS
 from ai_design_review.generation_schemas import GenerationParameterPackageV2
-from ai_design_review.solidworks import build_solidworks_command, build_solidworks_preview
+from ai_design_review.solidworks import build_solidworks_command, build_solidworks_preview, build_solidworks_technical_text
 
 
 def parameter(value, unit=None, **extra):
@@ -287,7 +287,7 @@ def run():
         if case["name"] == "book_baseline":
             assert notes.count("材料：SUS304。") == 1
             assert "材料：SUS304 不锈钢。" not in notes
-        assert notes.count("绕制方向：右旋。") == 1
+        assert notes.count("旋向：右旋。") == 1 and "绕制方向：" not in notes
         name = case["name"]
         if name in {"end_closed_active_original", "end_open_active_original", "end_open_active_legacy_text", "end_closed_active_legacy_text"}:
             assert "有效圈数：3 圈。" in notes and "工作圈数：2 圈，端面去毛刺。" in notes
@@ -426,9 +426,36 @@ def run():
     return outputs
 
 
+def label_cases():
+    samples = json.loads((Path(__file__).parent / "fixtures/solidworks_technical_labels.json").read_text(encoding="utf-8"))
+    outputs = []
+    for sample in samples:
+        parameters = {"handedness": {"value": sample["direction"]}} if sample.get("direction") else {}
+        package = {"generation_parameters": {"spring_parameters": parameters, "technical_requirements": sample.get("requirements", []),
+                    "technical_requirements_text": sample.get("legacy", ""), "load_points": []}}
+        review = {"spring_parameters": {}, "technical_requirements": deepcopy(sample.get("requirements", []))}
+        original, original_review = deepcopy(package), deepcopy(review)
+        expected = "\n".join(f"{i}.{line}" for i, line in enumerate(sample["expected"], 1))
+        assert build_solidworks_technical_text(package, review) == expected, sample["name"]
+        preview = build_solidworks_preview(package, review)
+        assert preview["extraProperties"]["技术要求"] == expected
+        assert preview["customProperties"]["旋向"] == {"left": "左旋", "right": "右旋"}.get(sample.get("direction"))
+        assert review == original_review and package["generation_parameters"] == original["generation_parameters"]
+        # Frozen pre-change requests are projections already stored, never re-cleaned.
+        frozen = deepcopy(package); frozen["solidworks_preview"] = deepcopy(preview)
+        old_notes = "1.绕制方向：左旋。\n2.其他要求：原始冻结正文。"
+        frozen["solidworks_preview"]["extraProperties"]["技术要求"] = old_notes
+        before = deepcopy(frozen)
+        assert build_solidworks_command("1000000009", frozen, review)["models"][0]["extraProperties"]["技术要求"] == old_notes
+        assert frozen == before
+        outputs.append({**sample, "package": original, "review": original_review, "expected_text": expected})
+    return outputs
+
+
 if __name__ == "__main__":
-    result = run()
-    if "--json" in sys.argv:
+    labels = label_cases()
+    result = labels if "--label-json" in sys.argv else run()
+    if "--json" in sys.argv or "--label-json" in sys.argv:
         print(json.dumps(result, ensure_ascii=True, allow_nan=False))
     else:
-        print(f"PASS: {len(result)} SW export cases, exact keys, notes, omission, precision, units and frozen snapshots")
+        print(f"PASS: {len(result)} SW export cases and {len(labels)} label fixtures, exact keys, notes, omission, precision, units and frozen snapshots")

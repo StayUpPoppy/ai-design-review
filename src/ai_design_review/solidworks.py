@@ -10,11 +10,18 @@ from .material_catalog import material_catalog_display_value
 from .standardizers.calculation_state import parameter_current, solid_height_kind
 from .standardizers.design_checks import LENGTH_UNITS, calculate_design_checks
 from .surface_roughness import confirmed_surface_roughness, surface_roughness_matches
-from .technical_requirements import format_technical_requirement, strip_technical_requirements_title, technical_requirement_output_content, technical_requirement_body, technical_requirement_equivalence_key
+from .technical_requirements import TECHNICAL_REQUIREMENT_TYPE_LABELS, format_technical_requirement, strip_technical_requirements_title, technical_requirement_output_content, technical_requirement_body, technical_requirement_equivalence_key
 
 CALCULATED_PROPERTIES = {"P'": "theoretical_spring_rate", "C": "spring_index", "τ_b": "solid_stress"}
 FROZEN_CALCULATION_METRICS = (*CALCULATED_PROPERTIES.values(), "unit_mass")
 SOLID_LABELS = {"fb", "pb", "压并载荷", "压并负荷", "压并力"}
+_SW_DIRECTION_LABEL = re.compile(r"^((?:(?:" + "|".join(TECHNICAL_REQUIREMENT_TYPE_LABELS.values()) + r")\s*[:：]\s*)*)绕制方向(?=\s*[:：])")
+
+
+def _sw_technical_line(line: str) -> str:
+    """Output labels only; keep engineering prose and stored review text intact."""
+    line = re.sub(r"^(?:\s*其他要求\s*[:：]\s*)+", "", line)
+    return _SW_DIRECTION_LABEL.sub(r"\1旋向", line) if line.strip() else ""
 
 
 def build_solidworks_command(
@@ -153,6 +160,7 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
             return
         if surface_roughness_matches({"content": line, "application_scope": scope}, roughness):
             return
+        line = _sw_technical_line(line)
         key = _sentence_key(line, scope)
         if line and key not in keys:
             keys.add(key)
@@ -166,7 +174,7 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
         append(f"材料：{material_catalog_display_value(material)}。")
     handedness = handedness_label(_parameter_value(parameters.get("handedness")))
     if handedness:
-        append(f"绕制方向：{handedness}。")
+        append(f"旋向：{handedness}。")
     requirements = generation.get("technical_requirements") or []
     remaining: list[dict[str, Any]] = []
     for item in requirements:

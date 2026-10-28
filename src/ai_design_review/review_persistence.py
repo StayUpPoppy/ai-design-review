@@ -836,6 +836,7 @@ class ReviewPersistence:
             "variant_id": record.variant_id,
             "variant_count": len((snapshot.get("multi_spec") or {}).get("variants", [])),
             "created_count": (snapshot.get("multi_spec") or {}).get("created_count", 0),
+            "creation_mode": (snapshot.get("multi_spec") or {}).get("creation_mode", "manual") if record.record_kind == "source" else None,
             "drawing_no": record.drawing_no,
             "drawing_name": record.drawing_name,
             "spring_type": record.spring_type,

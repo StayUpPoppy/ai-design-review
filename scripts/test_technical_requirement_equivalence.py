@@ -1,6 +1,7 @@
 """Whole engineering-note equivalence, recognition trace and order2 regression."""
 from __future__ import annotations
 import json
+import re
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -83,7 +84,8 @@ def run():
         if row["type"] != "surface_roughness":
             structured = {"generation_parameters": {"technical_requirements": [row["a"], row["b"]]}}
             row["sw_text"] = build_solidworks_technical_text(structured, {})
-            assert row["sw_text"] == row["text"], row
+            expected_sw = re.sub(r"(?m)^(\d+\.)(?:其他要求\s*[:：]\s*)+", r"\1", row["text"])
+            assert row["sw_text"] == expected_sw, row
         assert (row["a"]["content"], row["b"]["content"]) == (row["left"], row["right"]), "Comparison never rewrites records"
 
     assert format_technical_requirement({"type": "hardness", "content": "硬度 ＨＲＣ４５－５０"}) == "硬度要求：ＨＲＣ４５－５０"

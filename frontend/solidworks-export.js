@@ -9,6 +9,12 @@
   const parameterValue = (item, preservePrecision = false) => number(item?.value) != null ? (preservePrecision ? Number(item.value) : rounded(item.value, 3)) : typeof item?.value === "string" ? item.value.trim() || null : null;
   const handedness = (value) => ["right", "right_hand", "r", "右旋"].includes(String(value).toLowerCase()) ? "右旋" : ["left", "left_hand", "l", "左旋"].includes(String(value).toLowerCase()) ? "左旋" : null;
   const solidLabel = (label) => ["fb", "pb", "压并载荷", "压并负荷", "压并力"].includes(String(label || "").replace(/[\s_]/g, "").toLowerCase());
+  const swDirectionLabel = /^((?:(?:表面处理|表面粗糙度|硬度要求|热处理|盐雾试验|环保要求|寿命要求|工艺要求|其他要求)\s*[:：]\s*)*)绕制方向(?=\s*[:：])/;
+  function swTechnicalLine(line) {
+    // Normalize output labels without rewriting stored requirements or prose.
+    line = line.replace(/^(?:\s*其他要求\s*[:：]\s*)+/, "");
+    return line.trim() ? line.replace(swDirectionLabel, "$1旋向") : "";
+  }
   const sources = (item) => (Array.isArray(item?.source) ? item.source : [item?.source]).filter(Boolean).map((s) => String(s).toLowerCase());
   const humanOverride = (item) => item?.human_modified || sources(item).some((s) => s.startsWith("human") && s !== "human_confirmed" || ["manual", "manual_input", "standardization_chat", "ai_chat"].includes(s));
   function current(parameters, field, path = []) {
@@ -137,13 +143,14 @@
     const append = (line, scope) => {
       if (typeof CompanySurfaceMapping !== "undefined" && convertedSources.has(JSON.stringify([CompanySurfaceMapping.sourceKey(line), CompanySurfaceMapping.scopeKey(scope)]))) return;
       if (roughnessMatches({ content: line, application_scope: scope }, roughness)) return;
+      line = swTechnicalLine(line);
       const key = sentenceKey(line, catalog, scope);
       if (line && !keys.has(key)) { keys.add(key); lines.push(line); }
     };
     const endNote = confirmedEndNote(parameters, review);
     if (endNote) append(endNote);
     if (material != null) append(`材料：${CompressionDesignChecks.materialDisplayValue(material, catalog)}。`);
-    if (direction) append(`绕制方向：${direction}。`);
+    if (direction) append(`旋向：${direction}。`);
     const requirements = generation.technical_requirements || [];
     for (const item of requirements) {
       if (!item || typeof item !== "object") continue;

@@ -1529,6 +1529,7 @@ async def create_review(
 
     options: dict[str, Any] = {
         "drawing_path": str(drawing_path.relative_to(job_dir)),
+        "auto_create_variants": True,
         "use_werk24": use_werk24,
         "confirm_upload_to_werk24": confirm_upload_to_werk24,
         "use_cached_werk24": use_cached_werk24,
@@ -2092,6 +2093,7 @@ def get_recognition_status(job_id: str, identity: IdentityContext = Depends(requ
             multi = record["review"].get("multi_spec") or {}
             job["variant_count"] = len(multi.get("variants", []))
             job["created_count"] = multi.get("created_count", 0)
+            job["creation_mode"] = multi.get("creation_mode", "manual")
     return {"job_id": job_id, "recognition": job}
 
 

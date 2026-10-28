@@ -90,6 +90,7 @@ def ready_review() -> dict[str, object]:
             {"requirement_id": "tech-3", "type": "surface", "content": "表面处理：表面喷丸处理。", "page": 2, "recognition_key": "note-other-position", "need_human_review": False},
             {"requirement_id": "tech-4", "type": "heat_treatment", "content": "热处理：热处理要求：300℃/20min。", "need_human_review": False},
             {"requirement_id": "tech-5", "type": "heat_treatment", "content": "300 °C/20 min", "need_human_review": False},
+            {"requirement_id": "tech-6", "type": "other", "content": "其他要求：镀层厚度≥15 μm，先除氢后检验；不得漏镀。", "need_human_review": False},
         ],
         "derived_parameters": {},
         "derived_parameters_stale": False,
@@ -166,7 +167,7 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
     }
     review = {"spring_parameters": {}}
     legacy_text = build_solidworks_command("1000000002", legacy_package, review)["models"][0]["extraProperties"]["技术要求"]
-    assert legacy_text == "1.其他要求：端圈并紧磨平。"
+    assert legacy_text == "1.端圈并紧磨平。"
     legacy_package["generation_parameters"]["technical_requirements_text"] = "技术要求\n" + legacy_text
     assert build_solidworks_command("1000000003", legacy_package, review)["models"][0]["extraProperties"]["技术要求"] == legacy_text
 
@@ -243,7 +244,10 @@ def main() -> None:
                 notes = extra["技术要求"]
                 assert notes.count("表面喷丸处理") == 1 and notes.count("热处理：") == 1
                 assert "热处理：热处理要求" not in notes
-                assert notes.startswith("1.两端并紧磨平，每端磨270°。\n2.材料：60Si2Mn。\n3.绕制方向：左旋。\n4.")
+                assert notes.startswith("1.两端并紧磨平，每端磨270°。\n2.材料：60Si2Mn。\n3.旋向：左旋。\n4.")
+                assert "其他要求：" not in notes and "绕制方向：" not in notes
+                assert "镀层厚度≥15 μm，先除氢后检验；不得漏镀。" in notes
+                assert repository.get_review("review-solidworks-push", owner_user_id=OWNER["user_id"])["review"]["technical_requirements"][-1]["content"].startswith("其他要求：")
                 assert "粗糙度" not in notes
                 assert "有效圈数：7 圈。" in notes and "工作圈数：" not in notes
                 for expected in ("Hb = 25 mm", "Fb = 2300 N", "H1 = 38 mm", "F1 = 2000 N", "H2 = 43 mm", "F2 = 2100 N", "表面喷丸处理"):

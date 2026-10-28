@@ -6,6 +6,15 @@ const python = process.env.DESIGN_TEST_PYTHON || ".venv/Scripts/python.exe";
 const cases = JSON.parse(execFileSync(python, ["scripts/test_solidworks_export.py", "--json"], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }));
 const context = vm.createContext({ structuredClone });
 for (const file of ["frontend/compression-design-checks.js", "frontend/technical-requirement-equivalence.js", "frontend/solidworks-export.js"]) vm.runInContext(fs.readFileSync(file, "utf8"), context);
+const labelCases = JSON.parse(execFileSync(python, ["scripts/test_solidworks_export.py", "--label-json"], { encoding: "utf8" }));
+for (const sample of labelCases) {
+  const original = structuredClone(sample.review), generation = structuredClone(sample.package.generation_parameters);
+  const result = context.SolidWorksExport.buildPreview(structuredClone(sample.package), sample.review);
+  assert.equal(result.extraProperties["技术要求"], sample.expected_text, sample.name);
+  assert.equal(result.customProperties["旋向"], ({left:"左旋",right:"右旋"})[sample.direction] ?? null);
+  assert.deepEqual(sample.review, original, `${sample.name} keeps review text and confirmation`);
+  assert.deepEqual(sample.package.generation_parameters, generation, `${sample.name} keeps internal text`);
+}
 const catalog = JSON.parse(fs.readFileSync("config/compression_material_catalog.json", "utf8"));
 const appSource = fs.readFileSync("frontend/app.js", "utf8");
 Object.assign(context, {

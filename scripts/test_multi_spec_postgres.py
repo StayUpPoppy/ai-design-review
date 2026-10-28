@@ -52,13 +52,17 @@ def main():
             from unittest.mock import patch
             from ai_design_review import multi_spec_store
             real=multi_spec_store.child_review
-            def fail(*a): raise RuntimeError('offline rollback injection')
+            def fail(*a, **kw): raise RuntimeError('offline rollback injection')
             before=describe(repo,'source',OWNER['user_id'])
             with patch.object(multi_spec_store,'child_review',side_effect=fail):
                 try: create_children(repo,'source',OWNER['user_id'],{'variant_ids':[ids[2]],'expected_source_revision':before['source_revision'],'idempotency_key':'rollback'},OWNER,Path(folder))
                 except RuntimeError: pass
                 else: raise AssertionError('Expected rollback')
             assert describe(repo,'source',OWNER['user_id'])==before
+        # Automatic completion uses the same real database, never the service DB.
+        from test_multi_spec_automatic import run_suite
+        with tempfile.TemporaryDirectory() as folder:
+            run_suite(repo, Path(folder))
         repo._engine.dispose();repo=None
         command.downgrade(cfg,'20260911_01')
         print('PASS isolated PostgreSQL full migration, old record preservation, row locks, concurrent receipts, transaction rollback and downgrade')

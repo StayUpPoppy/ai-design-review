@@ -307,6 +307,12 @@ const SPECIALIZED_ACCURACY_PARAMETER_FIELDS = new Set([
   "load_accuracy_grade",
   "stiffness_accuracy_grade",
 ]);
+const ALWAYS_VISIBLE_ADVANCED_PARAMETER_FIELDS = new Set([
+  "support_coils", "pitch", "spring_rate", "perpendicularity",
+]);
+const OPTIONAL_ADVANCED_PARAMETER_FIELDS = new Set([
+  "straightness", "permanent_set_limit", "end_coils", "body_length", "controlled_diameter_field",
+]);
 
 const COMPRESSION_ACCURACY_GRADE_OPTIONS = ["1级", "2级", "3级"];
 const COMPRESSION_END_GRINDING_OPTIONS = ["两端磨削", "两端不磨削"];
@@ -543,9 +549,14 @@ const historyDeletion = HistoryBulkDeletion.create({
 
 const multiSpecUI = MultiSpecReview.create({
   request: (path, options) => apiFetch(path, options), scope: historyRecognitionScope,
+  storageScope: () => JSON.stringify([state.apiBaseUrl, state.identity?.user_id]),
   save: () => flushReviewPersistence({ throwOnError: true }), openReview: openPersistedReview,
   assetUrl: toBackendAssetUrl, deleted: id => state.deletedReviewIds.has(id),
-  changed: renderRecentReviews, renderRow: createHistoryRow,
+  changed: () => {
+    const top = recentReviewList.scrollTop;
+    renderRecentReviews();
+    recentReviewList.scrollTop = top;
+  }, renderRow: createHistoryRow,
   viewed: (id, round) => {
     if (round) historyUnread.markRead(id, round);
     renderRecentReviews();
@@ -665,7 +676,8 @@ function refreshIdentityUi() {
   if (showIdentity) {
     identityProfileName.textContent = identity.username || "-";
     identityProfileOrg.textContent = identity.org_name || "-";
-    identityProfileSource.textContent = identity.is_mock ? "开发模拟" : "ERP 已同步";
+    identityProfileSource.hidden = !identity.is_mock;
+    identityProfileSource.textContent = identity.is_mock ? "开发模拟" : "";
   }
   if (!state.identityReady && state.identityError) {
     selectedFileName.textContent = "请从 ERP 登录后进入审图助手";
@@ -2593,8 +2605,11 @@ function markDisplayedRecognitionRead() {
       || displayed.jobId !== state.lastJob?.job_id) return;
   // Use the loaded snapshot's round, never the latest round observed by polling.
   historyUnread.markRead(displayed.jobId, displayed.round);
+  if (displayed.sourceId && displayed.sourceRound) historyUnread.markRead(displayed.sourceId, displayed.sourceRound);
   const item = state.recentReviews.find((entry) => entry.job_id === displayed.jobId);
   if (item) updateRecentReviewRow(item);
+  const source = state.recentReviews.find((entry) => entry.job_id === displayed.sourceId);
+  if (source) updateRecentReviewRow(source);
   updateHistoryUnreadCount();
 }
 
@@ -2669,6 +2684,7 @@ function recognitionProgressText(recognition = {}) {
     building_review: "生成审图结果",
     saving_result: "保存审图结果",
     locating_parameters: "定位原图关键参数",
+    creating_variant_reviews: "创建规格审图",
     completed: "识别完成",
     failed: "识别失败",
     cancel_requested: "正在取消",
@@ -2880,7 +2896,7 @@ function mergeRecognitionStatus(jobId, recognition, { requestSerial = ++state.re
     updated_at: recognition.updated_at || previous?.updated_at,
   };
   if (!previous) incoming.drawing_name = recognition.drawing_name;
-  if (recognition.record_kind) Object.assign(incoming, { record_kind: recognition.record_kind, variant_count: recognition.variant_count, created_count: recognition.created_count });
+  if (recognition.record_kind) Object.assign(incoming, { record_kind: recognition.record_kind, variant_count: recognition.variant_count, created_count: recognition.created_count, creation_mode: recognition.creation_mode });
   const next = reconcileRecognitionListItem(previous, incoming, requestSerial, { restart });
   if (next === previous) return false;
   historyUnread?.observe(next, { restart, submission });
@@ -2969,6 +2985,8 @@ async function openPersistedReview(jobId, options = {}) {
   if (scope !== historyRecognitionScope() || navigationSerial !== state.reviewNavigationSerial || (options.uploadAutoOpen && !uploadAutoOpenIsCurrent(jobId))) return;
   const item = findHistoryItem(jobId);
   const loadedRound = controller?.capture(item);
+  const sourceId = item?.parent_review_id;
+  const sourceRound = sourceId ? controller?.capture(findHistoryItem(sourceId)) : null;
   if (["queued", "processing", "cancel_requested"].includes(item?.recognition_status)) {
     const messageId = appendAssistantText(recognitionProgressText(item), false);
     trackRecognitionJob(jobId, messageId);
@@ -3008,7 +3026,7 @@ async function openPersistedReview(jobId, options = {}) {
     state.reviewPersistenceFailedFields = {};
     state.reviewDraftFields.clear();
     setReview(normalizeReview(payload), toBackendAssetUrl(payload.image_url || item?.image_url));
-    displayedRecognitionRounds.set(state.review, { scope, controller, jobId, round: loadedRound });
+    displayedRecognitionRounds.set(state.review, { scope, controller, jobId, round: loadedRound, sourceId, sourceRound });
     await loadGenerationState(jobId, { render: false, silent: true });
     if (scope !== historyRecognitionScope() || navigationSerial !== state.reviewNavigationSerial || state.lastJob?.job_id !== jobId) return;
     renderRecentReviews();
@@ -4406,6 +4424,119 @@ function reasonablenessSeverityForField(review, field) {
   return result;
 }
 
+let parameterConfirmationSheetService = null;
+function confirmationSheetService() {
+  return parameterConfirmationSheetService ||= ParameterConfirmationSheet.create({
+    context: () => ({ review: state.review, jobId: state.lastJob?.job_id || null,
+      revision: state.lastJob?.review_revision ?? null, editSerial: state.reviewEditSerial,
+      materialCatalog: state.materialCatalog,
+      navigation: state.reviewNavigationSerial, scope: JSON.stringify([state.apiBaseUrl, state.identity?.user_id, identityRequestSerial]),
+      source: state.review?.record_kind === "source" || state.lastJob?.record_kind === "source",
+      supported: isCompressionSpringReview(state.review), identity: state.identity }),
+    save: () => flushReviewPersistence(),
+    build: buildConfirmationSheetSnapshot,
+    message: message => updateLatestReviewMessage(message),
+  });
+}
+
+async function buildConfirmationSheetSnapshot(context) {
+  const review = context.review, params = review.spring_parameters || {};
+  let notice = "";
+  // This existing endpoint is deterministic and read-only. Its response belongs
+  // solely to the report copy, never to state.review or the persistence queue.
+  if (state.identityReady) {
+    try {
+      review.parameter_reasonableness = await fetchReasonablenessAssessmentForReview(review, context.revision);
+      review.parameter_reasonableness_stale = false;
+    } catch { notice = "本次未能更新合理性检查，相关问题及建议需重新核对。"; review.parameter_reasonableness_stale = true; }
+  }
+  // Share the editor's advanced-field policy, without its transient editing state.
+  const allFields = getParameterFields(params, review);
+  const fields = allFields.filter(field => COMPRESSION_CORE_PARAMETER_FIELDS.has(field)
+    || shouldShowAdvancedParameter(field, params[field], review));
+  const valueText = (value, unit = "") => value == null || String(value).trim() === "" ? "待补充" : `${value}${unit ? ` ${unit}` : ""}`;
+  const status = (item, field, kind = "parameter") => {
+    const missing = kind === "parameter" ? item?.value == null || String(item.value).trim() === "" : kind === "technical" ? !String(item?.content || "").trim() : false;
+    const stale = item?.derived_value_stale || item?.formula_recommendation_stale || item?.diameter_linkage_error;
+    const invalid = kind === "parameter" ? parameterConfirmationInvalidReason(field, item) : "";
+    const control = confirmationControlState(item, { kind, field, review });
+    return { state: missing ? "待补充" : stale ? "已失效" : invalid || control.state === "invalid" || reasonablenessSeverityForField(review, field) ? "需核对" : control.state === "confirmed" ? "已确认" : "待确认",
+      reason: stale ? item?.diameter_linkage_error || "计算依据已变化，请核对当前值。" : invalid || (control.state === "invalid" ? control.reason : "") };
+  };
+  const parameters = fields.map(field => {
+    const item = params[field] || {}, meta = getFieldMeta(field, review);
+    const display = field === "handedness" && item.value ? handednessDisplayLabel(item.value)
+      : field === "controlled_diameter_field" && item.value ? getFieldMeta(item.value, review).label : item.value;
+    const heightKind = field === "solid_height" && typeof CompressionDesignChecks !== "undefined" ? CompressionDesignChecks.solidHeightKind(item) : "";
+    const label = field === "spring_rate" ? "当前刚度（参数值）" : field === "solid_height"
+      ? ({ input_height: "压并高度（图纸／人工值）", nominal_estimate: "压并高度（名义估算值）", reference_limit: "压并高度（上限参考值）" }[heightKind] || "压并高度（参数值）") : meta.label;
+    return { id: `param:${field}`, field, label, value: display == null || String(display).trim() === "" ? null : display,
+      current: valueText(display, parameterDisplayUnit(item.unit || meta.unit)), unit: parameterDisplayUnit(item.unit || meta.unit),
+      tolerance: ParameterConfirmationSheet.tolerance(item), ...status(item, field) };
+  });
+  const loads = (params.load_points || []).map((point, index) => {
+    const field = loadPointField(point, index), height = valueText(point.height, point.height_unit || "mm"), force = valueText(point.force, point.force_unit || "N");
+    return { id: `load:${point.load_point_id || index}`, field, label: point.label || `载荷点${index + 1}`,
+      current: `高度 ${height}；力值 ${force}`, height, force, tolerance: ParameterConfirmationSheet.tolerance(point, true), ...status(point, field, "load_point") };
+  });
+  const requirements = technicalRequirementGroups(review).map(group => {
+    const { item, index } = group.representative, control = technicalGroupControl(group.members, review);
+    const content = TechnicalRequirementEquivalence.format(item) || item.content || "";
+    return { id: `technical:${item.requirement_id || index}`, field: technicalRequirementField(item, index),
+      label: TECH_LABELS[normalizeTechnicalRequirementType(item.type)] || "技术要求", content, current: content.length > 160 ? `${content.slice(0, 160)}…（全文见技术要求）` : content || "待补充",
+      state: control.state === "invalid" || control.state === "validating" ? "需核对" : technicalGroupStatus(group.members, review),
+      reason: control.state === "invalid" ? control.reason : "" };
+  });
+  // Valid suggestions for an optional empty field still belong in the issues
+  // section; they must not manufacture an empty parameter row.
+  const reportableFields = new Set(allFields.filter(field => !SPECIALIZED_ACCURACY_PARAMETER_FIELDS.has(field)));
+  const suggestions = reasonablenessSuggestions(review).filter(item => item.status !== "applied" && reportableFields.has(item.target_field)
+    && (item.status === "stale" || reasonablenessSuggestionHasEffectiveChange(item))
+    && (item.suggested_value != null || item.suggested_tolerance_upper != null || item.suggested_tolerance_lower != null)).map(item => ({
+    field: item.target_field, label: getFieldMeta(item.target_field, review).label,
+    stale: item.status === "stale" || !reasonablenessSuggestionIsFresh(item, review),
+    value: formatReasonablenessSuggestionValue(item.target_field, item.suggested_value, item.suggested_tolerance_upper, item.suggested_tolerance_lower, item.unit),
+    basis: String(item.basis || item.rule_id || "").slice(0, 280),
+  }));
+  // Local formula candidates can be recomputed without applying them. Other
+  // outdated standard recommendations remain explicitly unavailable.
+  let checks = null;
+  if (typeof CompressionDesignChecks !== "undefined") {
+    checks = CompressionDesignChecks.calculate(params, review.spring_features || {}, context.materialCatalog || {});
+    for (const [field, calculation] of [["spring_rate", checks.metrics.theoretical_spring_rate], ["solid_height", checks.nominal_solid_height || checks.metrics.nominal_solid_height], ["pitch", checks.pitch_calculation]]) {
+      if (calculation?.value == null || !Number.isFinite(calculation.value) || !(params[field]?.value == null || params[field]?.value === "" || params[field]?.derived_value_stale || params[field]?.formula_recommendation_stale)) continue;
+      const computed = { field, value: `${Number(calculation.value.toFixed(4))} ${calculation.unit || ""}`.trim(), basis: calculation.formula || calculation.basis || "现有公式计算", stale: false };
+      for (let index = suggestions.length - 1; index >= 0; index--) if (suggestions[index].field === field && suggestions[index].stale && (review.parameter_reasonableness?.suggestions || []).some(s => s.target_field === field && s.source === "formula")) suggestions.splice(index, 1);
+      if (!suggestions.some(s => s.field === field && !s.stale && s.value.replace(/\s+/g, "") === computed.value.replace(/\s+/g, ""))) suggestions.push(computed);
+    }
+  }
+  const roughness = params.surface_roughness_ra;
+  if (typeof SurfaceRoughnessReference !== "undefined" && SurfaceRoughnessReference.eligible(roughness) && !SurfaceRoughnessReference.dismissed(roughness)) {
+    for (const value of [12.5, 6.3]) suggestions.push({ field: "surface_roughness_ra", value: `Ra ${value} μm · 两端面`, basis: "项目参考，非原图识别值", stale: false });
+  }
+  const summary = review.drawing_summary || {};
+  return ParameterConfirmationSheet.buildModel({ parameters: parameters.filter(item => COMPRESSION_CORE_PARAMETER_FIELDS.has(item.field)),
+    advanced: parameters.filter(item => !COMPRESSION_CORE_PARAMETER_FIELDS.has(item.field)),
+    calculations: ParameterConfirmationSheet.calculationRows(checks, field => getFieldMeta(field, review).label),
+    loads, requirements, suggestions,
+    issues: review.parameter_reasonableness_stale ? [] : confirmationSheetIssues(review), notice,
+    info: { drawingName: summary.drawing_name || "", drawingNo: summary.drawing_no || "", variant: review.multi_spec_origin?.code || (review.multi_spec_origin?.order ? `规格${review.multi_spec_origin.order}` : ""),
+      preparer: context.identity?.real_name?.trim() || context.identity?.username || "", date: new Date().toLocaleDateString("zh-CN"), revision: context.revision, local: !context.jobId } });
+}
+
+function confirmationSheetIssues(review) {
+  return (review.parameter_reasonableness?.issues || []).flatMap(issue => {
+    if (!issue.fields?.length) return [issue];
+    const fields = issue.fields.filter(field => !SPECIALIZED_ACCURACY_PARAMETER_FIELDS.has(String(field).split(".")[0]));
+    if (!fields.length) return [];
+    // Optional missing fields are not customer questions by themselves. Keep
+    // actual risks and missing dependencies for other engineering checks.
+    if (issue.severity === "needs_input" && fields.every(field => OPTIONAL_ADVANCED_PARAMETER_FIELDS.has(field)
+      && !hasAdvancedParameterValue(review.spring_parameters?.[field]))) return [];
+    return [{ ...issue, fields }];
+  });
+}
+
 function renderParameterTableHtml(review) {
   prepareCompressionDesignChecks(review);
   const params = review.spring_parameters || {};
@@ -4427,6 +4558,7 @@ function renderParameterTableHtml(review) {
         <h2>结构化尺寸数据</h2>
         <div class="parameter-bulk-actions">
           <span>${totalRows} 项</span>
+          ${isCompressionSpringReview(review) ? '<button type="button" data-action="preview-confirmation-sheet">预览确认单</button>' : ""}
           <button type="button" data-action="confirm-all-review-items" ${confirmationPlan.items.length ? "" : "disabled"}>全部确认可确认项${confirmationPlan.items.length ? ` · ${confirmationPlan.items.length}` : ""}</button>
         </div>
       </div>
@@ -4920,21 +5052,15 @@ function shouldShowSolidHeightCore(param) {
 }
 
 function shouldShowAdvancedParameter(field, param, review) {
-  if (["pitch", "support_coils"].includes(field)) return true;
-  if (SPECIALIZED_ACCURACY_PARAMETER_FIELDS.has(field)) {
-    return hasExplicitSpecializedAccuracyContent(param);
-  }
-  return hasParameterContent(param) || hasStandardizationForField(field, review);
+  if (SPECIALIZED_ACCURACY_PARAMETER_FIELDS.has(field)) return false;
+  if (ALWAYS_VISIBLE_ADVANCED_PARAMETER_FIELDS.has(field)) return true;
+  return hasAdvancedParameterValue(param);
 }
 
-function hasExplicitSpecializedAccuracyContent(param) {
+function hasAdvancedParameterValue(param) {
   if (!param || typeof param !== "object" || Array.isArray(param)) return false;
-  const hasValue = param.value != null && param.value !== "";
-  const hasTolerance = (param.tolerance_upper != null && param.tolerance_upper !== "")
-    || (param.tolerance_lower != null && param.tolerance_lower !== "");
-  if (!hasValue && !hasTolerance) return false;
-  if (param.default_source === "company_default") return false;
-  return true;
+  return [param.value, param.tolerance_upper, param.tolerance_lower, param.tolerance_input_draft]
+    .some(value => value != null && String(value).trim() !== "");
 }
 
 function hasParameterContent(param) {
@@ -8264,6 +8390,10 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   const context = getReviewContext(messageId) || activeReviewContext();
   const review = context?.review || state.review;
   if (!review) return;
+  root.querySelectorAll('[data-action="preview-confirmation-sheet"]').forEach(button => button.addEventListener("click", () => {
+    activateReviewContext(messageId);
+    void confirmationSheetService().open(button);
+  }));
   bindDrawingNoEditor(root, review, messageId);
   bindCompressionDesignDisclosures(root, review);
   if (typeof DrawingAnnotations !== "undefined") DrawingAnnotations.bindFields(root, () => activateReviewContext(messageId));
@@ -8284,6 +8414,24 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     const param = review.spring_parameters[field] || blankParam(fieldMeta.unit);
     review.spring_parameters[field] = param;
     const valueInput = row.querySelector('[data-role="value"]');
+    if (isCompressionSpringReview(review) && OPTIONAL_ADVANCED_PARAMETER_FIELDS.has(field)) {
+      row.addEventListener("focusout", event => {
+        if (row.contains(event.relatedTarget)) return;
+        window.setTimeout(() => {
+          // Moving between value and tolerance is still editing this row. Remove
+          // only this DOM row after editing ends; never rebuild neighbouring inputs.
+          if (state.review !== review || !row.isConnected || row.contains(document.activeElement)
+            || shouldShowAdvancedParameter(field, param, review)) return;
+          const section = row.closest(".advanced-parameters");
+          if (!section) return;
+          row.remove();
+          const count = section.querySelectorAll('[data-kind="param"]').length;
+          const summary = section.querySelector("summary small");
+          if (summary) summary.textContent = `${count} 项`;
+          syncBulkConfirmationActions(root, review);
+        }, 0);
+      });
+    }
     if (field === "material" && isCompressionSpringReview(review)) {
       row.materialParameter = param;
       bindMaterialCatalogRetry(row);
@@ -10175,10 +10323,12 @@ function buildSafeConfirmationPlan(review) {
     ...identity,
   });
 
-  getParameterFields(parameters, review).forEach((field) => {
+  [...coreFields, ...advancedFields].forEach((field) => {
     const param = parameters[field];
     if (!param?.need_human_review) return;
-    const group = coreFields.has(field) ? "core" : (advancedFields.has(field) ? "advanced" : "advanced");
+    if (advancedFields.has(field) && [param.value, param.tolerance_upper, param.tolerance_lower, param.tolerance_input_draft]
+      .every(value => value == null || String(value).trim() === "")) return;
+    const group = coreFields.has(field) ? "core" : "advanced";
     const label = targetFieldLabel(field);
     const sources = sourceValues(param.source);
     const hasSystemDefault = usesSystemDefaultCandidate(param);

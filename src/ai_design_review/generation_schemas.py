@@ -273,7 +273,7 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
                 "technical_requirements_text": "1.其他要求：两端磨平，表面镀锌。",
             },
             "derived_parameters": {},
-            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10.5, "有效圈数n": 8.25, "是否磨平": 1, "是否并紧": 1}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.两端并紧磨平，每端磨270°。\n2.材料：65Mn。\n3.绕制方向：右旋。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn", "客户图号": "SPRING-001"}},
+            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10.5, "有效圈数n": 8.25, "是否磨平": 1, "是否并紧": 1}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.两端并紧磨平，每端磨270°。\n2.材料：65Mn。\n3.旋向：右旋。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn", "客户图号": "SPRING-001"}},
         }]},
     )
 
