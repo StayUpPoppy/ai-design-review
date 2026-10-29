@@ -6,16 +6,9 @@ const appSource = fs.readFileSync(new URL("../frontend/app.js", import.meta.url)
 assert.match(appSource, /"end_type",\s*\n\s*"end_grinding"/);
 assert.match(appSource, /COMPRESSION_END_GRINDING_OPTIONS = \["两端磨削", "两端不磨削"\]/);
 assert.match(appSource, /COMPRESSION_END_TYPE_OPTIONS = \["两端并紧", "两端不并紧"\]/);
-assert.equal(
-  (appSource.match(/<button[^>]+data-action="export-generation-package"/g) || []).length,
-  2,
-  "工作台和生图参数包页应各有一个导出按钮",
-);
-assert.match(
-  appSource,
-  /querySelectorAll\('\[data-action="export-generation-package"\]'\)\.forEach/,
-  "两个导出参数包按钮都必须绑定点击事件",
-);
+assert.equal((appSource.match(/<button[^>]+data-action="export-generation-package"/g) || []).length, 0,
+  "the two workbench export buttons are removed");
+assert.match(appSource, /data-action="show-workbench-tab" data-target-tab="generation">去生图/);
 const start = appSource.indexOf("function safeConfirmableReviewItems");
 const end = appSource.indexOf("function renderCompareDataPanelHtml", start);
 const confirmationStart = appSource.indexOf("function confirmParam");
@@ -43,6 +36,7 @@ const context = {
     need_human_review: Boolean(param?.need_human_review),
   }),
   isCompressionSpringReview: () => true,
+  generationReadinessSummary: v => v.summary || "",
   getParameterFields: (params) => Object.keys(params).filter((field) => field !== "load_points" && field !== "torque_points"),
   targetFieldLabel: (field) => ({
     wire_diameter: "线径",
@@ -125,7 +119,8 @@ assert.match(html, /data-action="show-workbench-tab"/);
 assert.match(html, /去参数页批量确认/);
 assert.doesNotMatch(html, /data-action="confirm-safe-fields"/);
 assert.match(html, /data-action="run-workbench-standardization"/);
-assert.match(html, /data-action="export-generation-package"/);
+assert.doesNotMatch(html, /data-action="export-generation-package"|导出生图参数包/);
+assert.match(html, /data-target-tab="generation">去生图/);
 assert.match(html, /data-action="workbench-ai"/);
 assert.match(html, /data-action="select-workbench-accuracy-grade"/);
 assert.match(html, /data-accuracy-grade-update-status/);

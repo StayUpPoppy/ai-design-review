@@ -26,6 +26,7 @@ const state = {
 };
 const context = {
   console,
+  conversation: { querySelector: () => null },
   structuredClone,
   state,
   COMPRESSION_GENERATION_CORE_FIELDS: [
@@ -58,6 +59,7 @@ const context = {
   activateReviewContext: () => state.review,
   flushReviewPersistence: async () => true,
   validateCurrentGenerationSettings: () => {}, syncGenerationSettingsControls: () => {},
+  captureGenerationSettingsFocus: () => null,
   apiFetch: async () => ({
     ok: true,
     json: async () => ({
@@ -95,7 +97,8 @@ assert.deepEqual(downloads[0].data, { schema_version: "spring_generation_paramet
 assert.equal(downloads[0].filename, "compression_spring_generation_parameters.json");
 assert.equal(serverAction.download_status, "downloaded");
 assert.equal(serverAction.automatic_download, false);
-assert.ok(refreshCount >= 2);
+assert.equal(refreshCount, 0, "export status updates do not rebuild editor surfaces");
+assert.equal(state.generationBusy, false);
 assert.match(context.renderGenerationPackageExportHtml(serverAction, 0), /重新下载/);
 
 review.spring_parameters.free_length.value = 46;
@@ -131,6 +134,23 @@ assert.equal(await context.executeGenerationPackageExport(conflictAction, 0, "me
 assert.equal(conflictAction.download_status, "stale");
 assert.match(conflictAction.failure_reason, /参数已变化/);
 
+// Response ownership includes the navigation round, user, service and operation itself.
+const operation = context.beginGenerationPackageExport();
+assert.equal(context.generationPackageExportIsCurrent(operation), true);
+for (const field of ['reviewNavigationSerial', 'apiBaseUrl']) {
+  const before=state[field]; state[field]='changed';
+  assert.equal(context.generationPackageExportIsCurrent(operation), false);
+  state[field]=before;
+}
+state.identity={user_id:'other-user'};
+assert.equal(context.generationPackageExportIsCurrent(operation), false);
+state.identity=undefined;
+context.finishGenerationPackageExport(operation);
+const next=context.beginGenerationPackageExport();
+context.finishGenerationPackageExport(operation);
+assert.equal(state.generationBusy,true,'old completion cannot unlock a new operation');
+context.finishGenerationPackageExport(next);
+assert.equal(state.generationBusy,false);
 console.log("generation package chat UI test passed");
 
 function makeAction(overrides = {}) {

@@ -4903,7 +4903,7 @@ textarea {
 
 .generation-package-actions {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   border-top: 1px solid #e8eef6;
@@ -4911,9 +4911,14 @@ textarea {
 }
 
 .generation-package-actions small {
+  min-width: 0;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+@media (max-width: 760px) {
+  .generation-package-actions .primary-action { width: 100%; }
 }
 
 .generation-package-actions .primary-action,

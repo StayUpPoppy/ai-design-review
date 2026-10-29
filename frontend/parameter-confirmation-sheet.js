@@ -28,9 +28,9 @@
     // Native page-margin boxes repeat on the final fragment too. Negative
     // fixed-position offsets can omit the header on short final pages.
     return `@page {
-      @top-left { content: url("${printLogoUrl(logoData)}"); width: 42mm; margin-top: 14mm; margin-bottom: 4mm; vertical-align: middle; border-bottom: 1px solid #aab3bf; }
-      @top-center { content: "弹簧参数确认单"; margin-top: 14mm; margin-bottom: 4mm; vertical-align: middle; color: #172033; font: 700 20pt "Microsoft YaHei", "Segoe UI", Arial, sans-serif; border-bottom: 1px solid #aab3bf; }
-      @top-right { content: ""; width: 42mm; margin-top: 14mm; margin-bottom: 4mm; border-bottom: 1px solid #aab3bf; }
+      @top-left { content: url("${printLogoUrl(logoData)}"); width: 42mm; margin-top: 6mm; margin-bottom: 4mm; vertical-align: middle; border-bottom: 1px solid #aab3bf; }
+      @top-center { content: "弹簧参数确认单"; margin-top: 6mm; margin-bottom: 4mm; vertical-align: middle; color: #172033; font: 700 16pt "Microsoft YaHei", "Segoe UI", Arial, sans-serif; border-bottom: 1px solid #aab3bf; }
+      @top-right { content: ""; width: 42mm; margin-top: 6mm; margin-bottom: 4mm; border-bottom: 1px solid #aab3bf; }
     }`;
   }
   const empty = value => value == null || typeof value === "string" && !value.trim();
@@ -45,7 +45,59 @@
     const signed = value => empty(value) ? "未注明" : Number(value) > 0 ? `+${value}` : String(value);
     return `${signed(upper)} / ${signed(lower)}`;
   }
-  function calculationRows(checks, fieldLabel = field => field) {
+  function calculationRows(checks, fieldLabel = field => field, context = {}) {
+    const params = context.review?.spring_parameters || {}, points = params.load_points || [];
+    const isSolid = point => ["fb", "pb", "压并载荷", "压并负荷", "压并力"].includes(String(point.label || "").replace(/[\s_]/g, "").toLowerCase());
+    function fieldProblems(field, path = []) {
+      if (path.includes(field)) return [`${fieldLabel(field)}的计算依赖循环`];
+      const item = params[field];
+      // The calculator may derive a missing mean diameter or active-coil count.
+      if (empty(item?.value) && field === "mean_diameter") {
+        const alternatives = [["outer_diameter", "inner_diameter"], ["outer_diameter", "wire_diameter"], ["inner_diameter", "wire_diameter"]];
+        const actual = alternatives.find(fields => fields.every(f => !empty(params[f]?.value)));
+        if (actual) return actual.flatMap(f => fieldProblems(f, [...path, field]));
+      }
+      if (empty(item?.value) && field === "active_coils" && typeof CompressionDesignChecks !== "undefined") {
+        const sources = Array.isArray(item?.source) ? item.source : [item?.source];
+        if (!item?.human_modified && !sources.some(s => /^(human|manual)/.test(s || ""))) {
+          const inferred = CompressionDesignChecks.activeCalculation(params);
+          if (Number.isFinite(inferred.value)) return inferred.source_fields.flatMap(f => fieldProblems(f, [...path, field]));
+        }
+      }
+      const state = context.parameterState?.(field);
+      if (state?.state !== "已确认") return [`${fieldLabel(field)}${state?.reason ? `：${state.reason}` : "尚未核对确认"}`];
+      const sources = Array.isArray(item?.source) ? item.source : [item?.source];
+      const generated = !item?.human_modified && sources.some(s => /formula|derived|company_active_coil/.test(s || ""));
+      return generated ? (item.source_fields || []).flatMap(f => fieldProblems(f, [...path, field])) : [];
+    }
+    function assessment(key, item) {
+      if (context.assessmentAvailable === false) return { assessment: "rfi", reason: "本次合理性检查未完成，请核对计算依据。" };
+      const estimated = item.estimated === true || item.status === "estimated";
+      let fields = [...(item.source_fields || [])].filter(f => f !== "load_points"), problems = [];
+      if (key === "solid_stress" || key.startsWith("work_stress:")) {
+        const solid = key === "solid_stress", applicable = points.filter(p => isSolid(p) === solid);
+        const point = item.load_point_id != null ? applicable.find(p => p.load_point_id === item.load_point_id)
+          : applicable.find(p => p.label === item.label) || (solid && applicable.length === 1 ? applicable[0] : null);
+        // Explicit forces do not depend on spring rate, free height or other tests.
+        fields = ["mean_diameter", "wire_diameter"];
+        if (point) {
+          const state = context.loadState?.(point);
+          if (state?.state !== "已确认") problems.push(`${point.label || "载荷点"}${state?.reason ? `：${state.reason}` : "尚未核对确认"}`);
+        } else if (!solid || !estimated) problems.push("对应载荷点的确认依据不完整");
+        if (estimated) {
+          fields.push("free_length", ...(checks?.metrics?.theoretical_spring_rate?.source_fields || []));
+          if (solid) {
+            const height = checks?.metrics?.solid_height_used;
+            fields.push(...(["book_nominal", "open_nominal"].includes(height?.height_source)
+              ? checks?.metrics?.nominal_solid_height?.source_fields || [] : ["solid_height"]));
+          }
+        }
+      }
+      if (!fields.length) problems.push("计算依赖尚未核实");
+      problems.push(...[...new Set(fields)].flatMap(f => fieldProblems(f)));
+      problems = [...new Set(problems)];
+      return { assessment: problems.length ? "rfi" : "confirmed", reason: problems.join("；") };
+    }
     const definitions = [
       ["spring_index", "旋绕比 C", "中径与线径之比。"],
       ["slenderness_ratio", "细长比 b", "自由高度与中径之比。"],
@@ -60,7 +112,7 @@
     function row(key, label, description, result) {
       const item = result || {}, inapplicable = ["not_applicable", "not_required"].includes(item.status);
       const estimated = item.estimated === true || item.status === "estimated";
-      const valid = !inapplicable && Number.isFinite(item.value);
+      const valid = !inapplicable && ["calculated", "estimated"].includes(item.status) && Number.isFinite(item.value);
       const translated = value => String(value || "").replace(/\b[a-z]+(?:_[a-z]+)*\b/g, field => fieldLabel(field) || field);
       const missing = (item.missing_fields || []).map(fieldLabel).join("、");
       const reason = translated(item.reason) || (missing ? `缺少有效的${missing}。` : "缺少有效计算依据。");
@@ -69,9 +121,10 @@
       const value = valid ? rounded === 0 && item.value !== 0 ? item.value : rounded : inapplicable ? "不适用" : "无法计算";
       let note = valid ? `${estimated ? "估算；" : ""}${description}` : `${inapplicable ? "不适用" : "无法计算"}：${reason}`;
       if (valid && Number.isFinite(item.force_n)) note = `${estimated ? "估算载荷" : "已有载荷"}：${Number(item.force_n.toFixed(4))} N；${note}`;
-      return { id: `calculation:${key}`, field: `calculations.${key}`, label, value, unit: item.unit || "",
+      const evaluated = valid ? assessment(key, item) : { assessment: "rfi", reason };
+      return { id: `calculation:${key}`, field: `calculations.${key}`, label, value, unit: item.unit || "", method: valid ? estimated ? "估算" : "计算" : "",
         current: valid ? `${value}${item.unit ? ` ${item.unit}` : ""}` : value,
-        note, reason: valid || inapplicable ? "" : reason, state: valid ? "calculated" : inapplicable ? "not_applicable" : "missing_context" };
+        note, ...evaluated, state: valid ? "calculated" : inapplicable ? "not_applicable" : "missing_context" };
     }
     const rows = definitions.map(([key, label, description]) => row(key, label, description, checks?.metrics?.[key]));
     for (const [index, item] of (checks?.work_stresses || []).entries()) {
@@ -86,6 +139,7 @@
       { id: "calculations", label: "设计校核结果", rows: data.calculations || [] },
       { id: "requirements", label: "技术要求", rows: data.requirements || [] },
     ];
+    for (const section of sections) section.rows = section.rows.map(row => ({ ...row }));
     const issues = new Map();
     function issue(key, label, current = "待补充", message = "") {
       if (!issues.has(key)) issues.set(key, { id: `issue:${key}`, field: key, label, current, messages: [], suggestions: [] });
@@ -95,21 +149,23 @@
     }
     const byField = new Map(sections.flatMap(section => section.rows.map(row => [row.field, row])));
     for (const section of sections) for (const row of section.rows) {
-      if (["待补充", "已失效", "需核对", "missing_context"].includes(row.state)) {
-        issue(row.field, row.label, row.current ?? row.value, row.reason || ({ "待补充": "缺少数值，请补充或注明不适用。", "已失效": "计算依据已变化，请核对当前值。", "需核对": "参数存在问题，请核对。" }[row.state] || "缺少计算依据。"));
+      const confirmed = section.id === "calculations" ? row.assessment === "confirmed" : row.state === "已确认";
+      row.assessment = confirmed && (data.assessmentAvailable !== false || section.id === "requirements") ? "confirmed" : "rfi";
+      if (row.assessment === "rfi") {
+        issue(row.field, row.label, row.current ?? row.value, row.reason || ({ "待补充": "缺少数值，请补充或注明不适用。", "已失效": "计算依据已变化，请核对当前值。", "需核对": "参数存在问题，请核对。", not_applicable: "请核对该计算是否适用。" }[row.state]
+          || (data.assessmentAvailable === false && section.id !== "requirements" ? "本次合理性检查未完成，请核对。" : section.id === "calculations" ? "计算依据尚未核对确认。" : "请核对本项内容并确认。")));
       }
     }
     for (const item of data.issues || []) {
       const fields = item.fields?.length ? item.fields : [item.rule_id || item.issue_id || "general"];
       for (const field of fields) {
-        const related = byField.get(field) || [...byField].find(([key]) => field.startsWith(`${key}.`))?.[1];
+        const related = byField.get(field) || byField.get(`calculations.${field}`) || [...byField].find(([key]) => field.startsWith(`${key}.`))?.[1];
         issue(related?.field || field, related?.label || item.label || "参数核对", related?.current ?? related?.value, item.message || item.basis);
       }
     }
     for (const item of data.suggestions || []) {
       const related = byField.get(item.field);
-      // Internal confirmation never pre-fills customer boxes. Healthy fields
-      // remain in the main tables, without duplicating an already adopted proposal.
+      // A healthy reviewed value does not need another customer question.
       if (related?.state === "已确认" && !issues.has(item.field)) continue;
       const row = issue(item.field, related?.label || item.label || item.field, related?.current ?? related?.value);
       const proposal = item.stale ? "需重新核对（原建议未采用）" : `待确认建议：${item.value}`;
@@ -117,40 +173,54 @@
       if (!row.suggestions.some(v => v.value === copy.value && v.basis === copy.basis)) row.suggestions.push(copy);
     }
     if (data.notice) issue("assessment", "检查状态", "—", data.notice);
-    sections.push({ id: "issues", label: "问题与建议", rows: [...issues.values()] });
+    for (const section of sections) for (const row of section.rows) if (issues.has(row.field)) row.assessment = "rfi";
+    for (const row of issues.values()) row.relatedIds = sections.flatMap(s => s.rows.filter(r => r.field === row.field).map(r => r.id));
+    sections.push({ id: "issues", label: "待客户澄清事项", rows: [...issues.values()] });
     return { ...data.info, sections };
   }
+  function effectiveSelection(model, selected) {
+    const result = new Set(selected || model.sections.flatMap(section => section.rows.map(row => row.id)));
+    for (const row of model.sections.find(s => s.id === "issues")?.rows || []) {
+      if (row.relatedIds.some(id => result.has(id))) result.add(row.id);
+    }
+    return result;
+  }
   const PRINT_CSS = `
-    @page { size: A4 portrait; margin: 32mm 14mm 14mm; }
+    @page { size: A4 portrait; margin: 24mm 12mm 12mm; }
     * { box-sizing: border-box; }
     html { color-scheme: light; }
-    body { margin: 0; color: #172033; background: #e9edf3; font: 10.5pt/1.55 "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
+    body { margin: 0; color: #172033; background: #e9edf3; font: 10pt/1.32 "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
     .sheet-wrap { margin: 16px auto; }
-    .sheet { width: 210mm; min-height: 297mm; padding: 14mm; background: white; transform-origin: top left; }
+    .sheet { width: 210mm; min-height: 297mm; padding: 6mm 12mm 12mm; background: white; transform-origin: top left; }
+    .report-content { display: flow-root; }
     .brand-header { display: grid; grid-template-columns: 42mm minmax(0, 1fr) 42mm; align-items: center; height: 14mm; margin-bottom: 4mm; border-bottom: 1px solid #aab3bf; }
     .brand-header img { display: block; width: 38mm; height: auto; max-height: 12mm; object-fit: contain; }
-    .brand-header h1 { margin: 0; text-align: center; white-space: nowrap; font-size: 20pt; font-weight: 700; line-height: 1.2; }
-    h2 { margin: 6mm 0 2mm; font-size: 12pt; break-after: avoid; }
-    .info { display: grid; grid-template-columns: 1fr 1fr; gap: 2mm 6mm; margin-bottom: 4mm; font-size: 10pt; }
+    .brand-header h1 { margin: 0; text-align: center; white-space: nowrap; font-size: 16pt; font-weight: 700; line-height: 1.2; }
+    h2 { margin: 3mm 0 1mm; font-size: 11pt; line-height: 1.3; break-after: avoid; }
+    .info { display: grid; grid-template-columns: 1fr 1fr; gap: 1mm 6mm; margin-bottom: 2mm; font-size: 9.5pt; }
     .info > div { min-width: 0; overflow-wrap: anywhere; }
     .info .wide { grid-column: 1 / -1; }
-    table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 9.5pt; }
-    th, td { border: 1px solid #aab3bf; padding: 2mm; vertical-align: top; overflow-wrap: anywhere; white-space: pre-wrap; }
-    th { text-align: left; background: #f0f3f7; color: #172033; font-weight: 600; }
-    thead { display: table-header-group; }
-    tr { break-inside: avoid; page-break-inside: avoid; }
-    .long-row { break-inside: auto; page-break-inside: auto; }
+    .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7mm 6mm; }
+    .full-lines { margin: 0; padding: 0; list-style: none; }
+    .report-item { margin: 0; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; break-inside: avoid; }
+    .full-lines > .report-item + .report-item { margin-top: .8mm; }
+    .long-item { break-inside: auto; }
+    .field-label { font-weight: 600; }
     .number { font-variant-numeric: tabular-nums; }
-    .customer-check { white-space: nowrap; line-height: 1.9; }
-    .paper-check { display: inline-block; width: 2.8mm; height: 2.8mm; margin-right: 1.3mm; border: .8pt solid #172033; vertical-align: -.3mm; }
-    .write-space { min-height: 13mm; }
-    .basis { display: block; margin-top: 1mm; font-size: 9pt; color: #495365; }
-    .proposal + .proposal { margin-top: 2mm; padding-top: 2mm; border-top: 1px solid #ced4dd; }
-    .response { min-height: 12mm; }
-    .confirmation { margin-top: 7mm; break-inside: avoid; }
-    .opinion { min-height: 20mm; border: 1px solid #aab3bf; padding: 2mm; }
-    .signatures { display: flex; justify-content: space-between; gap: 10mm; margin-top: 5mm; padding-bottom: 3mm; }
-    .footnote { margin: 4mm 0 0; font-size: 9pt; color: #495365; }
+    .assessment { white-space: nowrap; font-size: 9.5pt; font-weight: 600; }
+    .assessment[data-state="confirmed"] { color: #245242; }
+    .assessment[data-state="rfi"], .rfi-code { color: #8a4b08; }
+    .basis { color: #495365; }
+    .proposal { margin: .6mm 0 0; }
+    .confirmation { margin-top: 3mm; break-inside: avoid; font-size: 9.5pt; }
+    .opinion { min-height: 9mm; border-bottom: 1px solid #aab3bf; padding: 1mm 0; }
+    .signatures { display: flex; justify-content: space-between; gap: 8mm; margin-top: 2mm; }
+    .footnote { margin: 2mm 0 0; font-size: 9.5pt; color: #495365; }
+    .sheet.compact { font-size: 9.5pt; line-height: 1.25; }
+    .compact h2 { margin-top: 2mm; margin-bottom: .7mm; font-size: 10pt; }
+    .compact .fields { row-gap: .4mm; }
+    .compact .info { row-gap: .6mm; margin-bottom: 1mm; }
+    .compact .full-lines > .report-item + .report-item { margin-top: .5mm; }
     @media print {
       html, body { background: white; }
       .sheet-wrap { width: auto !important; height: auto !important; margin: 0; }
@@ -160,25 +230,36 @@
   `;
   function documentHtml(model, selected, { logoData, renderId = "" } = {}) {
     if (!/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(logoData || "")) throw new Error(LOGO_ERROR);
-    const chosen = section => section.rows.filter(row => !selected || selected.has(row.id));
-    const table = (headers, rows, widths) => `<table><colgroup>${widths.map(width => `<col style="width:${width}%">`).join("")}</colgroup><thead><tr>${headers.map(h => `<th scope="col">${escape(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`;
-    const customer = '<td class="customer-check" aria-label="留给客户填写：正确或需修改"><span class="paper-check" aria-hidden="true"></span>正确<br><span class="paper-check" aria-hidden="true"></span>需修改</td><td><div class="write-space"></div></td>';
+    selected = effectiveSelection(model, selected);
+    const chosen = section => section.rows.filter(row => selected.has(row.id));
+    const questions = chosen(model.sections.find(s => s.id === "issues"));
+    const codes = new Map(questions.map((row, index) => [row.field, `RFI-${String(index + 1).padStart(2, "0")}`]));
+    const mark = row => `<span class="assessment" data-state="${row.assessment}">【${row.assessment === "confirmed" ? "确认" : codes.get(row.field)}】</span>`;
+    const attrs = row => `class="report-item${(row.content || "").length > 350 || JSON.stringify(row).length > 1200 ? " long-item" : ""}" data-report-row="${escape(row.id)}"`;
     const valueUnit = row => `${escape(text(row.value))}${!empty(row.value) && row.unit ? ` ${escape(row.unit)}` : ""}`;
     const sections = model.sections.map(section => {
       const rows = chosen(section);
       if (!rows.length) return "";
       let body;
-      if (section.id === "parameters") body = table(["参数", "数值及单位", "公差", "客户确认", "修改意见"], rows.map(row => `<tr><td>${escape(row.label)}</td><td class="number">${valueUnit(row)}</td><td class="number">${escape(row.tolerance || "—")}</td>${customer}</tr>`), [23, 22, 14, 19, 22]);
-      if (section.id === "loads") body = table(["载荷点", "高度", "力值及公差", "客户确认", "修改意见"], rows.map(row => `<tr><td>${escape(row.label)}</td><td class="number">${escape(row.height)}</td><td class="number">${escape(row.force)}<span class="basis">公差：${escape(row.tolerance)}</span></td>${customer}</tr>`), [16, 21, 22, 19, 22]);
-      if (section.id === "calculations") body = table(["计算项目", "结果及单位", "说明", "客户确认", "修改意见"], rows.map(row => `<tr><td>${escape(row.label)}</td><td class="number">${row.state === "calculated" ? valueUnit(row) : escape(row.value)}</td><td>${escape(row.note)}</td>${customer}</tr>`), [23, 19, 17, 19, 22]);
-      if (section.id === "requirements") body = table(["技术要求正文", "客户确认", "修改意见"], rows.map(row => `<tr${row.content.length > 350 ? ' class="long-row"' : ""}><td>${escape(text(row.content))}</td>${customer}</tr>`), [59, 19, 22]);
-      if (section.id === "issues") body = table(["项目／当前值", "问题及建议", "客户确认", "修改意见"], rows.map(row => {
-        const proposals = row.suggestions.map(s => `<div class="proposal">${escape(s.value)}${s.basis ? `<span class="basis">${escape(s.basis)}</span>` : ""}</div>`).join("");
-        return `<tr${JSON.stringify(row).length > 850 ? ' class="long-row"' : ""}><td>${escape(row.label)}<span class="basis">当前：${escape(text(row.current))}</span></td><td>${escape(row.messages.join("；") || "请核对建议是否适用。")}${proposals}</td>${customer}</tr>`;
-      }), [22, 37, 19, 22]);
+      if (["parameters", "calculations"].includes(section.id)) body = `<div class="fields">${rows.map(row => `<p ${attrs(row)}><span class="field-label">${escape(row.label)}：</span><span class="number">${section.id === "calculations" && row.state !== "calculated" ? escape(row.value) : valueUnit(row)}${row.tolerance && row.tolerance !== "—" ? `（公差 ${escape(row.tolerance)}）` : ""}</span> ${mark(row)}</p>`).join("")}</div>`;
+      if (section.id === "loads") body = `<ul class="full-lines">${rows.map(row => `<li ${attrs(row)}><span class="field-label">${escape(row.label)}：</span>高度 ${escape(row.height)}；力值 ${escape(row.force)}${row.tolerance && row.tolerance !== "—" ? `（公差 ${escape(row.tolerance)}）` : ""} ${mark(row)}</li>`).join("")}</ul>`;
+      if (section.id === "requirements") body = `<ol class="full-lines">${rows.map((row, index) => `<li ${attrs(row)}>${index + 1}. ${escape(text(row.content))} ${mark(row)}</li>`).join("")}</ol>`;
+      if (section.id === "issues") body = `<ol class="full-lines">${rows.map(row => {
+        const proposals = row.suggestions.map(s => `<div class="proposal">${escape(s.value)}${s.basis ? ` <span class="basis">（${escape(s.basis)}）</span>` : ""}</div>`).join("");
+        return `<li ${attrs(row)}><strong class="rfi-code">${codes.get(row.field)}</strong> <span class="field-label">${escape(row.label)}：</span>${escape(row.messages.join("；") || "请核对建议是否适用。")}${proposals}</li>`;
+      }).join("")}</ol>`;
       return `<section><h2>${escape(section.label)}</h2>${body}</section>`;
     }).join("");
-    return `<!doctype html><html lang="zh-CN" data-sheet-render="${escape(renderId)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escape(model.drawingName || "弹簧")}-参数确认单</title><style>${PRINT_CSS}${printHeaderCss(logoData)}</style></head><body><div class="sheet-wrap"><main class="sheet"><header class="brand-header"><img data-brand-logo src="${escape(logoData)}" alt="IncoSpring"><h1>弹簧参数确认单</h1></header><div class="info"><div class="wide">图纸名称：${escape(model.drawingName || "未填写")}</div><div>图号：${escape(model.drawingNo || "未填写")}</div><div>规格代号：${escape(model.variant || "—")}</div><div>制单人：${escape(model.preparer || "—")}</div><div>日期：${escape(model.date)}</div>${model.local ? '<div>数据来源：本地数据</div>' : ""}</div>${sections || "<p>未选择明细项目。</p>"}<section class="confirmation"><h2>客户确认</h2><div class="opinion">客户意见：</div><div class="signatures"><span>确认人：________________</span><span>确认日期：________________</span></div></section><p class="footnote">请逐项核对并勾选确认结果；需修改时填写意见，并在末尾签字。待补充的可选项可注明不适用。</p></main></div></body></html>`;
+    return `<!doctype html><html lang="zh-CN" data-sheet-render="${escape(renderId)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escape(model.drawingName || "弹簧")}-参数确认单</title><style>${PRINT_CSS}${printHeaderCss(logoData)}</style></head><body><div class="sheet-wrap"><main class="sheet"><header class="brand-header"><img data-brand-logo src="${escape(logoData)}" alt="IncoSpring"><h1>弹簧参数确认单</h1></header><div class="report-content"><div class="info"><div class="wide">图纸名称：${escape(model.drawingName || "未填写")}</div><div>图号：${escape(model.drawingNo || "未填写")}</div><div>规格代号：${escape(model.variant || "—")}</div><div>制单人：${escape(model.preparer || "—")}</div><div>日期：${escape(model.date)}</div>${model.local ? '<div>数据来源：本地数据</div>' : ""}</div>${sections || "<p>未选择明细项目。</p>"}<section class="confirmation"><h2>客户回复</h2><div class="opinion">请注明RFI编号及回复；其他异议可一并填写：</div><div class="signatures"><span>姓名：________________</span><span>日期：________________</span></div></section><p class="footnote">确认＝我方已核对；RFI＝需客户澄清。客户无需逐项勾选已确认信息。</p></div></main></div></body></html>`;
+  }
+  function fitDocument(doc) {
+    const sheet = doc.querySelector(".sheet"), content = doc.querySelector(".report-content");
+    sheet.classList.remove("compact");
+    const pageHeight = 261 * 96 / 25.4;
+    if (content.offsetHeight > pageHeight + .5) sheet.classList.add("compact");
+    const pages = Math.max(1, Math.ceil((content.offsetHeight - .5) / pageHeight));
+    doc.documentElement.dataset.estimatedPages = String(pages);
+    return { pages, compact: sheet.classList.contains("compact") };
   }
   // Only report inputs participate. Polling/audit bookkeeping cannot stale a sheet.
   function fingerprint(context) {
@@ -201,7 +282,7 @@
       const dialog = document.createElement("dialog");
       dialog.className = "confirmation-sheet-preview";
       dialog.setAttribute("aria-labelledby", "confirmation-sheet-title");
-      dialog.innerHTML = `<header><div><h2 id="confirmation-sheet-title">参数确认单预览</h2><p>A4纵向 · 参数修改请返回原编辑区</p></div><div class="confirmation-sheet-actions"><button type="button" data-sheet-action="back">返回修改</button><button type="button" data-sheet-action="refresh">刷新预览</button><button type="button" class="primary-action" data-sheet-action="print" disabled>打印／另存为PDF</button></div></header><p class="confirmation-sheet-message" role="status" aria-live="polite"></p><div class="confirmation-sheet-layout"><details class="confirmation-sheet-options" open><summary>选择打印项目</summary><div data-sheet-choices></div></details><iframe title="A4参数确认单" sandbox="allow-same-origin allow-modals"></iframe></div>`;
+      dialog.innerHTML = `<header><div><h2 id="confirmation-sheet-title">参数确认单预览</h2><p>A4纵向 · <span data-sheet-pages>正在准备排版</span> · 参数修改请返回原编辑区</p></div><div class="confirmation-sheet-actions"><button type="button" data-sheet-action="back">返回修改</button><button type="button" data-sheet-action="refresh">刷新预览</button><button type="button" class="primary-action" data-sheet-action="print" disabled>打印／另存为PDF</button></div></header><p class="confirmation-sheet-message" role="status" aria-live="polite"></p><div class="confirmation-sheet-layout"><details class="confirmation-sheet-options" open><summary>选择打印项目</summary><div data-sheet-choices></div></details><iframe title="A4参数确认单" sandbox="allow-same-origin allow-modals"></iframe></div>`;
       const s = { dialog, owner: owner(initial), trigger, selected: new Set(), known: new Set(), model: null, busy: false, stale: false, serial: 0, paperSerial: 0, logoData: "", token: "" };
       view = s; document.body.append(dialog);
       const active = () => view === s && owner(hooks.context()) === s.owner;
@@ -211,7 +292,13 @@
       const controls = () => {
         control("refresh").disabled = s.busy;
         control("print").disabled = s.busy || s.stale || !s.model || !s.ready;
-        dialog.querySelectorAll("input").forEach(input => input.disabled = s.busy);
+        const requiredIssues = new Set((s.model?.sections.find(section => section.id === "issues")?.rows || [])
+          .filter(row => row.relatedIds.some(id => s.selected.has(id))).map(row => row.id));
+        dialog.querySelectorAll("input").forEach(input => {
+          input.disabled = s.busy || requiredIssues.has(input.dataset.sheetId);
+          input.title = requiredIssues.has(input.dataset.sheetId) ? "RFI说明随关联项目一起打印" : "";
+          input.checked = s.selected.has(input.dataset.sheetId);
+        });
       };
       const scalePaper = () => {
         const doc = frame.contentDocument, sheet = doc?.querySelector(".sheet"), wrap = doc?.querySelector(".sheet-wrap");
@@ -234,6 +321,8 @@
           await Promise.all([logo.decode(), printLogo.decode(), doc.fonts?.ready]);
           if (!current()) return;
           if (!logo.naturalWidth || !logo.naturalHeight) throw new Error(LOGO_ERROR);
+          const layout = fitDocument(doc);
+          dialog.querySelector("[data-sheet-pages]").textContent = `预计${layout.pages}页${layout.compact ? " · 紧凑排版" : ""}${layout.pages > 1 ? " · 内容完整续页" : ""}`;
           s.ready = true; scalePaper(); controls();
         } catch {
           if (!current()) return;
@@ -242,7 +331,9 @@
         }
       });
       function renderPaper() {
+        s.selected = effectiveSelection(s.model, s.selected);
         s.ready = false; s.paperSerial++; controls();
+        dialog.querySelector("[data-sheet-pages]").textContent = "正在计算页数";
         frame.srcdoc = documentHtml(s.model, s.selected, { logoData: s.logoData, renderId: s.paperSerial });
       }
       function renderChoices() {
@@ -320,5 +411,5 @@
     }
     return { open, close };
   }
-  globalThis.ParameterConfirmationSheet = { buildModel, documentHtml, tolerance, calculationRows, fingerprint, create };
+  globalThis.ParameterConfirmationSheet = { buildModel, documentHtml, tolerance, calculationRows, effectiveSelection, fitDocument, fingerprint, create };
 })();

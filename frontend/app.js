@@ -71,6 +71,7 @@ const state = {
   generationPreviewWaitTimedOut: {},
   generationPreviewRetrying: {},
   generationBusy: false,
+  generationExportOperation: null,
   generationCompare: null,
   identity: null,
   identityReady: false,
@@ -4449,7 +4450,7 @@ async function buildConfirmationSheetSnapshot(context) {
       review.parameter_reasonableness = await fetchReasonablenessAssessmentForReview(review, context.revision);
       review.parameter_reasonableness_stale = false;
     } catch { notice = "本次未能更新合理性检查，相关问题及建议需重新核对。"; review.parameter_reasonableness_stale = true; }
-  }
+  } else { notice = "本次未完成合理性检查，请核对相关数据。"; review.parameter_reasonableness_stale = true; }
   // Share the editor's advanced-field policy, without its transient editing state.
   const allFields = getParameterFields(params, review);
   const fields = allFields.filter(field => COMPRESSION_CORE_PARAMETER_FIELDS.has(field)
@@ -4458,9 +4459,10 @@ async function buildConfirmationSheetSnapshot(context) {
   const status = (item, field, kind = "parameter") => {
     const missing = kind === "parameter" ? item?.value == null || String(item.value).trim() === "" : kind === "technical" ? !String(item?.content || "").trim() : false;
     const stale = item?.derived_value_stale || item?.formula_recommendation_stale || item?.diameter_linkage_error;
-    const invalid = kind === "parameter" ? parameterConfirmationInvalidReason(field, item) : "";
+    const invalid = kind === "parameter" ? parameterConfirmationInvalidReason(field, item)
+      : kind === "load_point" && (!isValidLoadPoint(item) || isDuplicateLoadPointLabel(review, item.label, item.load_point_id)) ? "请核对载荷点编号、高度、力值及单位。" : "";
     const control = confirmationControlState(item, { kind, field, review });
-    return { state: missing ? "待补充" : stale ? "已失效" : invalid || control.state === "invalid" || reasonablenessSeverityForField(review, field) ? "需核对" : control.state === "confirmed" ? "已确认" : "待确认",
+    return { state: missing ? "待补充" : stale ? "已失效" : invalid || control.state === "invalid" || reasonablenessSeverityForField(review, field) ? "需核对" : control.state === "confirmed" && item?.need_human_review === false ? "已确认" : "待确认",
       reason: stale ? item?.diameter_linkage_error || "计算依据已变化，请核对当前值。" : invalid || (control.state === "invalid" ? control.reason : "") };
   };
   const parameters = fields.map(field => {
@@ -4517,7 +4519,11 @@ async function buildConfirmationSheetSnapshot(context) {
   const summary = review.drawing_summary || {};
   return ParameterConfirmationSheet.buildModel({ parameters: parameters.filter(item => COMPRESSION_CORE_PARAMETER_FIELDS.has(item.field)),
     advanced: parameters.filter(item => !COMPRESSION_CORE_PARAMETER_FIELDS.has(item.field)),
-    calculations: ParameterConfirmationSheet.calculationRows(checks, field => getFieldMeta(field, review).label),
+    calculations: ParameterConfirmationSheet.calculationRows(checks, field => getFieldMeta(field, review).label, {
+      review, assessmentAvailable: !notice,
+      parameterState: field => status(params[field], field),
+      loadState: point => status(point, loadPointField(point, params.load_points.indexOf(point)), "load_point"),
+    }), assessmentAvailable: !notice,
     loads, requirements, suggestions,
     issues: review.parameter_reasonableness_stale ? [] : confirmationSheetIssues(review), notice,
     info: { drawingName: summary.drawing_name || "", drawingNo: summary.drawing_no || "", variant: review.multi_spec_origin?.code || (review.multi_spec_origin?.order ? `规格${review.multi_spec_origin.order}` : ""),
@@ -5713,11 +5719,22 @@ function renderDerivedParametersHtml(review) {
   `;
 }
 
+function generationReadinessSummary(readiness) {
+  if (readiness.status === "ready") return "核心参数和技术要求均已确认，可生成图纸。";
+  if (readiness.status === "ready_with_warnings") return "参数满足生成条件，请在生图前核对风险提示。";
+  return readiness.summary || "请核对当前生图条件。";
+}
+
+function generationCreationAvailable(review, readiness) {
+  return Boolean(state.lastJob?.job_id && review === state.review && state.generationQueueAvailable === true
+    && ["ready", "ready_with_warnings"].includes(readiness.status));
+}
+
 function renderGenerationReadinessHtml(review) {
   const serverState = review === state.review ? state.generationReadiness : null;
   const readiness = serverState?.generation_readiness || assessGenerationReadiness(review);
   const isPersistedReview = Boolean(state.lastJob?.job_id && review === state.review);
-  const canGenerate = isPersistedReview && state.generationQueueAvailable === true && ["ready", "ready_with_warnings"].includes(readiness.status);
+  const canGenerate = generationCreationAvailable(review, readiness);
   const statusLabels = {
     ready: "可生成",
     ready_with_warnings: "可生成，有提示",
@@ -5732,7 +5749,7 @@ function renderGenerationReadinessHtml(review) {
         <h2>生图参数包</h2>
         <span class="generation-readiness-status ${escapeHtml(readiness.status)}">${escapeHtml(statusLabels[readiness.status] || "待核对")}</span>
       </div>
-      <p class="generation-readiness-summary">${escapeHtml(readiness.summary)}</p>
+      <p class="generation-readiness-summary">${escapeHtml(generationReadinessSummary(readiness))}</p>
       <div class="generation-readiness-progress">已确认核心参数 ${readiness.confirmed_core_count}/${readiness.core_field_count}</div>
       ${renderGenerationReadinessIssues("需要补充", readiness.missing_fields, "missing")}
       ${renderGenerationReadinessIssues("需要确认", readiness.pending_fields, "pending")}
@@ -5741,11 +5758,10 @@ function renderGenerationReadinessHtml(review) {
       ${renderGenerationReadinessIssues("以下技术要求未写入本次图纸", (readiness.warnings || []).filter((item) => item.requirement_id), "warning")}
       ${renderGenerationSettingsHtml(review)}
       <div class="generation-package-actions">
-        <button type="button" data-action="export-generation-package">导出参数包</button>
-        <button type="button" class="primary-action" data-action="create-generation-job" ${canGenerate && !state.generationBusy ? "" : "disabled"}>${state.generationBusy ? "处理中…" : "生成图纸"}</button>
         <small>${isPersistedReview
-          ? (state.generationQueueAvailable === false ? "就绪状态可查询；创建生图任务需要 PostgreSQL。" : "就绪状态由服务器重新计算；参数有提示时仍可确认后生成。")
-          : "本地导入数据仅允许导出，保存为服务器审图单后才能生图。"}</small>
+          ? (state.generationQueueAvailable === false ? "生图服务暂不可用，请稍后重试或联系管理员。" : "就绪状态由服务器重新计算；参数有提示时仍可确认后生成。")
+          : "本地导入数据可通过AI对话导出参数包；生成图纸需要服务器审图记录。"}</small>
+        <button type="button" class="primary-action" data-action="create-generation-job" ${canGenerate && !state.generationBusy ? "" : "disabled"}>${state.generationBusy ? "处理中…" : "生成图纸"}</button>
       </div>
       ${renderGenerationJobsHtml(review)}
     </section>
@@ -5807,6 +5823,14 @@ function restoreGenerationSettingsFocus(snapshot) {
 
 function syncGenerationSettingsControls() {
   if (!state.review) return;
+  const readiness = state.generationReadiness?.generation_readiness || assessGenerationReadiness(state.review);
+  document.querySelectorAll('[data-action="create-generation-job"]').forEach((button) => {
+    const messageId = button.closest('[data-message-id]')?.dataset.messageId;
+    const active = !messageId || messageId === state.activeReviewMessageId;
+    button.disabled = !active || state.generationBusy || !generationCreationAvailable(state.review, readiness);
+    button.textContent = active && state.generationBusy ? "处理中…" : "生成图纸";
+    button.setAttribute("aria-busy", String(Boolean(active && state.generationBusy)));
+  });
   const settings = GenerationSettings.values(state.review, state.identity), error = GenerationSettings.error(settings);
   const fields = ["generation_settings.drawing_model", "generation_settings.username"];
   const failed = fields.some((field) => state.reviewPersistenceFailedFields[field]);
@@ -6618,7 +6642,7 @@ function renderGenerationPackageExportHtml(action, turnIndex) {
   const sourceLabel = action?.source_mode === "server" ? "正式审图 · 服务端冻结参数包" : "本地JSON · 本地白名单导出";
   return `
     <section class="generation-package-export-card ${escapeHtml(status)}" data-kind="generation_package_export" data-turn-index="${turnIndex}">
-      <div class="generation-package-export-head">
+      <div class="generation-package-export-head" aria-live="polite">
         <div><strong>${escapeHtml(title)}</strong><small>${escapeHtml(subtitle)}</small></div>
         <span>${escapeHtml(action?.schema_version || "spring_generation_parameters/v2")}</span>
       </div>
@@ -6646,8 +6670,48 @@ function updateGenerationPackageExportAction(turnIndex, patch, messageId = state
   Object.assign(action, patch);
   const context = getReviewContext(messageId);
   if (context) context.review = state.review;
-  refreshReviewSurfaces({ scrollChat: true });
+  // Only status text changes. Keep the editor, inputs, chat position and event handlers.
+  const roots = [conversation.querySelector(`[data-message-id="${messageId}"]`),
+    state.compareOpen && messageId === state.activeReviewMessageId ? compareOverlay : null].filter(Boolean);
+  if (roots.length) {
+    const template = document.createElement("template"); template.innerHTML = renderGenerationPackageExportHtml(action, turnIndex);
+    const next = template.content.firstElementChild;
+    for (const root of roots) for (const row of root.querySelectorAll(`[data-kind="generation_package_export"][data-turn-index="${turnIndex}"]`)) {
+      row.className = next.className;
+      for (const selector of [".generation-package-export-head strong", ".generation-package-export-head small"]) {
+        row.querySelector(selector).textContent = next.querySelector(selector).textContent;
+      }
+      const button = row.querySelector('[data-role="download-generation-package"]');
+      const updated = next.querySelector('[data-role="download-generation-package"]');
+      button.textContent = updated.textContent; button.disabled = updated.disabled;
+    }
+  }
   return action;
+}
+
+function beginGenerationPackageExport() {
+  if (state.generationBusy) return null;
+  const operation = { review: state.review, jobId: state.lastJob?.job_id, base: state.apiBaseUrl,
+    user: state.identity?.user_id, navigation: state.reviewNavigationSerial, focus: captureGenerationSettingsFocus() };
+  state.generationExportOperation = operation;
+  state.generationBusy = true;
+  syncGenerationSettingsControls();
+  return operation;
+}
+
+function generationPackageExportIsCurrent(operation) {
+  return state.generationExportOperation === operation && state.reviewNavigationSerial === operation.navigation
+    && state.lastJob?.job_id === operation.jobId && state.apiBaseUrl === operation.base && state.identity?.user_id === operation.user
+    && (Boolean(operation.jobId) || state.review === operation.review);
+}
+
+function finishGenerationPackageExport(operation) {
+  if (!operation || state.generationExportOperation !== operation) return;
+  const current = generationPackageExportIsCurrent(operation);
+  state.generationExportOperation = null;
+  state.generationBusy = false;
+  syncGenerationSettingsControls();
+  if (current && operation.focus && document.activeElement === document.body) restoreGenerationSettingsFocus(operation.focus);
 }
 
 async function executeGenerationPackageExport(action, turnIndex, messageId = state.activeReviewMessageId, options = {}) {
@@ -6658,131 +6722,98 @@ async function executeGenerationPackageExport(action, turnIndex, messageId = sta
   });
   try { validateCurrentGenerationSettings(); }
   catch (error) { if (!options.automatic) updateLatestReviewMessage(error.message); return false; }
-  const sourceJob = state.lastJob?.job_id, sourceBase = state.apiBaseUrl, sourceUser = state.identity?.user_id;
+  const operation = beginGenerationPackageExport();
+  if (!operation) return false;
   const capturedSettings = JSON.stringify(state.review.generation_settings);
-  const current = () => state.lastJob?.job_id === sourceJob && state.apiBaseUrl === sourceBase && state.identity?.user_id === sourceUser
+  const current = () => generationPackageExportIsCurrent(operation)
     && JSON.stringify(state.review?.generation_settings) === capturedSettings;
-  const saved = await flushReviewPersistence();
-  if (!current()) return false;
-  if (!saved || state.pendingReviewAuditEvents.length || state.reviewPersistenceSaving) {
-    if (!options.automatic) updateLatestReviewMessage("当前技术要求或参数尚未成功保存，请检查网络后重试。");
-    return false;
-  }
-  const liveAction = state.review?.standardization_chat?.[turnIndex]?.generation_package_export || action;
-  if (!liveAction.can_download) return false;
-  if (generationPackageExportDisplayStatus(liveAction) === "stale") {
-    updateGenerationPackageExportAction(turnIndex, {
-      download_status: "stale",
-      failure_reason: "参数或审图修订已经变化，请重新发送导出指令。",
-    }, messageId);
-    return false;
-  }
-  updateGenerationPackageExportAction(turnIndex, { download_status: "downloading", failure_reason: "" }, messageId);
-  state.generationBusy = true;
-  syncGenerationSettingsControls();
   try {
-    let parameterPackage;
-    if (liveAction.source_mode === "server") {
-      if (!state.lastJob?.job_id) throw new Error("找不到正式审图任务，无法读取服务端参数包。");
-      const response = await apiFetch(`/api/reviews/${encodeURIComponent(state.lastJob.job_id)}/generation-package`);
-      const payload = await response.json();
-      if (!response.ok) {
-        const detail = payload?.detail;
-        const error = new Error(
-          detail?.message
-          || detail?.summary
-          || detail?.generation_readiness?.summary
-          || (typeof detail === "string" ? detail : "服务端参数包读取失败。"),
-        );
-        if (response.status === 409) error.code = "generation_package_export_stale";
-        throw error;
-      }
-      const expectedRevision = Number(liveAction.review_revision);
-      const returnedRevision = Number(payload.review_revision);
-      if (Number.isFinite(expectedRevision) && Number.isFinite(returnedRevision) && expectedRevision !== returnedRevision) {
-        const error = new Error("审图修订已经变化，请重新发送导出指令。");
-        error.code = "generation_package_export_stale";
-        throw error;
-      }
-      parameterPackage = payload.parameter_package;
-    } else {
-      if (generationPackageExportDisplayStatus(liveAction) === "stale") {
-        const error = new Error("本地参数已经变化，请重新发送导出指令。");
-        error.code = "generation_package_export_stale";
-        throw error;
-      }
-      const readiness = assessGenerationReadiness(state.review);
-      if (!["ready", "ready_with_warnings"].includes(readiness.status)) {
-        const error = new Error(readiness.summary || "当前参数暂时不能导出。");
-        error.code = "generation_package_export_stale";
-        throw error;
-      }
-      parameterPackage = makeGenerationParameterPackage(state.review);
-    }
-    if (!current()) return false;
-    if (!parameterPackage || typeof parameterPackage !== "object") throw new Error("参数包响应为空，未触发下载。");
-    downloadJson(parameterPackage, liveAction.filename || "compression_spring_generation_parameters.json");
-    updateGenerationPackageExportAction(turnIndex, {
-      download_status: "downloaded",
-      downloaded_at: new Date().toISOString(),
-      failure_reason: "",
-      automatic_download: false,
-    }, messageId);
-    return true;
-  } catch (error) {
-    if (!current()) return false;
-    const stale = error?.code === "generation_package_export_stale";
-    updateGenerationPackageExportAction(turnIndex, {
-      download_status: stale ? "stale" : "failed",
-      failure_reason: error?.message || String(error),
-      automatic_download: false,
-    }, messageId);
-    if (!options.automatic) updateLatestReviewMessage(error?.message || "参数包下载失败，请重试。");
-    return false;
-  } finally {
-    if (current()) { state.generationBusy = false; syncGenerationSettingsControls(); }
-  }
-}
-
-async function exportCurrentGenerationPackage(messageId = state.activeReviewMessageId) {
-  if (!state.review || state.generationBusy) return false;
-  if (messageId) activateReviewContext(messageId, {
-    preserveAccuracyGradeUpdate: true,
-    preservePendingAccuracyGrade: true,
-  });
-  const sourceReview = state.review, sourceJob = state.lastJob?.job_id, sourceBase = state.apiBaseUrl, sourceUser = state.identity?.user_id;
-  const sourceNavigation = state.reviewNavigationSerial;
-  const current = () => (sourceJob || state.review === sourceReview) && state.reviewNavigationSerial === sourceNavigation
-    && state.lastJob?.job_id === sourceJob && state.apiBaseUrl === sourceBase && state.identity?.user_id === sourceUser;
-  try {
-    validateCurrentGenerationSettings();
-    state.generationBusy = true;
-    syncGenerationSettingsControls();
-    const saved = await flushReviewPersistence({ throwOnError: true });
+    const saved = await flushReviewPersistence();
     if (!current()) return false;
     if (!saved || state.pendingReviewAuditEvents.length || state.reviewPersistenceSaving) {
       throw new Error("当前技术要求或参数尚未成功保存，请检查网络后重试。");
     }
+    const liveAction = state.review?.standardization_chat?.[turnIndex]?.generation_package_export || action;
+    if (!liveAction.can_download) return false;
+    if (generationPackageExportDisplayStatus(liveAction) === "stale") {
+      updateGenerationPackageExportAction(turnIndex, { download_status: "stale", failure_reason: "参数或审图修订已经变化，请重新发送导出指令。" }, messageId);
+      return false;
+    }
+    updateGenerationPackageExportAction(turnIndex, { download_status: "downloading", failure_reason: "" }, messageId);
     let parameterPackage;
-    if (state.lastJob?.job_id) {
-      const response = await apiFetch(`/api/reviews/${encodeURIComponent(state.lastJob.job_id)}/generation-package`);
+    if (liveAction.source_mode === "server") {
+      if (!operation.jobId) throw new Error("找不到正式审图任务，无法读取服务端参数包。");
+      const response = await apiFetch(`/api/reviews/${encodeURIComponent(operation.jobId)}/generation-package`);
       const payload = await response.json();
       if (!current()) return false;
-      if (!response.ok) throw new Error(generationApiError(payload, "服务端参数包读取失败"));
+      if (!response.ok) {
+        const detail = payload?.detail;
+        const error = new Error(detail?.message || detail?.summary || detail?.generation_readiness?.summary
+          || (typeof detail === "string" ? detail : "服务端参数包读取失败。"));
+        if (response.status === 409) error.code = "generation_package_export_stale";
+        throw error;
+      }
+      const expectedRevision = Number(liveAction.review_revision), returnedRevision = Number(payload.review_revision);
+      if (Number.isFinite(expectedRevision) && Number.isFinite(returnedRevision) && expectedRevision !== returnedRevision) {
+        const error = new Error("审图修订已经变化，请重新发送导出指令。");
+        error.code = "generation_package_export_stale"; throw error;
+      }
       parameterPackage = payload.parameter_package;
     } else {
+      const readiness = assessGenerationReadiness(state.review);
+      if (!["ready", "ready_with_warnings"].includes(readiness.status)) {
+        const error = new Error(readiness.summary || "当前参数暂时不能导出。");
+        error.code = "generation_package_export_stale"; throw error;
+      }
       parameterPackage = makeGenerationParameterPackage(state.review);
     }
+    if (!current()) return false;
+    if (generationPackageExportDisplayStatus(liveAction) === "stale") {
+      const error = new Error("参数或审图修订已经变化，请重新发送导出指令。");
+      error.code = "generation_package_export_stale"; throw error;
+    }
+    if (!parameterPackage || typeof parameterPackage !== "object") throw new Error("参数包响应为空，未触发下载。");
+    downloadJson(parameterPackage, liveAction.filename || "compression_spring_generation_parameters.json");
+    updateGenerationPackageExportAction(turnIndex, { download_status: "downloaded", downloaded_at: new Date().toISOString(),
+      failure_reason: "", automatic_download: false }, messageId);
+    return true;
+  } catch (error) {
+    if (!current()) return false;
+    updateGenerationPackageExportAction(turnIndex, { download_status: error?.code === "generation_package_export_stale" ? "stale" : "failed",
+      failure_reason: error?.message || String(error), automatic_download: false }, messageId);
+    return false;
+  } finally { finishGenerationPackageExport(operation); }
+}
+
+async function exportCurrentGenerationPackage(messageId = state.activeReviewMessageId) {
+  if (!state.review || state.generationBusy) return false;
+  if (messageId) activateReviewContext(messageId, { preserveAccuracyGradeUpdate: true, preservePendingAccuracyGrade: true });
+  let operation;
+  try {
+    validateCurrentGenerationSettings();
+    operation = beginGenerationPackageExport();
+    if (!operation) return false;
+    const saved = await flushReviewPersistence({ throwOnError: true });
+    if (!generationPackageExportIsCurrent(operation)) return false;
+    if (!saved || state.pendingReviewAuditEvents.length || state.reviewPersistenceSaving) {
+      throw new Error("当前技术要求或参数尚未成功保存，请检查网络后重试。");
+    }
+    let parameterPackage;
+    if (operation.jobId) {
+      const response = await apiFetch(`/api/reviews/${encodeURIComponent(operation.jobId)}/generation-package`);
+      const payload = await response.json();
+      if (!generationPackageExportIsCurrent(operation)) return false;
+      if (!response.ok) throw new Error(generationApiError(payload, "服务端参数包读取失败"));
+      parameterPackage = payload.parameter_package;
+    } else { parameterPackage = makeGenerationParameterPackage(state.review); }
     if (!parameterPackage || typeof parameterPackage !== "object") throw new Error("参数包响应为空。");
     downloadJson(parameterPackage, "compression_spring_generation_parameters.json");
     updateLatestReviewMessage("已导出最新生图参数包；只有已确认技术要求会发送给 SolidWorks。");
     return true;
   } catch (error) {
-    if (current()) updateLatestReviewMessage(error?.message || "参数包导出失败，请重试。");
+    if (!operation || generationPackageExportIsCurrent(operation)) updateLatestReviewMessage(error?.message || "参数包导出失败，请重试。");
     return false;
-  } finally {
-    if (current()) { state.generationBusy = false; syncGenerationSettingsControls(); }
-  }
+  } finally { finishGenerationPackageExport(operation); }
 }
 
 function renderAccuracyStandardizationResultHtml(result, batch = null, turnIndex = -1) {
@@ -8916,7 +8947,12 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   root.querySelectorAll('[data-action="show-workbench-tab"]').forEach((button) => {
     button.addEventListener("click", () => {
       const compareRoot = root.closest?.("#compareOverlay") || (root.id === "compareOverlay" ? root : null);
-      if (compareRoot) setCompareTab(compareRoot, button.dataset.targetTab);
+      if (compareRoot) {
+        setCompareTab(compareRoot, button.dataset.targetTab);
+        if (button.dataset.targetTab === "generation") {
+          compareRoot.querySelector('[data-compare-tab="generation"]')?.focus({ preventScroll: true });
+        }
+      }
     });
   });
 
@@ -8930,13 +8966,6 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       const compareRoot = root.closest?.("#compareOverlay") || (root.id === "compareOverlay" ? root : null);
       if (compareRoot) setCompareTab(compareRoot, "assistant");
       runStandardizationChat(text, messageId, true);
-    });
-  });
-
-  // “待处理”和“生图参数包”页签都会显示导出按钮，必须分别绑定。
-  root.querySelectorAll('[data-action="export-generation-package"]').forEach((button) => {
-    button.addEventListener("click", () => {
-      void exportCurrentGenerationPackage(messageId);
     });
   });
 
@@ -10231,7 +10260,7 @@ function renderCompareOverlay() {
       <header class="compare-head">
         <div>
           <h2>审图工作台</h2>
-          <p>左侧查看原图，右侧按待处理事项完成核对、标准化与导出。</p>
+          <p>左侧查看原图，右侧按待处理事项完成核对、标准化与生图。</p>
         </div>
         <div class="compare-actions">
           <button type="button" data-action="export">导出确认版</button>
@@ -11387,11 +11416,11 @@ function renderReviewWorkbenchHtml(review) {
         <article class="workbench-step">
           <div class="workbench-step-index">3</div>
           <div>
-            <strong>导出生图参数包</strong>
-            <small>${escapeHtml(readiness.summary)}</small>
+            <strong>生成图纸</strong>
+            <small>${escapeHtml(generationReadinessSummary(readiness))}</small>
           </div>
           <div class="workbench-step-actions">
-            <button type="button" data-action="export-generation-package">导出参数包</button>
+            <button type="button" data-action="show-workbench-tab" data-target-tab="generation">去生图</button>
           </div>
         </article>
       </section>
@@ -11405,7 +11434,7 @@ function renderReviewWorkbenchHtml(review) {
       ` : `
         <section class="workbench-clear-state">
           <strong>当前没有需要优先处理的参数问题</strong>
-          <span>仍可查看参数详情，或直接导出当前已确认的参数包。</span>
+          <span>可查看参数详情，或前往生图参数包检查设置并生成图纸。</span>
         </section>
       `}
 
@@ -11425,7 +11454,7 @@ function workbenchFieldsOverlap(left, right) {
 
 function workbenchStatusLabel(review, readiness) {
   if (readiness.status === "blocked") return "存在需要先核对的参数";
-  if (readiness.status === "ready" || readiness.status === "ready_with_warnings") return "可以导出生图参数包";
+  if (readiness.status === "ready" || readiness.status === "ready_with_warnings") return "参数已就绪，可前往生图";
   return "继续处理待确认项目";
 }
 
@@ -11434,7 +11463,7 @@ function workbenchStatusDescription(review, readiness, counts) {
   if (counts.input) return `${counts.input} 项信息待补充，补齐后可继续标准化。`;
   if (counts.warning) return `${counts.warning} 项风险提示不阻断流程，但建议向客户确认。`;
   if (!review?.standardization_results?.length) return "标准化为可选功能；确认建模参数和技术要求后可直接生图。";
-  return readiness.summary;
+  return generationReadinessSummary(readiness);
 }
 
 function renderWorkbenchIssueHtml(item) {
@@ -11563,7 +11592,7 @@ function compareTabTitle(tab) {
 
 function compareTabDescription(tab) {
   const descriptions = {
-    workbench: "按优先级完成核对、标准化与导出",
+    workbench: "按优先级完成核对、标准化与生图",
     parameters: "核对识别尺寸和技术要求",
     standards: "查看标准选择、建议和派生参数",
     generation: "检查重新生图需要的已确认参数",
@@ -12142,6 +12171,7 @@ async function createGenerationJob(options = {}) {
   if (!reviewId || state.generationBusy) return;
   const scope = historyRecognitionScope(), navigation = state.reviewNavigationSerial;
   const current = () => scope === historyRecognitionScope() && state.lastJob?.job_id === reviewId && navigation === state.reviewNavigationSerial;
+  state.generationExportOperation = null;
   state.generationBusy = true;
   syncGenerationSettingsControls();
   try {
@@ -12285,6 +12315,7 @@ async function generationJobAction(generationId, action, successMessage, shouldT
   const reviewId = state.lastJob?.job_id, review = state.review;
   const isCurrent = () => state.lastJob?.job_id === reviewId && state.review === review;
   state.generationLoadRequest = null;
+  state.generationExportOperation = null;
   state.generationBusy = true;
   refreshReviewSurfaces();
   try {
@@ -12337,6 +12368,7 @@ function generationApiError(payload, fallback) {
 
 function resetGenerationState() {
   state.generationLoadRequest = null;
+  state.generationExportOperation = null;
   Object.keys(state.generationPollers).forEach(stopTrackingGenerationJob);
   state.generationReadiness = null;
   state.generationJobs = [];

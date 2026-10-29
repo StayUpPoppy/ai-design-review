@@ -34,7 +34,8 @@ await page.route('**/api/**',async route=>{
  if(api.endsWith('/changes'))return route.fulfill({json:{events:[]}});
  return route.fulfill({json:{status:'ok',generation_runtime:{status:'available'},recognition_queue_runtime:{status:'available'}}});
 });
-async function shot(name,locator){await page.waitForTimeout(120);await (locator||page).screenshot({path:path.join(out,name+'.png')});}
+const captureOnly=new Set((process.env.MANUAL_CAPTURE_ONLY||'').split(',').filter(Boolean));
+async function shot(name,locator){if(captureOnly.size&&!captureOnly.has(name))return;await page.waitForTimeout(120);await (locator||page).screenshot({path:path.join(out,name+'.png')});}
 try{
  await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>state.identityReady&&state.materialCatalog.items.length);
  await page.locator('#drawingInput').setInputFiles({name:'示例压缩弹簧.png',mimeType:'image/png',buffer:Buffer.from('manual demonstration file - never uploaded')});

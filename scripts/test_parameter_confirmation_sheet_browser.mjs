@@ -80,7 +80,15 @@ await page.route('**/api/**', async route => {
 const dialog = page.locator('.confirmation-sheet-preview'), frame = () => page.frameLocator('.confirmation-sheet-preview iframe');
 async function saved() { await page.evaluate(() => flushReviewPersistence()); }
 async function openReview(id) { await page.evaluate(async id => { await openPersistedReview(id); renderCompareOverlay(); }, id); await page.locator('[data-compare-tab="parameters"]').click(); await saved(); }
-async function openSheet() { await page.locator('.compare-overlay [data-action="preview-confirmation-sheet"]').click(); await dialog.waitFor(); await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled); }
+async function openSheet() {
+  await page.locator('.compare-overlay [data-action="preview-confirmation-sheet"]').click(); await dialog.waitFor();
+  try { await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled); }
+  catch (error) {
+    const diagnostic = await page.evaluate(() => ({ message:document.querySelector('.confirmation-sheet-message')?.textContent,
+      job:state.lastJob?.job_id, navigation:state.reviewNavigationSerial, edit:state.reviewEditSerial }));
+    throw new Error(`Report did not become ready: ${JSON.stringify(diagnostic)}`, {cause:error});
+  }
+}
 async function snapshot() { return page.evaluate(() => JSON.stringify({ review: state.review, edit: state.reviewEditSerial, events: state.pendingReviewAuditEvents })); }
 try {
   await page.goto(`http://127.0.0.1:${server.address().port}`);
@@ -140,11 +148,11 @@ try {
   assert.match(content, /00123-A/); assert.match(content, /测试工程师/); assert.match(content, /10\.5/); assert.match(content, /8\.25/);
   assert.match(content, /0 N/); assert.match(content, /±10%/); assert.match(content, /\+0.1 \/ 0/);
   assert.match(content, /待补充/); assert.match(content, /Ra 12.5 μm/); assert.match(content, /Ra 6.3 μm/);
-  assert.doesNotMatch(content, /审图修订|已确认|本单不代表全部参数/);
+  assert.doesNotMatch(content, /审图修订|本单不代表全部参数/);
   assert.equal(await frame().getByRole('columnheader', { name: '状态', exact: true }).count(), 0);
-  assert.equal(await frame().locator('input').count(), 0, 'customer boxes are static empty squares');
-  const printRows = await frame().locator('tbody > tr').count();
-  assert.equal(await frame().locator('.paper-check').count(), printRows * 2);
+  assert.equal(await frame().locator('input,table,.paper-check').count(), 0, 'no tables or customer check boxes');
+  assert.match(content, /【确认】/);assert.match(content,/【RFI-\d+】/);
+  assert.match(await dialog.locator('[data-sheet-pages]').innerText(),/预计\d+页/);
   assert.equal(await frame().getByRole('heading', { name: '输入参数', exact: true }).count(), 1);
   assert.doesNotMatch(content, /基础参数|高级参数/);
   assert.equal(await dialog.locator('legend').filter({ hasText: /^输入参数$/ }).count(), 1);
@@ -153,8 +161,9 @@ try {
   for (const field of optionalAdvanced) assert.equal(await dialog.locator(`input[data-sheet-id="param:${field}"]`).count(), 0);
   assert.match(content, /理论刚度/); assert.match(content, /单件重量/);
   assert.doesNotMatch(content, /名义压并高度|压并高度上限参考|应力采用高度/);
-  assert.equal(await frame().getByRole('cell', { name: '压并高度', exact: true }).count(), 1);
-  assert.match(await frame().getByRole('row').filter({ has: frame().getByRole('cell', { name: '压并高度', exact: true }) }).innerText(), /估算|无法计算/);
+  assert.equal(await frame().locator('[data-report-row="calculation:nominal_solid_height"]').count(), 1);
+  assert.doesNotMatch(await frame().locator('[data-report-row="calculation:nominal_solid_height"]').innerText(), /（(?:估算|计算)）/);
+  assert.equal(await frame().locator('.method').count(), 0);
   for (const key of ['reference_solid_height_limit', 'solid_height_used']) assert.equal(await dialog.locator(`input[data-sheet-id="calculation:${key}"]`).count(), 0);
   assert.match(content, /工作应力（F1）/);
   const advanced = await page.evaluate(() => getParameterFieldGroups(state.review.spring_parameters, state.review).advanced);
@@ -164,14 +173,14 @@ try {
   const rowIds = [...expectedRows, ...advanced.map(field => `param:${field}`)];
   assert.deepEqual(await inputChoices.locator('input').evaluateAll(inputs => inputs.map(input => input.dataset.sheetId)), rowIds);
   assert.equal(new Set(rowIds).size, rowIds.length, 'merged input parameters have no duplicate rows');
-  const inputRows = await frame().getByRole('heading', { name: '输入参数', exact: true }).locator('..').locator('tbody > tr').count();
-  assert.equal(inputRows, rowIds.length, 'one continuous table contains both original groups');
-  assert.equal(await frame().getByRole('cell', { name: '垂直度', exact: true }).count(), 1);
+  const inputRows = await frame().getByRole('heading', { name: '输入参数', exact: true }).locator('..').locator('.fields > .report-item').count();
+  assert.equal(inputRows, rowIds.length, 'one text section contains both original groups');
+  assert.equal(await frame().locator('[data-report-row="param:perpendicularity"]').count(), 1);
   const calculationChecks = await dialog.locator('input[data-sheet-id^="calculation:"]').count();
   assert.equal(calculationChecks, 10, 'nine customer-facing metrics and one work stress');
   await dialog.locator('input[data-sheet-id="calculation:theoretical_spring_rate"]').uncheck();
   await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
-  assert.equal(await frame().getByRole('cell', { name: '理论刚度', exact: true }).count(), 0);
+  assert.equal(await frame().locator('[data-report-row="calculation:theoretical_spring_rate"]').count(), 0);
   await dialog.locator('input[data-sheet-id="calculation:theoretical_spring_rate"]').check();
   await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
   assert.equal(await frame().locator('script').count(), 0);
@@ -181,7 +190,7 @@ try {
   assert.equal(writes, count, 'clean preview does not save');
   const choice = dialog.locator('input[data-sheet-id="param:total_coils"]');
   await choice.uncheck(); await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
-  assert.equal(await frame().locator('td').filter({ hasText: /^总圈数$/ }).count(), 0);
+  assert.equal(await frame().locator('[data-report-row="param:total_coils"]').count(), 0);
   const advancedChoice = dialog.locator('input[data-sheet-id="param:perpendicularity"]');
   await advancedChoice.uncheck();
   await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
@@ -189,13 +198,13 @@ try {
   await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
   assert.equal(await choice.isChecked(), false, 'refresh preserves a deselected original basic row');
   assert.equal(await advancedChoice.isChecked(), false, 'refresh preserves a deselected original advanced row');
-  assert.equal(await frame().getByRole('cell', { name: '垂直度', exact: true }).count(), 0);
+  assert.equal(await frame().locator('[data-report-row="param:perpendicularity"]').count(), 0);
   await advancedChoice.check(); await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
   await choice.check(); await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
   await choice.uncheck(); await choice.check();
   await advancedChoice.uncheck(); await advancedChoice.check();
   await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
-  assert.equal(await frame().getByRole('cell', { name: '垂直度', exact: true }).count(), 1, 'rapid rerenders retain the latest selection');
+  assert.equal(await frame().locator('[data-report-row="param:perpendicularity"]').count(), 1, 'rapid rerenders retain the latest selection');
   // Print and cancel are deliberately indistinguishable: both leave the preview reusable.
   await page.evaluate(() => { const win = document.querySelector('.confirmation-sheet-preview iframe').contentWindow; window.printCalls = 0; win.print = () => { window.printCalls++; win.dispatchEvent(new Event('afterprint')); }; });
   await dialog.locator('[data-sheet-action="print"]').click(); await dialog.locator('[data-sheet-action="print"]').click();
@@ -257,7 +266,7 @@ try {
   assert.match(await frame().locator('body').innerText(), /FTA-28\/103-274/);
   assert.equal(await frame().getByRole('heading', { name: '输入参数', exact: true }).count(), 1);
   assert.doesNotMatch(await frame().locator('body').innerText(), /基础参数|高级参数/);
-  const html = await page.locator('.confirmation-sheet-preview iframe').getAttribute('srcdoc');
+  const html = await page.locator('.confirmation-sheet-preview iframe').evaluate(el=>el.contentDocument.documentElement.outerHTML);
   fs.writeFileSync(path.join(out, 'print.html'), html);
   const printPage = await browser.newPage(); await printPage.setContent(html);
   await printPage.evaluate(() => Promise.all([document.fonts.ready, ...[...document.images].map(img => img.decode())]));

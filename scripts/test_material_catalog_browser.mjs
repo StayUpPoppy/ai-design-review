@@ -115,7 +115,8 @@ async function downloadFromTab(page, tab) {
   await page.locator(`#compareOverlay [data-compare-tab="${tab}"]`).click();
   const button = page.locator(`.compare-tab-panel[data-compare-panel="${tab}"] [data-action="export-generation-package"]`);
   const downloaded = page.waitForEvent("download");
-  await button.click();
+  assert.equal(await button.count(), 0, "export buttons stay hidden");
+  await page.evaluate(() => exportCurrentGenerationPackage());
   const download = await downloaded;
   const result = JSON.parse(fs.readFileSync(await download.path(), "utf8"));
   assert.equal(result.generation_parameters.spring_parameters.material.value, "SUS316", `${tab}: pure material grade is downloaded`);

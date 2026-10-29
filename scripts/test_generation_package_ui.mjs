@@ -20,6 +20,7 @@ assert.notEqual(handednessEnd, -1, "handedness normalizer block must be complete
 
 const context = {
   validateCurrentGenerationSettings: () => {}, syncGenerationSettingsControls: () => {},
+  captureGenerationSettingsFocus: () => null,
   structuredClone,
   TECH_LABELS: { surface: "表面处理" },
   GENERATION_TECHNICAL_REQUIREMENT_LABELS: {
@@ -251,7 +252,7 @@ Object.assign(context, { state: { review: warningReview, lastJob: null, pendingR
   flushReviewPersistence: async () => true, generationPackageExportDisplayStatus: () => "ready",
   updateGenerationPackageExportAction: (_index, patch) => Object.assign(action, patch),
   updateLatestReviewMessage() {}, downloadJson: (data) => downloads.push(data) });
-const exportStart = appSource.indexOf("async function executeGenerationPackageExport");
+const exportStart = appSource.indexOf("function beginGenerationPackageExport");
 vm.runInContext(appSource.slice(exportStart, appSource.indexOf("function renderAccuracyStandardizationResultHtml", exportStart)), context);
 assert.equal(await context.exportCurrentGenerationPackage(), true);
 assert.equal(await context.executeGenerationPackageExport(action, 0), true, action.failure_reason);

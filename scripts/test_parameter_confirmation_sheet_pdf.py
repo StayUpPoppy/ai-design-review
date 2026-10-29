@@ -18,7 +18,17 @@ def pixels(image: Image.Image):
 
 def check(path: Path) -> list[Image.Image]:
     reader = PdfReader(path)
-    assert len(reader.pages) > 1, "Fixture must exercise real pagination"
+    if path.stem in {"normal", "few-rfi", "compact"}:
+        assert len(reader.pages) == 1, (path.name, "ordinary reports must fit one A4 page")
+    else:
+        assert len(reader.pages) > 1, "Long fixture must exercise real pagination"
+    combined = "".join((page.extract_text() or "") for page in reader.pages)
+    assert "待客户澄清事项" in combined or path.stem == "normal"
+    assert "正确" not in combined and "需修改" not in combined
+    if path.stem == "long":
+        compact_text = "".join(combined.replace("弹簧参数确认单", "").split())
+        assert "长条款结束-完整保留。" in compact_text
+        assert compact_text.count("镀层厚度≥15μm，先除氢后检验；不得漏镀，作用部位按原图执行。") == 100
     for index, page in enumerate(reader.pages, 1):
         text = page.extract_text() or ""
         assert text.count("弹簧参数确认单") == 1, (path.name, index, "missing/duplicate title")
@@ -36,14 +46,14 @@ def check(path: Path) -> list[Image.Image]:
         name = f"{path.stem}-{index:0{len(str(len(reader.pages)))}d}.png"
         with Image.open(path.parent / name) as source:
             image = source.convert("RGB")
-        logo = image.crop(tuple(round(v * mm) for v in (14, 14, 52, 28)))
+        logo = image.crop(tuple(round(v * mm) for v in (12, 6, 50, 20)))
         blue = sum(b > r + 25 and g > r + 10 for r, g, b in pixels(logo))
         assert blue > 100, (path.name, index, "logo missing, cropped or misplaced")
         dark = sum(value < 180 for value in pixels(logo.convert("L")))
         assert dark > 100, (path.name, index, "monochrome logo illegible")
-        gap = image.crop(tuple(round(v * mm) for v in (14, 29, 196, 31)))
+        gap = image.crop(tuple(round(v * mm) for v in (12, 21, 198, 23)))
         assert sum(min(pixel) < 220 for pixel in pixels(gap)) < 5, (path.name, index, "header overlaps body")
-        headers.append(image.crop((0, 0, image.width, round(44 * mm))))
+        headers.append(image.crop((0, 0, image.width, round(36 * mm))))
         if index == 1:
             image.convert("L").save(path.parent / f"{path.stem}-monochrome.png")
     print(f"{path.name}: {len(reader.pages)} A4 pages, every title/logo/clearance verified (including final signature page)")
