@@ -1,0 +1,103 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import http from "node:http";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
+const require = createRequire(import.meta.url);
+const { chromium } = require(process.env.CODEX_NODE_MODULES ? path.join(process.env.CODEX_NODE_MODULES, "playwright") : "C:/Users/29580/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright");
+const cases = JSON.parse(execFileSync(process.env.DESIGN_TEST_PYTHON || ".venv/Scripts/python.exe", ["scripts/test_solidworks_export.py", "--json"], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }));
+const catalog = JSON.parse(fs.readFileSync("config/compression_material_catalog.json", "utf8"));
+const frontend = path.resolve("frontend");
+const server = http.createServer((request, response) => {
+  const file = path.resolve(frontend, new URL(request.url, "http://localhost").pathname.slice(1) || "index.html");
+  if (!file.startsWith(frontend + path.sep) || !fs.existsSync(file)) return response.writeHead(404).end();
+  response.setHeader("Content-Type", file.endsWith(".js") ? "text/javascript" : file.endsWith(".css") ? "text/css" : "text/html");
+  response.end(fs.readFileSync(file));
+});
+await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+let browser;
+try {
+  browser = await chromium.launch({ headless: true, channel: process.env.UNIT_TEST_BROWSER_CHANNEL || "msedge" });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  let saved = structuredClone(cases.find(test => test.name === "optional_all").review), revision = 1, patches = 0;
+  await page.route("**/api/**", async route => {
+    const request = route.request(), apiPath = new URL(request.url()).pathname;
+    let body;
+    if (apiPath === "/api/session") body = { mode: "mock", identity: { user_id: "optional-user", username: "SW 测试账号", org_id: "optional-org", org_name: "不应显示的测试厂名", identity_display_enabled: true, is_mock: true } };
+    else if (apiPath === "/api/material-catalog") body = catalog;
+    else if (apiPath === "/api/reviews/optional" && request.method() === "PATCH") {
+      const input = request.postDataJSON();
+      assert.equal(input.expected_revision, revision);
+      saved = input.review; patches++;
+      body = { review_revision: ++revision, events: (input.events || []).map(event => ({ ...event, sync_status: "saved" })) };
+    } else if (apiPath === "/api/reviews/optional") body = { ...saved, job_id: "optional", review_revision: revision, image_url: "" };
+    else if (apiPath === "/api/reviews") body = { reviews: [] };
+    else if (apiPath.endsWith("/changes")) body = { events: [] };
+    else if (apiPath.endsWith("/generation-package")) body = { parameter_package: await page.evaluate(() => makeGenerationParameterPackage()) };
+    else if (apiPath.endsWith("/generation-jobs")) body = { generation_jobs: [], generation_queue_available: false };
+    else if (apiPath.endsWith("/generation-readiness")) body = { generation_readiness: { status: "ready", warnings: [], missing_fields: [], pending_fields: [], confirmed_core_count: 8, core_field_count: 8 }, generation_queue_available: false };
+    else if (apiPath.endsWith("/reasonableness")) body = { parameter_reasonableness: { status: "ok", issues: [], suggestions: [] } };
+    else if (apiPath.endsWith("/annotations")) body = { schema_version: "original_annotations/v1", source_document_id: "test", annotation_revision: 1, pages: [], annotations: [], warnings: [] };
+    else body = { status: "ok", generation_runtime: { status: "not_configured" }, recognition_queue_runtime: { status: "not_configured" } };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  const reopen = () => page.evaluate(async () => { await openPersistedReview("optional"); state.compareTab = "parameters"; renderCompareOverlay(); });
+  const preview = () => page.evaluate(() => makeGenerationParameterPackage().solidworks_preview);
+  await page.goto(process.env.SW_EXPORT_FRONTEND_URL || `http://127.0.0.1:${server.address().port}`);
+  await page.waitForFunction(() => state.identityReady && state.materialCatalog.status === "ready");
+  await reopen();
+  assert.equal(await page.locator("#identityProfileName").innerText(), "SW 测试账号");
+  assert.equal(await page.locator("#identityProfileSource").innerText(), "开发模拟");
+  assert.equal(await page.locator("#identityProfileOrg").count(), 0);
+  assert.equal(await page.getByText("不应显示的测试厂名", { exact: true }).count(), 0);
+  assert.equal(await page.evaluate(() => state.identity.org_id), "optional-org", "Organization identity is retained for authorization");
+  let current = await preview();
+  assert.deepEqual(current.modelParametersTolerance, { "外径": 1.5, "自由高度": .5, "中径": .2 });
+  assert.equal(current.titleBlockProperties["垂直度A"], .01);
+  const panel = page.locator('.compare-tab-panel[data-compare-panel="parameters"]');
+  const length = panel.locator('[data-kind="param"][data-field="free_length"]');
+  const tolerance = length.locator('[data-role="tolerance"]');
+  await tolerance.fill("+1.25/-0.75"); await tolerance.dispatchEvent("change");
+  await length.locator('[data-role="confirm"]').click();
+  assert.equal((await preview()).modelParametersTolerance["自由高度"], undefined, "Confirmed asymmetric tolerance is omitted");
+  await tolerance.fill("±0.000012345"); await tolerance.dispatchEvent("change");
+  assert.equal((await preview()).modelParametersTolerance["自由高度"], undefined, "Edited tolerance awaits confirmation");
+  await length.locator('[data-role="confirm"]').click();
+  assert.equal((await preview()).modelParametersTolerance["自由高度"], .000012345, "Small tolerances are not rounded to zero");
+  await panel.locator(".advanced-parameters summary").click();
+  const perpendicularity = panel.locator('[data-kind="param"][data-field="perpendicularity"]');
+  await perpendicularity.locator('[data-role="value"]').fill("0");
+  await perpendicularity.locator('[data-role="value"]').dispatchEvent("change");
+  assert.equal((await preview()).titleBlockProperties["垂直度A"], undefined);
+  await perpendicularity.locator('[data-role="confirm"]').click();
+  assert.equal((await preview()).titleBlockProperties["垂直度A"], 0);
+  assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
+  const before = await preview();
+  assert.ok(patches > 0);
+  await page.reload(); await page.waitForFunction(() => state.identityReady && state.materialCatalog.status === "ready");
+  await reopen();
+  current = await preview();
+  assert.deepEqual(current.modelParametersTolerance, before.modelParametersTolerance);
+  assert.equal(current.titleBlockProperties["垂直度A"], 0);
+  assert.equal(await page.evaluate(async () => {
+    const originalDownload = downloadJson;
+    downloadJson = value => { window.optionalExport = structuredClone(value); };
+    try { return await exportCurrentGenerationPackage(); } finally { downloadJson = originalDownload; }
+  }), true);
+  const exported = await page.evaluate(() => window.optionalExport.solidworks_preview);
+  assert.deepEqual(exported.modelParametersTolerance, current.modelParametersTolerance);
+  assert.equal(exported.titleBlockProperties["垂直度A"], 0);
+  await page.evaluate(() => closeCompareOverlay());
+  fs.mkdirSync("outputs/sw-optional-fields-qa", { recursive: true });
+  for (const width of process.env.SKIP_UI_QA_SCREENSHOTS ? [] : [1440, 1100, 390]) {
+    await page.setViewportSize({ width, height: width < 500 ? 1100 : 1000 });
+    assert.equal(await page.locator("#identityProfileOrg").count(), 0);
+    if (width > 720) assert.equal(await page.locator("#identityProfileName").isVisible(), true);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2), false);
+    await page.screenshot({ path: `outputs/sw-optional-fields-qa/identity-${width}.png` });
+  }
+  assert.deepEqual(errors, []);
+  console.log("PASS: optional-field UI editing/confirmation, asymmetric omission, tiny decimal and zero, save/reopen, hidden factory with intact identity and desktop/narrow/mobile layouts; mocked API only.");
+} finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }

@@ -41,7 +41,7 @@ for (const test of cases) {
   delete input.solidworks_preview;
   const preview = context.SolidWorksExport.buildPreview(input, test.review, catalog);
   assert.deepEqual(JSON.parse(JSON.stringify(preview)), test.package.solidworks_preview, test.name);
-  assert.deepEqual(Object.keys(preview.titleBlockProperties), ["材料", "重量", "客户图号", "表面粗糙度"].filter((key) => Object.hasOwn(preview.titleBlockProperties, key)), `${test.name} title-block order`);
+  assert.deepEqual(Object.keys(preview.titleBlockProperties), ["材料", "重量", "客户图号", "垂直度A", "表面粗糙度"].filter((key) => Object.hasOwn(preview.titleBlockProperties, key)), `${test.name} title-block order`);
   assert.deepEqual(input.source, test.package.source, `${test.name} source snapshot is not rewritten`);
   assert.deepEqual(JSON.parse(JSON.stringify(input.derived_parameters.solidworks_design_checks.metrics.unit_mass)),
     test.package.derived_parameters.solidworks_design_checks.metrics.unit_mass, `${test.name} frozen weight basis`);
@@ -74,5 +74,13 @@ for (const value of [NaN, Infinity, -Infinity, 0, -1, true, "0x10", "1_2"]) {
   const invalid = structuredClone(base.review);
   invalid.spring_parameters.surface_roughness_ra.value = value;
   assert.equal(context.SolidWorksExport.buildPreview(structuredClone(base.package), invalid, catalog).titleBlockProperties["表面粗糙度"], undefined);
+}
+for (const value of [NaN, Infinity, -Infinity, true, {}, []]) {
+  const invalid = structuredClone(base.review);
+  invalid.spring_parameters.outer_diameter = { value:28.8, unit:"mm", need_human_review:false, tolerance_upper:value, tolerance_lower:-1 };
+  invalid.spring_parameters.perpendicularity = { value, unit:"mm", need_human_review:false };
+  const projected = context.SolidWorksExport.buildPreview(structuredClone(base.package), invalid, catalog);
+  assert.equal(projected.modelParametersTolerance, undefined);
+  assert.equal(projected.titleBlockProperties["垂直度A"], undefined);
 }
 console.log(`PASS: ${cases.length} shared SW cases match Python and JavaScript exactly`);

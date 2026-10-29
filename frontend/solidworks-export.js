@@ -5,6 +5,8 @@
   const forceUnits = { n: 1, "牛": 1, kn: 1000, kgf: 9.80665 };
   const number = (v) => ["number", "string"].includes(typeof v) && String(v).trim() && Number.isFinite(Number(v)) ? Number(v) : null;
   const rounded = (v, digits = 4) => Number(Number(v).toFixed(digits));
+  const strictNumber = value => typeof value === "number" && Number.isFinite(value) ? value
+    : typeof value === "string" && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value.trim()) ? number(value) : null;
   const textNumber = (v) => String(rounded(v));
   const parameterValue = (item, preservePrecision = false) => number(item?.value) != null ? (preservePrecision ? Number(item.value) : rounded(item.value, 3)) : typeof item?.value === "string" ? item.value.trim() || null : null;
   const handedness = (value) => ["right", "right_hand", "r", "右旋"].includes(String(value).toLowerCase()) ? "右旋" : ["left", "left_hand", "l", "左旋"].includes(String(value).toLowerCase()) ? "左旋" : null;
@@ -24,6 +26,30 @@
     if (item.derived_value_stale || item.formula_recommendation_stale && !humanOverride(item)) return false;
     if (humanOverride(item) || !sources(item).some((s) => ["formula_calculation", "derived"].includes(s))) return true;
     return (item.source_fields || []).every((parent) => parameters[parent]?.value != null && parameters[parent]?.value !== "" && current(parameters, parent, [...path, field]));
+  }
+  function confirmedOptionalMm(parameters, field, allowZero = false) {
+    const item = parameters[field];
+    if (!item || typeof item !== "object" || item.need_human_review !== false) return null;
+    if (["tolerance_input_draft", "derived_value_stale", "formula_recommendation_stale", "diameter_linkage_error", "conflict", "value_conflict", "tolerance_conflict"].some(key => item[key]) || !current(parameters, field)) return null;
+    const snapshot = item.confirmation_snapshot;
+    if (snapshot != null && (typeof snapshot !== "object" || Array.isArray(snapshot) || (Object.hasOwn(snapshot, "kind") ? snapshot.kind : "parameter") !== "parameter"
+      || ["value", "tolerance_upper", "tolerance_lower"].some(key => JSON.stringify(snapshot[key] ?? null) !== JSON.stringify(item[key] ?? null))
+      || Object.hasOwn(snapshot, "value_kind") && snapshot.value_kind !== item.value_kind)) return null;
+    const value = strictNumber(item.value), factor = lengthUnits[String(item.unit || "mm").trim().toLowerCase()];
+    return value == null || factor == null || value < 0 || !allowZero && value === 0 || !Number.isFinite(value * factor) ? null : { item, value: value * factor, factor };
+  }
+  function modelParametersTolerance(review) {
+    const parameters = review.spring_parameters || {}, tolerances = {};
+    for (const [label, field] of [["外径", "outer_diameter"], ["自由高度", "free_length"], ["中径", "mean_diameter"]]) {
+      if (review.diameter_linkage?.status === "invalid" && ["outer_diameter", "mean_diameter"].includes(field)) continue;
+      const confirmed = confirmedOptionalMm(parameters, field);
+      if (!confirmed) continue;
+      const upper = strictNumber(confirmed.item.tolerance_upper), lower = strictNumber(confirmed.item.tolerance_lower);
+      if (upper == null || lower == null || upper < 0 || upper !== -lower) continue;
+      const value = upper * confirmed.factor;
+      if (Number.isFinite(value)) tolerances[label] = value === 0 ? 0 : value;
+    }
+    return tolerances;
   }
   const roughnessUnit = (value) => String(value || "μm").trim().toLowerCase().replace(/µ/g, "μ").replace(/um/g, "μm");
   const roughnessLocation = (value) => {
@@ -211,13 +237,17 @@
     if (["calculated", "estimated"].includes(mass?.status) && mass.unit === "kg" && weight != null && weight > 0) titleBlock["重量"] = rounded(weight, 8);
     const drawingNo = packageData.source?.drawing_no;
     if (typeof drawingNo === "string" && drawingNo.trim()) titleBlock["客户图号"] = drawingNo.trim();
+    const perpendicularity = confirmedOptionalMm(review.spring_parameters || {}, "perpendicularity", true);
+    if (perpendicularity) titleBlock["垂直度A"] = perpendicularity.value;
     const roughness = confirmedRoughness(review);
     if (roughness != null) titleBlock["表面粗糙度"] = roughness.value;
     const modelParameters = Object.fromEntries([["线径", "wire_diameter"], ["中径", "mean_diameter"], ["自由高度", "free_length"], ["圈数", "total_coils"], ["有效圈数n", "active_coils"], ["是否磨平", "end_grinding"], ["是否并紧", "end_coils_closed"]].map(([label, field]) => [label, parameterValue(parameters[field], ["total_coils", "active_coils"].includes(field))]));
     if (modelParameters["是否并紧"] === 0) delete modelParameters["有效圈数n"];
+    const tolerances = modelParametersTolerance(review);
     return {
       ...(packageData.generation_settings ? { DrawingModel: packageData.generation_settings.drawing_model, Username: packageData.generation_settings.username } : {}),
       modelParameters,
+      ...(Object.keys(tolerances).length ? { modelParametersTolerance: tolerances } : {}),
       customProperties: { "旋向": handedness(parameterValue(parameters.handedness)) }, extraProperties: extra, titleBlockProperties: titleBlock,
     };
   }

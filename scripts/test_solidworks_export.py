@@ -188,6 +188,56 @@ def cases():
         add(name, summary={"drawing_no": value})
     add("drawing_no_without_weight", {"material": {"value": ""}}, summary={"drawing_no": "0001"})
     add("drawing_no_only", {"material": {"value": ""}, "surface_roughness_ra": {"value": ""}}, summary={"drawing_no": "0"})
+    # Optional SW fields share these expectations with the JavaScript exporter.
+    def optional(name, edits, tolerances=None, perpendicularity=None, **kwargs):
+        add("optional_" + name, edits, **kwargs)
+        result[-1].update(expected_tolerances=tolerances, expected_perpendicularity=perpendicularity)
+    for label, field, value in (("外径", "outer_diameter", 28.8), ("自由高度", "free_length", 19), ("中径", "mean_diameter", 25.2)):
+        base = parameter(value, "mm", tolerance_upper=1.5, tolerance_lower=-1.5)
+        optional(field, {field: base}, {label: 1.5})
+        optional(field + "_zero", {field: {**base, "tolerance_upper": 0, "tolerance_lower": 0}}, {label: 0})
+        optional(field + "_tiny", {field: {**base, "tolerance_upper": 0.000012345, "tolerance_lower": -0.000012345}}, {label: 0.000012345})
+        for suffix, patch in (
+            ("asymmetric", {"tolerance_lower": -0.5}), ("one_sided", {"tolerance_lower": None}),
+            ("one_sided_zero", {"tolerance_lower": 0}), ("missing", {"tolerance_upper": None, "tolerance_lower": None}),
+            ("reversed", {"tolerance_upper": -1.5, "tolerance_lower": 1.5}), ("pending", {"need_human_review": True}),
+            ("unknown_confirmation", {"need_human_review": None}), ("stale", {"derived_value_stale": True}),
+            ("formula_stale", {"formula_recommendation_stale": True, "source": ["manual"]}),
+            ("invalid", {"tolerance_input_draft": "±bad", "tolerance_upper": None, "tolerance_lower": None}), ("boolean", {"tolerance_upper": True, "tolerance_lower": -1}),
+            ("draft", {"tolerance_input_draft": "1.5/"}), ("conflict", {"tolerance_conflict": True}),
+            ("unit", {"unit": "μm"}),
+            ("old_confirmation", {"confirmation_snapshot": {"kind": "parameter", "value": value, "tolerance_upper": 1, "tolerance_lower": -1}}),
+        ):
+            optional(field + "_" + suffix, {field: {**base, **patch}})
+    optional("all", {"outer_diameter": parameter(28.8,"mm",tolerance_upper=1.5,tolerance_lower=-1.5),
+        "free_length": parameter(19,"mm",tolerance_upper=0.5,tolerance_lower=-0.5),
+        "mean_diameter": parameter(25.2,"mm",tolerance_upper=0.2,tolerance_lower=-0.2),
+        "perpendicularity": parameter(0.01,"mm")}, {"外径":1.5,"自由高度":0.5,"中径":0.2}, 0.01,
+        summary={"drawing_no":"OPTIONAL-001"})
+    for name, unit, value, tolerance, expected in (("cm", "cm", 2.88, 0.15, 1.5), ("m", "m", .0288, .0015, 1.5),
+        ("inch", "in", 1.2, .01, .01*25.4), ("alias", "毫米", 28.8, .25, .25)):
+        optional("unit_"+name,{"outer_diameter":parameter(value,unit,tolerance_upper=tolerance,tolerance_lower=-tolerance)}, {"外径":expected})
+    optional("no_copy",{"inner_diameter":parameter(21.6,"mm",tolerance_upper=2,tolerance_lower=-2),"outer_diameter":parameter(28.8,"mm")})
+    optional("bad_nominal",{"outer_diameter":parameter(0,"mm",tolerance_upper=1.5,tolerance_lower=-1.5)})
+    optional("dependency_stale",{"outer_diameter":parameter(28.8,"mm",source=["derived"],source_fields=["pitch"],tolerance_upper=1.5,tolerance_lower=-1.5),"pitch":{"derived_value_stale":True}})
+    for suffix, patch, expected in (
+        ("valid",{},.01), ("zero",{"value":0},0), ("tiny",{"value":.000012345},.000012345),
+        ("cm",{"value":.001,"unit":"cm"},.01), ("no_number",{"value":None},None), ("blank",{"value":" "},None),
+        ("negative",{"value":-.01},None), ("boolean",{"value":True},None), ("nan",{"value":"NaN"},None),
+        ("infinity",{"value":"Infinity"},None), ("hex",{"value":"0x10"},None),
+        ("pending",{"need_human_review":True},None), ("stale",{"derived_value_stale":True},None),
+        ("formula_stale",{"formula_recommendation_stale":True,"source":["manual"]},None),
+        ("conflict",{"value_conflict":True},None), ("unit",{"unit":"degree"},None),
+        ("old_confirmation",{"confirmation_snapshot":{"kind":"parameter","value":.02}},None),
+    ):
+        optional("perpendicularity_"+suffix,{"perpendicularity":{**parameter(.01,"mm"),**patch}}, perpendicularity=expected)
+    optional("fullwidth", {"perpendicularity":parameter("１", "mm")})
+    optional("snapshot_boolean", {"perpendicularity":parameter(1, "mm", confirmation_snapshot={"value":True})})
+    optional("snapshot_empty_kind", {"perpendicularity":parameter(.01,"mm",confirmation_snapshot={"kind":"","value":.01})})
+    optional("snapshot_null_kind", {"perpendicularity":parameter(.01,"mm",confirmation_snapshot={"kind":None,"value":.01})})
+    optional("numeric_strings", {"outer_diameter":parameter("28.8","mm",tolerance_upper="1.5",tolerance_lower="-1.5"), "perpendicularity":parameter("0.01","mm")}, {"外径":1.5}, .01)
+    optional("matching_snapshot", {"perpendicularity":parameter(.01,"mm",confirmation_snapshot={"kind":"parameter","value":.01,"tolerance_upper":None,"tolerance_lower":None})}, perpendicularity=.01)
+    optional("unknown_fields", {"perpendicularity":parameter(.01,"mm",need_human_review=None)})
     return result
 
 
@@ -227,7 +277,7 @@ def run():
         if complete_contract:
             GenerationParameterPackageV2.model_validate(package)
         preview = package["solidworks_preview"]
-        assert list(preview) == ["modelParameters", "customProperties", "extraProperties", "titleBlockProperties"]
+        assert list(preview) == ["modelParameters", *(["modelParametersTolerance"] if "modelParametersTolerance" in preview else []), "customProperties", "extraProperties", "titleBlockProperties"]
         command = build_solidworks_command("1000000099", package, review)
         model = command["models"][0]
         assert {k: model[k] for k in preview} == preview
@@ -246,14 +296,20 @@ def run():
         assert preview["modelParameters"]["是否并紧"] == package["generation_parameters"]["spring_parameters"].get("end_coils_closed", {}).get("value")
         extra = preview["extraProperties"]
         title = preview["titleBlockProperties"]
-        assert isinstance(title, dict) and set(title) <= {"材料", "重量", "客户图号", "表面粗糙度"}
-        assert list(title) == [key for key in ("材料", "重量", "客户图号", "表面粗糙度") if key in title]
+        assert isinstance(title, dict) and set(title) <= {"材料", "重量", "客户图号", "垂直度A", "表面粗糙度"}
+        assert list(title) == [key for key in ("材料", "重量", "客户图号", "垂直度A", "表面粗糙度") if key in title]
         drawing_no = package["source"].get("drawing_no")
         if isinstance(drawing_no, str) and drawing_no.strip():
             assert title["客户图号"] == drawing_no.strip() and isinstance(title["客户图号"], str)
         else:
             assert "客户图号" not in title
         assert review["drawing_summary"] == original_review["drawing_summary"]
+        if "expected_tolerances" in case:
+            assert preview.get("modelParametersTolerance") == case["expected_tolerances"], (case["name"], preview)
+            assert title.get("垂直度A") == case["expected_perpendicularity"], (case["name"], title)
+            for field in ("outer_diameter", "free_length", "mean_diameter", "perpendicularity"):
+                assert review["spring_parameters"].get(field) == original_review["spring_parameters"].get(field), (case["name"], field)
+
         if case["name"] == "drawing_no_without_weight":
             assert title == {"客户图号": "0001", "表面粗糙度": 12.5}
         if case["name"] == "drawing_no_only":
@@ -423,6 +479,22 @@ def run():
     del historical["solidworks_preview"]["modelParameters"]["是否并紧"]
     assert "是否并紧" not in build_solidworks_command("1000000099", historical, baseline["review"])["models"][0]["modelParameters"]
     assert build_solidworks_command("1000000099", historical, baseline["review"])["models"][0]["extraProperties"]["技术要求"] == old_text, "pre-feature frozen requests must not gain the new template"
+    for invalid in (float("nan"), float("inf"), -float("inf"), True, {}, []):
+        changed = deepcopy(outputs[0]["review"])
+        changed["spring_parameters"].update(outer_diameter=parameter(28.8,"mm",tolerance_upper=invalid,tolerance_lower=-1),perpendicularity=parameter(invalid,"mm"))
+        projected = build_solidworks_preview(deepcopy(outputs[0]["package"]), changed)
+        assert "modelParametersTolerance" not in projected and "垂直度A" not in projected["titleBlockProperties"]
+    # Frozen requests do not acquire new properties from a newer live review.
+    from ai_design_review.generation_service import stable_payload_hash
+    frozen = deepcopy(outputs[0]["package"])
+    live = deepcopy(outputs[0]["review"])
+    live["spring_parameters"].update(outer_diameter=parameter(28.8,"mm",tolerance_upper=1.5,tolerance_lower=-1.5),perpendicularity=parameter(.01,"mm"))
+    old = build_solidworks_command("1000000010",frozen,live)["models"][0]
+    assert "modelParametersTolerance" not in old and "垂直度A" not in old["titleBlockProperties"]
+    new = build_generation_parameter_package(live)
+    assert new["solidworks_preview"]["modelParametersTolerance"] == {"外径":1.5}
+    assert stable_payload_hash(frozen) != stable_payload_hash(new)
+    GenerationParameterPackageV2.model_validate(new)
     return outputs
 
 

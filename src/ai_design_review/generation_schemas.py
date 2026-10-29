@@ -163,8 +163,8 @@ class GenerationParameterPackageV1(BaseModel):
             "generation_parameters": {
                 "spring_parameters": {
                     "wire_diameter": {"label": "线径", "value": 3.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
-                    "mean_diameter": {"label": "中径", "value": 23.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
-                    "free_length": {"label": "自由长度", "value": 45.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "mean_diameter": {"label": "中径", "value": 23.0, "unit": "mm", "tolerance_upper": 0.2, "tolerance_lower": -0.2, "confirmation_source": "human_confirmed"},
+                    "free_length": {"label": "自由长度", "value": 45.0, "unit": "mm", "tolerance_upper": 0.5, "tolerance_lower": -0.5, "confirmation_source": "human_confirmed"},
                     "total_coils": {"label": "总圈数", "value": 10.5, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "active_coils": {"label": "有效圈数", "value": 8.25, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "handedness": {"label": "旋向", "value": "right", "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
@@ -231,13 +231,18 @@ class SolidWorksPreviewV2(BaseModel):
     modelParameters: dict[str, int | float | str | None] = Field(
         description="SolidWorks 建模字段：线径、中径、自由高度、圈数、是否磨平、是否并紧；是否并紧为0时省略有效圈数n，否则保留该键。内部有效圈数及确认规则不变；不含 TaskId。"
     )
+    modelParametersTolerance: dict[Literal["外径", "自由高度", "中径"], Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+        description="可选已确认有效对称公差，按外径、自由高度、中径顺序输出mm数字幅值，例如±1.5传1.5。各项只读自身公差；非对称、单边、待确认、非法及失效值省略。三项全缺时省略整个对象，0是有效数值；保留小数，不按名义尺寸三位截断。旧冻结请求及重试不补写。",
+        examples=[{"外径": 1.5, "自由高度": 0.5, "中径": 0.2}],
+    )
     customProperties: dict[str, str | None] = Field(default_factory=dict, description="旋向等模型属性；旧预览可省略。")
     extraProperties: dict[str, int | float | str] = Field(default_factory=dict, description="技术要求多行文本（已确认有效的端部状态排第一条，仅并紧且磨平时追加每端磨270°；不新增审图编辑条目；不并紧时省略自动有效圈数行，其余状态使用有效圈数名称，原图和人工圈数要求保留）及可用的 P'（N/mm）、C、τ_b（MPa）；缺项省略键名。")
     titleBlockProperties: dict[str, int | float | str] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="标题栏属性按材料、重量、客户图号、表面粗糙度顺序输出：已确认材料纯牌号、单件重量（数字，kg，最多八位小数）、参数包source.drawing_no中的客户图号（字符串，仅去首尾空白）及已确认有效的表面粗糙度Ra（数字，μm）。图号缺失或为空时独立省略，不增加生图拦截。粗糙度对应独立句不再输出到技术要求；其它部位及附加条件保留。各项缺失时省略键；新预览都缺失时为空对象，旧预览可省略此字段或客户图号，已冻结请求及重试保持原样。",
-        examples=[{"材料": "SUS304", "重量": 0.00642403, "客户图号": "YD4765020178", "表面粗糙度": 12.5}],
+        description="标题栏属性按材料、重量、客户图号、垂直度A、表面粗糙度顺序输出：已确认材料纯牌号、单件重量（数字，kg，最多八位小数）、参数包source.drawing_no中的客户图号（字符串，仅去首尾空白）及已确认有效的表面粗糙度Ra（数字，μm）。图号缺失或为空时独立省略，不增加生图拦截。垂直度A读取当前已确认有效的高级参数垂直度，输出有限非负mm数字，0有效；缺值、冲突、待确认、非法或失效时省略，不依赖客户图号。粗糙度对应独立句不再输出到技术要求；其它部位及附加条件保留。各项缺失时省略键；新预览都缺失时为空对象，旧预览可省略此字段或客户图号，已冻结请求及重试保持原样。",
+        examples=[{"材料": "SUS304", "重量": 0.00642403, "客户图号": "YD4765020178", "垂直度A": 0.01, "表面粗糙度": 12.5}],
     )
 
 
@@ -260,8 +265,8 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
                 "spring_parameters": {
                     "material": {"label": "材料", "value": "65Mn", "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "wire_diameter": {"label": "线径", "value": 3.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
-                    "mean_diameter": {"label": "中径", "value": 23.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
-                    "free_length": {"label": "自由长度", "value": 45.0, "unit": "mm", "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
+                    "mean_diameter": {"label": "中径", "value": 23.0, "unit": "mm", "tolerance_upper": 0.2, "tolerance_lower": -0.2, "confirmation_source": "human_confirmed"},
+                    "free_length": {"label": "自由长度", "value": 45.0, "unit": "mm", "tolerance_upper": 0.5, "tolerance_lower": -0.5, "confirmation_source": "human_confirmed"},
                     "total_coils": {"label": "总圈数", "value": 10.5, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "active_coils": {"label": "有效圈数", "value": 8.25, "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
                     "handedness": {"label": "旋向", "value": "right", "unit": None, "tolerance_upper": None, "tolerance_lower": None, "confirmation_source": "human_confirmed"},
@@ -273,7 +278,7 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
                 "technical_requirements_text": "1.其他要求：两端磨平，表面镀锌。",
             },
             "derived_parameters": {},
-            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10.5, "有效圈数n": 8.25, "是否磨平": 1, "是否并紧": 1}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.两端并紧磨平，每端磨270°。\n2.材料：65Mn。\n3.旋向：右旋。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn", "客户图号": "SPRING-001"}},
+            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10.5, "有效圈数n": 8.25, "是否磨平": 1, "是否并紧": 1}, "modelParametersTolerance": {"外径": 1.5, "自由高度": 0.5, "中径": 0.2}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.两端并紧磨平，每端磨270°。\n2.材料：65Mn。\n3.旋向：右旋。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn", "客户图号": "SPRING-001", "垂直度A": 0.01}},
         }]},
     )
 

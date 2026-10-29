@@ -219,8 +219,7 @@ button:disabled {
   text-align: right;
 }
 
-.identity-profile-name,
-.identity-profile-org {
+.identity-profile-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -231,7 +230,6 @@ button:disabled {
   font-weight: 700;
 }
 
-.identity-profile-org,
 .identity-profile-source {
   color: var(--muted);
   font-size: 11px;

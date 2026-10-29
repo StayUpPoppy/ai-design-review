@@ -7,7 +7,7 @@ from typing import Any
 
 from .generation_contract import generation_source_item, handedness_label, normalize_generation_value
 from .material_catalog import material_catalog_display_value
-from .standardizers.calculation_state import parameter_current, solid_height_kind
+from .standardizers.calculation_state import number as strict_number, parameter_current, solid_height_kind
 from .standardizers.design_checks import LENGTH_UNITS, calculate_design_checks
 from .surface_roughness import confirmed_surface_roughness, surface_roughness_matches
 from .technical_requirements import TECHNICAL_REQUIREMENT_TYPE_LABELS, format_technical_requirement, strip_technical_requirements_title, technical_requirement_output_content, technical_requirement_body, technical_requirement_equivalence_key
@@ -110,6 +110,57 @@ def _finite_number(value: Any) -> float | int | None:
     return int(number) if number.is_integer() else round(number, 3)
 
 
+def _optional_number(value: Any) -> float | None:
+    # Match the browser's JSON-number spelling; do not coerce booleans or prose.
+    if isinstance(value, str) and not value.strip().isascii():
+        return None
+    return strict_number(value)
+
+
+def _confirmed_optional_mm(parameters: dict[str, Any], field: str, *, allow_zero: bool = False) -> tuple[dict[str, Any], float] | None:
+    """Read optional SW dimensions without adopting suggestions or rounding small values."""
+    item = parameters.get(field)
+    if not isinstance(item, dict) or item.get("need_human_review") is not False:
+        return None
+    if any(item.get(key) for key in ("tolerance_input_draft", "derived_value_stale", "formula_recommendation_stale",
+                                     "diameter_linkage_error", "conflict", "value_conflict", "tolerance_conflict")):
+        return None
+    if not parameter_current(parameters, field):
+        return None
+    snapshot = item.get("confirmation_snapshot")
+    if snapshot is not None and (not isinstance(snapshot, dict) or snapshot.get("kind", "parameter") != "parameter"
+                                or any(isinstance(snapshot.get(key), bool) != isinstance(item.get(key), bool) or snapshot.get(key) != item.get(key)
+                                       for key in ("value", "tolerance_upper", "tolerance_lower"))
+                                or "value_kind" in snapshot and snapshot["value_kind"] != item.get("value_kind")):
+        return None
+    value = _optional_number(item.get("value"))
+    factor = LENGTH_UNITS.get(str(item.get("unit") or "mm").strip().lower())
+    if value is None or factor is None or value < 0 or not allow_zero and value == 0 or not math.isfinite(value * factor):
+        return None
+    return item, value * factor
+
+
+def _model_parameters_tolerance(review: dict[str, Any]) -> dict[str, float]:
+    parameters = review.get("spring_parameters") or {}
+    invalid_linkage = (review.get("diameter_linkage") or {}).get("status") == "invalid"
+    result = {}
+    for label, field in (("外径", "outer_diameter"), ("自由高度", "free_length"), ("中径", "mean_diameter")):
+        if invalid_linkage and field in {"outer_diameter", "mean_diameter"}:
+            continue
+        confirmed = _confirmed_optional_mm(parameters, field)
+        if confirmed is None:
+            continue
+        item, _ = confirmed
+        upper, lower = _optional_number(item.get("tolerance_upper")), _optional_number(item.get("tolerance_lower"))
+        # Do not turn asymmetric or one-sided engineering requirements into ± values.
+        if upper is None or lower is None or upper < 0 or upper != -lower:
+            continue
+        value = upper * LENGTH_UNITS[str(item.get("unit") or "mm").strip().lower()]
+        if math.isfinite(value):
+            result[label] = 0 if value == 0 else value
+    return result
+
+
 def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
     """Recalculate authoritative inputs and freeze their calculation basis."""
     checks = calculate_design_checks(review.get("spring_parameters") or {}, review.get("spring_features") or {})
@@ -136,12 +187,17 @@ def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str
     drawing_no = (parameter_package.get("source") or {}).get("drawing_no")
     if isinstance(drawing_no, str) and drawing_no.strip():
         title_block["客户图号"] = drawing_no.strip()
+    perpendicularity = _confirmed_optional_mm(review.get("spring_parameters") or {}, "perpendicularity", allow_zero=True)
+    if perpendicularity is not None:
+        title_block["垂直度A"] = perpendicularity[1]
     roughness = confirmed_surface_roughness(review)
     if roughness is not None:
         title_block["表面粗糙度"] = roughness["value"]
     settings = parameter_package.get("generation_settings")
+    tolerances = _model_parameters_tolerance(review)
     return {**({"DrawingModel": settings["drawing_model"], "Username": settings["username"]} if settings else {}),
             "modelParameters": build_solidworks_model_parameters(parameter_package, review),
+            **({"modelParametersTolerance": tolerances} if tolerances else {}),
             "customProperties": {"旋向": handedness_label(_parameter_value(parameters.get("handedness")))},
             "extraProperties": extra, "titleBlockProperties": title_block}
 

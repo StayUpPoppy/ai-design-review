@@ -512,7 +512,6 @@ let historySidebarExpandedSize = null;
 const historySidebarReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 const identityProfile = document.getElementById("identityProfile");
 const identityProfileName = document.getElementById("identityProfileName");
-const identityProfileOrg = document.getElementById("identityProfileOrg");
 const identityProfileSource = document.getElementById("identityProfileSource");
 const compareOverlay = createCompareOverlay();
 let historyUnread = null;
@@ -676,7 +675,6 @@ function refreshIdentityUi() {
   if (identityProfile) identityProfile.hidden = !showIdentity;
   if (showIdentity) {
     identityProfileName.textContent = identity.username || "-";
-    identityProfileOrg.textContent = identity.org_name || "-";
     identityProfileSource.hidden = !identity.is_mock;
     identityProfileSource.textContent = identity.is_mock ? "开发模拟" : "";
   }
