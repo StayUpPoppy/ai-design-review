@@ -3,50 +3,109 @@
     "name": "right_template_and_both_labels",
     "direction": "right",
     "requirements": [
-      {"type": "other", "content": "绕制方向：右旋。"},
-      {"type": "other", "content": "旋向：右旋。"}
+      {
+        "type": "other",
+        "content": "绕制方向：右旋。"
+      },
+      {
+        "type": "other",
+        "content": "旋向：右旋。"
+      }
     ],
-    "expected": ["旋向：右旋。"]
+    "expected": [
+      "旋向：右。"
+    ]
   },
   {
     "name": "left_template_keeps_conflicting_requirement",
     "direction": "left",
     "requirements": [
-      {"type": "other", "content": "其他要求：绕制方向：左旋。"},
-      {"type": "process", "content": "旋向：左旋。"},
-      {"type": "other", "content": "绕制方向：右旋。"}
+      {
+        "type": "other",
+        "content": "其他要求：绕制方向：左旋。"
+      },
+      {
+        "type": "process",
+        "content": "旋向：左旋。"
+      },
+      {
+        "type": "other",
+        "content": "绕制方向：右旋。"
+      }
     ],
-    "expected": ["旋向：左旋。", "旋向：右旋。"]
+    "expected": [
+      "旋向：左。",
+      "旋向：右旋。"
+    ]
   },
   {
     "name": "structured_direction_without_parameter",
     "requirements": [
-      {"type": "other", "content": "其他要求：绕制方向：左旋。"},
-      {"type": "other", "content": "旋向：左旋。"}
+      {
+        "type": "other",
+        "content": "其他要求：绕制方向：左旋。"
+      },
+      {
+        "type": "other",
+        "content": "旋向：左旋。"
+      }
     ],
-    "expected": ["旋向：左旋。"]
+    "expected": [
+      "旋向：左旋。"
+    ]
   },
   {
     "name": "direction_beneath_process_label",
-    "requirements": [{"type": "process", "content": "工艺要求：绕制方向:左旋，端部按原图。"}],
-    "expected": ["工艺要求：旋向:左旋，端部按原图。"]
+    "requirements": [
+      {
+        "type": "process",
+        "content": "工艺要求：绕制方向:左旋，端部按原图。"
+      }
+    ],
+    "expected": [
+      "工艺要求：旋向:左旋，端部按原图。"
+    ]
   },
   {
     "name": "both_colons_and_repeated_other_labels",
     "requirements": [
-      {"type": "other", "content": "其他要求：展开长度：约268mm。"},
-      {"type": "other", "content": "其他要求:展开长度：约268mm。"},
-      {"type": "other", "content": "其他要求：其他要求:其他要求：展开长度：约268mm。"}
+      {
+        "type": "other",
+        "content": "其他要求：展开长度：约268mm。"
+      },
+      {
+        "type": "other",
+        "content": "其他要求:展开长度：约268mm。"
+      },
+      {
+        "type": "other",
+        "content": "其他要求：其他要求:其他要求：展开长度：约268mm。"
+      }
     ],
-    "expected": ["展开长度：约268mm。"]
+    "expected": [
+      "展开长度：约268mm。"
+    ]
   },
   {
     "name": "engineering_conditions_and_other_types_unchanged",
     "requirements": [
-      {"type": "other", "content": "其他要求：镀层厚度≥15 μm，先除氢后检验；不得漏镀。", "application_scope": "两端面"},
-      {"type": "surface", "content": "表面处理：电镀-镀彩锌，镀层厚度≥15 μm，并进行除氢处理。"},
-      {"type": "heat_treatment", "content": "热处理：300℃+10℃/20min+1min。"},
-      {"type": "hardness", "content": "硬度要求：HRC45-50。"}
+      {
+        "type": "other",
+        "content": "其他要求：镀层厚度≥15 μm，先除氢后检验；不得漏镀。",
+        "application_scope": "两端面"
+      },
+      {
+        "type": "surface",
+        "content": "表面处理：电镀-镀彩锌，镀层厚度≥15 μm，并进行除氢处理。"
+      },
+      {
+        "type": "heat_treatment",
+        "content": "热处理：300℃+10℃/20min+1min。"
+      },
+      {
+        "type": "hardness",
+        "content": "硬度要求：HRC45-50。"
+      }
     ],
     "expected": [
       "镀层厚度≥15 μm，先除氢后检验；不得漏镀（作用范围：两端面）",
@@ -58,45 +117,536 @@
   {
     "name": "prose_and_nonlabel_words_preserved",
     "requirements": [
-      {"type": "other", "content": "其他要求：客户有其他要求：请先沟通，绕制方向需按原图执行。"},
-      {"type": "other", "content": "其他要求不得省略，按原图执行。"},
-      {"type": "other", "content": "请核对绕制方向：左旋，以及端部状态。"}
+      {
+        "type": "other",
+        "content": "其他要求：客户有其他要求：请先沟通，绕制方向需按原图执行。"
+      },
+      {
+        "type": "other",
+        "content": "其他要求不得省略，按原图执行。"
+      },
+      {
+        "type": "other",
+        "content": "请核对绕制方向：左旋，以及端部状态。"
+      }
     ],
-    "expected": ["客户有其他要求：请先沟通，绕制方向需按原图执行。", "其他要求不得省略，按原图执行。", "请核对绕制方向：左旋，以及端部状态。"]
+    "expected": [
+      "客户有其他要求：请先沟通，绕制方向需按原图执行。",
+      "其他要求不得省略，按原图执行。",
+      "请核对绕制方向：左旋，以及端部状态。"
+    ]
   },
   {
     "name": "empty_labels_omitted",
     "requirements": [
-      {"type": "other", "content": "其他要求："},
-      {"type": "other", "content": "其他要求 : 其他要求：  "},
-      {"type": "other", "content": ""},
-      {"type": "other", "content": "保留本条。"}
+      {
+        "type": "other",
+        "content": "其他要求："
+      },
+      {
+        "type": "other",
+        "content": "其他要求 : 其他要求：  "
+      },
+      {
+        "type": "other",
+        "content": ""
+      },
+      {
+        "type": "other",
+        "content": "保留本条。"
+      }
     ],
-    "expected": ["保留本条。"]
+    "expected": [
+      "保留本条。"
+    ]
   },
   {
     "name": "different_scopes_and_values_retained",
     "requirements": [
-      {"type": "other", "content": "其他要求：厚度≥15 μm。", "application_scope": "端面"},
-      {"type": "other", "content": "其他要求:厚度≥15 μm。", "application_scope": "外圆"},
-      {"type": "other", "content": "其他要求：厚度≥20 μm。", "application_scope": "端面"}
+      {
+        "type": "other",
+        "content": "其他要求：厚度≥15 μm。",
+        "application_scope": "端面"
+      },
+      {
+        "type": "other",
+        "content": "其他要求:厚度≥15 μm。",
+        "application_scope": "外圆"
+      },
+      {
+        "type": "other",
+        "content": "其他要求：厚度≥20 μm。",
+        "application_scope": "端面"
+      }
     ],
-    "expected": ["厚度≥15 μm（作用范围：端面）", "厚度≥15 μm（作用范围：外圆）", "厚度≥20 μm（作用范围：端面）"]
+    "expected": [
+      "厚度≥15 μm（作用范围：端面）",
+      "厚度≥15 μm（作用范围：外圆）",
+      "厚度≥20 μm（作用范围：端面）"
+    ]
   },
   {
     "name": "legacy_numbered_text_and_empty_line",
     "legacy": "技术要求\n1.绕制方向:左旋。\n2.其他要求：展开长度：约268mm。\n3.其他要求：\n4.其他要求:其他要求：不得漏镀。",
-    "expected": ["旋向:左旋。", "展开长度：约268mm。", "不得漏镀。"]
+    "expected": [
+      "旋向:左旋。",
+      "展开长度：约268mm。",
+      "不得漏镀。"
+    ]
   },
   {
     "name": "legacy_template_dedup",
     "direction": "right",
     "legacy": "绕制方向：右旋。\n旋向：右旋。\n其他要求：禁止漏镀。\n其他要求:禁止漏镀。",
-    "expected": ["旋向：右旋。", "禁止漏镀。"]
+    "expected": [
+      "旋向：右。",
+      "禁止漏镀。"
+    ]
   },
   {
     "name": "legacy_labels_only",
     "legacy": "1.其他要求：\n2.其他要求:其他要求：",
     "expected": []
+  },
+  {
+    "name": "new_header_decimal",
+    "parameters": {
+      "total_coils": 6.64,
+      "active_coils": 4.64,
+      "end_coils_closed": 1,
+      "end_grinding": 1
+    },
+    "requirements": [],
+    "expected": [
+      "旋向：右。",
+      "总圈数：6.64，有效圈数：4.64。",
+      "两端并紧并磨平，磨面角≥270°。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_left_other_values",
+    "parameters": {
+      "total_coils": 10.5,
+      "active_coils": 8.25,
+      "end_coils_closed": 1,
+      "end_grinding": 1
+    },
+    "requirements": [],
+    "expected": [
+      "旋向：左。",
+      "总圈数：10.5，有效圈数：8.25。",
+      "两端并紧并磨平，磨面角≥270°。"
+    ],
+    "direction": "left"
+  },
+  {
+    "name": "new_header_full_precision",
+    "parameters": {
+      "total_coils": 6.6401234567,
+      "active_coils": 4.6400000011,
+      "end_coils_closed": 1,
+      "end_grinding": 1
+    },
+    "requirements": [],
+    "expected": [
+      "旋向：右。",
+      "总圈数：6.6401234567，有效圈数：4.6400000011。",
+      "两端并紧并磨平，磨面角≥270°。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_small_decimals",
+    "parameters": {
+      "total_coils": 1e-05,
+      "active_coils": 1e-07,
+      "end_coils_closed": 1,
+      "end_grinding": 1
+    },
+    "requirements": [],
+    "expected": [
+      "旋向：右。",
+      "总圈数：0.00001，有效圈数：0.0000001。",
+      "两端并紧并磨平，磨面角≥270°。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_end_1_0",
+    "parameters": {
+      "total_coils": 6.64,
+      "active_coils": 4.64,
+      "end_coils_closed": 1,
+      "end_grinding": 0
+    },
+    "requirements": [],
+    "expected": [
+      "旋向：右。",
+      "总圈数：6.64，有效圈数：4.64。",
+      "两端并紧，不磨平。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_end_0_1",
+    "parameters": {
+      "total_coils": 6.64,
+      "active_coils": 4.64,
+      "end_coils_closed": 0,
+      "end_grinding": 1
+    },
+    "requirements": [],
+    "expected": [
+      "旋向：右。",
+      "总圈数：6.64。",
+      "两端不并紧，端面磨平。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_end_0_0",
+    "parameters": {
+      "total_coils": 6.64,
+      "active_coils": 4.64,
+      "end_coils_closed": 0,
+      "end_grinding": 0
+    },
+    "requirements": [],
+    "expected": [
+      "旋向：右。",
+      "总圈数：6.64。",
+      "两端不并紧，不磨平。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_pending_total",
+    "parameters": {
+      "total_coils": {
+        "value": 6.64,
+        "need_human_review": true
+      },
+      "active_coils": 4.64,
+      "end_coils_closed": 1,
+      "end_grinding": 1
+    },
+    "requirements": [],
+    "expected": [
+      "旋向：右。",
+      "有效圈数：4.64。",
+      "两端并紧并磨平，磨面角≥270°。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_missing_active",
+    "parameters": {
+      "total_coils": 6.64,
+      "active_coils": {
+        "value": null
+      },
+      "end_coils_closed": 1,
+      "end_grinding": 1
+    },
+    "requirements": [],
+    "expected": [
+      "旋向：右。",
+      "总圈数：6.64。",
+      "两端并紧并磨平，磨面角≥270°。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_invalid_total",
+    "parameters": {
+      "total_coils": {
+        "value": 0
+      },
+      "active_coils": 4.64,
+      "end_coils_closed": 1,
+      "end_grinding": 1
+    },
+    "requirements": [],
+    "expected": [
+      "旋向：右。",
+      "有效圈数：4.64。",
+      "两端并紧并磨平，磨面角≥270°。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_stale_active",
+    "parameters": {
+      "total_coils": 6.64,
+      "active_coils": {
+        "value": 4.64,
+        "derived_value_stale": true
+      },
+      "end_coils_closed": 1,
+      "end_grinding": 1
+    },
+    "requirements": [],
+    "expected": [
+      "旋向：右。",
+      "总圈数：6.64。",
+      "两端并紧并磨平，磨面角≥270°。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_pending_ground",
+    "parameters": {
+      "total_coils": 6.64,
+      "active_coils": 4.64,
+      "end_coils_closed": 1,
+      "end_grinding": {
+        "value": 1,
+        "need_human_review": true
+      }
+    },
+    "requirements": [],
+    "expected": [
+      "旋向：右。",
+      "总圈数：6.64，有效圈数：4.64。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_pending_direction",
+    "parameters": {
+      "total_coils": 6.64,
+      "active_coils": 4.64,
+      "end_coils_closed": 1,
+      "end_grinding": 1,
+      "handedness": {
+        "value": "right",
+        "need_human_review": true
+      }
+    },
+    "requirements": [],
+    "expected": [
+      "总圈数：6.64，有效圈数：4.64。",
+      "两端并紧并磨平，磨面角≥270°。"
+    ]
+  },
+  {
+    "name": "new_header_no_defaults",
+    "parameters": {},
+    "requirements": [],
+    "expected": []
+  },
+  {
+    "name": "new_header_duplicates",
+    "parameters": {
+      "total_coils": 6.64,
+      "active_coils": 4.64,
+      "end_coils_closed": 1,
+      "end_grinding": 1
+    },
+    "requirements": [
+      {
+        "type": "other",
+        "content": "绕制方向：右旋。"
+      },
+      {
+        "type": "other",
+        "content": "总圈数：6.64 圈。"
+      },
+      {
+        "type": "other",
+        "content": "工作圈数：4.64 圈。"
+      },
+      {
+        "type": "other",
+        "content": "总圈数：6.64，有效圈数：4.64。"
+      },
+      {
+        "type": "other",
+        "content": "两端并紧磨平，每端磨270°。"
+      }
+    ],
+    "expected": [
+      "旋向：右。",
+      "总圈数：6.64，有效圈数：4.64。",
+      "两端并紧并磨平，磨面角≥270°。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_distinct_conditions",
+    "parameters": {
+      "total_coils": 6.64,
+      "active_coils": 4.64,
+      "end_coils_closed": 1,
+      "end_grinding": 1
+    },
+    "requirements": [
+      {
+        "type": "other",
+        "content": "旋向：左旋。"
+      },
+      {
+        "type": "other",
+        "content": "总圈数：7 圈。"
+      },
+      {
+        "type": "other",
+        "content": "有效圈数：4.64 圈，端面去毛刺。"
+      },
+      {
+        "type": "other",
+        "content": "两端并紧磨平，每端磨300°。"
+      },
+      {
+        "type": "other",
+        "content": "总圈数：6.64 圈。",
+        "application_scope": "备用弹簧"
+      }
+    ],
+    "expected": [
+      "旋向：右。",
+      "总圈数：6.64，有效圈数：4.64。",
+      "两端并紧并磨平，磨面角≥270°。",
+      "旋向：左旋。",
+      "总圈数：7 圈。",
+      "有效圈数：4.64 圈，端面去毛刺。",
+      "两端并紧磨平，每端磨300°。",
+      "总圈数：6.64 圈（作用范围：备用弹簧）"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_material_filter",
+    "parameters": {
+      "total_coils": 6.64,
+      "active_coils": 4.64,
+      "end_coils_closed": 1,
+      "end_grinding": 1
+    },
+    "requirements": [
+      {
+        "type": "other",
+        "content": "材料：SUS304。"
+      },
+      {
+        "type": "other",
+        "content": "材质:65Mn。"
+      },
+      {
+        "type": "other",
+        "content": "材料SUS304 不锈钢。"
+      },
+      {
+        "type": "other",
+        "content": "材质：1.4310。"
+      },
+      {
+        "type": "other",
+        "content": "材料：不锈钢。"
+      },
+      {
+        "type": "other",
+        "content": "材料：SUS304，表面喷丸处理。"
+      },
+      {
+        "type": "other",
+        "content": "材料：65Mn须淬火。"
+      },
+      {
+        "type": "other",
+        "content": "材料：SUS304 must be inspected。"
+      },
+      {
+        "type": "other",
+        "content": "材料：SUS304（作用范围：端圈），不得替换。"
+      },
+      {
+        "type": "other",
+        "content": "材料：SUS304(HRC45)。"
+      },
+      {
+        "type": "other",
+        "content": "材料：65Mn(980MPa)。"
+      },
+      {
+        "type": "other",
+        "content": "材料：SUS304 (annealed)。"
+      },
+      {
+        "type": "other",
+        "content": "材质：SUS304。",
+        "application_scope": "两端面"
+      }
+    ],
+    "expected": [
+      "旋向：右。",
+      "总圈数：6.64，有效圈数：4.64。",
+      "两端并紧并磨平，磨面角≥270°。",
+      "材料：SUS304，表面喷丸处理。",
+      "材料：65Mn须淬火。",
+      "材料：SUS304 must be inspected。",
+      "材料：SUS304（作用范围：端圈），不得替换。",
+      "材料：SUS304(HRC45)。",
+      "材料：65Mn(980MPa)。",
+      "材料：SUS304 (annealed)。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_legacy_filter",
+    "parameters": {
+      "total_coils": 6.64,
+      "active_coils": 4.64,
+      "end_coils_closed": 1,
+      "end_grinding": 1
+    },
+    "requirements": [],
+    "expected": [
+      "旋向：右。",
+      "总圈数：6.64，有效圈数：4.64。",
+      "两端并紧并磨平，磨面角≥270°。",
+      "材料：65Mn，须回火。",
+      "保持清洁。"
+    ],
+    "direction": "right",
+    "legacy": "技术要求\n1.材质：SUS304。\n2.总圈数：6.64 圈。\n3.有效圈数：4.64 圈。\n4.绕制方向：右旋。\n5.两端并紧磨平，每端磨270°。\n6.材料：65Mn，须回火。\n7.保持清洁。"
+  },
+  {
+    "name": "new_header_open_original_active",
+    "parameters": {
+      "total_coils": 6.64,
+      "active_coils": 4.64,
+      "end_coils_closed": 0,
+      "end_grinding": 1
+    },
+    "requirements": [
+      {
+        "type": "other",
+        "content": "有效圈数：4.64 圈。"
+      }
+    ],
+    "expected": [
+      "旋向：右。",
+      "总圈数：6.64。",
+      "两端不并紧，端面磨平。",
+      "有效圈数：4.64 圈。"
+    ],
+    "direction": "right"
+  },
+  {
+    "name": "new_header_fullwidth_invalid_draft",
+    "direction": "right",
+    "parameters": {
+      "total_coils": "６.６４",
+      "active_coils": 4.64,
+      "end_coils_closed": 1,
+      "end_grinding": 1
+    },
+    "expected": [
+      "旋向：右。",
+      "有效圈数：4.64。",
+      "两端并紧并磨平，磨面角≥270°。"
+    ]
   }
 ]

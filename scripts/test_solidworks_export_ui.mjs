@@ -11,7 +11,7 @@ for (const sample of labelCases) {
   const original = structuredClone(sample.review), generation = structuredClone(sample.package.generation_parameters);
   const result = context.SolidWorksExport.buildPreview(structuredClone(sample.package), sample.review);
   assert.equal(result.extraProperties["技术要求"], sample.expected_text, sample.name);
-  assert.equal(result.customProperties["旋向"], ({left:"左旋",right:"右旋"})[sample.direction] ?? null);
+  assert.equal(result.customProperties["旋向"], ({left:"左旋",right:"右旋"})[sample.package.generation_parameters.spring_parameters.handedness?.value] ?? null);
   assert.deepEqual(sample.review, original, `${sample.name} keeps review text and confirmation`);
   assert.deepEqual(sample.package.generation_parameters, generation, `${sample.name} keeps internal text`);
 }

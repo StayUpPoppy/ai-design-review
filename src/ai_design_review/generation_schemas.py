@@ -124,7 +124,7 @@ class GenerationParametersV1(BaseModel):
     technical_requirements: list[GenerationTechnicalRequirementV1] = Field(default_factory=list, description="写入二维图固定区域的中文技术要求。")
     technical_requirements_text: str = Field(
         default="",
-        description="将已确认技术要求按页面顺序汇总的二维图备注文本；每行格式为“序号.中文类型：内容”。SolidWorks 可直接写入备注区。",
+        description="已确认原图技术要求按页面顺序汇总的内部文本；每行格式为“序号.中文类型：内容”。最终SW专用排序、合并及材料过滤结果读取solidworks_preview.extraProperties.技术要求。",
         examples=["1.表面处理：表面镀锌。\n2.盐雾试验：96小时。"],
     )
 
@@ -236,8 +236,8 @@ class SolidWorksPreviewV2(BaseModel):
         description="可选已确认有效对称公差，按外径、自由高度、中径顺序输出mm数字幅值，例如±1.5传1.5。各项只读自身公差；非对称、单边、待确认、非法及失效值省略。三项全缺时省略整个对象，0是有效数值；保留小数，不按名义尺寸三位截断。旧冻结请求及重试不补写。",
         examples=[{"外径": 1.5, "自由高度": 0.5, "中径": 0.2}],
     )
-    customProperties: dict[str, str | None] = Field(default_factory=dict, description="旋向等模型属性；旧预览可省略。")
-    extraProperties: dict[str, int | float | str] = Field(default_factory=dict, description="技术要求多行文本（已确认有效的端部状态排第一条，仅并紧且磨平时追加每端磨270°；不新增审图编辑条目；不并紧时省略自动有效圈数行，其余状态使用有效圈数名称，原图和人工圈数要求保留）及可用的 P'（N/mm）、C、τ_b（MPa）；缺项省略键名。")
+    customProperties: dict[str, str | None] = Field(default_factory=dict, description="旋向等模型属性，旋向仍传左旋/右旋；技术要求首项另写左/右。旧预览可省略。")
+    extraProperties: dict[str, int | float | str] = Field(default_factory=dict, description="技术要求多行文本（前三项依次为已确认有效的旋向左/右、总圈数与有效圈数合并行、端部状态；仅并紧且磨平时输出两端并紧并磨平，磨面角≥270°；不新增审图编辑条目；不并紧时合并圈数行省略有效圈数，其余状态使用有效圈数名称，原图和人工圈数要求保留；独立纯材料句不输出，材料仍在标题栏；其余要求沿原顺序连续编号）及可用的 P'（N/mm）、C、τ_b（MPa）；缺项省略键名。")
     titleBlockProperties: dict[str, int | float | str] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -278,7 +278,7 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
                 "technical_requirements_text": "1.其他要求：两端磨平，表面镀锌。",
             },
             "derived_parameters": {},
-            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10.5, "有效圈数n": 8.25, "是否磨平": 1, "是否并紧": 1}, "modelParametersTolerance": {"外径": 1.5, "自由高度": 0.5, "中径": 0.2}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.两端并紧磨平，每端磨270°。\n2.材料：65Mn。\n3.旋向：右旋。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn", "客户图号": "SPRING-001", "垂直度A": 0.01}},
+            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10.5, "有效圈数n": 8.25, "是否磨平": 1, "是否并紧": 1}, "modelParametersTolerance": {"外径": 1.5, "自由高度": 0.5, "中径": 0.2}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.旋向：右。\n2.总圈数：10.5，有效圈数：8.25。\n3.两端并紧并磨平，磨面角≥270°。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn", "客户图号": "SPRING-001", "垂直度A": 0.01}},
         }]},
     )
 

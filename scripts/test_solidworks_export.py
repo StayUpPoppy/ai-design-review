@@ -46,7 +46,7 @@ def base_review():
 
 def cases():
     result = []
-    def add(name, edits=None, points=None, features=None, requirements=None, end_note="两端并紧磨平，每端磨270°。", summary=None):
+    def add(name, edits=None, points=None, features=None, requirements=None, end_note="两端并紧并磨平，磨面角≥270°。", summary=None):
         review = base_review()
         review["drawing_summary"].update(summary or {})
         for field, updates in (edits or {}).items():
@@ -64,7 +64,7 @@ def cases():
     add("decimal_coils", {"total_coils": {"value": 10.5}, "active_coils": {"value": 8.25}}, summary={"drawing_name": "客户 弹簧001-A"})
     add("precise_decimal_coils", {"total_coils": {"value": 10.5123456789}, "active_coils": {"value": 8.25123456789}})
     for closed, ground, note in [
-        (1, 1, "两端并紧磨平，每端磨270°。"), (1, 0, "两端并紧，不磨平。"),
+        (1, 1, "两端并紧并磨平，磨面角≥270°。"), (1, 0, "两端并紧，不磨平。"),
         (0, 1, "两端不并紧，端面磨平。"), (0, 0, "两端不并紧，不磨平。"),
     ]:
         add(f"end_binary_{closed}_{ground}", {"end_coils_closed": parameter(closed), "end_grinding": parameter(ground)}, end_note=note)
@@ -290,7 +290,7 @@ def run():
             active = package["generation_parameters"]["spring_parameters"]["active_coils"]["value"]
             coil_text = preview["extraProperties"]["技术要求"]
             if preview["modelParameters"]["是否并紧"] != 0:
-                assert f"有效圈数：{active} 圈。" in coil_text
+                assert f"有效圈数：{active}。" in coil_text
             elif case["name"] not in {"end_open_active_original", "end_open_active_legacy_text"}:
                 assert "有效圈数：" not in coil_text and "工作圈数：" not in coil_text
         assert preview["modelParameters"]["是否并紧"] == package["generation_parameters"]["spring_parameters"].get("end_coils_closed", {}).get("value")
@@ -320,14 +320,12 @@ def run():
             assert isinstance(title["重量"], (int, float)) and title["重量"] == round(mass["value"], 8)
         assert list(extra)[0] == "技术要求" and set(extra) <= {"技术要求", "P'", "C", "τ_b"}
         notes = extra["技术要求"]
+        assert notes.startswith("1.旋向：右。\n"), (case["name"], notes)
         if case["end_note"]:
-            assert notes.startswith("1." + case["end_note"] + "\n"), (case["name"], notes)
+            assert notes.splitlines()[2] == "3." + case["end_note"], (case["name"], notes)
             assert notes.count(case["end_note"]) == 1, notes
-            if "material" in package["generation_parameters"]["spring_parameters"]:
-                assert notes.splitlines()[1].startswith("2.材料："), notes
         else:
-            assert notes.startswith("1.材料："), (case["name"], notes)
-            assert "每端磨270°" not in notes
+            assert "磨面角≥270°" not in notes
         if case["name"] == "book_baseline" or case["name"].startswith("end_"):
             assert review["technical_requirements"] == original_review["technical_requirements"], case["name"]
         assert "每端磨270°" not in package["generation_parameters"]["technical_requirements_text"] or case["name"] in {"end_duplicate", "end_different_conditions", "end_legacy_text", "end_open_explicit_angles"}
@@ -339,11 +337,8 @@ def run():
         assert "F1 = 13.2 N（允差 ±10%）" in notes
         assert "F2 = 18.9 N（允差 +1/-0.5 N）" in notes
         assert "F3 = 0 N" in notes
-        assert notes.count("材料：SUS304。") <= 1
-        if case["name"] == "book_baseline":
-            assert notes.count("材料：SUS304。") == 1
-            assert "材料：SUS304 不锈钢。" not in notes
-        assert notes.count("旋向：右旋。") == 1 and "绕制方向：" not in notes
+        assert "材料：SUS304。" not in notes and "材料：SUS304 不锈钢。" not in notes
+        assert notes.count("旋向：右。") == 1 and "绕制方向：" not in notes
         name = case["name"]
         if name in {"end_closed_active_original", "end_open_active_original", "end_open_active_legacy_text", "end_closed_active_legacy_text"}:
             assert "有效圈数：3 圈。" in notes and "工作圈数：2 圈，端面去毛刺。" in notes
@@ -353,7 +348,7 @@ def run():
                 assert notes.count("工作圈数：2 圈。") == 1, notes
                 assert "有效圈数：2 圈。" not in notes, "Only equivalent original records are deduplicated; no generated row is restored"
             else:
-                assert notes.count("有效圈数：2 圈。") == 1 and "工作圈数：2 圈。" not in notes, notes
+                assert "总圈数：4，有效圈数：2。" in notes and "工作圈数：2 圈。" not in notes, notes
         if name == "end_open_explicit_angles":
             assert notes.count("每端磨270°") == 1 and notes.count("每端磨300°") == 1
         if name == "end_open_active_pending":
@@ -425,7 +420,7 @@ def run():
         if name == "roughness_symbol":
             assert "外圆表面粗糙度：Ra ≤ 3.2 μm。" in notes
         if name == "conflicting_original":
-            assert "材料：65Mn。" in notes
+            assert "材料：65Mn。" not in notes
         frozen = deepcopy(package)
         changed = deepcopy(review)
         changed["drawing_summary"]["drawing_no"] = "CHANGED-AFTER-FREEZE"
@@ -502,20 +497,22 @@ def label_cases():
     samples = json.loads((Path(__file__).parent / "fixtures/solidworks_technical_labels.json").read_text(encoding="utf-8"))
     outputs = []
     for sample in samples:
-        parameters = {"handedness": {"value": sample["direction"]}} if sample.get("direction") else {}
+        parameters = {field: {**parameter(None), **value} if isinstance(value, dict) else parameter(value) for field, value in sample.get("parameters", {}).items()}
+        if sample.get("direction"):
+            parameters["handedness"] = parameter(sample["direction"])
         package = {"generation_parameters": {"spring_parameters": parameters, "technical_requirements": sample.get("requirements", []),
                     "technical_requirements_text": sample.get("legacy", ""), "load_points": []}}
-        review = {"spring_parameters": {}, "technical_requirements": deepcopy(sample.get("requirements", []))}
+        review = {"spring_parameters": deepcopy(parameters), "technical_requirements": deepcopy(sample.get("requirements", []))}
         original, original_review = deepcopy(package), deepcopy(review)
         expected = "\n".join(f"{i}.{line}" for i, line in enumerate(sample["expected"], 1))
         assert build_solidworks_technical_text(package, review) == expected, sample["name"]
         preview = build_solidworks_preview(package, review)
         assert preview["extraProperties"]["技术要求"] == expected
-        assert preview["customProperties"]["旋向"] == {"left": "左旋", "right": "右旋"}.get(sample.get("direction"))
+        assert preview["customProperties"]["旋向"] == {"left": "左旋", "right": "右旋"}.get((parameters.get("handedness") or {}).get("value"))
         assert review == original_review and package["generation_parameters"] == original["generation_parameters"]
         # Frozen pre-change requests are projections already stored, never re-cleaned.
         frozen = deepcopy(package); frozen["solidworks_preview"] = deepcopy(preview)
-        old_notes = "1.绕制方向：左旋。\n2.其他要求：原始冻结正文。"
+        old_notes = "1.两端并紧磨平，每端磨270°。\n2.材料：SUS304。\n3.绕制方向：左旋。\n4.总圈数：6 圈。\n5.有效圈数：4 圈。\n6.其他要求：原始冻结正文。"
         frozen["solidworks_preview"]["extraProperties"]["技术要求"] = old_notes
         before = deepcopy(frozen)
         assert build_solidworks_command("1000000009", frozen, review)["models"][0]["extraProperties"]["技术要求"] == old_notes

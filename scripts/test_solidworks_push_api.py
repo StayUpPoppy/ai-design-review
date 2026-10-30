@@ -244,12 +244,12 @@ def main() -> None:
                 notes = extra["技术要求"]
                 assert notes.count("表面喷丸处理") == 1 and notes.count("热处理：") == 1
                 assert "热处理：热处理要求" not in notes
-                assert notes.startswith("1.两端并紧磨平，每端磨270°。\n2.材料：60Si2Mn。\n3.旋向：左旋。\n4.")
+                assert notes.startswith("1.旋向：左。\n2.总圈数：9，有效圈数：7。\n3.两端并紧并磨平，磨面角≥270°。\n4.")
                 assert "其他要求：" not in notes and "绕制方向：" not in notes
                 assert "镀层厚度≥15 μm，先除氢后检验；不得漏镀。" in notes
                 assert repository.get_review("review-solidworks-push", owner_user_id=OWNER["user_id"])["review"]["technical_requirements"][-1]["content"].startswith("其他要求：")
                 assert "粗糙度" not in notes
-                assert "有效圈数：7 圈。" in notes and "工作圈数：" not in notes
+                assert "总圈数：9，有效圈数：7。" in notes and "工作圈数：" not in notes
                 for expected in ("Hb = 25 mm", "Fb = 2300 N", "H1 = 38 mm", "F1 = 2000 N", "H2 = 43 mm", "F2 = 2100 N", "表面喷丸处理"):
                     assert expected in notes, notes
                 assert isinstance(extra["P'"], (int, float)) and extra["C"] == round(29 / 3, 4)
@@ -288,7 +288,7 @@ def main() -> None:
                 order2_job = order2_created.json()["generation_job"]
                 order2_payload = submissions[-1]["payload"]
                 order2_notes = order2_payload["models"][0]["extraProperties"]["技术要求"]
-                assert len(order2_notes.splitlines()) == 14, order2_notes
+                assert len(order2_notes.splitlines()) == 12, order2_notes
                 assert order2_payload["models"][0]["titleBlockProperties"]["表面粗糙度"] == 12.5
                 assert order2_payload["models"][0]["titleBlockProperties"]["客户图号"] == "YD4765020178"
                 assert "粗糙度" not in order2_notes
@@ -324,9 +324,9 @@ def main() -> None:
                 reference_review = hardness_review()
                 reference_review["spring_parameters"]["surface_roughness_ra"].update(value=12.5, need_human_review=False, source=["human_edited", "human_roughness_reference"], roughness_reference_dismissed=False)
                 for review_id, sample, expected_count in [
-                    ("roughness-reference", reference_review, 9),
-                    ("hardness-eight-dedup", hardness_review(), 9),
-                    ("eight-class-dedup", eight_category_review(pairs()), 16),
+                    ("roughness-reference", reference_review, 7),
+                    ("hardness-eight-dedup", hardness_review(), 7),
+                    ("eight-class-dedup", eight_category_review(pairs()), 14),
                 ]:
                     for requirement in sample["technical_requirements"]:
                         requirement["need_human_review"] = False
@@ -758,9 +758,9 @@ def main() -> None:
                     assert list(open_model["modelParameters"]) == ["线径", "中径", "自由高度", "圈数", "是否磨平", "是否并紧"]
                     open_notes = open_model["extraProperties"]["技术要求"]
                     expected_end_note = "两端不并紧，端面磨平。" if grinding else "两端不并紧，不磨平。"
-                    assert open_notes.startswith("1." + expected_end_note + "\n") and "每端磨270°" not in open_notes
+                    assert open_notes.splitlines()[2] == "3." + expected_end_note and "磨面角≥270°" not in open_notes
                     assert "工作圈数：" not in open_notes and "有效圈数：" not in open_notes
-                    assert "总圈数：9 圈。" in open_notes
+                    assert "总圈数：9。" in open_notes
                     assert {key: open_model[key] for key in open_package["solidworks_preview"]} == open_package["solidworks_preview"]
                     with repository._session() as session:
                         frozen_open = session.get(GenerationJobRecord, open_job["generation_id"]).parameter_package

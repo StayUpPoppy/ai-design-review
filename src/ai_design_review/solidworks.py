@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 from copy import deepcopy
+from decimal import Decimal
 from typing import Any
 
 from .generation_contract import generation_source_item, handedness_label, normalize_generation_value
@@ -207,6 +208,7 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
     parameters = generation.get("spring_parameters") or {}
     lines: list[str] = []
     keys: set[tuple[str, str, str]] = set()
+    header_parts: set[str] = set()
     roughness = confirmed_surface_roughness(review)
     from .surface_source_links import surface_output_source_keys, surface_source_key, surface_scope_key
     converted_sources = surface_output_source_keys(review)
@@ -217,26 +219,40 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
         if surface_roughness_matches({"content": line, "application_scope": scope}, roughness):
             return
         line = _sw_technical_line(line)
+        if _pure_material_note(line):
+            return
+        parts = _header_parts(line) if not str(scope or "").strip() else set()
+        if parts and parts <= header_parts:
+            return
         key = _sentence_key(line, scope)
         if line and key not in keys:
             keys.add(key)
+            header_parts.update(parts)
             lines.append(line)
 
+    handedness = handedness_label(_confirmed_header_value(parameters, review, "handedness"))
+    if handedness:
+        append(f"旋向：{handedness.removesuffix('旋')}。")
+    coils = []
+    for label, field in (("总圈数", "total_coils"), ("有效圈数", "active_coils")):
+        if field == "active_coils" and _parameter_value(parameters.get("end_coils_closed")) == 0:
+            continue
+        value = _confirmed_header_value(parameters, review, field)
+        if value is not None:
+            coils.append(f"{label}：{format(Decimal(str(value)), 'f')}")
+    if coils:
+        append("，".join(coils) + "。")
     end_note = _confirmed_end_note(parameters, review)
     if end_note:
         append(end_note)
-    material = _parameter_value(parameters.get("material"))
-    if material is not None:
-        append(f"材料：{material_catalog_display_value(material)}。")
-    handedness = handedness_label(_parameter_value(parameters.get("handedness")))
-    if handedness:
-        append(f"旋向：{handedness}。")
     requirements = generation.get("technical_requirements") or []
     remaining: list[dict[str, Any]] = []
     for item in requirements:
         if not isinstance(item, dict):
             continue
         content = _content(item)
+        if _pure_material_note(content):
+            continue
         if item.get("type") in {"surface_roughness", "roughness"} and content:
             append(_roughness_line(format_technical_requirement(item)), item.get("application_scope"))
         else:
@@ -268,12 +284,6 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
             append(f"当弹簧工作高度 H{match[1]} = {_text_number(height)} mm 时，对应工作载荷 {label} = {_force_text(point)}。")
         else:
             append(f"载荷点 {label}：高度 {_text_number(height)} mm，力值 {_force_text(point)}。")
-    for label, field in (("总圈数", "total_coils"), ("有效圈数", "active_coils")):
-        if field == "active_coils" and _parameter_value(parameters.get("end_coils_closed")) == 0:
-            continue
-        value = _parameter_value(parameters.get(field), preserve_precision=True)
-        if value is not None:
-            append(f"{label}：{value} 圈。")
     # Only whole equivalent sentences are removed; composite/conflicting notes survive.
     requirement_keys: set[tuple[str, str, str]] = set()
     for item in remaining:
@@ -289,6 +299,53 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
             if body:
                 append(format_technical_requirement({"content": body}))
     return "\n".join(f"{index}.{line}" for index, line in enumerate(lines, 1))
+
+
+def _confirmed_header_value(exported: dict[str, Any], review: dict[str, Any], field: str) -> Any:
+    parameters = review.get("spring_parameters") or {}
+    item, output = parameters.get(field), exported.get(field)
+    if (not isinstance(item, dict) or not isinstance(output, dict) or item.get("need_human_review") is not False
+            or item.get("formula_recommendation_stale") or not parameter_current(parameters, field)):
+        return None
+    if field in {"total_coils", "active_coils"} and (_optional_number(item.get("value")) is None or _optional_number(output.get("value")) is None):
+        return None
+    try:
+        value = normalize_generation_value(field, item.get("value"))
+        return value if value == normalize_generation_value(field, output.get("value")) else None
+    except ValueError:
+        return None
+
+
+def _pure_material_note(line: str) -> bool:
+    body, _ = technical_requirement_body(line)
+    if re.search(r"(?:HRC|HRA|HRB|HBW?|HV)\s*[0-9<>≤≥]|MPa|\b(?:anneal\w*|quench\w*|harden\w*|heat|treat\w*|inspect\w*|must|shall)\b", body, re.I | re.ASCII):
+        return False
+    # Full names/codes only: a sentence with processing or inspection conditions stays intact.
+    name = r"(?:[A-Za-z0-9][A-Za-z0-9_+./()\-]*|不锈钢|弹簧钢|合金钢|碳素钢|碳钢|钢丝|钢带|铍青铜|磷青铜|黄铜|紫铜|铜合金|钛合金|铝合金)"
+    description = r"(?:不锈钢(?:丝|带)?|弹簧钢(?:丝|带)?|合金钢|碳素钢|碳钢|钢丝|钢带|线材|stainless\s+steel|spring\s+steel)"
+    return re.fullmatch(r"(?:材料|材质)\s*[:：]?\s*" + name + r"(?:\s*" + description + r")*\s*[.;]*", body, re.I | re.ASCII) is not None
+
+
+def _header_parts(line: str) -> set[str]:
+    """SW-only aliases; never discard unmatched conditions or scoped requirements."""
+    body, _ = technical_requirement_body(line)
+    body = body.rstrip(".;").strip()
+    direction = re.fullmatch(r"(?:旋向|绕制方向)\s*:\s*(左|右)(?:旋)?", body)
+    if direction:
+        return {"direction:" + direction[1]}
+    parts = []
+    for clause in re.split(r"[,;]", body):
+        coil = re.fullmatch(r"\s*(总圈数|有效圈数n?|工作圈数)\s*:\s*([+]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*(?:圈)?\s*", clause)
+        if not coil:
+            break
+        parts.append(("total:" if coil[1] == "总圈数" else "active:") + str(float(coil[2])))
+    else:
+        return set(parts)
+    compact = re.sub(r"\s+", "", body)
+    if compact in {"两端并紧磨平", "两端并紧并磨平", "两端并紧磨平,每端磨270°", "两端并紧并磨平,磨面角≥270°"}:
+        # The former default sentence is an alias of this project's updated template.
+        return {"end:1,1"} | ({"angle:270"} if "," in compact else set())
+    return {"两端并紧,不磨平": {"end:1,0"}, "两端不并紧,端面磨平": {"end:0,1"}, "两端不并紧,不磨平": {"end:0,0"}}.get(compact, set())
 
 
 def _confirmed_end_note(exported: dict[str, Any], review: dict[str, Any]) -> str | None:
@@ -312,7 +369,7 @@ def _confirmed_end_note(exported: dict[str, Any], review: dict[str, Any]) -> str
             return None
         values.append(value)
     return {
-        (1, 1): "两端并紧磨平，每端磨270°。",
+        (1, 1): "两端并紧并磨平，磨面角≥270°。",
         (1, 0): "两端并紧，不磨平。",
         (0, 1): "两端不并紧，端面磨平。",
         (0, 0): "两端不并紧，不磨平。",

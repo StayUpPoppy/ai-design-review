@@ -144,9 +144,41 @@
       values.push(value);
     }
     return {
-      "1,1": "两端并紧磨平，每端磨270°。", "1,0": "两端并紧，不磨平。",
+      "1,1": "两端并紧并磨平，磨面角≥270°。", "1,0": "两端并紧，不磨平。",
       "0,1": "两端不并紧，端面磨平。", "0,0": "两端不并紧，不磨平。",
     }[values.join(",")];
+  }
+  function confirmedHeaderValue(exported, review, field) {
+    const parameters = review.spring_parameters || {}, item = parameters[field], output = exported[field];
+    if (!item || !output || item.need_human_review !== false || item.formula_recommendation_stale || !current(parameters, field)) return null;
+    const normalize = value => field === "handedness" ? handedness(value) : strictNumber(value) > 0 ? strictNumber(value) : null;
+    const value = normalize(item.value);
+    return value != null && value === normalize(output.value) ? value : null;
+  }
+  function coilText(value) {
+    const text = String(value);
+    if (!text.includes("e")) return text;
+    const [mantissa, exponent] = text.split("e"), digits = mantissa.replace(".", "");
+    const decimal = (mantissa.includes(".") ? mantissa.indexOf(".") : mantissa.length) + Number(exponent);
+    return decimal <= 0 ? "0." + "0".repeat(-decimal) + digits
+      : decimal >= digits.length ? digits + "0".repeat(decimal - digits.length) : digits.slice(0, decimal) + "." + digits.slice(decimal);
+  }
+  function pureMaterialNote(line) {
+    const [body] = TechnicalRequirementEquivalence.body(line);
+    if (/(?:HRC|HRA|HRB|HBW?|HV)\s*[0-9<>≤≥]|MPa|\b(?:anneal\w*|quench\w*|harden\w*|heat|treat\w*|inspect\w*|must|shall)\b/i.test(body)) return false;
+    const name = "(?:[A-Za-z0-9][A-Za-z0-9_+./()\\-]*|不锈钢|弹簧钢|合金钢|碳素钢|碳钢|钢丝|钢带|铍青铜|磷青铜|黄铜|紫铜|铜合金|钛合金|铝合金)";
+    const description = "(?:不锈钢(?:丝|带)?|弹簧钢(?:丝|带)?|合金钢|碳素钢|碳钢|钢丝|钢带|线材|stainless\\s+steel|spring\\s+steel)";
+    return new RegExp("^(?:材料|材质)\\s*[:：]?\\s*" + name + "(?:\\s*" + description + ")*\\s*[.;]*$", "i").test(body);
+  }
+  function headerParts(line) {
+    const [raw] = TechnicalRequirementEquivalence.body(line), body = raw.replace(/[.;]+$/, "").trim();
+    const direction = body.match(/^(?:旋向|绕制方向)\s*:\s*(左|右)(?:旋)?$/);
+    if (direction) return ["direction:" + direction[1]];
+    const coils = body.split(/[,;]/).map(clause => clause.match(/^\s*(总圈数|有效圈数n?|工作圈数)\s*:\s*([+]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*(?:圈)?\s*$/));
+    if (coils.every(Boolean)) return coils.map(coil => (coil[1] === "总圈数" ? "total:" : "active:") + Number(coil[2]));
+    const compact = body.replace(/\s+/g, "");
+    if (["两端并紧磨平", "两端并紧并磨平", "两端并紧磨平,每端磨270°", "两端并紧并磨平,磨面角≥270°"].includes(compact)) return ["end:1,1", ...(compact.includes(",") ? ["angle:270"] : [])];
+    return ({"两端并紧,不磨平":["end:1,0"],"两端不并紧,端面磨平":["end:0,1"],"两端不并紧,不磨平":["end:0,0"]})[compact] || [];
   }
   function content(item) {
     const value = TechnicalRequirementEquivalence.outputContent(item);
@@ -162,25 +194,35 @@
   }
   function technicalText(packageData, review, catalog = {}) {
     const generation = packageData.generation_parameters || {}, parameters = generation.spring_parameters || {};
-    const lines = [], remaining = [], material = parameterValue(parameters.material), direction = handedness(parameterValue(parameters.handedness));
+    const lines = [], remaining = [], direction = confirmedHeaderValue(parameters, review, "handedness");
     const roughness = confirmedRoughness(review);
     const convertedSources = new Set(typeof CompanySurfaceMapping !== "undefined" ? CompanySurfaceMapping.outputSourceKeys(review).map((key) => JSON.stringify(key)) : []);
-    const keys = new Set();
+    const keys = new Set(), headParts = new Set();
     const append = (line, scope) => {
       if (typeof CompanySurfaceMapping !== "undefined" && convertedSources.has(JSON.stringify([CompanySurfaceMapping.sourceKey(line), CompanySurfaceMapping.scopeKey(scope)]))) return;
       if (roughnessMatches({ content: line, application_scope: scope }, roughness)) return;
       line = swTechnicalLine(line);
+      if (pureMaterialNote(line)) return;
+      const parts = String(scope || "").trim() ? [] : headerParts(line);
+      if (parts.length && parts.every(part => headParts.has(part))) return;
       const key = sentenceKey(line, catalog, scope);
-      if (line && !keys.has(key)) { keys.add(key); lines.push(line); }
+      if (line && !keys.has(key)) { keys.add(key); parts.forEach(part => headParts.add(part)); lines.push(line); }
     };
+    if (direction) append(`旋向：${direction.replace(/旋$/, "")}。`);
+    const coils = [];
+    for (const [label, field] of [["总圈数", "total_coils"], ["有效圈数", "active_coils"]]) {
+      if (field === "active_coils" && parameterValue(parameters.end_coils_closed) === 0) continue;
+      const value = confirmedHeaderValue(parameters, review, field);
+      if (value != null) coils.push(`${label}：${coilText(value)}`);
+    }
+    if (coils.length) append(coils.join("，") + "。");
     const endNote = confirmedEndNote(parameters, review);
     if (endNote) append(endNote);
-    if (material != null) append(`材料：${CompressionDesignChecks.materialDisplayValue(material, catalog)}。`);
-    if (direction) append(`旋向：${direction}。`);
     const requirements = generation.technical_requirements || [];
     for (const item of requirements) {
       if (!item || typeof item !== "object") continue;
       const body = content(item);
+      if (pureMaterialNote(body)) continue;
       if (["surface_roughness", "roughness"].includes(item.type) && body) append(roughnessLine(TechnicalRequirementEquivalence.format(item)), item.application_scope);
       else remaining.push(item);
     }
@@ -198,11 +240,6 @@
       if (height == null || height <= 0 || force == null || force < 0) continue;
       const match = label.match(/^[Ff](\d+)$/);
       append(match ? `当弹簧工作高度 H${match[1]} = ${textNumber(height)} mm 时，对应工作载荷 ${label} = ${forceText(point)}。` : `载荷点 ${label}：高度 ${textNumber(height)} mm，力值 ${forceText(point)}。`);
-    }
-    for (const [label, field] of [["总圈数", "total_coils"], ["有效圈数", "active_coils"]]) {
-      if (field === "active_coils" && parameterValue(parameters.end_coils_closed) === 0) continue;
-      const value = parameterValue(parameters[field], true);
-      if (value != null) append(`${label}：${value} 圈。`);
     }
     const requirementKeys = new Set();
     for (const item of remaining) {

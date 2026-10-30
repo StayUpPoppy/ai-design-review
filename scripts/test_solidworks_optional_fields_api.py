@@ -19,6 +19,8 @@ def optional_review():
     parameters["free_length"].update(tolerance_upper=.5, tolerance_lower=-.5)
     parameters["mean_diameter"] = {**parameter(29, "mm"), "tolerance_upper": .2, "tolerance_lower": -.2}
     parameters["perpendicularity"] = parameter(.01, "mm")
+    parameters["total_coils"]["value"] = 6.64
+    parameters["active_coils"]["value"] = 4.64
     return review
 
 
@@ -41,6 +43,10 @@ def main():
                 package = response.json()["parameter_package"]
                 preview = package["solidworks_preview"]
                 expected = {"外径": 1.5, "自由高度": .5, "中径": .2}
+                notes = preview["extraProperties"]["技术要求"]
+                assert notes.startswith("1.旋向：左。\n2.总圈数：6.64，有效圈数：4.64。\n3.两端并紧并磨平，磨面角≥270°。\n")
+                assert "材料：" not in notes and preview["titleBlockProperties"]["材料"] == "60Si2Mn"
+                assert preview["customProperties"]["旋向"] == "左旋"
                 assert preview["modelParametersTolerance"] == expected
                 assert preview["titleBlockProperties"]["垂直度A"] == .01
                 keys = list(preview)

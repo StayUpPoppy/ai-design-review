@@ -127,7 +127,7 @@ def run():
     package = build_generation_parameter_package(review)
     GenerationParameterPackageV2.model_validate(package)
     text = package["solidworks_preview"]["extraProperties"]["技术要求"]
-    assert len(text.splitlines()) == 14, text
+    assert len(text.splitlines()) == 12, text
     assert package["solidworks_preview"]["titleBlockProperties"]["表面粗糙度"] == 12.5
     assert "粗糙度" not in text
     assert len(review["technical_requirements"]) == 9 and len(package["generation_parameters"]["technical_requirements"]) == 10
@@ -153,8 +153,8 @@ def run():
     original_hard = deepcopy(hard["technical_requirements"])
     hard_package = build_generation_parameter_package(hard)
     hard_notes = hard_package["solidworks_preview"]["extraProperties"]["技术要求"]
-    assert len(hard_notes.splitlines()) == 9 and hard_notes.count("硬度要求：") == 1, hard_notes
-    assert "8.硬度要求：HRC45-50" in hard_notes
+    assert len(hard_notes.splitlines()) == 7 and hard_notes.count("硬度要求：") == 1, hard_notes
+    assert "6.硬度要求：HRC45-50" in hard_notes
     assert hard["technical_requirements"] == original_hard and len(original_hard) == 3
     legacy_hard = {"generation_parameters": {"technical_requirements_text": "技术要求\n8.硬度要求：硬度 HRC45-50\n10.硬度要求：HRC45~50"}}
     assert build_solidworks_technical_text(legacy_hard, {}) == "1.硬度要求：HRC45-50"
@@ -181,7 +181,7 @@ def run():
     for item in confirmed_eight["technical_requirements"]:
         item["need_human_review"] = False
     eight_package = build_generation_parameter_package(confirmed_eight)
-    assert len(eight_package["solidworks_preview"]["extraProperties"]["技术要求"].splitlines()) == 16
+    assert len(eight_package["solidworks_preview"]["extraProperties"]["技术要求"].splitlines()) == 14
     return {"pairs": rows, "review": order2_review(), "package": package, "merged": merged,
             "hardness_review": hard, "hardness_package": hard_package, "eight_review": eight, "eight_package": eight_package, "eight_pending_package": build_generation_parameter_package(eight)}
 
@@ -191,4 +191,4 @@ if __name__ == "__main__":
     if "--json" in sys.argv:
         print(json.dumps(result, ensure_ascii=True))
     else:
-        print(f"PASS: {len(result['pairs'])} safe equivalence fixtures, order2 14 notes + title-block Ra, aliases, confirmation and frozen requests")
+        print(f"PASS: {len(result['pairs'])} safe equivalence fixtures, order2 12 notes + title-block Ra, aliases, confirmation and frozen requests")
