@@ -84,6 +84,8 @@ class DrawingReviewWorkflow:
         candidates = apply_spring_semantic_mapping(
             candidates, normalize_materials=preliminary_type != "compression_spring",
         )
+        from .load_point_evidence import ground_candidates
+        if preliminary_type == "compression_spring": candidates = ground_candidates(candidates, file_path)
         candidates, load_point_diagnostics = partition_load_candidates(candidates)
         candidates = apply_compression_dimension_role_ranking(candidates)
         fused = fuse_candidates(candidates)
@@ -107,6 +109,8 @@ class DrawingReviewWorkflow:
             apply_formula_compression_spring_rate(spring_parameters, spring_features)
         accuracy_context = {"drawing_summary": {"spring_type": spring_type}, "spring_parameters": spring_parameters}
         ensure_load_point_ids(accuracy_context)
+        from .load_height_relations import refresh_load_heights
+        refresh_load_heights(accuracy_context)
         # Uploads deliberately defer standardization. Accuracy still needs a
         # local applicability decision, without starting RAG/LLM retrieval.
         from .standard_selector import select_standard
@@ -347,6 +351,7 @@ class DrawingReviewWorkflow:
 
     def _load_point(self, item: dict[str, Any]) -> dict[str, Any]:
         value = item.get("value", {})
+        if isinstance(value.get("height_relation"), dict): value["height_relation"]["page"] = item.get("page", 1)
         return {
             "label": value.get("label"),
             "height": value.get("height"),
@@ -359,6 +364,7 @@ class DrawingReviewWorkflow:
             "load_tolerance_upper": value.get("load_tolerance_upper"),
             "load_tolerance_lower": value.get("load_tolerance_lower"),
             "load_tolerance_percent": value.get("load_tolerance_percent"),
+            **{key: value[key] for key in ("height_relation", "height_calculation", "force_tolerance_status", "load_relation_conflict", "load_height_conflict") if key in value},
             "test_height_type": value.get("test_height_type", ""),
             "reference_only": value.get("reference_only", False),
             "source": item.get("source", []),

@@ -513,6 +513,16 @@ const historySidebarReducedMotion = window.matchMedia("(prefers-reduced-motion: 
 const identityProfile = document.getElementById("identityProfile");
 const identityProfileName = document.getElementById("identityProfileName");
 const identityProfileSource = document.getElementById("identityProfileSource");
+if (typeof TechnicalRequirementPreview !== "undefined") TechnicalRequirementPreview.configure({
+  scope: historyRecognitionScope, context: technicalOutputPreviewContext, build: technicalOutputPreviewModel,
+  catalog: () => state.materialCatalog || {}, request: (path, options) => apiFetch(path, options),
+  focus: (entry, messageId) => {
+    const field = entry.automatic ? entry.fields?.[0] : entry.requirement_ids?.[0] ? `technical_requirements.${entry.requirement_ids[0]}` : entry.fields?.[0];
+    if (field) focusMissingStandardizationField(field === "end_coils_closed" ? "end_type" : field, messageId,
+      { highlight: true, load_point_id: entry.load_point_ids?.[0], requirement_id: entry.requirement_ids?.[0] });
+  },
+});
+
 const compareOverlay = createCompareOverlay();
 let historyUnread = null;
 let historyUnreadScope = "";
@@ -1450,6 +1460,7 @@ function refreshParameterPersistenceControls(fields = null) {
   refreshTechnicalTranslationControls();
   syncGenerationSettingsControls();
   syncDrawingNoControls();
+  globalThis.TechnicalRequirementPreview?.refresh();
 }
 
 function createAuditEventId() {
@@ -4752,11 +4763,57 @@ function bindCompressionDesignDisclosures(root, review) {
 
 function prepareCompressionDesignChecks(review) {
   if (typeof CompressionDesignChecks === "undefined" || !isCompressionSpringReview(review)) return null;
+  if (typeof refreshLoadHeightRelations === "function") refreshLoadHeightRelations(review);
   CompressionDesignChecks.applyPitch(review);
   recordSupportCoilAdjustment(review);
   const checks = CompressionDesignChecks.calculate(review.spring_parameters || {}, review.spring_features || {}, state.materialCatalog || {});
   review.design_checks = checks;
   return checks;
+}
+
+function refreshLoadHeightRelations(review) {
+  const changes = globalThis.LoadHeightRelations?.refresh(review) || [];
+  if (review !== state.review || activeReviewContext()?.review !== review) return;
+  for (const change of changes) {
+    const point = review.spring_parameters.load_points.find(p => p.load_point_id === change.load_point_id);
+    if (!point) continue;
+    queueReviewAuditEvent({ event_type: "load_height_recalculated", target_field: loadPointField(point), source: "load_height_formula",
+      before_state: change.before, after_state: loadPointAuditState(point), metadata: { load_point_id: point.load_point_id, version: LoadHeightRelations.VERSION } });
+    document.querySelectorAll('[data-kind="load_point"]').forEach(row => {
+      const messageId = row.closest("[data-message-id]")?.dataset.messageId;
+      if (row.dataset.loadPointId !== point.load_point_id || messageId && messageId !== state.activeReviewMessageId) return;
+      const input = row.querySelector('[data-role="height"]');
+      if (input && document.activeElement !== input) input.value = point.height ?? "";
+      syncConfirmationControl(row, point, { kind: "load_point", field: loadPointField(point), review });
+      const note = row.querySelector('[data-role="height-relation-note"]');
+      if (note) note.textContent = loadHeightRelationNote(point);
+    });
+  }
+  document.querySelectorAll('[data-kind="load_point"]').forEach(row => {
+    const messageId = row.closest("[data-message-id]")?.dataset.messageId;
+    if (messageId && messageId !== state.activeReviewMessageId) return;
+    const point = review.spring_parameters.load_points.find(p => p.load_point_id === row.dataset.loadPointId);
+    const note = row.querySelector('[data-role="height-relation-note"]');
+    if (point && note) note.textContent = loadHeightRelationNote(point);
+  });
+}
+
+function loadHeightRelationNote(point) {
+  const relation = point.height_relation;
+  if (!relation || relation.mode === "manual") return "";
+  const label = relation.status === "pending" ? relation.reason || "高度关系待核对" : relation.kind === "absolute_height" ? "" : `由行程换算${point.need_human_review !== false ? "，待确认" : ""}`;
+  return [label, relation.check_warning].filter(Boolean).join("；");
+}
+
+function loadHeightRelationDetails(point) {
+  const relation = point.height_relation, candidate = point.load_relation_candidate;
+  if (!relation && !candidate) return "";
+  const r = relation || candidate.original?.height_relation || {};
+  const inputs = r.last_inputs || {};
+  const origin = [inputs.free_length_mm != null ? `自由高度：${inputs.free_length_mm} mm` : "", inputs.base_height_mm != null ? `参考点高度：${inputs.base_height_mm} mm` : "", inputs.dimension_mm != null ? `原始尺寸：${inputs.dimension_mm} mm` : "", inputs.reference_only ? "换算包含原图参考尺寸，需核对" : ""].filter(Boolean).join("；");
+  const proposal = candidate?.original?.height != null ? `原图换算参考高度：${candidate.original.height} mm` : "";
+  const lines = [r.mode === "manual" ? "当前高度为人工填写，原换算依据仅供追溯" : "", r.evidence, r.formula, origin, r.secant_rate != null ? `尺寸链与载荷对应刚度：${r.secant_rate} N/mm` : "", r.check_warning, candidate?.reason, candidate?.original?.evidence, proposal].filter(Boolean);
+  return `<details class="load-height-evidence"><summary>查看高度依据</summary>${lines.map(text => `<div>${escapeHtml(text)}</div>`).join("")}</details>`;
 }
 
 function recordSupportCoilAdjustment(review) {
@@ -5019,7 +5076,7 @@ function loadPointTableHeadHtml() {
       <span>&#36733;&#33655;&#28857;</span>
       <span>&#39640;&#24230;</span>
       <span>&#21147;&#20540;</span>
-      <span>&#20844;&#24046;</span>
+      <span>力值公差</span>
       <span>&#25805;&#20316;</span>
     </div>
   `;
@@ -5341,7 +5398,7 @@ function loadPointRowHtml(point, index, review = state.review) {
   const reasonablenessSeverity = reasonablenessSeverityForField(review, `load_points.${label}`);
   const heightLabel = parameterUnitLabel("height", "高度", { unit: point.height_unit }, { unit: "mm" });
   const forceLabel = parameterUnitLabel("force", "力值", { unit: point.force_unit }, { unit: "N" });
-  const toleranceLabel = `${label}公差（绝对公差单位：${forceLabel.unit}；百分比公差：%）`;
+  const toleranceLabel = `${label}力值公差（绝对公差单位：${forceLabel.unit}；百分比公差：%）`;
   return `
     <div class="data-row load-point${reasonablenessSeverity ? ` parameter-risk-${escapeHtml(reasonablenessSeverity)}` : ""}" data-kind="load_point" data-index="${index}" data-load-point-id="${escapeHtml(point.load_point_id || "")}">
       <div class="data-label">
@@ -5355,18 +5412,19 @@ function loadPointRowHtml(point, index, review = state.review) {
           </div>
           <span class="load-point-rename-status" data-role="rename-status" role="status" aria-live="polite"></span>
         </div>
-        ${evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
+        ${point.height_relation || point.load_relation_candidate ? loadHeightRelationDetails(point) : evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
       </div>
       <label class="data-input-cell data-primary">
         <span class="load-point-field-label">${parameterUnitLabelHtml(heightLabel)}</span>
         <input data-role="height" aria-label="${escapeHtml(`${label}${heightLabel.text}`)}" value="${escapeHtml(point.height ?? "")}">
+        <small data-role="height-relation-note">${escapeHtml(point.height_relation ? loadHeightRelationNote(point) : "")}</small>
       </label>
       <label class="data-input-cell data-secondary">
         <span class="load-point-field-label">${parameterUnitLabelHtml(forceLabel)}</span>
         <input data-role="force" aria-label="${escapeHtml(`${label}${forceLabel.text}`)}" value="${escapeHtml(point.force ?? "")}">
       </label>
       <label class="data-input-cell data-tertiary load-point-tolerance">
-        <span class="sr-only">${escapeHtml(toleranceLabel)}</span>
+        <span class="load-point-field-label">力值公差</span>
         <input data-role="load-tolerance" aria-label="${escapeHtml(toleranceLabel)}" value="${escapeHtml(tolerance.value)}" placeholder="${escapeHtml(tolerance.placeholder)}" title="${escapeHtml([tolerance.title, `绝对公差单位与力值一致（${forceLabel.unit}）；百分比公差使用 %。`].filter(Boolean).join("；"))}">
         ${tolerance.note ? `<small>${escapeHtml(tolerance.note)}</small>` : ""}
       </label>
@@ -5402,7 +5460,7 @@ function renderLoadPointSectionHtml(review, rows) {
         <label>编号<input data-role="new-load-label" placeholder="例如：F1"></label>
         <label>${parameterUnitLabelHtml(parameterUnitLabel("height", "高度", {}, { unit: "mm" }))}<input data-role="new-load-height" inputmode="decimal" placeholder="例如：25"></label>
         <label>${parameterUnitLabelHtml(parameterUnitLabel("force", "力值", {}, { unit: "N" }))}<input data-role="new-load-force" inputmode="decimal" placeholder="可留空，仅估算应力"></label>
-        <label>公差（可选）<input data-role="new-load-tolerance" placeholder="例如：±6 或 +6/-6" aria-label="公差（可选，绝对值单位 N，百分比单位 %）"></label>
+        <label>力值公差（可选）<input data-role="new-load-tolerance" placeholder="例如：±6 或 +6/-6" aria-label="公差（可选，绝对值单位 N，百分比单位 %）"></label>
         <small data-role="load-point-create-error" aria-live="polite"></small>
         <small data-role="load-candidate-form-note" hidden>请核对原图并补齐参数；加入后仍需确认。</small>
         <div><button type="submit">添加</button><button type="button" class="secondary-action" data-action="cancel-load-point-create">取消</button></div>
@@ -5592,7 +5650,9 @@ function confirmationControlState(item, options = {}) {
 
   let invalidReason = "";
   if (kind === "load_point") {
-    if (!isValidLoadPoint(item)) invalidReason = "编号不能为空，高度需大于零，力值需为非负数";
+    if (item.load_relation_conflict || item.force_tolerance_status === "uncertain") invalidReason = "力值公差证据不一致或单位不明确，请核对并重新填写";
+    else if (item.load_height_conflict) invalidReason = "高度尺寸关系存在冲突，请核对并修改高度";
+    else if (!isValidLoadPoint(item)) invalidReason = "编号不能为空，高度需大于零，力值需为非负数";
     else if (isDuplicateLoadPointLabel(review, item.label, item.load_point_id)) invalidReason = "载荷点编号重复，请先修改编号";
   } else if (kind === "technical") {
     if (!String(item?.content || "").trim()) invalidReason = "技术要求内容不能为空";
@@ -5644,6 +5704,10 @@ function syncConfirmationControl(row, item, options = {}) {
   button.textContent = control.label;
   button.title = control.reason || "";
   row.dataset.confirmationState = control.state;
+  if (options.kind === "load_point" && item?.height_relation && typeof loadHeightRelationNote === "function") {
+    const note = row.querySelector('[data-role="height-relation-note"]');
+    if (note) note.textContent = loadHeightRelationNote(item);
+  }
   if (!item?.need_human_review) row.querySelector?.(".parameter-default-candidate-note")?.remove();
   if (options.field === "material" && row.querySelector?.(".material-selection-notes")) refreshMaterialSelectionRow(row, item);
   return control;
@@ -7537,6 +7601,8 @@ function loadPointAuditState(point, extra = {}) {
     force_unit: point.force_unit || "N",
     load_tolerance_upper: point.load_tolerance_upper ?? null,
     load_tolerance_lower: point.load_tolerance_lower ?? null,
+    ...(point.height_relation ? { height_relation: LoadHeightRelations.snapshot(point) } : {}),
+    ...Object.fromEntries(["force_tolerance_status", "load_relation_conflict", "load_height_conflict"].filter(k => Object.hasOwn(point,k)).map(k => [k,point[k]])),
     load_tolerance_percent: point.load_tolerance_percent ?? null,
     need_human_review: point.need_human_review !== false,
     ...extra,
@@ -7689,7 +7755,7 @@ function bindLoadPointRename(row, point, review, messageId, root, changed) {
 }
 
 function isValidLoadPoint(point) {
-  if (point?.height == null || point.height === "" || point?.force == null || point.force === "") return false;
+  if (point?.height == null || point.height === "" || point?.force == null || point.force === "" || point.load_relation_conflict || point.load_height_conflict || point.force_tolerance_status === "uncertain") return false;
   const height = Number(point?.height);
   const force = Number(point?.force);
   return Boolean(normalizeLoadPointLabel(point?.label)) && Number.isFinite(height) && Number.isFinite(force) && height > 0 && force >= 0;
@@ -7800,7 +7866,7 @@ function technicalGroupStatus(members, review) {
 }
 
 function technicalSummaryText(counts) {
-  return `去重后 ${counts.total} 条 · 已确认 ${counts.confirmed} 条 · 待确认 ${counts.pending} 条 · 可输出 ${counts.exportable} 条 · 原始记录 ${counts.original} 条`;
+  return `原图／人工要求 · 去重后 ${counts.total} 条 · 已确认 ${counts.confirmed} 条 · 待确认 ${counts.pending} 条 · 可输出 ${counts.exportable} 条 · 原始记录 ${counts.original} 条`;
 }
 
 function findTechnicalRequirementRow(root, id) {
@@ -8167,11 +8233,41 @@ async function ensureSurfaceCatalog({ force = false } = {}) {
     } finally {
       if (request === surfaceCatalogRequestSerial && base === state.apiBaseUrl) {
         surfaceCatalogPromise = null;
+        globalThis.TechnicalRequirementPreview?.refresh();
         if (state.review) document.querySelectorAll('.requirement-row[data-kind="technical"]').forEach((row) => { syncSurfaceCompanyControls(row, state.review); syncTechnicalGroupControl(row, state.review); });
       }
     }
   })();
   return surfaceCatalogPromise;
+}
+
+const technicalPreviewOrigins = new WeakMap();
+
+function technicalOutputPreviewContext(review, messageId) {
+  const currentScope = historyRecognitionScope();
+  let origin = technicalPreviewOrigins.get(review);
+  if (!origin && review === state.review) { origin = { scope: currentScope, jobId: state.lastJob?.job_id || null }; technicalPreviewOrigins.set(review, origin); }
+  const scope = origin?.scope ?? currentScope;
+  const active = review === state.review && scope === currentScope && (origin?.jobId || null) === (state.lastJob?.job_id || null);
+  const jobId = active ? origin?.jobId : null, revision = active ? state.lastJob?.review_revision : null;
+  const readiness = active ? state.generationReadiness : null;
+  const dataSignature = JSON.stringify([review.spring_parameters, review.technical_requirements, review.spring_features, review.drawing_summary?.spring_type]);
+  const matching = readiness && (!readiness.review_id || readiness.review_id === jobId)
+    && (readiness.review_revision == null || readiness.review_revision === revision);
+  return { active, scope, jobId, revision, edit: state.reviewEditSerial, saving: active && state.reviewPersistenceSaving,
+    saveFailed: active && Object.keys(state.reviewPersistenceFailedFields || {}).length > 0,
+    dirty: active && Boolean(state.reviewPersistenceSaving || state.pendingReviewAuditEvents.length || state.reviewDraftFields.size || Object.keys(state.reviewPersistenceFailedFields || {}).length),
+    ready: matching ? ["ready", "ready_with_warnings"].includes(readiness.generation_readiness?.status) : null,
+    session: JSON.stringify([scope, jobId || messageId, state.reviewNavigationSerial]),
+    dataSignature, signature: JSON.stringify([dataSignature, state.materialCatalog.version, state.materialCatalog.status, state.surfaceCatalog.version, state.surfaceCatalog.status]) };
+}
+
+function technicalOutputPreviewModel(review) {
+  const snapshot = structuredClone(review);
+  const parameterPackage = makeGenerationParameterPackage(snapshot, { technicalPreview: true });
+  const projection = SolidWorksExport.technicalProjection(parameterPackage, snapshot, state.materialCatalog || {});
+  projection.ready = ["ready", "ready_with_warnings"].includes(assessGenerationReadiness(snapshot).status);
+  return projection;
 }
 
 function renderRequirementsHtml(review) {
@@ -8191,6 +8287,7 @@ function renderRequirementsHtml(review) {
           <button type="button" class="secondary-action" data-recovery-action="preview"${state.lastJob?.job_id ? "" : " disabled"}>补回遗漏技术要求</button>
         </div>
       </div>
+      <div data-kind="technical_output_preview"></div>
       ${globalThis.window?.TechnicalRequirementRecovery?.render(review) || ""}
       ${undo ? `
         <div class="technical-requirement-undo" role="status">
@@ -8205,6 +8302,7 @@ function renderRequirementsHtml(review) {
         <label>中文技术要求
           <textarea data-role="new-technical-content" placeholder="例如：去除毛刺，表面镀锌。"></textarea>
         </label>
+        <small class="technical-automatic-hint" data-role="technical-automatic-add-hint" role="status" hidden></small>
         <small data-role="technical-requirement-create-error" aria-live="polite"></small>
         <div>
           <button type="submit">添加</button>
@@ -8227,6 +8325,7 @@ function renderRequirementsHtml(review) {
                 <label>中文技术要求
                   <textarea data-role="content">${escapeHtml(TechnicalRequirementEquivalence.format(item))}</textarea>
                 </label>
+                <small class="technical-automatic-hint" data-role="technical-automatic-duplicate" role="status" hidden></small>
                 <small class="technical-group-reason" data-role="technical-group-reason" role="status"${control.disabled && control.state !== "confirmed" ? "" : " hidden"}>${escapeHtml(control.disabled && control.state !== "confirmed" ? control.reason : "")}</small>
                 ${group.members.map(({ item: member, index: memberIndex }) => `<div data-role="technical-translation-feedback" data-translation-requirement-id="${escapeHtml(member.requirement_id)}">${technicalTranslationFeedbackHtml(review, member, memberIndex)}</div>`).join("")}
                 <details class="technical-original technical-group-sources" data-role="technical-group-sources"><summary>查看识别来源（${group.sources.length} 条原始记录）</summary>
@@ -8249,7 +8348,7 @@ function renderRequirementsHtml(review) {
             </div>
           `; }).join("")}
         </div>
-      ` : '<div class="empty-line">尚未添加技术要求；如无标注要求，可保持为空。</div>'}
+      ` : '<div class="empty-line">尚无原图／人工技术要求；参数自动项见上方预览。</div>'}
     </section>
   `;
 }
@@ -8797,9 +8896,12 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     if (!point) return;
     let pointField = loadPointField(point, pointIndex);
     const confirmationField = loadPointConfirmationKey(point, pointIndex);
+    const editorJobId = state.lastJob?.job_id, editorScope = historyRecognitionScope();
+    const editorIsCurrent = () => state.review === review && state.lastJob?.job_id === editorJobId && historyRecognitionScope() === editorScope;
     const bindLoadPointDraft = (input, applyValue, eventType) => {
       let beforeState = null;
       const applyDraft = (event) => {
+        if (!editorIsCurrent()) return;
         activateReviewContext(messageId);
         beforeState ||= loadPointAuditState(point);
         rememberConfirmedSnapshot(point);
@@ -8812,6 +8914,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       };
       input.addEventListener("input", applyDraft);
       input.addEventListener("change", (event) => {
+        if (!editorIsCurrent()) return;
         if (!beforeState) applyDraft(event);
         const afterState = loadPointAuditState(point);
         if (JSON.stringify(beforeState) !== JSON.stringify(afterState)) {
@@ -8824,6 +8927,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     };
     bindLoadPointDraft(row.querySelector('[data-role="height"]'), (event) => {
       point.height = parseValue(event.target.value, point.height);
+      globalThis.LoadHeightRelations?.manual(point);
     }, "load_point_value_updated");
     bindLoadPointDraft(row.querySelector('[data-role="force"]'), (event) => {
       point.force = parseValue(event.target.value, point.force);
@@ -8831,8 +8935,11 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     bindLoadPointRename(row, point, review, messageId, root, () => { pointField = loadPointField(point, pointIndex); });
     bindLoadPointDraft(row.querySelector('[data-role="load-tolerance"]'), (event) => {
       applyLoadPointTolerance(point, event.target.value);
+      point.force_tolerance_status = event.target.value.trim() ? "specified" : "not_specified";
+      delete point.load_relation_conflict;
     }, "load_point_tolerance_updated");
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
+      if (!editorIsCurrent()) return;
       activateReviewContext(messageId);
       const control = confirmationControlState(point, { kind: "load_point", field: pointField, review });
       if (control.state === "save_failed") { void flushReviewPersistence(); return; }
@@ -8852,6 +8959,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       refreshBulkConfirmationFollowupAfterLocalChange(messageId);
     });
     row.querySelector('[data-role="delete-load-point"]')?.addEventListener("click", () => {
+      if (!editorIsCurrent()) return;
       activateReviewContext(messageId);
       const currentIndex = (review.spring_parameters.load_points || []).findIndex((item) => String(item?.load_point_id || "") === pointId);
       if (currentIndex < 0) return;
@@ -9226,6 +9334,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   });
 
   bindTechnicalRequirementGroups(root, review, messageId);
+  globalThis.TechnicalRequirementPreview?.mount(root, review, messageId);
 
 }
 
@@ -11052,6 +11161,7 @@ async function ensureMaterialCatalog(options = {}) {
     } finally {
       if (requestSerial === materialCatalogRequestSerial && requestedBase === state.apiBaseUrl) {
         materialCatalogPromise = null;
+        globalThis.TechnicalRequirementPreview?.refresh();
         refreshMaterialCatalogControls();
       }
     }
@@ -11571,6 +11681,7 @@ function setCompareTab(root, requestedTab) {
   root.querySelectorAll("[data-compare-panel]").forEach((panel) => {
     panel.classList.toggle("active", panel.dataset.comparePanel === tab);
   });
+  globalThis.TechnicalRequirementPreview?.refresh();
 }
 
 function validCompareTab(tab) {
@@ -11912,9 +12023,18 @@ function setReview(review, imageUrl, options = {}) {
   state.review = review;
   recordRoughnessVerificationAdjustment(review);
   recordMultiSpecReconciliation(review);
+  recordLoadHeightAdjustment(review);
   state.imageUrl = imageUrl;
   exportButton.disabled = false;
   scheduleTechnicalRequirementTranslation();
+}
+
+function recordLoadHeightAdjustment(review) {
+  const repair = review.load_height_adjustment;
+  if (!repair?.pending_save || repair.audit_recorded || state.review !== review) return;
+  repair.audit_recorded = true;
+  queueReviewAuditEvent({ event_type: "load_height_evidence_reconciled", target_field: "load_points", source: "original_load_evidence",
+    before_state: repair.before, after_state: structuredClone(review.spring_parameters.load_points), metadata: { version: repair.version } });
 }
 
 function recordRoughnessVerificationAdjustment(review) {
@@ -12135,6 +12255,7 @@ async function loadGenerationState(reviewId = state.lastJob?.job_id, options = {
     if (!readinessResponse.ok) throw new Error(generationApiError(readinessPayload, "无法读取服务端生图就绪状态"));
     if (state.lastJob?.job_id !== reviewId || state.generationLoadRequest !== request) return;
     state.generationReadiness = readinessPayload;
+    globalThis.TechnicalRequirementPreview?.refresh();
     if (jobsResponse.ok) {
       state.generationQueueAvailable = true;
       state.generationJobs = jobsPayload.generation_jobs || [];
@@ -12160,7 +12281,7 @@ async function reloadGenerationReadiness(reviewId = state.lastJob?.job_id) {
   const response = await apiFetch(`/api/reviews/${encodeURIComponent(reviewId)}/generation-readiness`);
   const payload = await response.json();
   if (!response.ok) throw new Error(generationApiError(payload, "无法读取服务端生图就绪状态"));
-  if (scope === historyRecognitionScope() && navigation === state.reviewNavigationSerial && state.lastJob?.job_id === reviewId) state.generationReadiness = payload;
+  if (scope === historyRecognitionScope() && navigation === state.reviewNavigationSerial && state.lastJob?.job_id === reviewId) { state.generationReadiness = payload; globalThis.TechnicalRequirementPreview?.refresh(); }
   return payload;
 }
 
@@ -13021,6 +13142,8 @@ function confirmationSnapshotFor(item) {
       load_tolerance_upper: item.load_tolerance_upper ?? null,
       load_tolerance_lower: item.load_tolerance_lower ?? null,
       load_tolerance_percent: item.load_tolerance_percent ?? null,
+      ...(item.height_relation ? { height_relation: LoadHeightRelations.snapshot(item) } : {}),
+      ...Object.fromEntries(["force_tolerance_status", "load_relation_conflict", "load_height_conflict"].filter(k => Object.hasOwn(item,k)).map(k => [k,item[k]])),
     };
   }
   if (Object.prototype.hasOwnProperty.call(item, "content")) {
@@ -13386,8 +13509,10 @@ function makeExportReview() {
   return exported;
 }
 
-function makeGenerationParameterPackage(review = state.review) {
-  if (Array.from(String(review.drawing_summary?.drawing_name ?? "").trim()).length > 512) throw new Error("图纸名称最长512字符，请缩短后重试");
+function makeGenerationParameterPackage(review = state.review, options = {}) {
+  review = structuredClone(review);
+  globalThis.LoadHeightRelations?.refresh(review);
+  if (!options.technicalPreview && Array.from(String(review.drawing_summary?.drawing_name ?? "").trim()).length > 512) throw new Error("图纸名称最长512字符，请缩短后重试");
   const confirmedParameters = {};
   COMPRESSION_GENERATION_EXPORT_FIELDS.forEach((field) => {
     const param = generationSourceParameter(review.spring_parameters || {}, field);
@@ -13453,8 +13578,9 @@ function makeGenerationParameterPackage(review = state.review) {
       technical_requirements: requirements,
       technical_requirements_text: technicalRequirementsText,
     },
-    derived_parameters: generationDerivedParameters(review),
+    derived_parameters: options.technicalPreview ? {} : generationDerivedParameters(review),
   };
+  if (options.technicalPreview) return parameterPackage;
   if (review.generation_settings) parameterPackage.generation_settings = GenerationSettings.normalized(review.generation_settings);
   parameterPackage.solidworks_preview = SolidWorksExport.buildPreview(parameterPackage, review, typeof state === "undefined" ? {} : state.materialCatalog || {});
   return parameterPackage;

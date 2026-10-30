@@ -11,6 +11,7 @@ from .surface_roughness import ROUGHNESS_VERIFICATION_VERSION, merge_roughness_c
 
 
 SOURCE_PRIORITY = {
+    "local_load_evidence": 0.995,
     "human": 1.0,
     "manual": 0.98,
     "cad": 0.95,
@@ -195,10 +196,10 @@ def _merge_load_points(load_points: list[dict[str, Any]], conflicts: list[dict[s
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for index, point in enumerate(load_points):
         label = str((point.get("value") or {}).get("label") or "").strip().upper()
-        key = label or f"__unnamed_{index}"
+        key = f"{point.get('page', 1)}:{(point.get('value') or {}).get('height_relation', {}).get('scope', '')}:{label}" if label else f"__unnamed_{index}"
         groups[key].append(point)
 
-    merged = [_merge_load_point(label, points, conflicts) for label, points in groups.items()]
+    merged = [_merge_load_point(str((points[0].get("value") or {}).get("label") or key).strip().upper(), points, conflicts) for key, points in groups.items()]
     return sorted(
         merged,
         key=lambda item: _number_or_default((item.get("value") or {}).get("height"), 999999),
@@ -224,10 +225,44 @@ def _merge_load_point(
         "load_tolerance_upper",
         "load_tolerance_lower",
         "load_tolerance_percent",
-        "test_height_type",
+        "test_height_type", "deflection", "deflection_unit", "height_calculation", "height_relation",
     )
     for key in value_keys:
         merged_value[key] = _first_load_point_value(ordered, key)
+    force_points = [p for p in ordered if (p.get("value") or {}).get("force") is not None]
+    if force_points:
+        force_bundle = force_points[0]["value"]
+        tolerance_keys=("load_tolerance_upper","load_tolerance_lower","load_tolerance_percent","force_tolerance_percent")
+        if all(force_bundle.get(k) is None for k in tolerance_keys):
+            factors={"n":1.,"kn":1000.,"kgf":9.80665}
+            base_force=_number_or_default(force_bundle.get("force"),float("nan"))*factors.get(str(force_bundle.get("force_unit") or "").lower(),float("nan"))
+            for candidate in force_points[1:]:
+                bundle=candidate["value"]
+                other_force=_number_or_default(bundle.get("force"),float("nan"))*factors.get(str(bundle.get("force_unit") or "").lower(),float("nan"))
+                if isfinite(base_force) and isfinite(other_force) and abs(base_force-other_force)<=1e-9 and any(bundle.get(k) is not None for k in tolerance_keys):
+                    force_bundle=bundle
+                    break
+        for key in ("force", "force_unit", "load_tolerance_upper", "load_tolerance_lower", "load_tolerance_percent", "force_tolerance_percent", "force_tolerance_status"):
+            merged_value[key] = force_bundle.get(key)
+    relations = [p["value"]["height_relation"] for p in ordered if isinstance(p.get("value", {}).get("height_relation"), dict)]
+    trusted_height_sources=("local_load_evidence", "rapidocr", "baidu", "pdf_text_layer", "ocr")
+    verified = [p for p in ordered if isinstance(p.get("value", {}).get("height_relation"), dict) and p["value"]["height_relation"].get("verified")
+                and "qwen" not in str(p.get("source")) and any(name in str(p.get("source")) for name in trusted_height_sources)]
+    if relations:
+        from .load_height_relations import normalize_relation
+        selected = verified[0] if verified else next((p for p in ordered if isinstance(p.get("value", {}).get("height_relation"), dict) and p["value"]["height_relation"].get("kind")!="unknown"),
+                                                   next(p for p in ordered if isinstance(p.get("value", {}).get("height_relation"), dict)))
+        merged_value["height_relation"] = normalize_relation(selected["value"]["height_relation"], trusted=selected in verified)
+    if any(p.get("value",{}).get("load_height_conflict") for p in ordered):
+        merged_value["load_height_conflict"]=True
+        conflicts.append({"field":f"load_points.{label}.height_relation","message":"原图存在不同的工作高度，请核对","need_human_review":True})
+    credible = [p["value"]["height_relation"] for p in verified]
+    if len(credible)>1:
+        from .load_height_relations import millimeters
+        signatures={(r.get("kind"),millimeters(r.get("value"),r.get("unit")),r.get("base_label") or r.get("base_point_id") or "") for r in credible}
+        if len(signatures)>1:
+            merged_value["load_height_conflict"]=True
+            conflicts.append({"field":f"load_points.{label}.height_relation","message":"载荷高度存在不同的原图尺寸关系，请核对","need_human_review":True})
     merged_value["label"] = label if not label.startswith("__unnamed_") else merged_value.get("label")
     merged_value["reference_only"] = all(bool((item.get("value") or {}).get("reference_only")) for item in ordered)
 
@@ -245,6 +280,10 @@ def _merge_load_point(
                 }
             )
 
+    bundles = [p["value"] for p in ordered if any((p.get("value") or {}).get(k) is not None for k in ("load_tolerance_upper", "load_tolerance_lower", "load_tolerance_percent", "force_tolerance_percent"))]
+    if len(bundles)>1 and any(any(b.get(k)!=bundles[0].get(k) for k in ("load_tolerance_upper","load_tolerance_lower","load_tolerance_percent","force_tolerance_percent")) for b in bundles[1:]):
+        conflicts.append({"field": f"load_points.{label}.tolerance", "message": "载荷点存在不同力值公差，请核对原图", "need_human_review": True})
+        merged_value["load_relation_conflict"] = True
     confidence = min(0.99, max(float(best.get("confidence", 0) or 0), _combined_confidence(ordered)))
     has_conflict = any(
         item.get("field", "").startswith(f"load_points.{label}.")
@@ -259,7 +298,7 @@ def _merge_load_point(
         "page": best.get("page", 1),
         "position": best.get("position"),
         "suggested_region": best.get("suggested_region", ""),
-        "need_human_review": has_conflict or _needs_human_review(best, ordered),
+        "need_human_review": has_conflict or any("local_load_evidence" in str(p.get("source")) for p in ordered) or _needs_human_review(best, ordered),
         "source_context": next((point["source_context"] for point in ordered if point.get("source_context")), {}),
     }
 

@@ -192,70 +192,106 @@
     key = key.replace(/^(?:材质|材料)/, "材料").replace(/^(?:旋向|绕制方向)/, "绕制方向").replace(/^(?:有效圈数n?|工作圈数)/, "工作圈数").replace(/表面粗糙度/g, "粗糙度").replace(/^(材料|绕制方向|工作圈数)\s*:\s*/, "$1");
     return JSON.stringify(TechnicalRequirementEquivalence.key({ type: [null, "other", "process"].includes(kind) ? "other" : kind, content: key, application_scope: scope }));
   }
-  function technicalText(packageData, review, catalog = {}) {
+  function technicalProjection(packageData, review, catalog = {}) {
     const generation = packageData.generation_parameters || {}, parameters = generation.spring_parameters || {};
-    const lines = [], remaining = [], direction = confirmedHeaderValue(parameters, review, "handedness");
+    const lines = [], entries = [], remaining = [], direction = confirmedHeaderValue(parameters, review, "handedness");
     const roughness = confirmedRoughness(review);
     const convertedSources = new Set(typeof CompanySurfaceMapping !== "undefined" ? CompanySurfaceMapping.outputSourceKeys(review).map((key) => JSON.stringify(key)) : []);
     const keys = new Set(), headParts = new Set();
-    const append = (line, scope) => {
+    const sourceFor = item => {
+      const key = JSON.stringify(TechnicalRequirementEquivalence.key(item));
+      const ids = (review.technical_requirements || []).filter(candidate => JSON.stringify(TechnicalRequirementEquivalence.key(candidate)) === key)
+        .map(candidate => candidate.requirement_id).filter(Boolean);
+      return { automatic: !ids.length && ["surface_roughness", "roughness"].includes(item.type),
+        fields: !ids.length && ["surface_roughness", "roughness"].includes(item.type) ? ["surface_roughness_ra"] : [], requirement_ids: ids };
+    };
+    const loadSource = point => {
+      const original = (review.spring_parameters?.load_points || []).find(item => String(item.label || "").trim() === String(point.label || "").trim());
+      return { automatic: true, fields: [`load_points.${point.label}`], load_point_ids: original?.load_point_id ? [original.load_point_id] : [] };
+    };
+    const append = (line, scope, source = {}) => {
       if (typeof CompanySurfaceMapping !== "undefined" && convertedSources.has(JSON.stringify([CompanySurfaceMapping.sourceKey(line), CompanySurfaceMapping.scopeKey(scope)]))) return;
       if (roughnessMatches({ content: line, application_scope: scope }, roughness)) return;
       line = swTechnicalLine(line);
       if (pureMaterialNote(line)) return;
       const parts = String(scope || "").trim() ? [] : headerParts(line);
-      if (parts.length && parts.every(part => headParts.has(part))) return;
       const key = sentenceKey(line, catalog, scope);
-      if (line && !keys.has(key)) { keys.add(key); parts.forEach(part => headParts.add(part)); lines.push(line); }
+      if (parts.length && parts.every(part => headParts.has(part)) || keys.has(key)) {
+        entries.filter(entry => entry.key === key || parts.length && entry.parts.some(part => parts.includes(part))).forEach(entry => {
+          entry.requirement_ids = [...new Set([...entry.requirement_ids, ...(source.requirement_ids || [])])];
+        });
+        return;
+      }
+      if (line) {
+        keys.add(key); parts.forEach(part => headParts.add(part)); lines.push(line);
+        entries.push({ id: `note-${entries.length}`, body: line, key, parts, scope: scope || "", automatic: Boolean(source.automatic),
+          fields: source.fields || [], load_point_ids: source.load_point_ids || [], requirement_ids: source.requirement_ids || [] });
+      }
     };
-    if (direction) append(`旋向：${direction.replace(/旋$/, "")}。`);
-    const coils = [];
+    if (direction) append(`旋向：${direction.replace(/旋$/, "")}。`, null, { automatic: true, fields: ["handedness"] });
+    const coils = [], coilFields = [];
     for (const [label, field] of [["总圈数", "total_coils"], ["有效圈数", "active_coils"]]) {
       if (field === "active_coils" && parameterValue(parameters.end_coils_closed) === 0) continue;
       const value = confirmedHeaderValue(parameters, review, field);
-      if (value != null) coils.push(`${label}：${coilText(value)}`);
+      if (value != null) { coils.push(`${label}：${coilText(value)}`); coilFields.push(field); }
     }
-    if (coils.length) append(coils.join("，") + "。");
+    if (coils.length) append(coils.join("，") + "。", null, { automatic: true, fields: coilFields });
     const endNote = confirmedEndNote(parameters, review);
-    if (endNote) append(endNote);
+    if (endNote) append(endNote, null, { automatic: true, fields: [review.spring_parameters?.end_coils_closed?.value != null ? "end_coils_closed" : "end_type", "end_grinding"] });
     const requirements = generation.technical_requirements || [];
     for (const item of requirements) {
       if (!item || typeof item !== "object") continue;
       const body = content(item);
       if (pureMaterialNote(body)) continue;
-      if (["surface_roughness", "roughness"].includes(item.type) && body) append(roughnessLine(TechnicalRequirementEquivalence.format(item)), item.application_scope);
+      if (["surface_roughness", "roughness"].includes(item.type) && body) append(roughnessLine(TechnicalRequirementEquivalence.format(item)), item.application_scope, sourceFor(item));
       else remaining.push(item);
     }
     const hb = confirmedSolidHeight(review), points = (generation.load_points || []).filter((p) => p && typeof p === "object");
     const solid = points.filter((p) => solidLabel(p.label)), fb = solid.length === 1 ? number(solid[0].force?.value) : null;
     const fbHeight = solid.length === 1 ? number(solid[0].height?.value) : null, fbText = fb != null && fb >= 0 ? forceText(solid[0]) : null;
-    if (hb != null && fbText != null && fbHeight != null && Math.abs(hb - fbHeight) <= 1e-9) append(`当弹簧压并至高度 Hb = ${textNumber(hb)} mm 时，对应压并载荷 Fb = ${fbText}。`);
+    if (hb != null && fbText != null && fbHeight != null && Math.abs(hb - fbHeight) <= 1e-9) append(`当弹簧压并至高度 Hb = ${textNumber(hb)} mm 时，对应压并载荷 Fb = ${fbText}。`, null, { ...loadSource(solid[0]), fields: ["solid_height", ...loadSource(solid[0]).fields] });
     else {
-      if (hb != null) append(`压并高度：Hb = ${textNumber(hb)} mm。`);
-      if (fbText != null) append(`压并载荷：Fb = ${fbText}${hb != null && fbHeight != null ? `（载荷测试高度 ${textNumber(fbHeight)} mm）` : ""}。`);
+      if (hb != null) append(`压并高度：Hb = ${textNumber(hb)} mm。`, null, { automatic: true, fields: ["solid_height"] });
+      if (fbText != null) append(`压并载荷：Fb = ${fbText}${hb != null && fbHeight != null ? `（载荷测试高度 ${textNumber(fbHeight)} mm）` : ""}。`, null, loadSource(solid[0]));
     }
     for (const point of points) {
       if (solidLabel(point.label)) continue;
       const height = number(point.height?.value), force = number(point.force?.value), label = String(point.label || "").trim();
       if (height == null || height <= 0 || force == null || force < 0) continue;
       const match = label.match(/^[Ff](\d+)$/);
-      append(match ? `当弹簧工作高度 H${match[1]} = ${textNumber(height)} mm 时，对应工作载荷 ${label} = ${forceText(point)}。` : `载荷点 ${label}：高度 ${textNumber(height)} mm，力值 ${forceText(point)}。`);
+      append(match ? `当弹簧工作高度 H${match[1]} = ${textNumber(height)} mm 时，对应工作载荷 ${label} = ${forceText(point)}。` : `载荷点 ${label}：高度 ${textNumber(height)} mm，力值 ${forceText(point)}。`, null, loadSource(point));
     }
     const requirementKeys = new Set();
     for (const item of remaining) {
       const key = JSON.stringify(TechnicalRequirementEquivalence.key(item));
       if (requirementKeys.has(key)) continue;
       requirementKeys.add(key);
-      append(TechnicalRequirementEquivalence.format(item), item.application_scope);
+      append(TechnicalRequirementEquivalence.format(item), item.application_scope, sourceFor(item));
     }
     if (!requirements.length) {
       const legacy = String(generation.technical_requirements_text || "").replace(/\r\n?/g, "\n").trim().replace(/^技术要求[:：]?\s*(?:\n|$)/, "");
       for (const line of legacy.split("\n")) {
         const body = TechnicalRequirementEquivalence.outputContent({ content: line });
-        if (body) append(TechnicalRequirementEquivalence.format({ content: body }));
+        if (body) append(TechnicalRequirementEquivalence.format({ content: body }), null, sourceFor({ content: body }));
       }
     }
-    return lines.map((line, index) => `${index + 1}.${line}`).join("\n");
+    return { text: lines.map((line, index) => `${index + 1}.${line}`).join("\n"), entries };
+  }
+  function technicalText(packageData, review, catalog = {}) {
+    return technicalProjection(packageData, review, catalog).text;
+  }
+  function automaticMatches(projection, item, catalog = {}) {
+    const line = swTechnicalLine(TechnicalRequirementEquivalence.format(item));
+    if (!line || pureMaterialNote(line)) return [];
+    const scope = item.application_scope, parts = String(scope || "").trim() ? [] : headerParts(line);
+    const automatic = (projection?.entries || []).filter(entry => entry.automatic);
+    const matches = automatic.filter(entry => sentenceKey(entry.body, catalog, entry.scope) === sentenceKey(line, catalog, scope));
+    if (matches.length) return matches;
+    if (parts.length) {
+      const available = new Set(automatic.flatMap(entry => entry.parts || headerParts(entry.body)));
+      if (parts.every(part => available.has(part))) return automatic.filter(entry => (entry.parts || headerParts(entry.body)).some(part => parts.includes(part)));
+    }
+    return [];
   }
   function buildPreview(packageData, review, catalog = {}) {
     const parameters = packageData.generation_parameters?.spring_parameters || {};
@@ -296,5 +332,5 @@
     return { label: String(point.label || "").trim().replace(/\s+/g, " "), height: { value: rounded(height * hFactor, 3), unit: "mm" },
       force: { value: rounded(force * fFactor, 3), unit: "N", tolerance_upper: tolerance(point.load_tolerance_upper), tolerance_lower: tolerance(point.load_tolerance_lower), ...(percent != null ? { tolerance_percent: number(percent) == null ? null : rounded(percent, 3) } : {}) }, confirmation_source: "human_confirmed" };
   }
-  globalThis.SolidWorksExport = { buildPreview, technicalText, exportLoadPoint, standaloneRoughness, confirmedRoughness, roughnessMatches, currentRoughness, canPromoteRoughness };
+  globalThis.SolidWorksExport = { buildPreview, technicalText, technicalProjection, automaticMatches, exportLoadPoint, standaloneRoughness, confirmedRoughness, roughnessMatches, currentRoughness, canPromoteRoughness };
 })();

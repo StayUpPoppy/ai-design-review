@@ -98,6 +98,8 @@ from .standardization_chat_llm import standardization_chat_llm_runtime_status
 from .spring_feasibility import assess_parameter_reasonableness
 from .solidworks import build_solidworks_command
 from .load_points import ensure_load_point_ids
+from .load_height_relations import refresh_load_heights, prepare_load_height_save
+from .load_point_evidence import reconcile_load_points, prepare_recovery_save, ground_job_candidates
 from .material_catalog import ensure_compression_material, load_material_catalog, validate_material_change
 from .rules import refresh_compression_material_check
 from .standardizers.stiffness import refresh_compression_spring_rate_freshness
@@ -1416,6 +1418,8 @@ async def run_recognition_execution(
         LOGGER.exception("PDF dimension evidence recovery failed for %s", job_id)
     candidates = await run_in_threadpool(verify_job_candidates, job_dir, candidates, raw_payloads,
                                          lambda path: _artifact_url(job_id, path))
+    if classify_spring_type(candidates, uploaded_file_info)["spring_type"] == "compression_spring":
+        candidates = await run_in_threadpool(ground_job_candidates, job_dir, candidates, raw_payloads, warnings=warnings)
     rules = read_json(project_path("config", "factory_rules.json"))
     review = DrawingReviewWorkflow(rules).run(str(drawing_path), candidates, run_standardization=False)
     apply_generation_defaults(review)
@@ -2464,6 +2468,7 @@ def _load_persisted_review(
         apply_generation_defaults(review)
         ensure_load_point_ids(review)
         ensure_technical_requirement_ids(review)
+        reconcile_load_points(review, review_path.parent)
         _prepare_review_reasonableness(review, stored["revision"])
         return review, stored["revision"]
     if not _local_job_owned(review_path.parent, identity.user_id) or not review_path.exists():
@@ -2475,6 +2480,7 @@ def _load_persisted_review(
     apply_generation_defaults(review)
     ensure_load_point_ids(review)
     ensure_technical_requirement_ids(review)
+    reconcile_load_points(review, review_path.parent)
     _prepare_review_reasonableness(review, None)
     return review, None
 
@@ -2488,6 +2494,7 @@ def _ensure_review_owned(job_id: str, review_path: Path, identity: IdentityConte
 def _prepare_review_reasonableness(review: dict[str, Any], revision: int | None) -> None:
     if review.get("record_kind") == "source": return
     from .diameter_linkage import apply_diameter_linkage
+    refresh_load_heights(review)
     apply_diameter_linkage(review)
     refresh_accuracy_inference(review)
     refresh_design_checks(review)
@@ -2517,6 +2524,13 @@ def _save_review_persistence(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail={"code": "generation_settings_invalid", "message": str(exc)}) from exc
     previous, _ = _load_persisted_review(job_id, review_path, identity)
+    load_changes = prepare_load_height_save(review, previous)
+    events = list(events or [])
+    for change in load_changes:
+        if not any(e.get("event_type")=="load_height_recalculated" and (e.get("metadata") or {}).get("load_point_id")==change["load_point_id"] for e in events):
+            events.append({"event_type":"load_height_recalculated","target_field":"load_points","source":"load_height_formula",
+                "before_state":change["before"],"after_state":change["after"],"metadata":{"load_point_id":change["load_point_id"],"version":"load-height/v1"}})
+    prepare_recovery_save(review, previous)
     # Derive repair metadata from server evidence, never from a client's claim.
     from copy import deepcopy
     repair = previous.get("multi_spec_reconciliation") or {}
@@ -2619,6 +2633,11 @@ def _save_review_persistence(
                              "target_field": "surface_roughness_ra", "source": "original_evidence_verification",
                              "before_state": adjustment["before"], "after_state": review["spring_parameters"]["surface_roughness_ra"],
                              "reason": "按原图独立证据核验粗糙度，保留人工值及原始识别记录", "actor": identity.as_audit_actor()})
+    load_adjustment = previous.get("load_height_adjustment") or {}
+    if load_adjustment.get("pending_save") and not any(e.get("event_type")=="load_height_evidence_reconciled" for e in audit_events):
+        audit_events.append({"event_type":"load_height_evidence_reconciled","target_field":"load_points","source":"original_load_evidence",
+            "before_state":load_adjustment["before"],"after_state":review.get("spring_parameters",{}).get("load_points",[]),
+            "metadata":{"version":load_adjustment["version"]},"actor":identity.as_audit_actor()})
     history_status = "saved" if REVIEW_PERSISTENCE.configured else "saved_local"
     fallback_events = _merge_audit_events_into_review_history(review, audit_events, status=history_status)
     try:

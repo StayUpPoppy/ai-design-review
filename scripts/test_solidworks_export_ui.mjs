@@ -37,6 +37,11 @@ for (const test of cases) {
     assert.deepEqual(normalized.spring_parameters.surface_roughness_ra[key] ?? null,
       test.review.spring_parameters.surface_roughness_ra[key] ?? null, `${test.name} normalized ${key}`);
   }
+  const beforeProjection = structuredClone(test.review);
+  const projection = context.SolidWorksExport.technicalProjection(structuredClone(test.package), test.review, catalog);
+  assert.equal(projection.text, test.package.solidworks_preview.extraProperties["技术要求"], `${test.name} projection text`);
+  assert.equal(projection.entries.map((entry, index) => `${index + 1}.${entry.body}`).join("\n"), projection.text);
+  assert.deepEqual(test.review, beforeProjection, `${test.name} projection is read-only`);
   const input = structuredClone(test.package);
   delete input.solidworks_preview;
   const preview = context.SolidWorksExport.buildPreview(input, test.review, catalog);
@@ -49,6 +54,20 @@ for (const test of cases) {
     .map(context.SolidWorksExport.exportLoadPoint).filter(Boolean);
   assert.deepEqual(JSON.parse(JSON.stringify(points)), test.package.generation_parameters.load_points, `${test.name} load export`);
 }
+const baselineProjection = context.SolidWorksExport.technicalProjection(cases[0].package, cases[0].review, catalog);
+for (const [text, scope, expected] of [
+  ["绕制方向：右旋。", undefined, true], ["总圈数：4 圈。", undefined, true],
+  ["总圈数：4，有效圈数：2。", undefined, true], ["两端并紧磨平，每端磨270°。", undefined, true],
+  ["总圈数：4，有效圈数：3。", undefined, false], ["旋向：左旋。", undefined, false],
+  ["旋向：右旋。", "备用弹簧", false], ["两端并紧磨平，每端磨300°。", undefined, false],
+  ["有效圈数：2 圈，端面去毛刺。", undefined, false], ["材料：SUS304。", undefined, false],
+]) assert.equal(context.SolidWorksExport.automaticMatches(baselineProjection, { type:"other",content:text,application_scope:scope }, catalog).length > 0, expected, text);
+const loadNote = baselineProjection.entries.find(entry => entry.automatic && entry.body.includes("工作载荷 F1"));
+assert.ok(loadNote.fields.includes("load_points.F1"));
+assert.equal(context.SolidWorksExport.automaticMatches(baselineProjection, {type:"other",content:loadNote.body}, catalog).length, 1);
+assert.equal(context.SolidWorksExport.automaticMatches(baselineProjection, {type:"other",content:loadNote.body.replace("F1", "P1")}, catalog).length, 0);
+assert.equal(context.SolidWorksExport.automaticMatches(baselineProjection, {type:"other",content:loadNote.body.replace("±10%", "±11%")}, catalog).length, 0);
+assert.equal(baselineProjection.entries.slice(0,3).every(entry => entry.automatic), true);
 const originalCalculate = context.CompressionDesignChecks.calculate;
 const base = cases[0];
 for (const value of [NaN, Infinity, -Infinity, -1, 0]) {

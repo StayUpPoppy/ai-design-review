@@ -93,7 +93,7 @@ class GenerationTechnicalRequirementV1(BaseModel):
 class GenerationLoadHeightV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    value: float = Field(gt=0, description="指定载荷测试时的弹簧高度，必须大于 0。", examples=[25.0])
+    value: float = Field(gt=0, description="指定载荷测试时的弹簧高度；来自原图直接标注或已核实尺寸链换算并经人工确认，不能将压缩量直接当高度；必须大于0。", examples=[25.0])
     unit: Literal["mm"] = Field(description="固定单位 mm。")
 
 

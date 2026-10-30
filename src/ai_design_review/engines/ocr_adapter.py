@@ -387,7 +387,9 @@ def ocr_payload_to_candidates(payload: dict[str, Any] | list[dict[str, Any]]) ->
     candidates.extend(_extract_free_length(full_text, anchor, blocks))
     candidates.extend(_extract_total_coils(full_text, anchor))
     candidates.extend(_extract_handedness(full_text, anchor))
-    candidates.extend(_extract_load_points(full_text, anchor))
+    for page_number in sorted({b.get("page", 1) for b in blocks}):
+        page_blocks = [b for b in blocks if b.get("page", 1) == page_number]
+        candidates.extend(_extract_load_points("\n".join(str(b.get("text", "")) for b in page_blocks), _best_anchor(page_blocks)))
     candidates.extend(_extract_technical_requirements(full_text, anchor))
     candidates.extend(_document_text_candidates(blocks))
     return candidates
@@ -679,39 +681,22 @@ def _extract_handedness(text: str, anchor: dict[str, Any] | None) -> list[dict[s
 
 
 def _extract_load_points(text: str, anchor: dict[str, Any] | None) -> list[dict[str, Any]]:
+    from ..load_point_evidence import extract_force_annotations, explicit_load_heights
     candidates = []
-    for index in ("1", "2"):
-        pair = _search(
-            rf"H{index}\s*(?:=|压缩到|壓縮到)?\s*(\d+(?:\.\d+)?)\s*mm?"
-            rf"[\s\S]{{0,80}}?"
-            rf"F{index}\s*=?\s*(\d+(?:\.\d+)?)\s*N?\s*(?:±|士|\+/-)?\s*(\d+(?:\.\d+)?)?\s*%?\s*(?:[（(]?参考[）)]?)?",
-            text,
-        )
-        if not pair:
-            continue
-        height = float(pair.group(1))
-        force = float(pair.group(2))
-        tolerance = float(pair.group(3)) if pair.group(3) else 10 if "±10%" in pair.group(0) or "士10%" in pair.group(0) else None
-        evidence = pair.group(0)
-        candidates.append(
-            _candidate(
-                "load_point",
-                {
-                    "label": f"F{index}",
-                    "height": height,
-                    "height_unit": "mm",
-                    "force": force,
-                    "force_unit": "N",
-                    "force_tolerance_percent": int(tolerance) if tolerance and float(tolerance).is_integer() else tolerance,
-                    "load_tolerance_percent": int(tolerance) if tolerance and float(tolerance).is_integer() else tolerance,
-                    "test_height_type": "specified_height",
-                    "reference_only": index == "2" and ("参考" in evidence or "參考" in evidence),
-                },
-                anchor,
-                evidence,
-                0.78,
-            )
-        )
+    annotations=extract_force_annotations(text)
+    for item in annotations:
+        label=item["label"]
+        heights=explicit_load_heights(text,label)
+        value={**item,"height":None,"height_unit":"mm","test_height_type":"","reference_only":False}
+        evidence=item["evidence"]
+        if len(heights)==1 and sum(p["label"].casefold()==label.casefold() for p in annotations)==1:
+            height=heights[0]
+            value.update(height=height["value"],height_unit=height["unit"],test_height_type="specified_height")
+            value["height_relation"]={"kind":"absolute_height","mode":"automatic","value":height["value"],"unit":height["unit"],"verified":True,
+                "page":(anchor or {}).get("page",1),"evidence":height["evidence"],"verification_method":"explicit_height","reference_only":height["reference_only"]}
+            evidence=height["evidence"]+"; "+evidence
+        value["reference_only"]=bool(re.search(r"参考|參考",evidence))
+        candidates.append(_candidate("load_point",value,anchor,evidence,.78))
     return candidates
 
 

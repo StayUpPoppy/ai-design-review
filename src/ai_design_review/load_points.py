@@ -5,6 +5,7 @@ import re
 import uuid
 from math import isfinite
 from typing import Any
+from .load_height_relations import relation_snapshot
 
 
 def new_load_point_id() -> str:
@@ -35,7 +36,7 @@ def load_point_is_complete(item: Any) -> bool:
 
 
 def load_point_is_confirmed(item: Any) -> bool:
-    return load_point_is_complete(item) and isinstance(item, dict) and item.get("need_human_review") is False
+    return load_point_is_complete(item) and isinstance(item, dict) and item.get("need_human_review") is False and not item.get("load_relation_conflict") and not item.get("load_height_conflict") and item.get("force_tolerance_status") != "uncertain"
 
 
 def load_point_snapshot(item: dict[str, Any]) -> dict[str, Any]:
@@ -48,6 +49,8 @@ def load_point_snapshot(item: dict[str, Any]) -> dict[str, Any]:
         "force_unit": item.get("force_unit") or "N",
         "load_tolerance_upper": item.get("load_tolerance_upper"),
         "load_tolerance_lower": item.get("load_tolerance_lower"),
+        **({"height_relation": relation_snapshot(item)} if item.get("height_relation") else {}),
+        **{k:item[k] for k in ("load_tolerance_percent", "force_tolerance_percent", "force_tolerance_status", "load_relation_conflict", "load_height_conflict") if k in item},
         "need_human_review": bool(item.get("need_human_review", True)),
     }
 
