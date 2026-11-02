@@ -12,6 +12,9 @@ def normalize_generation_settings(
     drawing_model = settings.get("drawing_model", "X型")
     if drawing_model not in ("X型", "Y型"):
         raise ValueError("图纸版式只能选择横版或竖版。")
+    typeface = settings.get("typeface", "宋体")
+    if typeface not in ("宋体", "黑体"):
+        raise ValueError("图纸字体只能选择宋体或黑体。")
     username = settings.get("username", default_username)
     if not isinstance(username, str):
         raise ValueError("生图人姓名必须是文本。")
@@ -20,7 +23,7 @@ def normalize_generation_settings(
         raise ValueError("请填写生图人姓名。")
     if len(username) > 256:
         raise ValueError("生图人姓名不能超过256个字符。")
-    return {"drawing_model": drawing_model, "username": username}
+    return {"drawing_model": drawing_model, "username": username, "typeface": typeface}
 
 
 def resolve_generation_settings(review: dict[str, Any], identity: dict[str, Any] | None = None) -> dict[str, str] | None:

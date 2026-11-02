@@ -198,7 +198,8 @@ def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str
         title_block["表面粗糙度"] = roughness["value"]
     settings = parameter_package.get("generation_settings")
     tolerances = _model_parameters_tolerance(review)
-    return {**({"DrawingModel": settings["drawing_model"], "Username": settings["username"]} if settings else {}),
+    return {**({"DrawingModel": settings["drawing_model"], "Username": settings["username"],
+                **({"typeface": settings["typeface"]} if "typeface" in settings else {})} if settings else {}),
             "modelParameters": build_solidworks_model_parameters(parameter_package, review),
             **({"modelParametersTolerance": tolerances} if tolerances else {}),
             "customProperties": {"旋向": handedness_label(_parameter_value(parameters.get("handedness")))},

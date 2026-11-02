@@ -18,11 +18,13 @@
 
 离线验收：`test_review_workbench_ui.mjs`、`test_generation_package_ui.mjs`、`test_generation_package_chat_ui.mjs`、`test_generation_settings_browser.mjs`；覆盖入口导航、各就绪状态、保存/网络失败、慢导出、切换订单与新任务并发隔离。仅前端变更，更新JS/CSS缓存版本后Ctrl+F5生效，无需数据库迁移或Docker重启。
 
-## 生图版式及姓名
+## 生图版式、字体及姓名
 
-“生图参数包”按钮上方提供图纸版式及生图人姓名。首次默认横版，姓名优先取 `/api/session` 的 `identity.real_name`，其次为 `username`；按订单恢复上次保存值。姓名主动清空后保持为空，保存草稿允许空值，导出及生图前要求非空且不超过256字符，只去除首尾空格。修改设置不撤销弹簧参数确认，也不改动登录身份或审计操作者。
+“生图参数包”按钮上方提供图纸版式、图纸字体及生图人姓名。首次默认横版和宋体，字体可选择宋体或黑体；姓名优先取 `/api/session` 的 `identity.real_name`，其次为 `username`。三项按订单恢复上次保存值，旧订单缺少字体时默认宋体。宽面板三列排列，窄面板上下排列。姓名主动清空后保持为空，保存草稿允许空值，导出及生图前要求非空且不超过256字符，只去除首尾空格。修改设置不撤销弹簧参数确认，也不改动登录身份或审计操作者。
 
-审图JSON的可选 `generation_settings` 保存 `{"drawing_model":"X型","username":"阿拉伯特"}`。`X型`表示横版，`Y型`表示竖版。前端预览、手动和对话导出，以及新任务冻结参数包使用同一份设置；最终字段为模型对象同级的 `DrawingModel`、`Username`，不放入建模参数或标题栏。旧接口调用缺少设置时，服务端取横版及当前登录姓名；已有冻结包缺少字段时继续原样读取和重试。
+审图JSON的可选 `generation_settings` 保存 `{"drawing_model":"X型","username":"阿拉伯特","typeface":"宋体"}`。`X型`表示横版，`Y型`表示竖版；字体只接受宋体、黑体，空值或其他名称返回422。前端预览、保留的导出入口及新任务冻结参数包使用同一份设置；最终字段为模型对象同级的 `DrawingModel`、`Username`、`typeface`，字体紧随Username，不放入建模参数或标题栏。旧接口调用创建新包时缺少设置或字体，服务端取横版、宋体及当前登录姓名；已有冻结包缺少设置或字体时继续原样读取和重试，不补写。
+
+字体选择沿用保存队列、失败重试、修订冲突合并和订单切换保护，导出或创建任务期间禁用。字体纳入任务哈希与幂等比较；只改变字体也会产生新的参数哈希。此字段只负责传参，由外部SW程序读取并应用相应字体。无新增接口或数据库迁移；测试通过后重建api、worker，强制刷新浏览器。
 
 任务列表显示冻结的版式和姓名，历史版本不会随输入框修改。“原参数重试”沿用冻结值；真实SW“重新生图”按当前已保存修订创建新TaskId。设置纳入参数哈希和幂等比较；保存失败不创建任务，晚到响应不得覆盖其他订单。无需数据库迁移。离线验证使用 `scripts/test_generation_settings.py` 和 `scripts/test_generation_settings_browser.mjs`，均不调用真实SW或云端模型。
 
@@ -78,6 +80,7 @@
     "modelLabel": "压缩弹簧",
     "DrawingModel": "X型",
     "Username": "阿拉伯特",
+    "typeface": "宋体",
     "materialCode": null,
     "modelParameters": {
       "线径": 1.8,

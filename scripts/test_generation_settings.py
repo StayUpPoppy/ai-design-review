@@ -2,6 +2,7 @@
 from copy import deepcopy
 from pathlib import Path
 import os
+import json
 import tempfile
 import sys
 
@@ -13,13 +14,39 @@ from ai_design_review.generation_persistence import GenerationStore, GenerationJ
 from ai_design_review.generation_settings import normalize_generation_settings
 from ai_design_review.generation_readiness import build_generation_parameter_package
 from ai_design_review.generation_schemas import GenerationParameterPackageV2
+from ai_design_review.generation_service import stable_payload_hash
 from ai_design_review.solidworks import build_solidworks_command
 
 
+def shared_cases():
+    cases = []
+    for font in [None, "宋体", "黑体"]:
+        review = ready_review()
+        review["generation_settings"] = {"drawing_model": "Y型", "username": "阿拉伯特"}
+        if font is not None:
+            review["generation_settings"]["typeface"] = font
+        package = build_generation_parameter_package(review)
+        cases.append({"name": f"new-{font or 'missing-font'}", "review": review, "package": package})
+    # Rebuilding a preview from old frozen settings must not invent a font.
+    old = deepcopy(cases[0])
+    old["name"] = "old-frozen-settings"
+    old["package"]["generation_settings"].pop("typeface")
+    old["package"]["solidworks_preview"].pop("typeface")
+    cases.append(old)
+    old = deepcopy(old)
+    old["name"] = "old-frozen-no-settings"
+    del old["package"]["generation_settings"]
+    old["package"]["solidworks_preview"].pop("DrawingModel")
+    old["package"]["solidworks_preview"].pop("Username")
+    cases.append(old)
+    return cases
+
+
 def main():
-    assert normalize_generation_settings({"username": " 阿拉伯特 "}) == {"drawing_model": "X型", "username": "阿拉伯特"}
+    assert normalize_generation_settings({"username": " 阿拉伯特 "}) == {"drawing_model": "X型", "username": "阿拉伯特", "typeface": "宋体"}
     assert normalize_generation_settings({"username": ""}, allow_blank=True)["username"] == ""
-    for settings in [{"drawing_model": "Z型", "username": "甲"}, {"username": " "}, {"username": "甲" * 257}, {"username": 123}]:
+    for settings in [{"drawing_model": "Z型", "username": "甲"}, {"username": " "}, {"username": "甲" * 257}, {"username": 123},
+                     *({"username": "甲", "typeface": font} for font in ["", "楷体", None, 123, [], {}])]:
         try:
             normalize_generation_settings(settings)
             raise AssertionError(settings)
@@ -28,6 +55,10 @@ def main():
     legacy = build_generation_parameter_package(ready_review())
     assert "generation_settings" not in legacy
     assert "Username" not in build_solidworks_command("1000000001", legacy, {**ready_review(), "generation_settings": {"drawing_model": "Y型", "username": "新姓名"}})["models"][0]
+    for sample in shared_cases():
+        package = sample["package"]
+        assert GenerationParameterPackageV2.model_validate(package).model_dump()["solidworks_preview"] == package["solidworks_preview"]
+        assert build_solidworks_command("1000000001", package, ready_review())["models"][0].get("typeface") == package["solidworks_preview"].get("typeface")
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         repository = ReviewPersistence(f"sqlite+pysqlite:///{root / 'settings.db'}")
@@ -44,8 +75,9 @@ def main():
                 preview = client.get(endpoint + "/generation-package")
                 assert preview.status_code == 200, preview.text
                 package = preview.json()["parameter_package"]
-                assert package["generation_settings"] == {"drawing_model": "X型", "username": OWNER["real_name"]}
+                assert package["generation_settings"] == {"drawing_model": "X型", "username": OWNER["real_name"], "typeface": "宋体"}
                 assert package["solidworks_preview"]["DrawingModel"] == "X型"
+                assert package["solidworks_preview"]["typeface"] == "宋体"
                 assert GenerationParameterPackageV2.model_validate(package).model_dump()["generation_settings"] == package["generation_settings"]
                 created = client.post(endpoint + "/generation-jobs", json=create_request("settings-legacy-default"))
                 assert created.status_code == 202, created.text
@@ -60,12 +92,12 @@ def main():
                     os.environ["AI_REVIEW_MOCK_REAL_NAME"] = original_name
                 review = ready_review()
                 before_parameters = deepcopy(review["spring_parameters"])
-                review["generation_settings"] = {"drawing_model": "Y型", "username": " 阿拉伯特 "}
+                review["generation_settings"] = {"drawing_model": "Y型", "username": " 阿拉伯特 ", "typeface": "黑体"}
                 saved = client.patch(endpoint, json={"review": review, "expected_revision": 1})
                 assert saved.status_code == 200, saved.text
                 revision = saved.json()["review_revision"]
                 reopened = client.get(endpoint).json()
-                assert reopened["generation_settings"] == {"drawing_model": "Y型", "username": "阿拉伯特"}
+                assert reopened["generation_settings"] == {"drawing_model": "Y型", "username": "阿拉伯特", "typeface": "黑体"}
                 for key, parameter in before_parameters.items():
                     if isinstance(parameter, dict) and "need_human_review" in parameter:
                         assert reopened["spring_parameters"][key]["need_human_review"] == parameter["need_human_review"], key
@@ -76,6 +108,9 @@ def main():
                 assert second_job["generation_settings"] == reopened["generation_settings"]
                 model = submissions[-1]["models"][0]
                 assert (model["DrawingModel"], model["Username"]) == ("Y型", "阿拉伯特")
+                assert model["typeface"] == "黑体"
+                assert list(model).index("typeface") == list(model).index("Username") + 1
+                assert "typeface" not in model["modelParameters"] and "typeface" not in model["titleBlockProperties"]
                 assert "Username" not in model["modelParameters"] and "DrawingModel" not in model["titleBlockProperties"]
                 assert client.post(endpoint + "/generation-jobs", json=request).status_code == 200
                 assert len(submissions) == 2
@@ -89,6 +124,17 @@ def main():
                     assert record.owner_username == OWNER["username"]
                 assert frozen["execution_options"]["solidworks_payload"]["models"][0]["Username"] == OWNER["real_name"]
                 assert frozen["parameter_hash"] != second_job["parameter_hash"]
+                # A font-only change uses a different hash and cannot reuse the old key.
+                review["generation_settings"]["typeface"] = "宋体"
+                changed = client.patch(endpoint, json={"review": review, "expected_revision": revision})
+                assert changed.status_code == 200, changed.text
+                revision = changed.json()["review_revision"]
+                assert client.post(endpoint + "/generation-jobs", json={**request, "expected_review_revision": revision}).status_code == 409
+                third = client.post(endpoint + "/generation-jobs", json={**request, "expected_review_revision": revision, "idempotency_key": "settings-font-only"})
+                assert third.status_code == 202, third.text
+                assert third.json()["generation_job"]["parameter_hash"] != second_job["parameter_hash"]
+                assert submissions[-1]["models"][0]["typeface"] == "宋体"
+                assert GenerationStore(repository).get_job(second_job["generation_id"], owner_user_id=OWNER["user_id"])["generation_settings"]["typeface"] == "黑体"
                 review["generation_settings"]["username"] = ""
                 saved = client.patch(endpoint, json={"review": review, "expected_revision": revision})
                 assert saved.status_code == 200, saved.text
@@ -96,15 +142,16 @@ def main():
                 assert client.get(endpoint + "/generation-package").status_code == 422
                 invalid_create = {**create_request("settings-empty-name"), "expected_review_revision": saved.json()["review_revision"]}
                 assert client.post(endpoint + "/generation-jobs", json=invalid_create).status_code == 422
-                assert len(submissions) == 2
-                for settings in [{"drawing_model": "Z型", "username": "甲"}, {"username": "甲" * 257}]:
+                assert len(submissions) == 3
+                for settings in [{"drawing_model": "Z型", "username": "甲"}, {"username": "甲" * 257},
+                                 *({"username": "甲", "typeface": font} for font in ["楷体", "", None, [], {}])]:
                     review["generation_settings"] = settings
                     assert client.patch(endpoint, json={"review": review, "expected_revision": saved.json()["review_revision"]}).status_code == 422
                 # Exercise the existing worker-compatible original-parameter retry.
                 original_url = os.environ.pop("SOLIDWORKS_GENERATION_URL")
                 try:
                     mock_review = ready_review()
-                    mock_review["generation_settings"] = {"drawing_model": "Y型", "username": "原任务署名"}
+                    mock_review["generation_settings"] = {"drawing_model": "Y型", "username": "原任务署名", "typeface": "黑体"}
                     repository.create_review("settings-retry", mock_review, owner=OWNER)
                     queued = client.post("/api/reviews/settings-retry/generation-jobs", json=create_request("settings-original-retry"))
                     assert queued.status_code == 202, queued.text
@@ -113,19 +160,41 @@ def main():
                         record = session.get(GenerationJobRecord, frozen_job["generation_id"])
                         record.status = "failed"
                         session.commit()
-                    mock_review["generation_settings"] = {"drawing_model": "X型", "username": "后续的新署名"}
+                    mock_review["generation_settings"] = {"drawing_model": "X型", "username": "后续的新署名", "typeface": "宋体"}
                     changed = client.patch("/api/reviews/settings-retry", json={"review": mock_review, "expected_revision": 1})
                     assert changed.status_code == 200, changed.text
                     retried = client.post(f"/api/generation-jobs/{frozen_job['generation_id']}/retry")
                     assert retried.status_code in (200, 202), retried.text
                     assert retried.json()["generation_job"]["generation_settings"] == frozen_job["generation_settings"]
                     assert retried.json()["generation_job"]["parameter_hash"] == frozen_job["parameter_hash"]
+                    # Seed an actual pre-font frozen record, then retry without backfilling.
+                    with repository._session() as session:
+                        record = session.get(GenerationJobRecord, frozen_job["generation_id"])
+                        package = deepcopy(record.parameter_package)
+                        package["generation_settings"].pop("typeface")
+                        package["solidworks_preview"].pop("typeface")
+                        record.parameter_package = package
+                        record.parameter_hash = stable_payload_hash(package)
+                        record.status = "failed"
+                        session.commit()
+                        legacy_hash = record.parameter_hash
+                    retried = client.post(f"/api/generation-jobs/{frozen_job['generation_id']}/retry")
+                    assert retried.status_code in (200, 202), retried.text
+                    job = retried.json()["generation_job"]
+                    assert "typeface" not in job["generation_settings"]
+                    assert job["parameter_hash"] == legacy_hash
+                    with repository._session() as session:
+                        assert session.get(GenerationJobRecord, frozen_job["generation_id"]).parameter_package == package
                 finally:
                     os.environ["SOLIDWORKS_GENERATION_URL"] = original_url
         finally:
             api.REVIEW_PERSISTENCE, api.API_RUN_ROOT, api._post_solidworks_command = old_repository, old_root, old_post
+            repository.dispose()
     print("PASS: drawing orientation/name defaults, draft validation, save/reopen, unchanged confirmations, schema, SW placement, frozen history, hashes/idempotency and invalid input; mock SW only.")
 
 
 if __name__ == "__main__":
-    main()
+    if "--json" in sys.argv:
+        print(json.dumps(shared_cases()))
+    else:
+        main()

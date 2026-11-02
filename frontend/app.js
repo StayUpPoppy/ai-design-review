@@ -108,6 +108,7 @@ const REQUIRED_FIELDS = [
 
 const FIELD_LABELS = {
   "generation_settings.drawing_model": "图纸版式",
+  "generation_settings.typeface": "图纸字体",
   "generation_settings.username": "生图人姓名",
   drawing_no: "图号",
   drawing_name: "图纸名称",
@@ -1615,7 +1616,7 @@ function parameterConflictValue(item, field = "") {
   if (!item) return "未填写";
   if (field === "diameter_linkage") return ["wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter"].map((f) => `${FIELD_LABELS[f]} ${item.parameters?.[f]?.value ?? "未填写"} ${item.parameters?.[f]?.unit || "mm"}`).join("；");
   if (field === "generation_settings.drawing_model") return item.value === "Y型" ? "竖版" : "横版";
-  if (field === "generation_settings.username") return item.value || "未填写";
+  if (["generation_settings.username", "generation_settings.typeface"].includes(field)) return item.value || "未填写";
   if (field === "technical_output_deletions") return `已取消输出 ${(item.value || []).length} 条自动／旧文本要求`;
   if (field.startsWith("load_points.")) return `${item.label || "未编号"}：高度 ${item.height ?? "未填写"} ${item.height_unit || "mm"}，力值 ${item.force ?? "未填写"} ${item.force_unit || "N"}`;
   if (field.startsWith("technical_requirements.")) return String(item.content || "未填写");
@@ -1684,7 +1685,7 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
     ...Array.from(state.reviewDraftFields, (field) => groupedField(pointFields.get(field) || field)),
   ]));
   const technicalId = (field) => field?.startsWith("technical_requirements.") ? field.slice("technical_requirements.".length) : null;
-  const settingKey = (field) => ["generation_settings.drawing_model", "generation_settings.username"].includes(field) ? field.split(".")[1] : null;
+  const settingKey = (field) => ["generation_settings.drawing_model", "generation_settings.typeface", "generation_settings.username"].includes(field) ? field.split(".")[1] : null;
   const summaryKey = (field) => ["drawing_summary.drawing_no", "drawing_summary.drawing_name"].includes(field) ? field.split(".")[1] : null;
   const fieldItem = (review, field) => field === "diameter_linkage" ? DiameterLinkage.groupState(review) : summaryKey(field) ? { value: review.drawing_summary?.[summaryKey(field)] ?? "" } : settingKey(field) ? { value: review.generation_settings?.[settingKey(field)] ?? null } : loadId(field)
     ? review.spring_parameters?.load_points?.find((item) => item.load_point_id === loadId(field))
@@ -5875,6 +5876,7 @@ function renderGenerationSettingsHtml(review) {
     <strong>生图设置</strong>
     <div class="generation-settings-fields">
       <label>图纸版式<select data-generation-setting="drawing_model" ${state.generationBusy ? "disabled" : ""}><option value="X型" ${settings.drawing_model === "X型" ? "selected" : ""}>横版</option><option value="Y型" ${settings.drawing_model === "Y型" ? "selected" : ""}>竖版</option></select></label>
+      <label>图纸字体<select data-generation-setting="typeface" ${state.generationBusy ? "disabled" : ""}><option value="宋体" ${settings.typeface === "宋体" ? "selected" : ""}>宋体</option><option value="黑体" ${settings.typeface === "黑体" ? "selected" : ""}>黑体</option></select></label>
       <label>生图人姓名<input type="text" autocomplete="name" maxlength="256" data-generation-setting="username" value="${escapeHtml(settings.username)}" ${state.generationBusy ? "disabled" : ""} aria-invalid="${Boolean(error)}" placeholder="请输入姓名"></label>
     </div>
     <p class="generation-settings-error" role="status" ${error ? "" : "hidden"}>${escapeHtml(error)}</p>
@@ -5908,7 +5910,7 @@ function syncGenerationSettingsControls() {
     button.setAttribute("aria-busy", String(Boolean(active && state.generationBusy)));
   });
   const settings = GenerationSettings.values(state.review, state.identity), error = GenerationSettings.error(settings);
-  const fields = ["generation_settings.drawing_model", "generation_settings.username"];
+  const fields = ["generation_settings.drawing_model", "generation_settings.typeface", "generation_settings.username"];
   const failed = fields.some((field) => state.reviewPersistenceFailedFields[field]);
   const pending = [...state.pendingReviewAuditEvents, ...state.reviewPersistenceInFlightEvents].some((event) => fields.includes(event.target_field));
   document.querySelectorAll('[data-kind="generation-settings"]').forEach((panel) => {
@@ -5932,7 +5934,7 @@ function generationSettingsDraftKey(field) {
 function commitGenerationSettings() {
   if (!state.review) return;
   const settings = GenerationSettings.values(state.review, state.identity);
-  for (const key of ["drawing_model", "username"]) {
+  for (const key of ["drawing_model", "typeface", "username"]) {
     const field = `generation_settings.${key}`, draftKey = generationSettingsDraftKey(field);
     const before = state.generationSettingsDrafts.get(draftKey);
     const value = key === "username" ? String(settings[key]).trim() : settings[key];
@@ -5941,7 +5943,7 @@ function commitGenerationSettings() {
       state.review.generation_settings[key] = value;
       state.generationSettingsDrafts.delete(draftKey);
       queueReviewAuditEvent({ event_type: "generation_settings_updated", target_field: field,
-        reason: "用户设置本次图纸版式或生图人姓名", before_state: { value: before?.value ?? null }, after_state: { value } });
+        reason: "用户设置本次图纸版式、字体或生图人姓名", before_state: { value: before?.value ?? null }, after_state: { value } });
     }
   }
   syncGenerationSettingsControls();

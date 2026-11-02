@@ -368,7 +368,8 @@
     if (modelParameters["是否并紧"] === 0) delete modelParameters["有效圈数n"];
     const tolerances = modelParametersTolerance(review);
     return {
-      ...(packageData.generation_settings ? { DrawingModel: packageData.generation_settings.drawing_model, Username: packageData.generation_settings.username } : {}),
+      ...(packageData.generation_settings ? { DrawingModel: packageData.generation_settings.drawing_model, Username: packageData.generation_settings.username,
+        ...(Object.hasOwn(packageData.generation_settings, "typeface") ? { typeface: packageData.generation_settings.typeface } : {}) } : {}),
       modelParameters,
       ...(Object.keys(tolerances).length ? { modelParametersTolerance: tolerances } : {}),
       customProperties: { "旋向": handedness(parameterValue(parameters.handedness)) }, extraProperties: extra, titleBlockProperties: titleBlock,
