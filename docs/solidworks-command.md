@@ -210,3 +210,7 @@ v3验收（2026-10-20）：`test_roughness_v3.py --real`以图号YD4765020175的
 验证覆盖99组Python/JavaScript SW投影、版本设置/取消及SW进度完成回调、保存和参数确认竞态。独立PostgreSQL临时schema中并发设置两个版本只成功一个，并发重复取消仅记录一次审计；测试结束清理临时schema，原订单、参数快照及审图修订未修改。浏览器交互及截图保存在忽略目录 `outputs/final-selection-qa/` 和 `outputs/design-check-compact-qa/`。这些验收使用本地测试数据和模拟SW，不提交真实外部生图任务。本次UI范围验收结论：可交付；现有界面外观及其他区域不重新设计。
 
 公差与垂直度离线回归：`scripts/test_solidworks_export.py`与`test_solidworks_export_ui.mjs`使用共享样例；`test_solidworks_optional_fields_api.py`验证临时数据库、模拟推送、哈希与旧新任务重试；`test_solidworks_optional_fields_browser.mjs`验证编辑确认、保存重开、保留导出和厂名隐藏；权限隔离沿用`test_erp_identity_isolation.py`。
+
+### 成图技术要求输出选择
+
+“成图技术要求预览”支持逐条删除，包括自动旋向、合并圈数、端部及载荷描述。删除状态保存在审图JSON的可选`technical_output_deletions`，仅影响`extraProperties.技术要求`，不清空模型、标题栏、载荷或计算输入。对应生成依据改变后旧选择失效，满足原确认条件的新内容重新出现；新任务按当前保存修订冻结，历史请求及原参数重试不变。全部条目删除时保持`"技术要求": ""`，不补默认正文。来源投影只作为参数包读取接口的可选响应信息，不新增SW模型字段。详见[成图技术要求预览](technical-requirement-preview.md)。

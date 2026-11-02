@@ -388,8 +388,29 @@ class GenerationReadinessResponse(BaseModel):
     generation_readiness: GenerationReadinessView = Field(description="由服务端重新计算的生图就绪结果。")
 
 
+class TechnicalOutputEntry(BaseModel):
+    id: str
+    source_key: str = Field(description="条目稳定来源；删除不得使用显示编号猜测来源。")
+    body: str
+    display: str
+    automatic: bool
+    fields: list[str] = Field(default_factory=list)
+    load_point_ids: list[str] = Field(default_factory=list)
+    requirement_ids: list[str] = Field(default_factory=list)
+    basis: dict[str, Any] = Field(description="生成依据快照，不包含确认状态。")
+    scope: str = ""
+    key: str
+    parts: list[str] = Field(default_factory=list)
+
+
+class TechnicalOutputProjection(BaseModel):
+    text: str
+    entries: list[TechnicalOutputEntry] = Field(default_factory=list)
+
+
 class GenerationPackageResponse(GenerationReadinessResponse):
     parameter_package: GenerationParameterPackageV2 = Field(description="当前生成的 spring_generation_parameters/v2 生图参数包。")
+    technical_requirements_projection: TechnicalOutputProjection | None = Field(default=None, description="当前修订的成图技术要求及来源，旧响应允许缺少；不传入SW请求。")
 
 
 class GenerationTemplateListResponse(BaseModel):

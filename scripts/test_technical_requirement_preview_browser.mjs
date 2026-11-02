@@ -26,7 +26,7 @@ try {
   const orders={preview:{review:structuredClone(initial),revision:1},other:{review:structuredClone(initial),revision:1}};
   orders.other.review.spring_parameters.total_coils.value=10.5;
   orders.other.review.spring_parameters.active_coils.value=8.25;
-  let patches=0, generationPosts=0, failPatch=false, failPackage=false, holdPackage=false, releasePackage=null, serverText=null, invalidRevision=false;
+  let patches=0, generationPosts=0, failPatch=false, conflictPatch=false, failPackage=false, holdPackage=false, releasePackage=null, serverText=null, invalidRevision=false;
   const packages=[];
   const waitForPackageRelease=async()=>{const deadline=Date.now()+10000;while(!releasePackage){if(Date.now()>deadline)throw new Error("No mocked package request arrived");await new Promise(resolve=>setTimeout(resolve,20));}};
   await page.route("**/api/**",async route=>{
@@ -35,12 +35,14 @@ try {
     let body;
     if(apiPath==="/api/session") body={mode:"mock",identity:{user_id:"preview-user",username:"预览测试"}};
     else if(apiPath==="/api/material-catalog") body=catalog;
+    else if(apiPath==="/api/surface-treatment-catalog") body={version:"test",items:[{id:"zinc",name:"电镀-镀彩锌"}]};
     else if(match){
       const [,id,action]=match, order=orders[id];
       if(!action && request.method()==="PATCH"){
         patches++;
         if(failPatch){failPatch=false;return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({detail:"模拟保存失败"})});}
         const input=request.postDataJSON();assert.equal(input.expected_revision,order.revision);
+        if(conflictPatch){conflictPatch=false;order.revision++;order.review.drawing_summary.drawing_name="服务器保留名称";return route.fulfill({status:409,json:{detail:"模拟版本冲突"}});}
         order.review=input.review;body={review_revision:++order.revision,events:(input.events||[]).map(event=>({...event,sync_status:"saved"}))};
       }else if(!action) body={...order.review,job_id:id,review_revision:order.revision,image_url:""};
       else if(action==="generation-package"){
@@ -50,7 +52,8 @@ try {
         if(failPackage){failPackage=false;return route.fulfill({status:503,contentType:"application/json",body:'{"detail":"模拟核对失败"}'});}
         const parameterPackage=await page.evaluate(review=>makeGenerationParameterPackage(review),review);
         if(text!==null) parameterPackage.solidworks_preview.extraProperties["技术要求"]=text;
-        body={review_id:id,review_revision:wrongRevision ? revision-1 : revision,parameter_package:parameterPackage};
+        body={review_id:id,review_revision:wrongRevision ? revision-1 : revision,parameter_package:parameterPackage,
+          ...(text===null ? {technical_requirements_projection:await page.evaluate(review=>technicalOutputPreviewModel(review),review)} : {})};
       }else if(action==="generation-readiness") body={review_id:id,review_revision:order.revision,generation_readiness:{status:order.readinessStatus || "ready",warnings:[],missing_fields:[],pending_fields:[],confirmed_core_count:8,core_field_count:8}};
       else if(action==="generation-jobs") {if(request.method()==="POST") generationPosts++;body={generation_jobs:[],generation_queue_available:false};}
       else if(action==="reasonableness") body={parameter_reasonableness:{status:"ok",issues:[],suggestions:[]}};
@@ -66,7 +69,7 @@ try {
   };
   const panel=page.locator('.compare-tab-panel[data-compare-panel="parameters"]');
   const block=panel.locator(".technical-requirements-block"), preview=block.locator('[data-role="technical-output-preview"]');
-  const shown=async()=> (await preview.locator('li > button, li > span').allTextContents()).join("\n");
+  const shown=async()=> (await preview.locator('li > button:not([data-role="delete-technical-output"]), li > span').allTextContents()).join("\n");
   const expected=()=>page.evaluate(()=>technicalOutputPreviewModel(state.review).text);
   const flush=()=>page.evaluate(()=>flushReviewPersistence({throwOnError:true}));
   const checked=()=>preview.locator('[data-role="technical-output-status"]').filter({hasText:"已与服务器核对"}).waitFor();
@@ -217,7 +220,89 @@ try {
     assert.equal(await preview.locator(".technical-output-scroll").evaluate(element=>element.scrollHeight>element.clientHeight),true);
     await page.screenshot({path:`outputs/technical-preview-qa/preview-${width}.png`});
   }
+  // Four screenshot-style notes: three automatic notes and a company surface.
+  await page.setViewportSize({width:1440,height:1000});
+  const resetDeleteFixture=async()=>{
+    orders.preview.review=structuredClone(initial);orders.preview.revision++;
+    orders.preview.review.spring_parameters.load_points=[];
+    Object.assign(orders.preview.review.spring_parameters.solid_height,{value:null,human_modified:true,source:["manual"],value_kind:"input_height"});
+    orders.preview.review.technical_requirements=[
+      {requirement_id:"direction-a",type:"other",content:"旋向：右旋。",need_human_review:false},
+      {requirement_id:"direction-b",type:"other",content:"绕制方向：右旋。",need_human_review:false},
+      {requirement_id:"surface",type:"surface",content:"表面处理：电镀-镀彩锌，镀层厚度≥15 μm。",normalization_status:"human_confirmed",source:["human_confirmed"],need_human_review:false},
+    ];
+    await open();await checked();assert.equal(await preview.locator("li").count(),4);
+  };
+  const erase=async text=>{await preview.locator("li").filter({hasText:text}).locator('[data-role="delete-technical-output"]').click();await flush();await checked();};
+  const undo=async(serverCheck=true)=>{await block.locator('[data-action="undo-technical-requirement-delete"]').click();await flush();if(serverCheck)await checked();};
+  const invariants=()=>page.evaluate(()=>JSON.stringify({parameters:state.review.spring_parameters,
+    confirmations:Object.fromEntries(Object.entries(state.review.manual_confirmations||{}).filter(([key])=>!key.startsWith("technical")))}));
+  await resetDeleteFixture();
+  if(!process.env.SKIP_UI_QA_SCREENSHOTS){
+    for(const width of [1440,390]){await page.setViewportSize({width,height:width<500?1200:1000});await preview.scrollIntoViewIfNeeded();
+      await preview.screenshot({path:`outputs/technical-preview-qa/delete-controls-${width}.png`});
+      assert.equal(await preview.evaluate(element=>element.scrollWidth>element.clientWidth+2),false);}
+    await page.setViewportSize({width:1440,height:1000});
+  }
+  const inputs=await invariants();
+  await erase("旋向");
+  assert.equal(await shown(),await expected());assert.equal(await preview.locator("li").count(),3);
+  assert.equal(await block.locator('[data-kind="technical"]').count(),1,"Both equivalent raw directions disappear with their automatic note");
+  assert.equal(await invariants(),inputs,"Deleting automatic text preserves engineering inputs and confirmation");
+  await undo();assert.equal(await preview.locator("li").count(),4);
+  assert.equal(await page.evaluate(()=>state.review.technical_requirements.length),3);
+  await erase("表面处理");assert.equal(await block.locator('[data-requirement-id="surface"]').count(),0);
+  await undo();assert.equal(await block.locator('[data-requirement-id="surface"]').count(),1);
+  await erase("总圈数");await erase("两端并紧");await undo();
+  assert.ok(!(await shown()).includes("总圈数"));assert.ok((await shown()).includes("两端并紧"),"Only the latest deletion is undone");
+  await page.reload();await page.waitForFunction(()=>state.identityReady);await open();await checked();
+  assert.ok(!(await shown()).includes("总圈数"));assert.equal(await block.locator('[data-action="undo-technical-requirement-delete"]').count(),0);
+  const free=panel.locator('[data-field="free_length"]');
+  await free.locator('[data-role="value"]').fill("20");await free.locator('[data-role="value"]').dispatchEvent("change");await flush();
+  await free.locator('[data-role="confirm"]').click();await flush();await checked();
+  assert.ok(!(await shown()).includes("总圈数"),"An unrelated input does not restore a deleted coil note");
+  const coils=panel.locator('[data-field="total_coils"]');
+  await coils.locator('[data-role="value"]').fill("4.5");await coils.locator('[data-role="value"]').dispatchEvent("change");await flush();
+  await coils.locator('[data-role="confirm"]').click();await flush();await checked();
+  assert.ok((await shown()).includes("总圈数：4.5"),"A changed confirmed input regenerates its automatic note");
+  await erase("总圈数");
+  await block.locator('[data-action="show-technical-requirement-create"]').click();
+  await create.locator('[data-role="new-technical-content"]').fill("总圈数：4.5，有效圈数：2。");
+  await create.locator('button[type="submit"]').click();await flush();
+  const explicit=block.locator('.requirement-row').filter({hasText:"总圈数：4.5"});
+  await explicit.locator('[data-role="confirm"]').click();await flush();await checked();
+  assert.ok((await shown()).includes("总圈数：4.5"),"A newly added original record is not blocked by the old automatic choice");
+  const beforeAll=await invariants();
+  const beforeModel=await page.evaluate(()=>{const p=makeGenerationParameterPackage().solidworks_preview;delete p.extraProperties["技术要求"];return p;});
+  while(await preview.locator("li").count()){await preview.locator('[data-role="delete-technical-output"]').first().click();await flush();await checked();}
+  assert.equal(await shown(),"");assert.equal(await expected(),"");assert.equal(await invariants(),beforeAll);
+  assert.deepEqual(await page.evaluate(()=>{const p=makeGenerationParameterPackage().solidworks_preview;delete p.extraProperties["技术要求"];return p;}),beforeModel,"All other SW properties remain unchanged");
+  await page.reload();await page.waitForFunction(()=>state.identityReady);await open();await checked();assert.equal(await shown(),"");
+
+  await resetDeleteFixture();failPatch=true;
+  await preview.locator("li").filter({hasText:"总圈数"}).locator('[data-role="delete-technical-output"]').click();
+  await preview.locator('[data-role="technical-output-retry"]').filter({hasText:"重试保存"}).waitFor();
+  assert.ok(!(await shown()).includes("总圈数"));
+  await preview.locator('[data-role="technical-output-retry"]').click();await flush();await checked();
+  assert.ok(!(await shown()).includes("总圈数"));
+  conflictPatch=true;await erase("两端并紧");
+  assert.equal(await page.evaluate(()=>state.review.drawing_summary.drawing_name),"服务器保留名称","Output choices merge with an unrelated server edit");
+  assert.ok(!(await shown()).includes("总圈数"));assert.ok(!(await shown()).includes("两端并紧"));
+  await undo();assert.ok((await shown()).includes("两端并紧"));
+
+  await resetDeleteFixture();await erase("旋向");
+  const direction=panel.locator('[data-field="handedness"]');
+  await direction.locator('[data-role="value"]').selectOption("左旋");await flush();
+  await direction.locator('[data-role="confirm"]').click();await flush();await checked();
+  await undo(false);assert.ok((await shown()).includes("旋向：左"));assert.ok(!(await shown()).includes("旋向：右"));
+  assert.ok(await page.evaluate(()=>state.review.technical_requirements.filter(item=>item.requirement_id.startsWith("direction-")).every(item=>item.need_human_review)),"Undo restores old evidence for review, not stale confirmed right-handed output");
+
+  await resetDeleteFixture();holdPackage=true;orders.preview.revision++;await open();await waitForPackageRelease();
+  await preview.locator("li").filter({hasText:"总圈数"}).locator('[data-role="delete-technical-output"]').click();await flush();
+  releasePackage();releasePackage=null;await checked();
+  assert.ok(!(await shown()).includes("总圈数"),"A late old package must not restore deleted text");
+  await open("other");await checked();assert.equal(await block.locator('[data-action="undo-technical-requirement-delete"]').count(),0);
   assert.equal(generationPosts,0,"Preview never creates a generation task");
   assert.deepEqual(errors,[]);
-  console.log("PASS: automatic notes on empty sources, read-only provenance/navigation, nonblocking duplicate add, original duplicate guard, delete/undo, live drafts, save failure/reopen, per-revision cache, server authority/retry, stale order responses, escaped text and responsive preview; mocked API only.");
+  console.log("PASS: preview/provenance/cache/navigation, every-line automatic/raw delete, linked sources, latest undo, all-delete, unchanged engineering/SW fields, input regeneration, explicit re-add, save retry/conflict/reopen, late responses and responsive layout; mocked API only.");
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}

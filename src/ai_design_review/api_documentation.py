@@ -383,6 +383,13 @@ class ParameterReasonablenessAssessment(BaseModel):
     suggestions: list[ReasonablenessSuggestion] = Field(default_factory=list, description="可选公式和标准化建议；不会自动写入参数。")
 
 
+class TechnicalOutputDeletionDocument(BaseModel):
+    source_key: str = Field(description="成图条目的稳定来源，不能使用显示编号。")
+    fields: list[str] = Field(default_factory=list, description="相关输入参数。")
+    load_point_ids: list[str] = Field(default_factory=list, description="相关载荷点稳定ID。")
+    basis: dict[str, Any] = Field(description="删除时的生成依据，不包含确认状态；依据改变后删除选择失效。")
+
+
 class ReviewDocument(BaseModel):
     model_config = ConfigDict(
         extra="allow",
@@ -407,6 +414,8 @@ class ReviewDocument(BaseModel):
         default_factory=list,
         description="按页面顺序保存的技术要求；已确认项会同步进入生图参数包。",
     )
+    technical_output_deletions: list[TechnicalOutputDeletionDocument] | None = Field(default=None, exclude_if=lambda value: value is None,
+        description="可选自动项／旧文本的取消输出选择；保留工程参数，保存重开有效，仅生成依据改变后失效。不进入SW JSON。")
     derived_parameters: dict[str, Any] = Field(default_factory=dict, description="根据已知参数计算出的派生参数。")
     standard_selection: dict[str, Any] = Field(default_factory=dict, description="标准选择、适用性和人工确认信息。")
     parameter_reasonableness: ParameterReasonablenessAssessment | None = Field(default=None, description="最近一次参数合理性诊断和可选建议。")

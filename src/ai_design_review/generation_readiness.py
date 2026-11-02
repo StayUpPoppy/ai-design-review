@@ -18,6 +18,7 @@ from .spring_templates import FIELD_LABELS
 from .spring_feasibility import assess_parameter_reasonableness
 from .surface_roughness import confirmed_surface_roughness_requirement, ensure_surface_roughness_parameter
 from .solidworks import build_solidworks_preview
+from .technical_output_deletions import refresh_technical_output_deletions
 from .generation_settings import resolve_generation_settings
 from .standardizers.design_checks import FORCE_UNITS, LENGTH_UNITS
 from .load_height_relations import refresh_load_heights
@@ -39,6 +40,7 @@ from .technical_translation import translation_blocks_export
 def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
     """Check whether confirmed review data can be safely handed to a drawing generator."""
     refresh_load_heights(review)
+    refresh_technical_output_deletions(review)
     spring_type = str((review.get("drawing_summary") or {}).get("spring_type") or "unknown_spring")
     if spring_type != "compression_spring":
         return {
@@ -54,6 +56,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
     defaulted_fields = apply_generation_defaults(review)
     ensure_load_point_ids(review)
     refresh_load_heights(review)
+    refresh_technical_output_deletions(review)
     parameters = review.get("spring_parameters") or {}
     # Generation export is a release boundary, so always recalculate instead of
     # trusting a diagnostic that may predate an external/manual parameter edit.
@@ -122,6 +125,7 @@ def build_generation_parameter_package(review: dict[str, Any], *, identity: dict
     apply_generation_defaults(review)
     ensure_load_point_ids(review)
     refresh_load_heights(review)
+    refresh_technical_output_deletions(review)
     parameters = review.get("spring_parameters") or {}
     confirmed_parameters = export_generation_parameters(parameters)
     from .surface_source_links import surface_source_links

@@ -96,7 +96,8 @@ from .standardization_chat_agent import (
 )
 from .standardization_chat_llm import standardization_chat_llm_runtime_status
 from .spring_feasibility import assess_parameter_reasonableness
-from .solidworks import build_solidworks_command
+from .solidworks import build_solidworks_command, build_solidworks_technical_projection
+from .technical_output_deletions import refresh_technical_output_deletions
 from .load_points import ensure_load_point_ids
 from .load_height_relations import refresh_load_heights, prepare_load_height_save
 from .load_point_evidence import reconcile_load_points, prepare_recovery_save, ground_job_candidates
@@ -434,11 +435,13 @@ def get_generation_package(job_id: str, identity: IdentityContext = Depends(requ
             status_code=409,
             detail={"code": "generation_not_ready", "generation_readiness": readiness},
         )
+    package = _generation_package_for_identity(review, identity)
     return {
         "review_id": job_id,
         "review_revision": revision,
         "generation_readiness": readiness,
-        "parameter_package": _generation_package_for_identity(review, identity),
+        "parameter_package": package,
+        "technical_requirements_projection": build_solidworks_technical_projection(package, review),
     }
 
 
@@ -2498,6 +2501,7 @@ def _prepare_review_reasonableness(review: dict[str, Any], revision: int | None)
     apply_diameter_linkage(review)
     refresh_accuracy_inference(review)
     refresh_design_checks(review)
+    refresh_technical_output_deletions(review)
     refresh_compression_material_check(review, read_json(project_path("config", "factory_rules.json")))
     if (review.get("drawing_summary") or {}).get("spring_type") == "compression_spring":
         refresh_compression_spring_rate_freshness(review.get("spring_parameters") or {}, review.get("spring_features") or {})

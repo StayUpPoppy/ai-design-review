@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import re
 from copy import deepcopy
@@ -11,6 +12,7 @@ from .material_catalog import material_catalog_display_value
 from .standardizers.calculation_state import number as strict_number, parameter_current, solid_height_kind
 from .standardizers.design_checks import LENGTH_UNITS, calculate_design_checks
 from .surface_roughness import confirmed_surface_roughness, surface_roughness_matches
+from .technical_output_deletions import technical_output_basis, technical_output_is_deleted
 from .technical_requirements import TECHNICAL_REQUIREMENT_TYPE_LABELS, format_technical_requirement, strip_technical_requirements_title, technical_requirement_output_content, technical_requirement_body, technical_requirement_equivalence_key
 
 CALCULATED_PROPERTIES = {"P'": "theoretical_spring_rate", "C": "spring_index", "τ_b": "solid_stress"}
@@ -204,16 +206,35 @@ def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str
 
 
 def build_solidworks_technical_text(parameter_package: dict[str, Any], review: dict[str, Any]) -> str:
+    return build_solidworks_technical_projection(parameter_package, review)["text"]
+
+
+def build_solidworks_technical_projection(parameter_package: dict[str, Any], review: dict[str, Any], *, include_deleted: bool = False) -> dict[str, Any]:
     generation = parameter_package.get("generation_parameters") or {}
     parameters = generation.get("spring_parameters") or {}
-    lines: list[str] = []
+    entries: list[dict[str, Any]] = []
     keys: set[tuple[str, str, str]] = set()
     header_parts: set[str] = set()
     roughness = confirmed_surface_roughness(review)
     from .surface_source_links import surface_output_source_keys, surface_source_key, surface_scope_key
     converted_sources = surface_output_source_keys(review)
 
-    def append(line: str, scope: Any = None, requirement_kind: str | None = None) -> None:
+    def source_for(item: dict[str, Any]) -> dict[str, Any]:
+        key = technical_requirement_equivalence_key(item)
+        ids = [candidate["requirement_id"] for candidate in review.get("technical_requirements") or []
+               if candidate.get("requirement_id") and technical_requirement_equivalence_key(candidate) == key]
+        rough = not ids and item.get("type") in {"surface_roughness", "roughness"}
+        return {"automatic": rough, "fields": ["surface_roughness_ra"] if rough else [], "requirement_ids": ids,
+                **({"source_key": "auto:roughness"} if rough else {})}
+
+    def load_source(point: dict[str, Any]) -> dict[str, Any]:
+        original = next((item for item in (review.get("spring_parameters") or {}).get("load_points") or []
+                         if str(item.get("label") or "").strip() == str(point.get("label") or "").strip()), {})
+        point_id = original.get("load_point_id")
+        return {"automatic": True, "fields": [f"load_points.{point.get('label')}"], "load_point_ids": [point_id] if point_id else [],
+                "source_key": f"auto:load:{point_id or point.get('label')}"}
+
+    def append(line: str, scope: Any = None, requirement_kind: str | None = None, *, source: dict[str, Any] | None = None) -> None:
         if (surface_source_key(line), surface_scope_key(scope)) in converted_sources:
             return
         if surface_roughness_matches({"content": line, "application_scope": scope}, roughness):
@@ -222,17 +243,27 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
         if _pure_material_note(line):
             return
         parts = _header_parts(line) if not str(scope or "").strip() else set()
-        if parts and parts <= header_parts:
-            return
         key = _sentence_key(line, scope, requirement_kind)
+        source = source or {}
+        if (parts and parts <= header_parts) or key in keys:
+            for entry in entries:
+                if entry["key"] == json.dumps(key, ensure_ascii=False, separators=(",", ":")) or parts and set(entry["parts"]) & parts:
+                    entry["requirement_ids"] = sorted(set(entry["requirement_ids"] + source.get("requirement_ids", [])))
+            return
         if line and key not in keys:
             keys.add(key)
             header_parts.update(parts)
-            lines.append(line)
+            ids = sorted(set(source.get("requirement_ids") or []))
+            source_key = source.get("source_key") or ("requirements:" + json.dumps(ids, ensure_ascii=False, separators=(",", ":")) if ids
+                                                       else "legacy:" + json.dumps([line, scope or ""], ensure_ascii=False, separators=(",", ":")))
+            fields, point_ids = source.get("fields") or [], source.get("load_point_ids") or []
+            entries.append({"id": source_key, "source_key": source_key, "body": line, "scope": scope or "", "key": json.dumps(key, ensure_ascii=False, separators=(",", ":")), "parts": sorted(parts),
+                            "automatic": bool(source.get("automatic")), "fields": fields, "load_point_ids": point_ids, "requirement_ids": ids,
+                            "basis": technical_output_basis(review, source_key, fields, point_ids, body=line, scope=scope or "")})
 
     handedness = handedness_label(_confirmed_header_value(parameters, review, "handedness"))
     if handedness:
-        append(f"旋向：{handedness.removesuffix('旋')}。")
+        append(f"旋向：{handedness.removesuffix('旋')}。", source={"automatic": True, "fields": ["handedness"], "source_key": "auto:handedness"})
     coils = []
     for label, field in (("总圈数", "total_coils"), ("有效圈数", "active_coils")):
         if field == "active_coils" and _parameter_value(parameters.get("end_coils_closed")) == 0:
@@ -241,10 +272,10 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
         if value is not None:
             coils.append(f"{label}：{format(Decimal(str(value)), 'f')}")
     if coils:
-        append("，".join(coils) + "。")
+        append("，".join(coils) + "。", source={"automatic": True, "fields": ["total_coils", "active_coils"], "source_key": "auto:coils"})
     end_note = _confirmed_end_note(parameters, review)
     if end_note:
-        append(end_note)
+        append(end_note, source={"automatic": True, "fields": ["end_type", "end_grinding"], "source_key": "auto:end"})
     requirements = generation.get("technical_requirements") or []
     remaining: list[dict[str, Any]] = []
     for item in requirements:
@@ -254,7 +285,7 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
         if _pure_material_note(content):
             continue
         if item.get("type") in {"surface_roughness", "roughness"} and content:
-            append(_roughness_line(format_technical_requirement(item)), item.get("application_scope"))
+            append(_roughness_line(format_technical_requirement(item)), item.get("application_scope"), source=source_for(item))
         else:
             remaining.append(item)
     hb = _confirmed_solid_height(review)
@@ -264,13 +295,13 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
     fb_height = _number((solid[0].get("height") or {}).get("value")) if len(solid) == 1 else None
     fb_text = _force_text(solid[0]) if fb is not None and fb >= 0 else None
     if hb is not None and fb_text is not None and fb_height is not None and math.isclose(hb, fb_height, rel_tol=0, abs_tol=1e-9):
-        append(f"当弹簧压并至高度 Hb = {_text_number(hb)} mm 时，对应压并载荷 Fb = {fb_text}。")
+        append(f"当弹簧压并至高度 Hb = {_text_number(hb)} mm 时，对应压并载荷 Fb = {fb_text}。", source={**load_source(solid[0]), "source_key": "auto:solid_combined", "fields": ["solid_height", *load_source(solid[0])["fields"]]})
     else:
         if hb is not None:
-            append(f"压并高度：Hb = {_text_number(hb)} mm。")
+            append(f"压并高度：Hb = {_text_number(hb)} mm。", source={"automatic": True, "fields": ["solid_height"], "source_key": "auto:solid_height"})
         if fb_text is not None:
             suffix = f"（载荷测试高度 {_text_number(fb_height)} mm）" if hb is not None and fb_height is not None else ""
-            append(f"压并载荷：Fb = {fb_text}{suffix}。")
+            append(f"压并载荷：Fb = {fb_text}{suffix}。", source={**load_source(solid[0]), "fields": ["solid_height", *load_source(solid[0])["fields"]]})
     for point in points:
         if _solid_label(point.get("label")):
             continue
@@ -281,9 +312,9 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
         label = str(point.get("label") or "").strip()
         match = re.fullmatch(r"[Ff](\d+)", label)
         if match:
-            append(f"当弹簧工作高度 H{match[1]} = {_text_number(height)} mm 时，对应工作载荷 {label} = {_force_text(point)}。")
+            append(f"当弹簧工作高度 H{match[1]} = {_text_number(height)} mm 时，对应工作载荷 {label} = {_force_text(point)}。", source=load_source(point))
         else:
-            append(f"载荷点 {label}：高度 {_text_number(height)} mm，力值 {_force_text(point)}。")
+            append(f"载荷点 {label}：高度 {_text_number(height)} mm，力值 {_force_text(point)}。", source=load_source(point))
     # Only whole equivalent sentences are removed; composite/conflicting notes survive.
     requirement_keys: set[tuple[str, str, str]] = set()
     for item in remaining:
@@ -292,14 +323,25 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
         if key in requirement_keys:
             continue
         requirement_keys.add(key)
-        append(format_technical_requirement(item), item.get("application_scope"), key[0])
+        append(format_technical_requirement(item), item.get("application_scope"), key[0], source=source_for(item))
     if not requirements:
         for line in strip_technical_requirements_title(generation.get("technical_requirements_text")).splitlines():
             body = technical_requirement_output_content({"content": line})
             if body:
                 item = {"content": body}
-                append(format_technical_requirement(item), requirement_kind=technical_requirement_equivalence_key(item)[0])
-    return "\n".join(f"{index}.{line}" for index, line in enumerate(lines, 1))
+                append(format_technical_requirement(item), requirement_kind=technical_requirement_equivalence_key(item)[0], source=source_for(item))
+    visible = []
+    for entry in entries:
+        if include_deleted or not technical_output_is_deleted(review, entry):
+            visible.append(entry)
+        elif entry["automatic"] and entry["requirement_ids"]:
+            source_key = "requirements:" + json.dumps(sorted(entry["requirement_ids"]), ensure_ascii=False, separators=(",", ":"))
+            visible.append({**entry, "id": source_key, "source_key": source_key, "automatic": False, "fields": [], "load_point_ids": [],
+                            "basis": technical_output_basis(review, source_key, [], [], body=entry["body"], scope=entry["scope"])})
+    entries = visible
+    for index, entry in enumerate(entries, start=1):
+        entry["display"] = f"{index}.{entry['body']}"
+    return {"text": "\n".join(entry["display"] for entry in entries), "entries": entries}
 
 
 def _confirmed_header_value(exported: dict[str, Any], review: dict[str, Any], field: str) -> Any:
@@ -339,7 +381,8 @@ def _header_parts(line: str) -> set[str]:
         coil = re.fullmatch(r"\s*(总圈数|有效圈数n?|工作圈数)\s*:\s*([+]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*(?:圈)?\s*", clause)
         if not coil:
             break
-        parts.append(("total:" if coil[1] == "总圈数" else "active:") + str(float(coil[2])))
+        number = float(coil[2])
+        parts.append(("total:" if coil[1] == "总圈数" else "active:") + (str(int(number)) if number.is_integer() else str(number)))
     else:
         return set(parts)
     compact = re.sub(r"\s+", "", body)

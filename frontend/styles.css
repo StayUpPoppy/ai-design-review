@@ -6326,7 +6326,9 @@ textarea {
 .technical-output-state small, .technical-output-auto, .technical-automatic-hint { font-size: 12px; line-height: 1.55; color: #526176; }
 .technical-output-scroll { max-height: 250px; overflow: auto; overscroll-behavior: contain; scrollbar-color: #8ea5d4 #f4f7fc; scrollbar-width: thin; }
 .technical-output-scroll ol { list-style: none; margin: 0; padding: 0; }
-.technical-output-scroll li { min-width: 0; padding: 2px 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
+.technical-output-scroll li { display: flex; align-items: baseline; gap: 6px; min-width: 0; padding: 2px 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
+.technical-output-scroll li > .technical-output-link, .technical-output-scroll li > span { flex: 1; min-width: 0; }
+button.technical-output-delete { flex: none; min-height: 30px; padding: 3px 7px; font-size: 12px; line-height: 1.6; }
 .technical-output-scroll p { margin: 8px 0; font-size: 13px; line-height: 1.6; color: #526176; }
 button.technical-output-link { display: inline; max-width: 100%; min-height: 30px; padding: 3px 0; border: 0; border-radius: 2px; background: transparent; box-shadow: none; color: #14388f; font: inherit; text-align: left; line-height: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
 button.technical-output-link:hover { background: transparent; color: #14388f; text-decoration: underline; text-underline-offset: 3px; }

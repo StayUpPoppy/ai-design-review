@@ -1,4 +1,4 @@
-/* Read-only SW text, provenance and advisory duplicate hints. No review writes. */
+/* SW text/provenance preview; explicit deletions use app.js audit/save hooks. */
 (() => {
   let options, scheduled = false, scope;
   const hosts = new Map(), roots = new WeakSet(), cache = new Map(), views = new Map();
@@ -54,6 +54,10 @@
         const text = payload.parameter_package?.solidworks_preview?.extraProperties?.["技术要求"];
         if (!response.ok || payload.review_id !== context.jobId || payload.review_revision !== context.revision || typeof text !== "string") throw new Error("preview unavailable");
         entry.status = "ready"; entry.text = text;
+        const projection = payload.technical_requirements_projection;
+        if (projection?.text === text && Array.isArray(projection.entries)
+          && projection.entries.every(item => typeof item.source_key === "string" && item.basis && Array.isArray(item.fields)
+            && Array.isArray(item.requirement_ids) && Array.isArray(item.load_point_ids))) entry.projection = projection;
       } catch {
         if (!current(record, context)) { if (cache.get(key) === entry) cache.delete(key); return; }
         entry.status = "error";
@@ -62,6 +66,7 @@
     return entry;
   }
   function effectiveProjection(local, server) {
+    if (server?.status === "ready" && server.projection) return server.projection;
     if (server?.status !== "ready" || server.text === local.text) return local;
     // Server text is authoritative. Never guess provenance for an unmapped line.
     return { text: server.text, entries: server.text.split(/\r?\n/).filter(line => line.trim()).map((line, index) => {
@@ -82,6 +87,16 @@
       }
       li.append(text);
       if (entry.automatic) { const tag = document.createElement("small"); tag.textContent = "自动"; tag.className = "technical-output-auto"; li.append(tag); }
+      if (options.remove) {
+        const button = document.createElement("button");
+        button.type = "button"; button.className = "technical-output-delete secondary-action";
+        button.dataset.role = "delete-technical-output"; button.textContent = "删除";
+        button.setAttribute("aria-label", `删除第${index + 1}条成图技术要求`);
+        button.disabled = !entry.source_key || !options.context(record.review, record.messageId).active;
+        button.title = button.disabled ? "请打开当前订单或刷新预览后操作" : "删除这条成图技术要求";
+        button.addEventListener("click", () => options.remove(entry, record.review, record.messageId));
+        li.append(button);
+      }
       return li;
     });
   }
@@ -123,7 +138,8 @@
     record.host.querySelector('[data-role="technical-output-count"]').textContent = `（${projection.entries.length}条）`;
     const empty = record.host.querySelector('[data-role="technical-output-empty"]');
     empty.hidden = projection.entries.length > 0;
-    empty.textContent = model.error ? "预览暂不可用，请核对当前输入。" : "确认参数或技术要求后，将在此呈现成图内容。";
+    empty.textContent = model.error ? "预览暂不可用，请核对当前输入。"
+      : record.review.technical_output_deletions?.length ? "暂无成图技术要求，可撤销上一次删除或修改对应参数。" : "确认参数或技术要求后，将在此呈现成图内容。";
     const status = model.error ? "草稿预览 · 尚未完成服务端核对"
       : context.dirty ? `草稿预览 · ${context.saveFailed ? "保存失败" : context.saving ? "保存中…" : "尚未保存"}`
       : !context.jobId ? "本地草稿预览 · 仅包含已确认有效内容"
@@ -132,7 +148,9 @@
       : server?.status === "error" ? "草稿预览 · 尚未完成服务端核对"
       : "当前预览 · 仍有内容待补充或确认";
     record.host.querySelector('[data-role="technical-output-status"]').textContent = status;
-    record.host.querySelector('[data-role="technical-output-retry"]').hidden = server?.status !== "error";
+    const retry = record.host.querySelector('[data-role="technical-output-retry"]');
+    retry.hidden = server?.status !== "error" && !context.saveFailed;
+    retry.textContent = context.saveFailed ? "重试保存" : "重试核对";
     duplicateHints(record, projection);
   }
   function mount(root, review, messageId) {
@@ -151,7 +169,10 @@
         if (!record.session) return;
         views.set(record.session, host.querySelector("details").open);
       });
-      host.querySelector('[data-role="technical-output-retry"]').addEventListener("click", () => { cache.delete(record.cacheKey); refresh(); });
+      host.querySelector('[data-role="technical-output-retry"]').addEventListener("click", () => {
+        if (options.context(record.review, record.messageId).saveFailed && options.retrySave) options.retrySave(record.review, record.messageId);
+        else { cache.delete(record.cacheKey); refresh(); }
+      });
     });
     refresh();
   }

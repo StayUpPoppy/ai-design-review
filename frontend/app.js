@@ -516,6 +516,10 @@ const identityProfileSource = document.getElementById("identityProfileSource");
 if (typeof TechnicalRequirementPreview !== "undefined") TechnicalRequirementPreview.configure({
   scope: historyRecognitionScope, context: technicalOutputPreviewContext, build: technicalOutputPreviewModel,
   catalog: () => state.materialCatalog || {}, request: (path, options) => apiFetch(path, options),
+  remove: removeTechnicalOutputEntry,
+  retrySave: (review, messageId) => {
+    if (technicalOutputPreviewContext(review, messageId).active) void flushReviewPersistence();
+  },
   focus: (entry, messageId) => {
     const field = entry.automatic ? entry.fields?.[0] : entry.requirement_ids?.[0] ? `technical_requirements.${entry.requirement_ids[0]}` : entry.fields?.[0];
     if (field) focusMissingStandardizationField(field === "end_coils_closed" ? "end_type" : field, messageId,
@@ -1411,6 +1415,7 @@ function parameterAuditState(param) {
 function queueReviewAuditEvent(event) {
   if (typeof AccuracyInference !== "undefined" && ["load_point_added", "load_point_deleted", "load_point_restored"].includes(event?.event_type)) syncAccuracyInferenceInput(state.review, null);
   if (!state.review || !event) return null;
+  if (typeof SolidWorksExport !== "undefined") SolidWorksExport.refreshDeletions?.(state.review);
   const surfaceSourceChanges = typeof CompanySurfaceMapping !== "undefined" ? CompanySurfaceMapping.bindSources(state.review) : [];
   state.reviewEditSerial += 1;
   if (!event.target_field?.startsWith("generation_settings.")) state.generationReadiness = null;
@@ -1449,7 +1454,7 @@ function refreshParameterPersistenceControls(fields = null) {
     if (param) syncConfirmationControl(row, param, { kind: "parameter", field, review: state.review });
     if (field === "surface_roughness_ra" && param) syncSurfaceRoughnessReferenceRow(row, param);
   });
-  document.querySelectorAll('[data-kind="load_point"][data-load-point-id]').forEach((row) => {
+  document.querySelectorAll('.load-point[data-kind="load_point"][data-load-point-id]').forEach((row) => {
     const point = state.review.spring_parameters?.load_points?.find((item) => item.load_point_id === row.dataset.loadPointId);
     if (!point) return;
     syncConfirmationControl(row, point, { kind: "load_point", field: loadPointField(point), review: state.review });
@@ -1611,6 +1616,7 @@ function parameterConflictValue(item, field = "") {
   if (field === "diameter_linkage") return ["wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter"].map((f) => `${FIELD_LABELS[f]} ${item.parameters?.[f]?.value ?? "未填写"} ${item.parameters?.[f]?.unit || "mm"}`).join("；");
   if (field === "generation_settings.drawing_model") return item.value === "Y型" ? "竖版" : "横版";
   if (field === "generation_settings.username") return item.value || "未填写";
+  if (field === "technical_output_deletions") return `已取消输出 ${(item.value || []).length} 条自动／旧文本要求`;
   if (field.startsWith("load_points.")) return `${item.label || "未编号"}：高度 ${item.height ?? "未填写"} ${item.height_unit || "mm"}，力值 ${item.force ?? "未填写"} ${item.force_unit || "N"}`;
   if (field.startsWith("technical_requirements.")) return String(item.content || "未填写");
   const value = item.value == null || item.value === ""
@@ -1682,8 +1688,9 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
   const summaryKey = (field) => ["drawing_summary.drawing_no", "drawing_summary.drawing_name"].includes(field) ? field.split(".")[1] : null;
   const fieldItem = (review, field) => field === "diameter_linkage" ? DiameterLinkage.groupState(review) : summaryKey(field) ? { value: review.drawing_summary?.[summaryKey(field)] ?? "" } : settingKey(field) ? { value: review.generation_settings?.[settingKey(field)] ?? null } : loadId(field)
     ? review.spring_parameters?.load_points?.find((item) => item.load_point_id === loadId(field))
-    : technicalId(field) ? review.technical_requirements?.find((item) => item.requirement_id === technicalId(field)) : review.spring_parameters?.[field];
-  if (!fields.length || fields.some((field) => !field || (field !== "diameter_linkage" && !summaryKey(field) && !settingKey(field) && !loadId(field) && !technicalId(field) && (field.includes(".") || !local?.spring_parameters?.[field])))) {
+    : technicalId(field) ? review.technical_requirements?.find((item) => item.requirement_id === technicalId(field))
+      : field === "technical_output_deletions" ? { value: review.technical_output_deletions || [] } : review.spring_parameters?.[field];
+  if (!fields.length || fields.some((field) => !field || (field !== "diameter_linkage" && field !== "technical_output_deletions" && !summaryKey(field) && !settingKey(field) && !loadId(field) && !technicalId(field) && (field.includes(".") || !local?.spring_parameters?.[field])))) {
     return null;
   }
   const server = normalizeReview(payload);
@@ -1704,6 +1711,10 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
   const merged = normalizeReview(server);
   for (const field of fields) {
     if (chosenServer.has(field)) continue;
+    if (field === "technical_output_deletions") {
+      merged.technical_output_deletions = structuredClone(local.technical_output_deletions || []);
+      continue;
+    }
     if (summaryKey(field)) { merged.drawing_summary[summaryKey(field)] = local.drawing_summary?.[summaryKey(field)] ?? ""; continue; }
     if (field === "diameter_linkage") {
       if (local.diameter_linkage) merged.diameter_linkage = structuredClone(local.diameter_linkage);
@@ -1771,7 +1782,7 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
     ...(local.change_history || []).filter((entry) => unsavedIds.has(entry.client_event_id) && !serverHistoryIds.has(entry.client_event_id)),
     ...(merged.change_history || []),
   ];
-  if (unsaved.some((event) => !settingKey(event.target_field))) {
+  if (unsaved.some((event) => !settingKey(event.target_field) && event.target_field !== "technical_output_deletions")) {
     merged.parameter_reasonableness_stale = true;
     merged.derived_parameters_stale = true;
     (merged.standardization_results || []).forEach((item) => {
@@ -1791,6 +1802,7 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
     }
     AccuracyInference.refresh(merged);
   }
+  if (state.technicalRequirementUndo?.review === local) state.technicalRequirementUndo.review = merged;
   setReview(merged, state.imageUrl, {
     preserveAccuracyGradeUpdate: true,
     preservePendingAccuracyGrade: true,
@@ -1971,7 +1983,7 @@ function syncParameterReasonablenessSurfaces(messageId = state.activeReviewMessa
     const param = state.review.spring_parameters?.[row.dataset.field];
     if (param) syncConfirmationControl(row, param, { kind: "parameter", field: row.dataset.field, review: state.review });
   });
-  document.querySelectorAll('[data-kind="load_point"]').forEach((row) => {
+  document.querySelectorAll('.load-point[data-kind="load_point"]').forEach((row) => {
     const points = state.review.spring_parameters?.load_points || [];
     const point = points.find((item) => String(item?.load_point_id || "") === String(row.dataset.loadPointId || ""))
       || points[Number(row.dataset.index)];
@@ -2003,7 +2015,7 @@ function bindBulkConfirmationFollowupControls(root, messageId = state.activeRevi
     button.dataset.boundBulkConfirmationFocus = "true";
     button.addEventListener("click", () => {
       focusMissingStandardizationField(button.dataset.field || "", messageId, {
-        kind: button.dataset.kind || "parameter",
+        kind: button.dataset.targetKind || "parameter",
         load_point_id: button.dataset.loadPointId || "",
         requirement_id: button.dataset.requirementId || "",
         highlight: true,
@@ -3739,7 +3751,7 @@ function renderBulkConfirmationFollowupHtml(report) {
                 type="button"
                 class="secondary-action"
                 data-role="focus-bulk-confirmation-target"
-                data-kind="${escapeHtml(item.kind)}"
+                data-target-kind="${escapeHtml(item.kind)}"
                 data-field="${escapeHtml(item.field)}"
                 data-load-point-id="${escapeHtml(item.load_point_id || "")}"
                 data-requirement-id="${escapeHtml(item.requirement_id || "")}"
@@ -4667,6 +4679,8 @@ function auditEventLabel(eventType) {
     technical_requirement_added: "新增技术要求",
     technical_requirement_updated: "修改技术要求",
     technical_requirement_deleted: "删除技术要求",
+    technical_output_deleted: "删除成图技术要求",
+    technical_output_restored: "撤销成图技术要求删除",
     technical_requirement_restored: "恢复技术要求",
     technical_requirement_recovered: "补回遗漏技术要求",
     technical_requirement_confirmed: "确认技术要求",
@@ -4779,7 +4793,7 @@ function refreshLoadHeightRelations(review) {
     if (!point) continue;
     queueReviewAuditEvent({ event_type: "load_height_recalculated", target_field: loadPointField(point), source: "load_height_formula",
       before_state: change.before, after_state: loadPointAuditState(point), metadata: { load_point_id: point.load_point_id, version: LoadHeightRelations.VERSION } });
-    document.querySelectorAll('[data-kind="load_point"]').forEach(row => {
+    document.querySelectorAll('.load-point[data-kind="load_point"]').forEach(row => {
       const messageId = row.closest("[data-message-id]")?.dataset.messageId;
       if (row.dataset.loadPointId !== point.load_point_id || messageId && messageId !== state.activeReviewMessageId) return;
       const input = row.querySelector('[data-role="height"]');
@@ -4789,7 +4803,7 @@ function refreshLoadHeightRelations(review) {
       if (note) note.textContent = loadHeightRelationNote(point);
     });
   }
-  document.querySelectorAll('[data-kind="load_point"]').forEach(row => {
+  document.querySelectorAll('.load-point[data-kind="load_point"]').forEach(row => {
     const messageId = row.closest("[data-message-id]")?.dataset.messageId;
     if (messageId && messageId !== state.activeReviewMessageId) return;
     const point = review.spring_parameters.load_points.find(p => p.load_point_id === row.dataset.loadPointId);
@@ -5720,7 +5734,7 @@ function syncReviewConfirmationControls(root, review = state.review) {
     const item = review.spring_parameters?.[field];
     if (item) syncConfirmationControl(row, item, { kind: "parameter", field, review });
   });
-  root.querySelectorAll('[data-kind="load_point"][data-index]').forEach((row) => {
+  root.querySelectorAll('.load-point[data-kind="load_point"][data-index]').forEach((row) => {
     const points = review.spring_parameters?.load_points || [];
     const item = points.find((point) => String(point?.load_point_id || "") === String(row.dataset.loadPointId || ""))
       || points[Number(row.dataset.index)];
@@ -7908,19 +7922,81 @@ function restoreTechnicalRequirementViewState(snapshot) {
 function restoreTechnicalRequirementGroup(review) {
   const undo = state.technicalRequirementUndo;
   if (!undo || undo.review !== review) return;
+  const changedAutomatic = undo.outputDeletion?.source_key.startsWith("auto:")
+    && stableReasonablenessJson(undo.outputDeletion.basis) !== stableReasonablenessJson(SolidWorksExport.outputBasis(review,
+      undo.outputDeletion.source_key, undo.outputDeletion.fields, undo.outputDeletion.load_point_ids, "", undo.outputDeletion.basis.scope || ""));
+  if (undo.outputDeletion) {
+    const before = structuredClone(review.technical_output_deletions || []);
+    review.technical_output_deletions = before.filter(item => item.source_key !== undo.outputDeletion.source_key
+      || stableReasonablenessJson(item.basis) !== stableReasonablenessJson(undo.outputDeletion.basis));
+    queueReviewAuditEvent({ event_type: "technical_output_restored", target_field: "technical_output_deletions",
+      before_state: { value: before }, after_state: { value: structuredClone(review.technical_output_deletions) } });
+  }
   for (const entry of (undo.entries || [undo]).slice().sort((a, b) => a.index - b.index)) {
     if (review.technical_requirements.some((item) => item.requirement_id === entry.item.requirement_id)) continue;
     const index = Math.min(entry.index, review.technical_requirements.length);
     const restored = structuredClone(entry.item);
+    if (changedAutomatic) { restored.need_human_review = true; delete restored.confirmation_snapshot; }
     review.technical_requirements.splice(index, 0, restored);
-    Object.assign(review.manual_confirmations, structuredClone(entry.confirmations || {}));
+    if (!changedAutomatic) Object.assign(review.manual_confirmations, structuredClone(entry.confirmations || {}));
     queueReviewAuditEvent({ event_type: "technical_requirement_restored", target_field: technicalRequirementField(restored, index),
       before_state: { requirement_id: restored.requirement_id, deleted: true }, after_state: technicalRequirementAuditState(restored),
       metadata: { requirement_id: restored.requirement_id, index, group_requirement_ids: undo.entries?.map((entry) => entry.item.requirement_id) } });
   }
   state.technicalRequirementUndo = null;
   markParameterChangeProposalsStale("技术要求已恢复");
-  updateLatestReviewMessage("已恢复此项对应的全部原始记录和确认信息。");
+  updateLatestReviewMessage("已撤销上一次删除，成图内容按当前参数与确认状态重新生成。");
+}
+
+function deleteTechnicalRequirementMembers(review, members, label, outputDeletion = null) {
+  const entries = members.map(({ item, index }) => {
+    const key = technicalRequirementConfirmationKey(item, index);
+    const confirmations = Object.fromEntries(Object.entries(review.manual_confirmations || {}).filter(([name, value]) =>
+      name === key || name === `technical_${index}` || name === technicalRequirementField(item, index) || value?.requirement_id === item.requirement_id));
+    return { item: structuredClone(item), index, confirmations };
+  });
+  const ids = entries.map(entry => entry.item.requirement_id);
+  for (const entry of entries) {
+    for (const key of Object.keys(entry.confirmations)) delete review.manual_confirmations[key];
+    state.reviewDraftFields.delete(technicalRequirementField(entry.item, entry.index));
+  }
+  review.technical_requirements = review.technical_requirements.filter(item => !ids.includes(item.requirement_id));
+  state.technicalRequirementUndo = { review, entries, label, outputDeletion, jobId: state.lastJob?.job_id,
+    navigationSerial: state.reviewNavigationSerial, scope: historyRecognitionScope(), messageId: state.activeReviewMessageId };
+  if (outputDeletion) {
+    const before = structuredClone(review.technical_output_deletions || []);
+    review.technical_output_deletions = [...before.filter(item => item.source_key !== outputDeletion.source_key), outputDeletion];
+    queueReviewAuditEvent({ event_type: "technical_output_deleted", target_field: "technical_output_deletions",
+      before_state: { value: before }, after_state: { value: structuredClone(review.technical_output_deletions) },
+      metadata: { source_key: outputDeletion.source_key, group_requirement_ids: ids } });
+  }
+  for (const { item, index } of entries) queueReviewAuditEvent({ event_type: "technical_requirement_deleted", target_field: technicalRequirementField(item, index),
+    before_state: technicalRequirementAuditState(item), after_state: { requirement_id: item.requirement_id, deleted: true },
+    metadata: { requirement_id: item.requirement_id, index, group_requirement_ids: ids } });
+  markParameterChangeProposalsStale("技术要求已删除");
+  updateLatestReviewMessage("已删除此条成图要求，可撤销上一次删除。");
+}
+
+function removeTechnicalOutputEntry(entry, review, messageId) {
+  if (!technicalOutputPreviewContext(review, messageId).active) return;
+  const projection = technicalOutputPreviewModel(review);
+  const current = projection.entries.find(item => item.source_key === entry.source_key
+    && stableReasonablenessJson(item.basis) === stableReasonablenessJson(entry.basis));
+  if (!current) { globalThis.TechnicalRequirementPreview?.refresh(); return; }
+  const index = projection.entries.indexOf(current), wanted = new Set(current.requirement_ids);
+  const members = new Map();
+  for (const group of technicalRequirementGroups(review)) {
+    if (group.ids.some(id => wanted.has(id))) for (const member of group.sources) members.set(member.item.requirement_id, member);
+  }
+  const deletion = current.automatic || current.source_key.startsWith("legacy:") ? SolidWorksExport.deletionFor(current) : null;
+  if (!members.size && !deletion) return;
+  deleteTechnicalRequirementMembers(review, [...members.values()], current.body, deletion);
+  requestAnimationFrame(() => {
+    if (!technicalOutputPreviewContext(review, messageId).active || document.activeElement !== document.body) return;
+    const host = compareOverlay.querySelector('[data-role="technical-output-preview"]');
+    const buttons = host?.querySelectorAll('[data-role="delete-technical-output"]');
+    (buttons?.[Math.min(index, buttons.length - 1)] || host?.querySelector("summary"))?.focus({ preventScroll: true });
+  });
 }
 
 function flushTechnicalRequirementRefreshes() {
@@ -8068,24 +8144,7 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
     row.querySelector('[data-role="delete-technical-requirement"]')?.addEventListener("click", () => {
       activateReviewContext(messageId);
       const members = technicalRequirementGroups(review).find((group) => group.ids.some((id) => technicalRowIds(row).includes(id)))?.sources || technicalRowMembers(row, review);
-      const ids = members.map(({ item }) => item.requirement_id);
-      const entries = members.map(({ item, index }) => {
-        const key = technicalRequirementConfirmationKey(item, index);
-        const confirmations = Object.fromEntries(Object.entries(review.manual_confirmations || {}).filter(([name, value]) =>
-          name === key || name === `technical_${index}` || name === technicalRequirementField(item, index) || value?.requirement_id === item.requirement_id));
-        return { item: structuredClone(item), index, confirmations };
-      });
-      for (const entry of entries) {
-        for (const key of Object.keys(entry.confirmations)) delete review.manual_confirmations[key];
-        state.reviewDraftFields.delete(technicalRequirementField(entry.item, entry.index));
-      }
-      review.technical_requirements = review.technical_requirements.filter((item) => !ids.includes(item.requirement_id));
-      state.technicalRequirementUndo = { review, entries, label: contentInput.value };
-      for (const { item, index } of entries) queueReviewAuditEvent({ event_type: "technical_requirement_deleted", target_field: technicalRequirementField(item, index),
-        before_state: technicalRequirementAuditState(item), after_state: { requirement_id: item.requirement_id, deleted: true },
-        metadata: { requirement_id: item.requirement_id, index, group_requirement_ids: ids } });
-      markParameterChangeProposalsStale("技术要求已删除");
-      updateLatestReviewMessage("已删除此项对应的全部记录，可使用“撤销删除”恢复。");
+      deleteTechnicalRequirementMembers(review, members, contentInput.value);
     });
   });
 }
@@ -8256,7 +8315,7 @@ function technicalOutputPreviewContext(review, messageId) {
   const active = review === state.review && scope === currentScope && (origin?.jobId || null) === (state.lastJob?.job_id || null);
   const jobId = active ? origin?.jobId : null, revision = active ? state.lastJob?.review_revision : null;
   const readiness = active ? state.generationReadiness : null;
-  const dataSignature = JSON.stringify([review.spring_parameters, review.technical_requirements, review.spring_features, review.drawing_summary?.spring_type]);
+  const dataSignature = JSON.stringify([review.spring_parameters, review.technical_requirements, review.technical_output_deletions, review.spring_features, review.drawing_summary?.spring_type]);
   const matching = readiness && (!readiness.review_id || readiness.review_id === jobId)
     && (readiness.review_revision == null || readiness.review_revision === revision);
   return { active, scope, jobId, revision, edit: state.reviewEditSerial, saving: active && state.reviewPersistenceSaving,
@@ -8296,8 +8355,8 @@ function renderRequirementsHtml(review) {
       ${globalThis.window?.TechnicalRequirementRecovery?.render(review) || ""}
       ${undo ? `
         <div class="technical-requirement-undo" role="status">
-          <span>已删除“${escapeHtml(undo.label || undo.item?.content || "技术要求")}”及其对应 ${(undo.entries || [undo]).length} 条记录</span>
-          <button type="button" class="secondary-action" data-action="undo-technical-requirement-delete">撤销删除</button>
+          <span>已删除“${escapeHtml(undo.label || undo.item?.content || "技术要求")}”${undo.entries?.length ? `及其对应 ${undo.entries.length} 条记录` : ""}</span>
+          <button type="button" class="secondary-action" data-action="undo-technical-requirement-delete">撤销上一次删除</button>
         </div>
       ` : ""}
       <form class="technical-requirement-create" data-kind="technical_requirement_create" hidden>
@@ -8475,6 +8534,7 @@ function canConfirmStandardization(item) {
 }
 
 function targetFieldLabel(targetField) {
+  if (targetField === "technical_output_deletions") return "成图技术要求输出选择";
   if (targetField === "diameter_linkage") return "线径与三径联动";
   if (targetField === "drawing_summary.drawing_no") return "图号";
   if (targetField === "drawing_summary.drawing_name") return "图纸名称";
@@ -8894,11 +8954,21 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     updateLatestReviewMessage("已撤销删除，载荷测试点已恢复到原位置。");
   });
 
-  root.querySelectorAll('[data-kind="load_point"]').forEach((row) => {
+  root.querySelectorAll('.load-point[data-kind="load_point"]').forEach((row) => {
     const pointId = String(row.dataset.loadPointId || "");
     const pointIndex = (review.spring_parameters.load_points || []).findIndex((item) => String(item?.load_point_id || "") === pointId);
     const point = review.spring_parameters.load_points[pointIndex];
     if (!point) return;
+    const controls = Object.fromEntries([
+      "height", "force", "load-tolerance", "confirm", "rename-load-point", "label",
+      "save-load-label", "cancel-load-label", "rename-editor", "rename-status",
+    ].map(role => [role, row.querySelector(`[data-role="${role}"]`)]));
+    const missingControls = Object.keys(controls).filter(role => !controls[role]);
+    if (!row.querySelector(".data-label strong")) missingControls.push("label-title");
+    if (missingControls.length) {
+      console.warn("载荷编辑区域缺少必要控件，已跳过绑定。", { load_point_id: pointId, missing_roles: missingControls });
+      return;
+    }
     let pointField = loadPointField(point, pointIndex);
     const confirmationField = loadPointConfirmationKey(point, pointIndex);
     const editorJobId = state.lastJob?.job_id, editorScope = historyRecognitionScope();
@@ -8930,20 +9000,20 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         refreshBulkConfirmationFollowupAfterLocalChange(messageId);
       });
     };
-    bindLoadPointDraft(row.querySelector('[data-role="height"]'), (event) => {
+    bindLoadPointDraft(controls.height, (event) => {
       point.height = parseValue(event.target.value, point.height);
       globalThis.LoadHeightRelations?.manual(point);
     }, "load_point_value_updated");
-    bindLoadPointDraft(row.querySelector('[data-role="force"]'), (event) => {
+    bindLoadPointDraft(controls.force, (event) => {
       point.force = parseValue(event.target.value, point.force);
     }, "load_point_value_updated");
     bindLoadPointRename(row, point, review, messageId, root, () => { pointField = loadPointField(point, pointIndex); });
-    bindLoadPointDraft(row.querySelector('[data-role="load-tolerance"]'), (event) => {
+    bindLoadPointDraft(controls["load-tolerance"], (event) => {
       applyLoadPointTolerance(point, event.target.value);
       point.force_tolerance_status = event.target.value.trim() ? "specified" : "not_specified";
       delete point.load_relation_conflict;
     }, "load_point_tolerance_updated");
-    row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
+    controls.confirm.addEventListener("click", () => {
       if (!editorIsCurrent()) return;
       activateReviewContext(messageId);
       const control = confirmationControlState(point, { kind: "load_point", field: pointField, review });
@@ -10323,9 +10393,9 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
         (requestedId && String(point?.load_point_id || "") === requestedId)
         || (!requestedId && canonicalLoadPointLabel(point?.label) === canonicalLoadPointLabel(requestedLabel))
       ));
-      const loadRow = Array.from(compareOverlay.querySelectorAll('[data-kind="load_point"]'))
+      const loadRow = Array.from(compareOverlay.querySelectorAll('.load-point[data-kind="load_point"]'))
         .find((row) => requestedId && String(row.dataset.loadPointId || "") === requestedId)
-        || compareOverlay.querySelector(`[data-kind="load_point"][data-index="${pointIndex}"]`);
+        || compareOverlay.querySelector(`.load-point[data-kind="load_point"][data-index="${pointIndex}"]`);
       if (loadRow) {
         loadRow.scrollIntoView({ behavior: "smooth", block: "center" });
         if (options.highlight) highlightReviewTarget(loadRow);
@@ -10396,8 +10466,9 @@ function renderCompareOverlay() {
     downloadJson(makeExportReview(), "spring_review_confirmed.json");
   });
   bindCompareTabs(compareOverlay);
-  bindReviewEditors(compareOverlay);
+  // Viewer controls stay usable even if a separate editor fails to bind.
   initializeCompareViewer();
+  bindReviewEditors(compareOverlay);
   restoreCompareOverlayScrollState(scrollState);
 }
 
@@ -12024,7 +12095,15 @@ function setReview(review, imageUrl, options = {}) {
   if (!options.preservePendingAccuracyGrade) resetPendingAccuracyGrade();
   ensureTechnicalRequirementIds(review);
   applyGenerationDefaults(review);
-  if (state.review !== review) state.reasonablenessRefreshError = "";
+  if (state.review !== review) {
+    state.reasonablenessRefreshError = "";
+    const undo = state.technicalRequirementUndo;
+    if (undo && undo.review !== review) {
+      if (undo.navigationSerial === state.reviewNavigationSerial && undo.scope === historyRecognitionScope()
+        && undo.jobId === state.lastJob?.job_id && (undo.jobId || undo.messageId === state.activeReviewMessageId)) undo.review = review;
+      else state.technicalRequirementUndo = null;
+    }
+  }
   state.review = review;
   recordRoughnessVerificationAdjustment(review);
   recordMultiSpecReconciliation(review);
@@ -12926,6 +13005,7 @@ function normalizeReview(review) {
   applyGenerationDefaults(cloned);
   if (typeof DiameterLinkage !== "undefined") DiameterLinkage.apply(cloned);
   if (typeof AccuracyInference !== "undefined") AccuracyInference.refresh(cloned);
+  if (typeof SolidWorksExport !== "undefined") SolidWorksExport.refreshDeletions?.(cloned);
   return cloned;
 }
 
@@ -13063,6 +13143,7 @@ function requiredFieldsForReview(review) {
 }
 
 function refreshDerivedStatus(review) {
+  if (typeof SolidWorksExport !== "undefined") SolidWorksExport.refreshDeletions?.(review);
   const requiredMissing = requiredFieldsForReview(review).filter((field) => {
     const value = review.spring_parameters?.[field]?.value;
     return value == null || value === "";
