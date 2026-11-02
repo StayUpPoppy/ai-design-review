@@ -185,8 +185,9 @@
     return value.replace(/(?:\s*(?:\r\n?|\n)\s*)+/g, "；").replace(/[\t ]+/g, " ").trim();
   }
   const roughnessLine = (value) => value.replace(/粗糙度\s*[:：]?\s*Ra\s*/, "表面粗糙度：Ra ").replace("表面表面粗糙度", "表面粗糙度").replace(/(?<=\d)\s*[μµ]m/g, " μm").replace(/[。.]+$/, "") + "。";
-  function sentenceKey(value, catalog, scope) {
+  function sentenceKey(value, catalog, scope, requirementKind = null) {
     let [key, kind] = TechnicalRequirementEquivalence.body(value);
+    kind = requirementKind ?? kind;
     const material = key.match(/^(?:材质|材料)\s*[:：]?\s*(.+?)\s*[。.]*$/);
     if (material) key = `材料：${CompressionDesignChecks.materialDisplayValue(material[1], catalog)}`;
     key = key.replace(/^(?:材质|材料)/, "材料").replace(/^(?:旋向|绕制方向)/, "绕制方向").replace(/^(?:有效圈数n?|工作圈数)/, "工作圈数").replace(/表面粗糙度/g, "粗糙度").replace(/^(材料|绕制方向|工作圈数)\s*:\s*/, "$1");
@@ -209,13 +210,13 @@
       const original = (review.spring_parameters?.load_points || []).find(item => String(item.label || "").trim() === String(point.label || "").trim());
       return { automatic: true, fields: [`load_points.${point.label}`], load_point_ids: original?.load_point_id ? [original.load_point_id] : [] };
     };
-    const append = (line, scope, source = {}) => {
+    const append = (line, scope, source = {}, requirementKind = null) => {
       if (typeof CompanySurfaceMapping !== "undefined" && convertedSources.has(JSON.stringify([CompanySurfaceMapping.sourceKey(line), CompanySurfaceMapping.scopeKey(scope)]))) return;
       if (roughnessMatches({ content: line, application_scope: scope }, roughness)) return;
       line = swTechnicalLine(line);
       if (pureMaterialNote(line)) return;
       const parts = String(scope || "").trim() ? [] : headerParts(line);
-      const key = sentenceKey(line, catalog, scope);
+      const key = sentenceKey(line, catalog, scope, requirementKind);
       if (parts.length && parts.every(part => headParts.has(part)) || keys.has(key)) {
         entries.filter(entry => entry.key === key || parts.length && entry.parts.some(part => parts.includes(part))).forEach(entry => {
           entry.requirement_ids = [...new Set([...entry.requirement_ids, ...(source.requirement_ids || [])])];
@@ -266,13 +267,16 @@
       const key = JSON.stringify(TechnicalRequirementEquivalence.key(item));
       if (requirementKeys.has(key)) continue;
       requirementKeys.add(key);
-      append(TechnicalRequirementEquivalence.format(item), item.application_scope, sourceFor(item));
+      append(TechnicalRequirementEquivalence.format(item), item.application_scope, sourceFor(item), TechnicalRequirementEquivalence.key(item)[0]);
     }
     if (!requirements.length) {
       const legacy = String(generation.technical_requirements_text || "").replace(/\r\n?/g, "\n").trim().replace(/^技术要求[:：]?\s*(?:\n|$)/, "");
       for (const line of legacy.split("\n")) {
         const body = TechnicalRequirementEquivalence.outputContent({ content: line });
-        if (body) append(TechnicalRequirementEquivalence.format({ content: body }), null, sourceFor({ content: body }));
+        if (body) {
+          const item = { content: body };
+          append(TechnicalRequirementEquivalence.format(item), null, sourceFor(item), TechnicalRequirementEquivalence.key(item)[0]);
+        }
       }
     }
     return { text: lines.map((line, index) => `${index + 1}.${line}`).join("\n"), entries };
@@ -285,7 +289,7 @@
     if (!line || pureMaterialNote(line)) return [];
     const scope = item.application_scope, parts = String(scope || "").trim() ? [] : headerParts(line);
     const automatic = (projection?.entries || []).filter(entry => entry.automatic);
-    const matches = automatic.filter(entry => sentenceKey(entry.body, catalog, entry.scope) === sentenceKey(line, catalog, scope));
+    const matches = automatic.filter(entry => entry.key === sentenceKey(line, catalog, scope, TechnicalRequirementEquivalence.key(item)[0]));
     if (matches.length) return matches;
     if (parts.length) {
       const available = new Set(automatic.flatMap(entry => entry.parts || headerParts(entry.body)));

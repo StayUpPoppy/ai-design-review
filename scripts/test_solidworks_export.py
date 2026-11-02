@@ -333,7 +333,7 @@ def run():
             assert line.startswith(f"{index}."), line
         assert "不应导出的" not in notes
         assert "材料SUS304 不锈钢，表面喷丸处理。" in notes
-        assert "热处理：300℃，20min。" in notes and "中性盐雾72小时。" in notes
+        assert "300℃，20min。" in notes and "中性盐雾72小时。" in notes
         assert "F1 = 13.2 N（允差 ±10%）" in notes
         assert "F2 = 18.9 N（允差 +1/-0.5 N）" in notes
         assert "F3 = 0 N" in notes

@@ -181,9 +181,9 @@ def format_technical_requirement(item: dict[str, Any]) -> str:
     scope = str(item.get("application_scope") or "").strip()
     if scope and scope not in text:
         text = f"{text.rstrip('。.')}（作用范围：{scope}）"
-    if kind == "surface_roughness":
-        return text
-    return f"{TECHNICAL_REQUIREMENT_TYPE_LABELS.get(kind, '其他要求')}：{text}"
+    # Classification stays in metadata/the selector, not in the engineering body.
+    # Surface treatment retains its existing company-name presentation contract.
+    return f"表面处理：{text}" if kind == "surface" else text
 
 
 def strip_technical_requirements_title(text: Any) -> str:

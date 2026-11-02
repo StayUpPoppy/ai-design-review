@@ -213,7 +213,7 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
     from .surface_source_links import surface_output_source_keys, surface_source_key, surface_scope_key
     converted_sources = surface_output_source_keys(review)
 
-    def append(line: str, scope: Any = None) -> None:
+    def append(line: str, scope: Any = None, requirement_kind: str | None = None) -> None:
         if (surface_source_key(line), surface_scope_key(scope)) in converted_sources:
             return
         if surface_roughness_matches({"content": line, "application_scope": scope}, roughness):
@@ -224,7 +224,7 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
         parts = _header_parts(line) if not str(scope or "").strip() else set()
         if parts and parts <= header_parts:
             return
-        key = _sentence_key(line, scope)
+        key = _sentence_key(line, scope, requirement_kind)
         if line and key not in keys:
             keys.add(key)
             header_parts.update(parts)
@@ -292,12 +292,13 @@ def build_solidworks_technical_text(parameter_package: dict[str, Any], review: d
         if key in requirement_keys:
             continue
         requirement_keys.add(key)
-        append(format_technical_requirement(item), item.get("application_scope"))
+        append(format_technical_requirement(item), item.get("application_scope"), key[0])
     if not requirements:
         for line in strip_technical_requirements_title(generation.get("technical_requirements_text")).splitlines():
             body = technical_requirement_output_content({"content": line})
             if body:
-                append(format_technical_requirement({"content": body}))
+                item = {"content": body}
+                append(format_technical_requirement(item), requirement_kind=technical_requirement_equivalence_key(item)[0])
     return "\n".join(f"{index}.{line}" for index, line in enumerate(lines, 1))
 
 
@@ -426,8 +427,11 @@ def _roughness_line(content: str) -> str:
     return line.rstrip("。.") + "。"
 
 
-def _sentence_key(content: str, scope: Any = None) -> tuple[str, str, str]:
+def _sentence_key(content: str, scope: Any = None, requirement_kind: str | None = None) -> tuple[str, str, str]:
     key, kind = technical_requirement_body(content)
+    # Formatted notes no longer carry classification headings. Preserve the
+    # original comparison category rather than inferring it from bare prose.
+    kind = requirement_kind if requirement_kind is not None else kind
     material = re.fullmatch(r"(?:材质|材料)\s*[:：]?\s*(.+?)\s*[。.]*", key)
     if material:
         key = f"材料：{material_catalog_display_value(material[1])}"

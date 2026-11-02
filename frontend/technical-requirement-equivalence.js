@@ -101,7 +101,8 @@
     while ((match = leadingLabel(text))) text = text.slice(match.end).trim();
     const scope = String(item?.application_scope || "").trim();
     if (text && scope && !text.includes(scope)) text = `${text.replace(/[。.]+$/, "")}（作用范围：${scope}）`;
-    return !text ? "" : kind === "surface_roughness" ? text : `${labels[kind]}：${text}`;
+    // Keep classification in metadata/the selector; only surface keeps a heading.
+    return text && kind === "surface" ? `表面处理：${text}` : text;
   }
   function unlabel(item) {
     let text = outputContent(item), match;

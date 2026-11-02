@@ -75,6 +75,20 @@ def eight_category_review(rows):
 
 def run():
     rows = pairs()
+    prefixes = json.loads((Path(__file__).parent / "fixtures/technical_requirement_prefixes.json").read_text(encoding="utf-8"))
+    for item in prefixes:
+        before = deepcopy(item)
+        assert format_technical_requirement(item) == item["expected"], item
+        package = {"generation_parameters": {"technical_requirements": [item]}}
+        expected = f"1.{item['expected']}" if item["expected"] else ""
+        assert build_solidworks_technical_text(package, {}) == expected, item
+        assert item == before, "Display and export never rewrite a legacy record"
+    # Bare identical prose in distinct categories must retain separate entries.
+    for generation in [
+        {"technical_requirements": [{"type": kind, "content": "720h"} for kind in ("heat_treatment", "salt_spray")]},
+        {"technical_requirements_text": "1.热处理：720h\n2.盐雾试验：720h"},
+    ]:
+        assert build_solidworks_technical_text({"generation_parameters": generation}, {}) == "1.720h\n2.720h"
     for row in rows:
         assert technical_requirements_are_duplicates(row["a"], row["b"]) is row["same"], row
         row["key_a"] = technical_requirement_equivalence_key(row["a"])
@@ -88,7 +102,7 @@ def run():
             assert row["sw_text"] == expected_sw, row
         assert (row["a"]["content"], row["b"]["content"]) == (row["left"], row["right"]), "Comparison never rewrites records"
 
-    assert format_technical_requirement({"type": "hardness", "content": "硬度 ＨＲＣ４５－５０"}) == "硬度要求：ＨＲＣ４５－５０"
+    assert format_technical_requirement({"type": "hardness", "content": "硬度 ＨＲＣ４５－５０"}) == "ＨＲＣ４５－５０"
     original = {"content": "2.热处理要求：300℃/20min", "original_content": "2.热处理要求：300℃/20min", "page": 1, "position": [10, 20, 30, 40]}
     payload = {"parameters": {"heat_treatment": {**original, "value": original["content"]}},
                "technical_requirements": [{**original, "type": "heat_treatment"}]}
@@ -146,20 +160,20 @@ def run():
     assert build_solidworks_command("1000000199", package, review) == command and package == frozen
 
     legacy = {"generation_parameters": {"technical_requirements_text": "技术要求\n9.热处理：热处理要求：300℃/20min\n16.热处理300°C/20 min"}}
-    assert build_solidworks_technical_text(legacy, {}) == "1.热处理：300℃/20min"
+    assert build_solidworks_technical_text(legacy, {}) == "1.300℃/20min"
     scoped = {"generation_parameters": {"technical_requirements": [{"type": "surface", "content": "镀锌", "application_scope": scope} for scope in ["外圆", "两端面"]]}}
     assert len(build_solidworks_technical_text(scoped, {}).splitlines()) == 2
     hard = hardness_review()
     original_hard = deepcopy(hard["technical_requirements"])
     hard_package = build_generation_parameter_package(hard)
     hard_notes = hard_package["solidworks_preview"]["extraProperties"]["技术要求"]
-    assert len(hard_notes.splitlines()) == 7 and hard_notes.count("硬度要求：") == 1, hard_notes
-    assert "6.硬度要求：HRC45-50" in hard_notes
+    assert len(hard_notes.splitlines()) == 7 and hard_notes.count("HRC45-50") == 1, hard_notes
+    assert "6.HRC45-50" in hard_notes
     assert hard["technical_requirements"] == original_hard and len(original_hard) == 3
     legacy_hard = {"generation_parameters": {"technical_requirements_text": "技术要求\n8.硬度要求：硬度 HRC45-50\n10.硬度要求：HRC45~50"}}
-    assert build_solidworks_technical_text(legacy_hard, {}) == "1.硬度要求：HRC45-50"
+    assert build_solidworks_technical_text(legacy_hard, {}) == "1.HRC45-50"
     old_hard = deepcopy(hard_package)
-    old_hard["solidworks_preview"]["extraProperties"]["技术要求"] += "\n10.硬度要求：HRC45-50"
+    old_hard["solidworks_preview"]["extraProperties"]["技术要求"] = "1.硬度要求：HRC45-50\n2.硬度要求：HRC45-50"
     frozen_hard = deepcopy(old_hard)
     assert build_solidworks_command("1000000199", old_hard, hard)["models"][0]["extraProperties"]["技术要求"].count("硬度要求：") == 2
     assert old_hard == frozen_hard, "Historical duplicate notes are not rewritten"
@@ -182,7 +196,7 @@ def run():
         item["need_human_review"] = False
     eight_package = build_generation_parameter_package(confirmed_eight)
     assert len(eight_package["solidworks_preview"]["extraProperties"]["技术要求"].splitlines()) == 14
-    return {"pairs": rows, "review": order2_review(), "package": package, "merged": merged,
+    return {"prefixes": prefixes, "pairs": rows, "review": order2_review(), "package": package, "merged": merged,
             "hardness_review": hard, "hardness_package": hard_package, "eight_review": eight, "eight_package": eight_package, "eight_pending_package": build_generation_parameter_package(eight)}
 
 

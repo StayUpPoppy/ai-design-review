@@ -242,7 +242,7 @@ def main() -> None:
                 extra = model["extraProperties"]
                 assert list(extra) == ["技术要求", "P'", "C", "τ_b"]
                 notes = extra["技术要求"]
-                assert notes.count("表面喷丸处理") == 1 and notes.count("热处理：") == 1
+                assert notes.count("表面喷丸处理") == 1 and notes.count("300℃/20min") == 1
                 assert "热处理：热处理要求" not in notes
                 assert notes.startswith("1.旋向：左。\n2.总圈数：9，有效圈数：7。\n3.两端并紧并磨平，磨面角≥270°。\n4.")
                 assert "其他要求：" not in notes and "绕制方向：" not in notes

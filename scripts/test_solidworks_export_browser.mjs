@@ -27,6 +27,7 @@ try {
     { requirement_id: "sw-original-direction", type: "other", content: "绕制方向：右旋。", need_human_review: false },
   );
   saved.drawing_summary.drawing_no = "  000-YD4765020178  ";
+  let patchRequests = 0;
   let failNextPatch = false, holdNextPatch = false, heldPatchRelease = null;
   // A confirmed human height starts independently of formula snapshot migration.
   Object.assign(saved.spring_parameters.solid_height, { source: ["manual"], value_kind: "input_height" });
@@ -38,6 +39,7 @@ try {
     if (apiPath === "/api/material-catalog") { if (!released) await gate; body = catalog; }
     else if (apiPath === "/api/reviews/sw-export" && request.method() === "PATCH") {
       const input = request.postDataJSON();
+      patchRequests++;
       if (failNextPatch) { failNextPatch = false; return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "模拟保存失败" }) }); }
       if (holdNextPatch) { holdNextPatch = false; await new Promise((resolve) => { heldPatchRelease = resolve; }); }
       assert.equal(input.expected_revision, revision);
@@ -228,7 +230,7 @@ try {
   await create.locator('[data-action="cancel-technical-requirement-create"]').click();
   await heatRow.locator('[data-role="type"]').selectOption("process");
   assert.deepEqual(await page.evaluate(() => state.review.technical_requirements.filter((item) => ["techreq_order2_0", "techreq_order2_7"].includes(item.requirement_id)).map((item) => [item.type, item.need_human_review])), [["process", true], ["process", true]]);
-  assert.ok((await heatRow.locator('textarea').inputValue()).startsWith("工艺要求："));
+  assert.equal(await heatRow.locator('textarea').inputValue(), "310°C+10°C/20min+1min");
   await heatRow.locator('[data-role="type"]').selectOption("heat_treatment");
   assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
   await heatRow.locator('[data-role="confirm"]').click();
@@ -302,7 +304,7 @@ try {
   await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
   assert.equal(await panel.locator('.requirement-row[data-kind="technical"]').count(), 2);
   const hardness = panel.locator('[data-kind="technical"][data-requirement-id="hardness_0"]');
-  assert.equal(await hardness.locator('textarea').inputValue(), "硬度要求：HRC45-50");
+  assert.equal(await hardness.locator('textarea').inputValue(), "HRC45-50");
   assert.ok((await hardness.textContent()).includes("对应 2 条原始记录"));
   assert.deepEqual(await preview(), regression.hardness_package.solidworks_preview);
   const hardnessOriginals = saved.technical_requirements.map((item) => [item.requirement_id, item.original_content, item.evidence]);
@@ -341,6 +343,62 @@ try {
     await panel.locator('.technical-requirements-block').evaluate((element) => element.scrollIntoView({ block: "start" }));
     assert.equal(await panel.locator('.technical-requirements-block').evaluate((element) => element.scrollWidth > element.clientWidth + 2), false);
     await page.screenshot({ path: `outputs/technical-duplication-qa/frontend-dedup-${width}.png` });
+  }
+  // Legacy records show the new body without rewriting the persisted text or confirmation.
+  const prefixCases = JSON.parse(fs.readFileSync("scripts/fixtures/technical_requirement_prefixes.json", "utf8"));
+  const displayedCases = [...prefixCases.slice(0,4), prefixCases[12]];
+  saved = structuredClone(cases[0].review); revision++;
+  saved.technical_requirements = displayedCases.map((item,index)=>({...item,requirement_id:`prefix-${index}`,original_content:item.content,evidence:item.content,need_human_review:false,...(item.type === "surface" ? {normalization_status:"human_confirmed"} : {})}));
+  const originalNotes = structuredClone(saved.technical_requirements);
+  await page.reload(); await reopen(); await page.waitForFunction(()=>state.materialCatalog.status === "ready");
+  await page.evaluate(()=>flushReviewPersistence({throwOnError:true}));
+  const prefixRow = index=>panel.locator(`[data-kind="technical"][data-requirement-id="prefix-${index}"]`);
+  for (const [index,item] of displayedCases.entries()) {
+    assert.equal(await prefixRow(index).locator('textarea').inputValue(),item.expected);
+    assert.equal(await prefixRow(index).locator('select[data-role="type"]').inputValue(),item.type);
+  }
+  assert.deepEqual(saved.technical_requirements,originalNotes);
+  const readonlyWrites = patchRequests, confirmations = await page.evaluate(()=>JSON.stringify(state.review.manual_confirmations));
+  for (const index of [0,1,2,3]) {
+    const input = prefixRow(index).locator('textarea');
+    await input.focus(); await input.blur();
+    await input.dispatchEvent('input'); await input.dispatchEvent('change');
+    await prefixRow(index).locator('select[data-role="type"]').dispatchEvent('change');
+  }
+  await page.evaluate(()=>flushReviewPersistence({throwOnError:true}));
+  assert.equal(patchRequests,readonlyWrites,"Unchanged projected text, focus and blur never save or revoke confirmation");
+  assert.deepEqual(await page.evaluate(()=>state.review.technical_requirements),originalNotes);
+  assert.equal(await page.evaluate(()=>JSON.stringify(state.review.manual_confirmations)),confirmations);
+  const snapshot = await page.evaluate(async()=>{
+    const before=JSON.stringify(state.review);
+    const data=await buildConfirmationSheetSnapshot({review:structuredClone(state.review),revision:state.lastJob.review_revision,materialCatalog:state.materialCatalog});
+    if(JSON.stringify(state.review)!==before) throw new Error("Report modified the active review");
+    return data.sections.find(section=>section.id==="requirements").rows.map(row=>row.content);
+  });
+  assert.deepEqual(snapshot,displayedCases.map(item=>item.expected));
+  let prefixPreview = (await preview()).extraProperties["技术要求"];
+  for(const label of ["寿命要求：","热处理：","工艺要求："]) assert.ok(!prefixPreview.includes(label));
+  for(const item of displayedCases) assert.ok(prefixPreview.includes(item.expected));
+  await prefixRow(0).locator('textarea').fill('耐久试验：≥2000次循环寿命试验。');
+  await prefixRow(0).locator('textarea').dispatchEvent('change');
+  await page.evaluate(()=>flushReviewPersistence({throwOnError:true}));
+  assert.equal(saved.technical_requirements[0].need_human_review,true);
+  assert.equal(saved.technical_requirements[0].original_content,originalNotes[0].content);
+  await prefixRow(0).locator('[data-role="confirm"]').click();
+  await page.evaluate(()=>flushReviewPersistence({throwOnError:true}));
+  await prefixRow(1).locator('[data-role="type"]').selectOption('process');
+  assert.equal(await prefixRow(1).locator('textarea').inputValue(),displayedCases[1].expected);
+  assert.equal(await page.evaluate(()=>state.review.technical_requirements[1].need_human_review),true);
+  await page.evaluate(()=>flushReviewPersistence({throwOnError:true}));
+  await page.reload(); await reopen(); await page.waitForFunction(()=>state.materialCatalog.status === "ready");
+  assert.equal(await prefixRow(0).locator('textarea').inputValue(),'耐久试验：≥2000次循环寿命试验。');
+  assert.equal(await prefixRow(3).locator('textarea').inputValue(),'表面处理：抛光。');
+  assert.ok(!(await preview()).extraProperties["技术要求"].includes('寿命要求：'));
+  fs.mkdirSync("outputs/technical-prefix-qa",{recursive:true});
+  for(const width of [1440,390]) {
+    await page.setViewportSize({width,height:width<500?1100:1000});
+    await prefixRow(0).scrollIntoViewIfNeeded();
+    await page.screenshot({path:`outputs/technical-prefix-qa/prefix-${width}.png`});
   }
   assert.deepEqual(errors, []);
   console.log("PASS: eight classes 16 -> 8, hardness 10 -> 7 SW notes, 9 records -> 6 editable requirements, unified edit/type/confirm, group delete/undo, repeated add, failed save, save race, regroup, source navigation, desktop/mobile and SW preview parity");

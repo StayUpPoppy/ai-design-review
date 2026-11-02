@@ -4492,7 +4492,7 @@ async function buildConfirmationSheetSnapshot(context) {
   });
   const requirements = technicalRequirementGroups(review).map(group => {
     const { item, index } = group.representative, control = technicalGroupControl(group.members, review);
-    const content = TechnicalRequirementEquivalence.format(item) || item.content || "";
+    const content = TechnicalRequirementEquivalence.format(item);
     return { id: `technical:${item.requirement_id || index}`, field: technicalRequirementField(item, index),
       label: TECH_LABELS[normalizeTechnicalRequirementType(item.type)] || "技术要求", content, current: content.length > 160 ? `${content.slice(0, 160)}…（全文见技术要求）` : content || "待补充",
       state: control.state === "invalid" || control.state === "validating" ? "需核对" : technicalGroupStatus(group.members, review),
@@ -7958,6 +7958,7 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
   });
   root.querySelectorAll('.requirement-row[data-kind="technical"]').forEach((row) => {
     const contentInput = row.querySelector('[data-role="content"]');
+    const initialContent = contentInput.value;
     let beforeStates = null;
     const beginEdit = () => {
       if (beforeStates) return;
@@ -7968,6 +7969,8 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
       row.technicalEditBeforeStates = beforeStates;
     };
     const applyDraft = (value, changedField) => {
+      // Prefix cleanup is a projection, not an edit to an unchanged legacy note.
+      if (!beforeStates && changedField === "content" && value === initialContent) return false;
       activateReviewContext(messageId); beginEdit();
       for (const { item, index } of technicalRowMembers(row, review, true)) {
         const previousType = item.type;
@@ -7987,6 +7990,7 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
       }
       syncTechnicalGroupControl(row, review); syncTechnicalRequirementSummary(root, review);
       syncSurfaceCompanyControls(row, review);
+      return true;
     };
     const commitEdit = (changedField, event) => {
       const ids = [...(row.technicalEditingIds || technicalRowIds(row))];
@@ -8001,10 +8005,11 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
     };
     contentInput.addEventListener("input", (event) => applyDraft(event.target.value, "content"));
     contentInput.addEventListener("change", (event) => {
-      if (!beforeStates) applyDraft(event.target.value, "content");
+      if (!beforeStates && !applyDraft(event.target.value, "content")) return;
       commitEdit("content", event);
     });
     row.querySelector('[data-role="type"]')?.addEventListener("change", (event) => {
+      if (!beforeStates && technicalRowMembers(row, review).every(({ item }) => normalizeTechnicalRequirementType(item.type) === event.target.value)) return;
       applyDraft(event.target.value, "type"); commitEdit("type", event);
     });
     row.addEventListener("change", (event) => {

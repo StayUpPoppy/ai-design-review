@@ -1,0 +1,23 @@
+[
+  {"type":"lifetime","content":"寿命要求：耐久试验：≥1000次循环寿命试验。","expected":"耐久试验：≥1000次循环寿命试验。"},
+  {"type":"heat_treatment","content":"热处理：时效处理：沉淀硬化处理，4小时，@649℃。","expected":"时效处理：沉淀硬化处理，4小时，@649℃。"},
+  {"type":"process","content":"工艺要求：弹簧需要进行压缩定型6次。","expected":"弹簧需要进行压缩定型6次。"},
+  {"type":"surface","content":"表面处理：抛光。","expected":"表面处理：抛光。"},
+  {"type":"surface","content":"其他要求：表面处理要求: 表面处理：电镀-镀彩锌，厚度≥15 μm；先除氢后检验。","expected":"表面处理：电镀-镀彩锌，厚度≥15 μm；先除氢后检验。"},
+  {"type":"surface","content":"镀镍，厚度≥3 μm，不得漏镀。","expected":"表面处理：镀镍，厚度≥3 μm，不得漏镀。"},
+  {"type":"hardness","content":"硬度要求：硬度 HRC45-50，端面不得低于HRC45。","expected":"HRC45-50，端面不得低于HRC45。"},
+  {"type":"salt_spray","content":"盐雾要求：中性盐雾720小时无红锈，按ISO 9227。","expected":"中性盐雾720小时无红锈，按ISO 9227。"},
+  {"type":"environmental","content":"环保要求: RoHS 2011/65/EU，铅含量不得超过0.1%。","expected":"RoHS 2011/65/EU，铅含量不得超过0.1%。"},
+  {"type":"other","content":"其他要求：压并测试：压并24h后，永久变形≤0.5%。","expected":"压并测试：压并24h后，永久变形≤0.5%。"},
+  {"type":"lifetime","content":"  11．寿命要求:寿命测试：耐久试验：≥1000次。  ","expected":"耐久试验：≥1000次。"},
+  {"type":"heat_treatment","content":"热处理要求：热处理: 时效处理：4小时，@649°C。","expected":"时效处理：4小时，@649°C。"},
+  {"type":"heat_treatment","content":"热处理后检查硬度，不得省略检验。","expected":"热处理后检查硬度，不得省略检验。"},
+  {"type":"process","content":"先热处理：再进行工艺要求核对。","expected":"先热处理：再进行工艺要求核对。"},
+  {"type":"lifetime","content":"寿命不得低于4万次，力衰减须控制在10%之内。","expected":"寿命不得低于4万次，力衰减须控制在10%之内。"},
+  {"type":"process","content":"工艺顺序：先喷丸，后热处理；不得颠倒。","expected":"工艺顺序：先喷丸，后热处理；不得颠倒。"},
+  {"type":"other","content":"12.5 mm，不得修改该尺寸。","expected":"12.5 mm，不得修改该尺寸。"},
+  {"type":"heat_treatment","content":"时效处理：沉淀硬化处理，4小时，@649℃。","application_scope":"两端面","expected":"时效处理：沉淀硬化处理，4小时，@649℃（作用范围：两端面）"},
+  {"type":"lifetime","content":"寿命要求：寿命：","expected":""},
+  {"type":"surface","content":"表面处理：","expected":""},
+  {"type":"other","content":"","expected":""}
+]
