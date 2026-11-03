@@ -74,7 +74,7 @@ class CompressionSpringGenerationInputsV1(BaseModel):
     mean_diameter: GenerationMillimeterParameter = Field(description="中径，默认候选值 23 mm；SolidWorks据此计算外径和内径。")
     free_length: GenerationMillimeterParameter = Field(description="自由长度，默认候选值 45 mm。")
     total_coils: GenerationPositiveCoilParameter = Field(description="总圈数，支持正小数；默认候选值 10。")
-    active_coils: GenerationPositiveCoilParameter = Field(description="有效圈数，支持正小数；默认候选值 8，且不得大于总圈数。")
+    active_coils: GenerationPositiveCoilParameter = Field(description="有效圈数，支持正小数，不再自动填默认8；需原图、人工或有效端部公式依据，且不得大于总圈数。")
     handedness: GenerationHandednessParameter = Field(description="旋向，无默认值，必须人工确认。")
     end_grinding: GenerationBinaryParameter = Field(description="两端磨削：1 表示磨削，0 表示不磨削；默认候选值 1。")
     end_coils_closed: GenerationBinaryParameter = Field(description="端圈压并：1 表示压并，0 表示不压并；默认候选值 1。")

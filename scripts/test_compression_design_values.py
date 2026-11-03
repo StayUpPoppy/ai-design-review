@@ -58,8 +58,8 @@ def protections(fixture):
     pitch.update(need_human_review=False, source=["formula_calculation", "human_confirmed"])
     r["spring_parameters"]["free_length"]["value"] = 40
     refresh_design_checks(r)
-    assert pitch["value"] == 3.3 and pitch["derived_value_stale"]
-    assert r["design_checks"]["metrics"]["unit_mass"]["value"] is None
+    assert pitch["value"] == 3.7 and not pitch["derived_value_stale"] and pitch["need_human_review"]
+    assert r["design_checks"]["metrics"]["unit_mass"]["value"] is not None
 
     r["spring_parameters"]["free_length"]["value"] = 36
     refresh_design_checks(r)
@@ -93,8 +93,8 @@ def protections(fixture):
     support.update(need_human_review=False, source=["formula_calculation", "human_confirmed"])
     r["spring_parameters"]["active_coils"]["value"] = 9
     refresh_design_checks(r)
-    assert support["value"] == 1 and support["derived_value_stale"]
-    assert r["design_checks"]["metrics"]["unit_mass"]["value"] is None
+    assert support["value"] == 1.5 and not support["derived_value_stale"] and support["need_human_review"]
+    assert r["design_checks"]["metrics"]["unit_mass"]["value"] is None, "The existing end model does not cover this support count"
     r["spring_parameters"]["active_coils"]["value"] = 10
     refresh_design_checks(r)
     assert not support["derived_value_stale"]
@@ -128,13 +128,13 @@ def height_and_model_protections(fixture):
     old_snapshot = copy.deepcopy(height["formula_calculation_inputs"])
     params["end_grinding"]["value"] = "两端磨削"
     refresh_design_checks(r)
-    assert height["value_kind"] == "nominal_estimate" and height["derived_value_stale"]
-    near(height["value"], 9)
-    near(height["formula_recalculation_candidate"]["value"], 6.3)
-    assert height["formula_calculation_inputs"] == old_snapshot
+    assert height["value_kind"] == "nominal_estimate" and not height["derived_value_stale"]
+    near(height["value"], 6.3)
+    assert height["need_human_review"]
+    assert height["formula_calculation_inputs"] != old_snapshot
     checks = r["design_checks"]["metrics"]
     near(checks["reference_solid_height_limit"]["value"], 7.4)
-    assert checks["solid_height_used"]["value"] is None and checks["solid_stress"]["value"] is None
+    assert checks["solid_height_used"]["value"] == 6.3 and checks["solid_stress"]["value"] is not None
     near(checks["nominal_solid_height"]["value"], 6.3)
     assert checks["solid_stress"]["height_source"] == "book_nominal"
     params["end_grinding"]["value"] = "两端不磨削"
@@ -148,8 +148,8 @@ def height_and_model_protections(fixture):
     assert not pitch["derived_value_stale"]
     params["free_length"]["value"] = 20
     refresh_design_checks(r)
-    assert pitch["derived_value_stale"]
-    assert r["design_checks"]["metrics"]["unit_mass"]["value"] is None
+    assert not pitch["derived_value_stale"] and pitch["need_human_review"]
+    assert r["design_checks"]["metrics"]["unit_mass"]["value"] is not None
     assert r["design_checks"]["metrics"]["solid_stress"]["value"] is not None
     # Open-end coil derivations depend on grinding, but never on support coils.
     params["end_type"]["value"] = "两端不并紧"
@@ -164,8 +164,7 @@ def height_and_model_protections(fixture):
     assert not active["derived_value_stale"]
     params["end_grinding"]["value"] = "两端磨削"
     refresh_design_checks(r)
-    assert active["value"] == 4 and active["derived_value_stale"]
-    assert active["formula_recalculation_candidate"]["value"] == 3
+    assert active["value"] == 3 and not active["derived_value_stale"] and active["need_human_review"]
     params["end_grinding"]["value"] = "两端不磨削"
     refresh_design_checks(r)
     assert not active["derived_value_stale"]

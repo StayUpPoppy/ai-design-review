@@ -64,11 +64,11 @@ try {
   assert.equal(await panel.locator('[data-suggestion-id^="formula_candidate:support_coils:"]').count(),0);
   await confirm('total_coils');await confirm('active_coils');await confirm('support_coils');
   assert.equal((await current()).need_human_review,false);
-  // One changed count waits for confirmation, then replaces the confirmed automatic value.
+  // A valid edited count immediately replaces the confirmed automatic value.
   await edit('total_coils',18);
-  assert.equal((await current()).value,1);assert.equal((await current()).support_coils_waiting_confirmation,true);
+  assert.equal((await current()).value,2);assert.equal((await current()).need_human_review,true);
   assert.equal(await row('total_coils').locator('[data-role="value"]').evaluate(e=>document.activeElement===e),true);
-  assert.match(await row('support_coils').innerText(),/等待圈数确认/);
+  assert.ok(!(await current()).derived_value_stale);
   await confirm('total_coils');
   assert.equal((await current()).value,2);assert.equal((await current()).need_human_review,true);
   assert.equal(await row('support_coils').locator('[data-role="value"]').inputValue(),'2');
@@ -76,14 +76,14 @@ try {
   await confirm('support_coils');
   // Both edited counts, reversed confirmation order; same numeric result reopens support confirmation.
   await edit('total_coils',20);await edit('active_coils',16);
-  await confirm('active_coils');assert.equal((await current()).support_coils_waiting_confirmation,true);
+  await confirm('active_coils');assert.equal((await current()).value,2);
   await confirm('total_coils');assert.equal((await current()).value,2);assert.equal((await current()).need_human_review,true);
   await confirm('support_coils');
   await edit('total_coils',22);await edit('active_coils',18);
   await panel.locator('[data-action="confirm-all-review-items"]').click();await flush();
-  assert.equal((await current()).value,2);assert.equal((await current()).need_human_review,true,'New result is not confirmed in the same bulk action');
+  assert.equal((await current()).value,2);assert.equal((await current()).need_human_review,false,'A result already updated before the bulk click can now be confirmed');
   await reopen();await expand();
-  assert.equal((await current()).value,2);assert.equal((await current()).need_human_review,true);
+  assert.equal((await current()).value,2);assert.equal((await current()).need_human_review,false);
   await assertNoRecognitionDetails();
   assert.equal(saved.spring_parameters.support_coils.support_coils_original.value,2);
   const adjustmentEvents=requests.flatMap(r=>r.events).filter(e=>e.event_type==='support_coils_recalculated');

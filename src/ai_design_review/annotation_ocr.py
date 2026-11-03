@@ -102,6 +102,9 @@ def _local_ocr_blocks_locked(job_dir, pages, document_id, review, candidates, ex
         ordinary = [a for a in locate_fields(review, candidates, blocks)
                     if a["status"] == "unlocated" and a["original_value"] is not None and a["field"] not in protected]
         for request in verification_requests:
+            if request.get("kind") == "pitch_dimension":
+                ordinary.append(request)
+                continue
             if request.get("kind") == "load_dimensions":
                 if not any(b.get("page") == request["page"] and b.get("source") in {"ocr", "local_ocr"} for b in blocks):
                     ordinary.append(request)

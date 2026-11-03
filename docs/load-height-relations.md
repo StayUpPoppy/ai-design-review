@@ -16,7 +16,7 @@
 
 验收样例：自由高度133.35，参考压缩量7.58到P1，再压缩30.33到P2。P1高度125.77、力值1109.83N且公差为空；P2高度95.44、力值5550.05N及±221.96N。无历史锚点的原PDF及位图线段/模拟OCR均需通过；本功能不调整压并高度。
 
-直接高度验收包括UQD06的11.414/9.474、UQD08的14.284/12.284、UQD04的21.15/9.668，均不做相减。`load-evidence/v2`使旧核验缓存重新判定；未确认自动值恢复后仍待确认，人工填写、清空和旧已确认值受保护。服务端保护的旧确认值使用可选`preserve_existing_value`标记，不能由模型产生。
+直接高度验收包括UQD06的11.414/9.474、UQD08的14.284/12.284、UQD04的21.15/9.668，均不做相减。`load-evidence/v3`使旧核验缓存重新判定；未确认自动值恢复后仍待确认，人工填写、清空和旧已确认值受保护。服务端保护的旧确认值使用可选`preserve_existing_value`标记，不能由模型产生。
 
 ## 审图JSON与兼容
 
@@ -24,7 +24,7 @@
 
 | 字段 | 用途 |
 |---|---|
-| version、kind | `load-height/v1`；`absolute_height/free_deflection/incremental_deflection/unknown` |
+| version、kind | `load-height/v2`；`absolute_height/free_deflection/incremental_deflection/unknown` |
 | value、unit | 原始尺寸和单位，不存再次相减后的值 |
 | base_label、base_point_id | 原参考编号及解析后的稳定ID，已有ID不会重新按编号配对 |
 | mode | `automatic/manual`；人工改写或清空高度后单独保护，编辑力值不改变高度模式 |
@@ -56,4 +56,12 @@ node scripts/test_load_height_relations_browser.mjs
 
 `LOAD_HEIGHT_TEST_PDF`可指定验收PDF；本地提供的原图优先使用。接口测试在没有该附件时生成临时的同类尺寸链PDF。浏览器、Qwen及SW使用模拟响应；数据库使用临时SQLite，不修改真实订单。
 
-后端及前端更新后执行`docker compose up -d --build api worker`，检查服务健康并Ctrl+F5刷新。高度换算脚本缓存版本为`20261030-direct-heights-v2`。
+后端及前端更新后执行`docker compose up -d --build api worker`，检查服务健康并Ctrl+F5刷新。高度换算脚本缓存版本为`20261103-calculation-recovery`。
+
+## 通用名称与双语载荷表（v3）
+
+Pn、Fmin、F_A、数字、下标和中文工况名只用于标识，不再用固定F/P白名单决定高度是否有效。名称之外，必须有力值单位/明确工程语境；刚度N/mm、压力MPa、力矩N·mm仍不能当作载荷。原编号和稳定ID分别保存。
+
+本地核验支持Height/Load、安装高度/载荷等纵向相邻行及横向列头表格。高度和力值须各有单位，且属于同一列/行、同一载荷区块；合并标题不作为数值。OCR重复框合并，完整15框中的1和5不再制造多个高度；不同单元数字不能拼接。匹配仍限同页和本规格区域，多处不同高度保留冲突。核验方式为table_cells，折叠依据保留高度与力值单元的证据引用。
+
+NBM200M-2454采用表格15mm/142.1N，图示13±0.5独立保留；Pn±5N仍绑定原力值。表格关系无法核实时提示“表格中的高度与载荷关联尚未核实”，尺寸链提示起止关系，缺少参考点及多高度冲突分别保留原因。直接高度不会再次相减。旧订单复用保存响应与OCR缓存修复未确认自动值，人工/已确认值不静默替换。

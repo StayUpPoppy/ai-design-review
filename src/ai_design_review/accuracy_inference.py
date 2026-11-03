@@ -84,7 +84,7 @@ def _fingerprint(value: Any) -> str:
 
 def _scaled(item: dict, kind: str) -> tuple[float | None, float | None]:
     unit = str(item.get("unit") or ("N" if kind == "load" else "N/mm" if kind == "stiffness" else "turns" if kind == "coils" else "mm")).strip().lower()
-    factor = FORCE.get(unit) if kind == "load" else {"n/mm": 1, "n/cm": .1, "kn/m": 1, "n/m": .001}.get(unit) if kind == "stiffness" else 1 if kind == "coils" and unit in {"turns", "turn", "圈"} else LENGTH.get(unit)
+    factor = FORCE.get(unit) if kind == "load" else {"n/mm": 1, "n/cm": .1, "kn/m": 1, "n/m": .001}.get(unit) if kind == "stiffness" else 1 if kind == "coils" and unit in {"turns", "turn", "coil", "coils", "圈"} else LENGTH.get(unit)
     value = number(item.get("value"))
     if item.get("invalid") or factor is None or value is None or value <= 0:
         return None, None

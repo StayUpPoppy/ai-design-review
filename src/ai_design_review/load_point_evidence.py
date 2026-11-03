@@ -17,7 +17,7 @@ from .load_height_relations import VERSION, number, millimeters, refresh_load_he
 
 _PDF_LOCK = RLock()
 LOGGER = logging.getLogger(__name__)
-EVIDENCE_VERSION = "load-evidence/v2"
+EVIDENCE_VERSION = "load-evidence/v3"
 
 
 def _verification_warning(stage, error, warnings=None):
@@ -47,7 +47,7 @@ def axis_aligned_lines(found):
 
 NUM = r"[+-]?\d+(?:\.\d+)?"
 UNIT = r"(?:kN|kgf|N|牛顿|牛)"
-FORCE = re.compile(rf"(?<![A-Za-z0-9_])(?P<label>[FP]\s*(?:\d+|b))\s*(?:[=＝:：]\s*|\s+)(?P<force>{NUM})(?![\d.])\s*(?P<unit>{UNIT})?\s*(?:(?P<pm>±|\+\s*/\s*-|士)\s*(?P<sym>{NUM})|(?P<up>\+\s*\d+(?:\.\d+)?)\s*(?P<up_unit>{UNIT})?\s*/\s*(?P<down>-\s*\d+(?:\.\d+)?)|(?P<single>[+-]\s*\d+(?:\.\d+)?))?\s*(?P<tail>%|{UNIT})?", re.I)
+FORCE = re.compile(rf"(?<![A-Za-z0-9_])(?P<label>[A-Za-z0-9_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]{{0,23}}(?:\s*\d+)?)\s*(?:[=＝:：]\s*|\s+)(?P<force>{NUM})(?![\d.])\s*(?P<unit>{UNIT})?\s*(?:(?P<pm>±|\+\s*/\s*-|士)\s*(?P<sym>{NUM})|(?P<up>\+\s*\d+(?:\.\d+)?)\s*(?P<up_unit>{UNIT})?\s*/\s*(?P<down>-\s*\d+(?:\.\d+)?)|(?P<single>[+-]\s*\d+(?:\.\d+)?))?\s*(?P<tail>%|{UNIT})?", re.I)
 FREE = re.compile(rf"(?:[LH]\s*[0o₀]|自由(?:高度|长度))\s*[=＝:：]?\s*({NUM})(?![\d.])", re.I)
 DIMENSION = re.compile(rf"^\s*([（(]?)\s*({NUM})\s*[）)]?\s*(mm|毫米|cm|m|in)?\s*$", re.I)
 
@@ -91,7 +91,8 @@ def _deduplicate_texts(texts):
             area=min((x1-x0)*(y1-y0),(c-a)*(d-b))
             if area>0 and overlap/area>=.7:
                 existing["bbox"]=[min(x0,a),min(y0,b),max(x1,c),max(y1,d)]
-                existing["_source_boxes"].append(text["bbox"])
+                if text["bbox"] not in existing["_source_boxes"]:
+                    existing["_source_boxes"].append(text["bbox"])
                 break
         else:
             result.append({**text,"_text_key":key,"_source_boxes":[text["bbox"]]})
@@ -227,24 +228,44 @@ def _dimension(text, page, axis):
     return None
 
 
-def extract_page_points(page: dict[str, Any], *, region=None, document_id="", scope="") -> list[dict[str, Any]]:
+def extract_page_points(page: dict[str, Any], *, region=None, document_id="", scope="", hints=None) -> list[dict[str, Any]]:
     epsilon=page.get("epsilon",.8)
     if region:
         x0,y0=region["x"]*page["width"],region["y"]*page["height"]
         x1,y1=x0+region["width"]*page["width"],y0+region["height"]*page["height"]
         page={**page,"lines":[l for l in page["lines"] if all(x0<=x<=x1 and y0<=y<=y1 for x,y in ((l[0],l[1]),(l[2],l[3])))]}
     texts = _deduplicate_texts([t for t in page["texts"] if _inside(t,page,region)])
+    from .load_table_evidence import table_height
     records = []
     for text in texts:
         for point in extract_force_annotations(text["text"]):
             # Only the actual force annotation, not a prose repetition in test instructions.
-            if not re.match(r"^\s*[FP]\s*(?:\d+|b)\s*[=＝:：]",text["text"],re.I):
+            if not re.match(rf"^{re.escape(point['label'])}[=＝:：]",re.sub(r"\s+","",unicodedata.normalize("NFKC",text["text"])),re.I):
                 continue
             point.update(height=None,height_unit="mm",page=page["page"],position=_position(text,page),
                          force_evidence_verified=True,source_document_id=document_id,source=["local_load_evidence"],need_human_review=True)
             point["height_relation"]={"kind":"unknown","mode":"automatic","verified":False,"page":page["page"],"scope":scope,"reason":"原图工作高度的起止关系待核对"}
             records.append((point,text))
+    for hint in hints or []:
+        if hint.get("page",1)!=page["page"] or not hint.get("label") or number(hint.get("force")) is None:continue
+        if any(p["label"].casefold()==str(hint["label"]).casefold() for p,_ in records):continue
+        if sum(h.get("page",1)==page["page"] and h.get("force")==hint.get("force") for h in hints)>1:continue
+        match=table_height(hint,texts)
+        if match and not match.get("conflict"):
+            point=deepcopy(hint)
+            point.update(page=page["page"],source_document_id=document_id,source=["local_load_evidence"],need_human_review=True)
+            point["position"]=_position(match["cell"],page)
+            records.append((point,match["cell"]))
     for point,text in records:
+        table=table_height(point,texts)
+        if table and not table.get("conflict"):
+            relation=_relation("absolute_height",table["value"],"mm",table["cell"],page,document_id,scope)
+            relation.update(verification_method="table_cells",evidence=table["evidence"])
+            relation["evidence_refs"]+=_relation("absolute_height",table["value"],"mm",table["force_cell"],page,document_id,scope)["evidence_refs"]
+            point["height_relation"]=relation
+            point["source_context"]={"kind":"table","row_text":table["evidence"],"unit_evidence":"mm; "+(point.get("force_unit") or "N")}
+            continue
+        if table and table.get("conflict"):point["load_height_conflict"]=True
         direct=[]
         for t in texts:
             direct.extend((t,value) for value in explicit_load_heights(t["text"],point["label"]))
@@ -349,14 +370,14 @@ def _relation(kind,value,unit,text,page,document_id,scope,reference=False):
             "evidence_refs":[{"page":page["page"],"text":text["text"],"position":_position({"bbox":box},page)} for box in text.get("_source_boxes",[text["bbox"]])]}
 
 
-def original_points(source: Path, *, region=None, scope="", pages=None) -> list[dict[str, Any]]:
+def original_points(source: Path, *, region=None, scope="", pages=None, hints=None) -> list[dict[str, Any]]:
     if pages is None:
         if source.suffix.lower()!=".pdf":
             return []
         stat=source.stat()
         pages=_pdf_pages(str(source.resolve()),stat.st_size,stat.st_mtime_ns,max(1,int(os.getenv("QWEN_MAX_PAGES","3"))))
     document_id=hashlib.sha256(source.read_bytes()).hexdigest()
-    return [p for page in pages for p in extract_page_points(page,region=region,document_id=document_id,scope=scope)]
+    return [p for page in pages for p in extract_page_points(page,region=region,document_id=document_id,scope=scope,hints=hints)]
 
 
 def _merge_original_points(primary, supplementary):
@@ -397,9 +418,11 @@ def raster_pages(job_dir, review, *, raw_payloads=None, allow_ocr=False, warning
     cached=_read_json(pool/"annotation_ocr_v3.json")
     if cached.get("source_document_id")==document["source_document_id"]:
         blocks.extend(cached.get("blocks",[]))
-    if allow_ocr and not blocks:
+    pitch=(review.get("spring_parameters") or {}).get("pitch") or {}
+    if allow_ocr and (not blocks or not pitch.get("value")):
         from .annotation_ocr import local_ocr_blocks
         requests=[{"kind":"load_dimensions","field":f"load_dimensions_{p['page']}","page":p["page"],"evidence_pages":[p["page"]],"status":"unlocated","original_value":0} for p in pages]
+        requests += [{"kind":"pitch_dimension","field":f"pitch_evidence_{p['page']}","page":p["page"],"evidence_pages":[p["page"]],"status":"unlocated","original_value":0} for p in pages if not pitch.get("value") or pitch.get("formula_calculation_kind")=="pitch"]
         extra,_,_=local_ocr_blocks(pool,pages,document["source_document_id"],review,[],blocks,verification_requests=requests)
         blocks.extend(extra)
     if not blocks:
@@ -430,9 +453,15 @@ def raster_pages(job_dir, review, *, raw_payloads=None, allow_ocr=False, warning
                 if not all(k in b for k in ("x","y","width","height")):continue
                 texts.append({"text":block["text"],"bbox":[b["x"]*width,b["y"]*height,(b["x"]+b["width"])*width,(b["y"]+b["height"])*height]})
             scale=min(width,height)/595
+            try:
+                circles=cv2.HoughCircles(cv2.GaussianBlur(np.asarray(image),(3,3),0),cv2.HOUGH_GRADIENT,1.2,max(8,min(width,height)*.025),param1=100,param2=18,minRadius=max(3,int(min(width,height)*.009)),maxRadius=max(8,int(min(width,height)*.03)))
+                coil_circles=[[float(x)/scale,float(y)/scale,float(r)/scale] for x,y,r in np.asarray(circles).reshape(-1,3)] if circles is not None else []
+            except Exception as error:
+                _verification_warning(f"page {page['page']} pitch dimension",error,warnings)
+                coil_circles=[]
             lines=[[v/scale for v in line] for line in lines]
             texts=[{**t,"bbox":[v/scale for v in t["bbox"]]} for t in texts]
-            result.append({"page":page["page"],"width":width/scale,"height":height/scale,"lines":lines,"texts":texts,"epsilon":1.5,"source":"local_ocr"})
+            result.append({"page":page["page"],"width":width/scale,"height":height/scale,"lines":lines,"texts":texts,"epsilon":1.5,"source":"local_ocr","coil_circles":coil_circles})
     return result
 
 
@@ -442,9 +471,14 @@ def ground_job_candidates(job_dir,candidates,raw_payloads, *, warnings=None):
     if not source:return candidates
     try:
         pdf_points=original_points(source) if source.suffix.lower()==".pdf" else []
-        if pdf_points and all(p["height_relation"].get("verified") for p in pdf_points):return candidates
+        if pdf_points and all(p["height_relation"].get("verified") for p in pdf_points) and any(c.get("field")=="pitch" for c in candidates):return candidates
         pages=raster_pages(Path(job_dir),{"drawing_summary":{"spring_type":"compression_spring"},"spring_parameters":{}},raw_payloads=raw_payloads,allow_ocr=True,warnings=warnings)
-        recovered=_merge_original_points(pdf_points,original_points(source,pages=pages))
+        hints=[c["value"] for c in candidates if c.get("field")=="load_point" and isinstance(c.get("value"),dict)]
+        recovered=_merge_original_points(pdf_points,original_points(source,pages=pages,hints=hints))
+        from .pitch_evidence import pitch_from_pages
+        geometry={c.get("field"):c.get("value") for c in candidates if c.get("field") in {"wire_diameter","free_length"} and isinstance(c.get("value"),(int,float))}
+        pitch=pitch_from_pages(pages,wire_diameter=geometry.get("wire_diameter"),free_height=geometry.get("free_length"))
+        if pitch and not any(c.get("field")=="pitch" for c in candidates):candidates=[*candidates,{**pitch,"source":"local_pitch_evidence","confidence":.97}]
     except Exception as error:
         _verification_warning("upload", error, warnings)
         return candidates
@@ -457,7 +491,7 @@ def _point_candidates(points):
         value=deepcopy(point)
         result.append({"field":"load_point","value":value,"source":"local_load_evidence","confidence":.99,
                        "evidence":point["evidence"],"page":point["page"],"position":point.get("position"),
-                       "source_context":{"kind":"annotation","unit_evidence":point["force_unit"]}})
+                       "source_context":point.get("source_context") or {"kind":"annotation","unit_evidence":point["force_unit"]}})
     return result
 
 
@@ -506,14 +540,25 @@ def reconcile_load_points(review, job_dir):
     fingerprint=hashlib.sha256(f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:{EVIDENCE_VERSION}:{json.dumps(region,sort_keys=True)}:{signatures}".encode()).hexdigest()
     cache_path=job_dir/"load_point_evidence.json"
     cache=_read_json(cache_path)
+    from .pitch_evidence import recover_pitch
+    pitch_item=(review.get("spring_parameters") or {}).get("pitch") or {}
+    repair_pitch=(pitch_item.get("value") in (None,"") or pitch_item.get("formula_calculation_kind")=="pitch") and not any(str(s).startswith(("human_edited","manual")) for s in pitch_item.get("source",[]))
+    evidence_pages=None
+    if repair_pitch:
+        try:
+            evidence_pages=raster_pages(job_dir,review,allow_ocr=True)
+            recover_pitch(review,evidence_pages,region=region)
+        except Exception as error:
+            _verification_warning("pitch evidence",error)
     if cache.get("fingerprint")==fingerprint:
         recovered=cache.get("points",[])
     else:
         verification_warnings=[]
         try:
-            recovered=original_points(source,region=region,scope=scope)
+            hints=(review.get("spring_parameters") or {}).get("load_points") or []
+            recovered=original_points(source,region=region,scope=scope,hints=hints)
             if not recovered or any(not p["height_relation"].get("verified") for p in recovered):
-                recovered=_merge_original_points(recovered,original_points(source,region=region,scope=scope,pages=raster_pages(job_dir,review,warnings=verification_warnings)))
+                recovered=_merge_original_points(recovered,original_points(source,region=region,scope=scope,pages=evidence_pages if evidence_pages is not None else raster_pages(job_dir,review,allow_ocr=True,warnings=verification_warnings),hints=hints))
         except Exception as error:
             _verification_warning("saved review", error)
             return
@@ -592,6 +637,10 @@ def reconcile_load_points(review, job_dir):
 
 def prepare_recovery_save(review, previous):
     """Keep deletion tombstones and protect new user input against a pending local repair."""
+    for adjustment in (review.get("automatic_calculation_adjustments") or {}).values():
+        adjustment["pending_save"]=False
+    if review.get("pitch_recovery"):
+        review["pitch_recovery"]["pending_save"]=False
     if previous.get("load_point_recovery"):
         review["load_point_recovery"]=deepcopy(previous["load_point_recovery"])
     adjustment=previous.get("load_height_adjustment") or {}

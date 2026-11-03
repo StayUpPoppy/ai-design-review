@@ -364,7 +364,7 @@ class DrawingReviewWorkflow:
             "load_tolerance_upper": value.get("load_tolerance_upper"),
             "load_tolerance_lower": value.get("load_tolerance_lower"),
             "load_tolerance_percent": value.get("load_tolerance_percent"),
-            **{key: value[key] for key in ("height_relation", "height_calculation", "force_tolerance_status", "load_relation_conflict", "load_height_conflict") if key in value},
+            **{key: value[key] for key in ("height_relation", "height_calculation", "load_role", "force_tolerance_status", "load_relation_conflict", "load_height_conflict") if key in value},
             "test_height_type": value.get("test_height_type", ""),
             "reference_only": value.get("reference_only", False),
             "source": item.get("source", []),

@@ -57,7 +57,7 @@ def context_from_parameters(parameters):
             return None
         v = number(p.get("value"))
         unit = str(p.get("unit") or ("turns" if field == "active_coils" else "N/mm" if field == "spring_rate" else "mm")).lower()
-        factor = {"n/mm": 1, "n/cm": .1, "kn/m": 1, "n/m": .001}.get(unit) if field == "spring_rate" else 1 if field == "active_coils" and unit in {"turns", "turn", "圈"} else LENGTH_UNITS.get(unit)
+        factor = {"n/mm": 1, "n/cm": .1, "kn/m": 1, "n/m": .001}.get(unit) if field == "spring_rate" else 1 if field == "active_coils" and unit in {"turns", "turn", "coil", "coils", "圈"} else LENGTH_UNITS.get(unit)
         return v*factor if v is not None and factor is not None and v > 0 else None
     c = {f: value(f) for f in ("wire_diameter", "mean_diameter", "free_length", "active_coils", "pitch", "spring_rate")}
     if c["mean_diameter"] is None and c["wire_diameter"] is not None:

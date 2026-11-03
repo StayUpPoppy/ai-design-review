@@ -4656,6 +4656,8 @@ function auditEventLabel(eventType) {
     parameter_value_updated: "修改数值",
     generation_settings_updated: "修改生图设置",
     support_coils_recalculated: "重算单端支承圈数",
+    automatic_calculation_reconciled: "重算关联参数",
+    pitch_evidence_reconciled: "恢复原图节距",
     roughness_evidence_verified: "核验粗糙度原图依据",
     multi_spec_diameter_reconciled: "核实规格表直径角色",
     parameter_tolerance_updated: "修改公差",
@@ -4781,6 +4783,14 @@ function prepareCompressionDesignChecks(review) {
   if (typeof refreshLoadHeightRelations === "function") refreshLoadHeightRelations(review);
   CompressionDesignChecks.applyPitch(review);
   recordSupportCoilAdjustment(review);
+  if (review === state.review) {
+    for (const [field, adjustment] of Object.entries(review.automatic_calculation_adjustments || {})) {
+      if (!adjustment.pending_save || adjustment.audit_recorded) continue;
+      adjustment.audit_recorded = true;
+      queueReviewAuditEvent({ event_type:"automatic_calculation_reconciled", target_field:field, source:"formula_calculation",
+        reason:"依赖输入变化后自动重算，撤销旧确认", before_state:adjustment.before, after_state:adjustment.after, metadata:{version:adjustment.version} });
+    }
+  }
   const checks = CompressionDesignChecks.calculate(review.spring_parameters || {}, review.spring_features || {}, state.materialCatalog || {});
   review.design_checks = checks;
   return checks;
@@ -5001,7 +5011,10 @@ function syncDependentFormulaParameterRows(root, review, editedField) {
 
 function formulaCandidateHtml(param) {
   if (param?.diameter_linkage_error) return `<small>${escapeHtml(param.diameter_linkage_error)}</small>`;
-  if (!param?.derived_value_stale && !param?.formula_recommendation_stale && !param?.support_coils_conflict) return param?.support_coils_notice ? `<small>${escapeHtml(param.support_coils_notice)}</small>` : "";
+  if (!param?.derived_value_stale && !param?.formula_recommendation_stale && !param?.support_coils_conflict) {
+    const notice=param?.pitch_evidence_warning || param?.formula_check_warning || param?.support_coils_notice;
+    return notice ? `<small>${escapeHtml(notice)}</small>` : "";
+  }
   const candidate = param.formula_recalculation_candidate;
   const value = candidate?.value, waiting = param.support_coils_waiting_confirmation;
   const reason = param.support_coils_conflict || (waiting ? param.formula_calculation_reason : candidate?.reason || param.formula_calculation_reason) || "计算依据已变化，请核对";
@@ -5189,7 +5202,8 @@ function isCompressionSpringReview(review) {
 
 function parameterDisplayUnit(unit) {
   const value = String(unit ?? "").trim();
-  if (value === "turns") return "圈";
+  if (["turn", "turns", "coil", "coils"].includes(String(value).toLowerCase())) return "圈";
+  if (["coil/end", "coils/end", "turn/end", "turns/end"].includes(String(value).toLowerCase())) return "圈／端";
   if (value === "µm") return "μm";
   return value;
 }
@@ -6191,6 +6205,7 @@ function applyGenerationDefaults(review) {
   review.spring_parameters ||= {};
   const applied = [];
   Object.entries(COMPRESSION_GENERATION_DEFAULTS).forEach(([field, value]) => {
+    if (field === "active_coils") return;
     if (generationSourceParameter(review.spring_parameters, field)) return;
     const internalField = field === "end_coils_closed" ? "end_type" : field;
     const existing = review.spring_parameters[internalField];
@@ -12116,6 +12131,11 @@ function setReview(review, imageUrl, options = {}) {
 }
 
 function recordLoadHeightAdjustment(review) {
+  const pitch = review.pitch_recovery;
+  if (pitch?.pending_save && !pitch.audit_recorded && state.review === review) {
+    pitch.audit_recorded = true;
+    queueReviewAuditEvent({event_type:"pitch_evidence_reconciled",target_field:"pitch",source:"local_pitch_evidence",before_state:pitch.before,after_state:structuredClone(review.spring_parameters.pitch),metadata:{version:pitch.version}});
+  }
   const repair = review.load_height_adjustment;
   if (!repair?.pending_save || repair.audit_recorded || state.review !== review) return;
   repair.audit_recorded = true;
@@ -13231,6 +13251,7 @@ function confirmationSnapshotFor(item) {
       load_tolerance_lower: item.load_tolerance_lower ?? null,
       load_tolerance_percent: item.load_tolerance_percent ?? null,
       ...(item.height_relation ? { height_relation: LoadHeightRelations.snapshot(item) } : {}),
+      ...(["working", "solid", "unknown"].includes(item.load_role) ? {load_role:item.load_role} : {}),
       ...Object.fromEntries(["force_tolerance_status", "load_relation_conflict", "load_height_conflict"].filter(k => Object.hasOwn(item,k)).map(k => [k,item[k]])),
     };
   }
@@ -13349,7 +13370,7 @@ function markDependentFormulaParametersPending(field) {
         CompressionDesignChecks.applySupportCoils(state.review);
         return;
       }
-      if (target.need_human_review === false || sourceValues(target.source).some((source) => source.startsWith("human") || source === "manual" || source === "manual_input")) {
+      if (sourceValues(target.source).some((source) => source.startsWith("human") && source !== "human_confirmed" || source === "manual" || source === "manual_input")) {
         target.formula_recommendation_stale = true;
         state.review.derived_parameters_stale = true;
         return;

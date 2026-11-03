@@ -54,9 +54,10 @@ def main():
             saved["spring_parameters"]["free_length"]["value"] = 42
             assert client.patch("/api/reviews/test-job", json={"review":saved}).status_code == 200
             saved = client.get("/api/reviews/test-job").json()
-            assert saved["spring_parameters"]["pitch"]["value"] == 3.7
-            assert saved["spring_parameters"]["pitch"]["derived_value_stale"]
-            assert saved["design_checks"]["metrics"]["unit_mass"]["value"] is None
+            assert saved["spring_parameters"]["pitch"]["value"] == 3.9
+            assert not saved["spring_parameters"]["pitch"]["derived_value_stale"]
+            assert saved["spring_parameters"]["pitch"]["need_human_review"]
+            assert saved["design_checks"]["metrics"]["unit_mass"]["value"] is not None
             saved["spring_parameters"]["pitch"].update(value="", source=["human_edited"],need_human_review=True)
             assert client.patch("/api/reviews/test-job", json={"review":saved}).status_code == 200
             reopened = client.get("/api/reviews/test-job").json()
@@ -112,7 +113,7 @@ def main():
             assert height["value_kind"] == "nominal_estimate" and height["need_human_review"]
             assert height["legacy_reference_limit"]["value"] == 10.175
             checks = reopened["design_checks"]
-            assert checks["version"] == "compression-design-v2"
+            assert checks["version"] == "compression-design-v3"
             assert checks["metrics"]["solid_height_used"]["value"] == 6.3
             assert math.isclose(checks["metrics"]["solid_stress"]["value"], 451.26689676793944)
             original = (book_job / "review.json").read_bytes()

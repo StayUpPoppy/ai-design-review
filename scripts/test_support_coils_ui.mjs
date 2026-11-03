@@ -19,7 +19,7 @@ const p=r.spring_parameters;
 ctx.confirmParam(p.total_coils,'total_coils');ctx.confirmParam(p.active_coils,'active_coils');ctx.confirmParam(p.support_coils,'support_coils');
 const original=structuredClone(p.support_coils);
 p.total_coils.value=18;p.total_coils.source=['human_edited'];p.total_coils.need_human_review=true;
-ctx.CompressionDesignChecks.applySupportCoils(r);assert.equal(p.support_coils.value,1);assert.equal(p.support_coils.support_coils_waiting_confirmation,true);
+ctx.CompressionDesignChecks.applySupportCoils(r);assert.equal(p.support_coils.value,2);assert.equal(p.support_coils.need_human_review,true);
 ctx.confirmParam(p.total_coils,'total_coils');assert.equal(p.support_coils.value,2);assert.equal(p.support_coils.need_human_review,true);
 assert.ok(!r.manual_confirmations.support_coils);assert.ok(!p.support_coils.confirmation_snapshot);
 // A second upload/edit sequence confirms the counts in the opposite order.
@@ -30,7 +30,7 @@ for(const reverse of [false,true]){
   params.total_coils={...params.total_coils,value:20,source:['human_edited'],need_human_review:true};
   params.active_coils={...params.active_coils,value:16,source:['human_edited'],need_human_review:true};
   const order=reverse?['active_coils','total_coils']:['total_coils','active_coils'];
-  ctx.confirmParam(params[order[0]],order[0]);assert.equal(params.support_coils.value,1);
+  ctx.confirmParam(params[order[0]],order[0]);assert.equal(params.support_coils.value,2);
   ctx.confirmParam(params[order[1]],order[1]);assert.equal(params.support_coils.value,2);assert.equal(params.support_coils.need_human_review,true);
 }
 console.log(`Support coil UI: ${fixtures.length} full Python/JS snapshots, both confirmation orders and old-confirmation removal passed`);

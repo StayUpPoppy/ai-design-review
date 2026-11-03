@@ -87,6 +87,10 @@ def apply_generation_defaults(review: dict[str, Any]) -> list[str]:
 
     applied: list[str] = []
     for field, default in COMPRESSION_GENERATION_DEFAULTS.items():
+        # Effective coils require drawing/manual evidence or a valid end relation.
+        # Reintroducing 8 here would undo the local calculation's invalidation.
+        if field == "active_coils":
+            continue
         if generation_source_item(parameters, field) is not None:
             continue
         internal_field, internal_value = _default_internal_value(field, default)

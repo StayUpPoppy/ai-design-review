@@ -170,20 +170,21 @@ def _assert_missing_values_receive_pending_defaults() -> None:
         del review["spring_parameters"][field]
     del review["spring_parameters"]["end_type"]
     readiness = assess_generation_readiness(review)
-    assert readiness["status"] == "needs_confirmation", readiness
+    assert readiness["status"] == "needs_input", readiness
     assert set(readiness["defaulted_fields"]) == {
         "wire_diameter", "mean_diameter", "free_length", "total_coils",
-        "active_coils", "end_grinding", "end_coils_closed",
+        "end_grinding", "end_coils_closed",
     }
     assert review["spring_parameters"]["wire_diameter"]["value"] == 3
     assert review["spring_parameters"]["mean_diameter"]["value"] == 23
     assert review["spring_parameters"]["free_length"]["value"] == 45
     assert review["spring_parameters"]["total_coils"]["value"] == 10
-    assert review["spring_parameters"]["active_coils"]["value"] == 8
+    assert "active_coils" not in review["spring_parameters"]
+    assert any(p["field"] == "active_coils" for p in readiness["missing_fields"])
     assert review["spring_parameters"]["end_grinding"]["value"] == "两端磨削"
     assert review["spring_parameters"]["end_type"]["value"] == "两端并紧"
     assert all(review["spring_parameters"][field]["need_human_review"] for field in (
-        "wire_diameter", "mean_diameter", "free_length", "total_coils", "active_coils", "end_grinding", "end_type"
+        "wire_diameter", "mean_diameter", "free_length", "total_coils", "end_grinding", "end_type"
     ))
     package = build_generation_parameter_package(review)
     assert set(package["generation_parameters"]["spring_parameters"]) == {"material", "handedness"}
@@ -336,13 +337,13 @@ def _assert_technical_requirements_text_formatting() -> None:
     ]
     assert build_technical_requirements_text(requirements) == "\n".join((
         "1.表面处理：表面镀锌。",
-        "2.硬度要求：HRC 45～50。",
-        "3.热处理：淬火并回火。",
-        "4.盐雾试验：96小时。",
-        "5.环保要求：符合 RoHS。",
-        "6.寿命要求：寿命不少于10万次。",
-        "7.工艺要求：去除毛刺。；不得有锐边。",
-        "8.其他要求：包装时防潮。",
+        "2.HRC 45～50。",
+        "3.淬火并回火。",
+        "4.96小时。",
+        "5.符合 RoHS。",
+        "6.寿命不少于10万次。",
+        "7.去除毛刺。；不得有锐边。",
+        "8.包装时防潮。",
     ))
     assert build_technical_requirements_text([]) == ""
     assert strip_technical_requirements_title("") == ""

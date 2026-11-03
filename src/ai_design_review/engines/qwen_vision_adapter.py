@@ -213,7 +213,7 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
    - 拉伸弹簧：hook_type、hook_outer_diameter、hook_inner_diameter、hook_gap、hook1_type、hook2_type、hook1_length、hook2_length、hook1_outer_diameter、hook2_outer_diameter、hook1_inner_diameter、hook2_inner_diameter、hook1_opening、hook2_opening、hook_orientation、center_to_center_length、initial_tension，可提取 load_points。
    - 卡簧/挡圈：ring_type、thickness、free_diameter、opening_width、gap_width、notch_depth、groove_diameter、groove_width、lug_hole_diameter、lug_center_distance、opening_angle、section_width、section_height、chamfer、corner_radius。
    - 端面磨削 end_grinding：只有图纸文字明确写“不磨/未磨”时才填“两端不磨削”；只有文字明确写“磨平/磨削”，或两端面有明确关联的表面粗糙度/加工符号且端面画为平整时才填“两端磨削”。不得仅因弹簧示意图看似开口、或没有文字标注，就推断为“不磨”；无法确定时不要输出该字段。
-   - support_coils 严格表示“单端支承圈数”。只提取原图明确写出的“单端/每端/两端各”支承圈数，evidence 保留完整原文，并标记 support_coils_origin="drawing_single_end"。禁止从总圈数、有效圈数自行相减或除以2推算，也不填默认值；未明确标注时省略该字段。两端合计圈数不能直接填入单端字段。原图明确两端支承不对称时，在 technical_requirements 保留原文说明，不自行均分。
+   - support_coils 严格表示“单端支承圈数”。只提取原图明确写出的“单端/每端/两端各”或per end、Each One of Two Ends等支承圈数，evidence 保留表头与完整原文，并标记 support_coils_origin="drawing_single_end"。圈数单位统一turns，单端语义由字段保留。禁止从总圈数、有效圈数自行相减或除以2推算，也不填默认值；未明确标注时省略该字段。两端合计圈数不能直接填入单端字段。原图明确两端支承不对称时，在 technical_requirements 保留原文说明，不自行均分。
    - 端部形式 end_type：只有图纸文字明确写“并紧/闭口”时才填“两端并紧”；明确写“不并紧/开口”时才填“两端不并紧”。端部形式与端面磨削是独立字段，无法确定时不要输出。
    - 表面粗糙度符号、加工符号或小三角旁的数值（例如 Ra 12.5、▽ 12.5）绝不能填入 outer_diameter、inner_diameter、mean_diameter、free_length、body_length、wire_diameter 或 load_points。识别到明确 Ra 数值时，必须在 parameters.surface_roughness_ra 中输出数值，并在 evidence 中保留符号或文字；明确知道作用位置时增加 surface_location（例如“两端面”），不明确时不要猜。
    - 粗糙度 evidence 只填写可见原图的简短原文或符号，不写分析过程、推测、默认参考或内部JSON字段。禁止根据磨平、端部形式、加工习惯推测Ra值；“▲：加工基准面”是基准说明，不能作为粗糙度标注。缺少明确可见标注时surface_roughness_ra返回空值，不能补造Ra数值、符号或位置；notes中出现的讨论、举例或推荐值不代表原图标注。
@@ -235,7 +235,7 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
    - 提取载荷前先判断表格用途。未注尺寸/无标示尺寸/一般公差表中的尺寸区间上下限及公差，绝不能配成高度和力值，不能生成 F1/F2/F3。不能仅凭两列数字、自动编号或默认 N 单位推断载荷。
    - 保留明确 H/F 标注、写明压缩高度及对应载荷的要求文字，以及有高度/载荷表头的真实载荷表；真实载荷表可以没有 F 编号，也可以包含载荷公差列。缺少高度或力值时保留已写明的部分，不补算力值。
    - 载荷编号保留原图P/F字母，P1/P2不得改成F1/F2。分别提取力值及该点自己的公差；绝对公差填load_tolerance_upper/lower（带偏差符号），百分比填load_tolerance_percent；没有公差时留空，不填0或复制另一点。
-   - 高度必须区分直接工作高度、从自由位置起算的压缩量、两个载荷点之间的追加行程。增加height_relation：kind为absolute_height/free_deflection/incremental_deflection/unknown，value为原始尺寸，unit为明确单位，base_label为追加行程的参考点编号，reference_only记录括号参考尺寸，evidence逐字记录原标注。不能只看P1/P2顺序判断尺寸关系。
+   - 高度必须区分直接工作高度、从自由位置起算的压缩量、两个载荷点之间的追加行程。增加height_relation：kind为absolute_height/free_deflection/incremental_deflection/unknown，value为原始尺寸，unit为明确单位，base_label为追加行程的参考点编号，reference_only记录括号参考尺寸，evidence逐字记录原标注。编号可为任意原图名称，例如Pn、Fmin、F_A、工况1；表格Height/Installed Load等须保留相应单元格及上下文，不能将独立的另一尺寸混入。不能只看P1/P2顺序判断尺寸关系。load_role可选working/solid/unknown，只有原图明确压并用途才选solid，不能凭最大载荷推测。pitch优先提取图中相邻簧圈节距尺寸，不自行用自由高度或圈数改算。
    - 例如工作高度H1=25mm应填height=25及absolute_height；自由状态压缩10mm到P1应填height=null、free_deflection、value=10；再压缩20mm到P2应填height=null、incremental_deflection、base_label=P1、value=20。不要提前把减法结果当成原图高度。关系不清楚填unknown，保留已识别力值，不猜坐标或单位。
    - load_points.evidence 必须逐字保留可见标注，不用“载荷表第一行”等描述代替原文。增加 source_context：kind 为 annotation/sentence/table/unknown；表格候选保留 table_title、headers（原文列名数组）、row_text（对应原文行）；unit_evidence 保留明确表头或图纸统一单位原文。没有证据的单位保持空，不因格式默认值声称原图有单位。证据不足时保留候选并标记 need_human_review=true，后端将单列待核对。
 8. 不确定或识别不到的字段不要猜；可以留空或省略，并标记 need_human_review=true。只根据图纸可见文字、尺寸线和表格内容输出。
@@ -386,6 +386,7 @@ def qwen_payload_to_candidates(payload: dict[str, Any], *, require_height_relati
             "deflection": _numeric_or_none(item.get("deflection")), "deflection_unit": item.get("deflection_unit") or "",
             "test_height_type": item.get("test_height_type") or "",
             "reference_only": bool(item.get("reference_only", False)),
+            **({"load_role": item["load_role"]} if item.get("load_role") in {"working", "solid", "unknown"} and (item["load_role"] != "solid" or re.search(r"压并|solid", str(item.get("evidence") or ""), re.I)) else {}),
         }
         if require_height_relation and "height_relation" not in value and value["height"] is not None:
             value["height_relation"] = normalize_relation({"kind":"unknown","evidence":item.get("evidence") or "","page":item.get("page",1)})

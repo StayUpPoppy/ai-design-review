@@ -1,6 +1,6 @@
 /* Draft calculations mirror standardizers/design_checks.py; shared fixtures verify parity. */
 (() => {
-  const VERSION = "compression-design-v2";
+  const VERSION = "compression-design-v3";
   const PITCH_FIELDS = ["free_length", "wire_diameter", "active_coils", "total_coils", "support_coils", "end_type", "end_grinding", "pitch_type"];
   const SUPPORT_FIELDS = ["total_coils", "active_coils", "end_type"];
   const LENGTH_UNITS = { mm: 1, "毫米": 1, cm: 10, m: 1000, in: 25.4, inch: 25.4, "英寸": 25.4 };
@@ -17,11 +17,24 @@
   const safe = (calculate) => number(calculate());
   const humanOverride = (item) => Boolean(item?.human_modified) || sources(item).some((s) => s.startsWith("human") && s !== "human_confirmed" || ["manual", "manual_input", "standardization_chat", "ai_chat"].includes(s));
   const sameInputs = (old, current) => old && Object.entries(current).every(([key, value]) => ["model_version", "model_id"].includes(key) || old[key] === value);
+  function coilUnitSupported(field, unit) {
+    const text = String(unit || "turns").normalize("NFKC").replace(/\s+/g, "").toLowerCase(), common = ["turns", "turn", "coil", "coils", "圈"];
+    return common.includes(text) || field === "support_coils" && common.some(base => ["/end", "/eachend", "/端", "/单端"].some(suffix => text === base + suffix));
+  }
   function preserveCandidate(item, calculation) {
     const stale = calculation.value == null || !sameInputs(item.formula_calculation_inputs, calculation.inputs);
     item.derived_value_stale = stale;
     item.formula_recommendation_stale = stale;
-    if (stale) { item.formula_recalculation_candidate = calculation; item.formula_calculation_reason = "计算依据已变化或无法验证，请应用新候选值后重新确认"; }
+    if (stale) {
+      item.formula_recalculation_candidate = calculation; item.formula_calculation_reason = calculation.reason || "计算依据已变化或无法验证，请核对";
+      item.need_human_review = true; delete item.confirmation_snapshot;
+      if (calculation.value != null) {
+        Object.assign(item, { value: Number(calculation.value.toFixed(4)), unit: calculation.unit || item.unit,
+          formula: calculation.formula || item.formula, formula_calculation_inputs: calculation.inputs || {}, source_fields: calculation.source_fields || item.source_fields || [],
+          derived_value_stale: false, formula_recommendation_stale: false, formula_calculation_status: "calculated" });
+        delete item.formula_recalculation_candidate; delete item.formula_calculation_reason;
+      }
+    }
     else { delete item.formula_recalculation_candidate; delete item.formula_calculation_reason; }
   }
   function solidHeightKind(item) {
@@ -39,6 +52,7 @@
     if (path.includes(field)) return false;
     const item = params[field];
     if (!item || typeof item !== "object") return true;
+    if (field === "active_coils" && sources(item).includes("solidworks_protocol_default") && item.need_human_review !== false) return false;
     if (item.derived_value_stale || item.formula_recommendation_stale && !humanOverride(item)) return false;
     return !sources(item).some((s) => ["formula_calculation", "derived"].includes(s)) || humanOverride(item)
       || (item.source_fields || []).every((s) => {
@@ -49,7 +63,7 @@
           const value = number(raw(parent));
           if (value == null || value <= 0) return false;
           const unit = String(parent?.unit || (s.includes("coils") ? "turns" : "mm")).trim().toLowerCase();
-          if (s.includes("coils") ? !["turns", "turn", "圈"].includes(unit) : !(unit in LENGTH_UNITS)) return false;
+          if (s.includes("coils") ? !coilUnitSupported(s, unit) : !(unit in LENGTH_UNITS)) return false;
         }
         return fresh(params, s, [...path, field]);
       });
@@ -62,7 +76,7 @@
       notes[field] = empty(raw(item)) ? `待补充 ${field}` : `${field} 必须为有限正数`; return null;
     }
     const unit = String(item?.unit || (length ? "mm" : "turns")).trim().toLowerCase();
-    const factor = length ? LENGTH_UNITS[unit] : ["turns", "turn", "圈", ""].includes(unit) ? 1 : null;
+    const factor = length ? LENGTH_UNITS[unit] : coilUnitSupported(field, unit) ? 1 : null;
     if (factor == null) { notes[field] = `${field} 不支持单位 ${unit}`; return null; }
     value *= factor;
     if (!Number.isFinite(value)) { notes[field] = `${field} 超出计算范围`; return null; }
@@ -84,7 +98,7 @@
       else reason = "需明确端面磨削方式与总圈数";
     } else if (end === "两端并紧") {
       fields.push("support_coils");
-      if (support == null && empty(raw(params.support_coils)) && !humanOverride(params.support_coils) && fresh(params, "support_coils")) support = 1;
+      if ((params.support_coils?.source_fields || []).includes("active_coils")) support = null;
       if (total != null && support != null) { value = total - 2 * support; formula = "total_coils - 2 * support_coils"; }
       else reason = "支承圈数或总圈数无效";
     } else reason = "端部条件或圈数无效";
@@ -100,7 +114,7 @@
       if (!item.formula_calculation_inputs && calculation.value != null && number(item.value) === calculation.value) item.formula_calculation_inputs = calculation.inputs;
       preserveCandidate(item, calculation); return;
     }
-    if (calculation.value == null && !sources(item).includes("company_active_coil_rule")) return;
+    if (calculation.value == null && !sources(item).some(s => ["company_active_coil_rule", "solidworks_protocol_default"].includes(s))) return;
     const target = item && typeof item === "object" ? item : (params.active_coils = {});
     Object.assign(target, { value: calculation.value == null ? null : Number(calculation.value.toFixed(4)), unit: "turns", source: ["company_active_coil_rule"], need_human_review: true,
       derived_rule_id: "COMPANY-ACTIVE-COILS-END-CONDITION-V2", derived_formula: calculation.formula, evidence: calculation.basis, source_fields: calculation.source_fields,
@@ -205,8 +219,8 @@
     const text = String(item?.evidence || "");
     if (/计算|推算|推导|相减|差值|默认|假设|derived|calculated|(?:总圈|total).*(?:有效|active).*[=＝]/i.test(text)) return "inferred";
     if (/(?:两端|双端|左右两端).{0,8}(?:合计|共|总)|总支承圈数|支承圈数合计|total\s+support/i.test(text)) return "drawing_total";
-    if (/单端|每端|各端|两端各|每一端|per\s*end|each\s*end/i.test(text)
-      && (/支承|支撑|support/i.test(text) || /(?:单端|每端|各端|两端各|每一端)\s*[:：]?\s*\d+(?:\.\d+)?\s*圈/.test(text))) return "drawing_single_end";
+    if (/单端|每端|各端|两端各|每一端|per\s*end|each\s*(?:one\s*of\s*(?:the\s*)?two\s*)?ends?/i.test(text)
+      && (/支承|支撑|support|number\s+of\s+end\s+coils|end\s+coils/i.test(text) || /(?:单端|每端|各端|两端各|每一端)\s*[:：]?\s*\d+(?:\.\d+)?\s*圈/.test(text))) return "drawing_single_end";
     return "unknown";
   }
   function asymmetricSupport(params, review = {}) {
@@ -225,6 +239,7 @@
       item.support_coils_origin = supportOrigin(item);
       if (!item.support_coils_original && !empty(item.value)) item.support_coils_original = supportSnapshot(item);
       if (item.support_coils_origin !== "drawing_single_end" && item.need_human_review !== false) item.derived_value_stale = true;
+      else if (item.support_coils_origin === "drawing_single_end") ["derived_value_stale", "formula_recommendation_stale", "formula_recalculation_candidate", "formula_calculation_reason"].forEach(k => delete item[k]);
     }
   }
   function applySupportCoils(review) {
@@ -234,8 +249,12 @@
     const formula = item.formula_calculation_kind === "support_coils", c = calculateSupportCoils(params, review);
     const origin = item.support_coils_origin || supportOrigin(item);
     const automatic = formula || recognizedSupport(item) && origin !== "drawing_single_end";
-    const protectedValue = humanOverride(item) || origin === "drawing_single_end" || !automatic && !empty(item.value);
+    let protectedValue = humanOverride(item) || origin === "drawing_single_end" || !automatic && !empty(item.value);
     const value = number(c.value), changedInputs = !sameInputs(item.formula_calculation_inputs || item.support_coils_input_baseline, c.inputs);
+    if (!formula && item.need_human_review === false && !item.support_coils_input_baseline) {
+      item.support_coils_legacy_confirmed = true; item.support_coils_input_baseline = copy(c.inputs);
+    }
+    protectedValue ||= !formula && item.support_coils_legacy_confirmed && sameInputs(item.support_coils_input_baseline,c.inputs);
     const roots = [params.total_coils || {}, params.active_coils || {}];
     const waiting = roots.some((p) => humanOverride(p) && p.need_human_review !== false);
     const confirmed = roots.every((p) => p.need_human_review === false);
@@ -250,12 +269,7 @@
       } else { delete item.formula_recalculation_candidate; if (value == null) item.support_coils_notice = c.reason || "缺少有效计算依据"; }
       return;
     }
-    if (waiting) {
-      Object.assign(item, { derived_value_stale: true, formula_recommendation_stale: true, formula_recalculation_candidate: copy(c),
-        support_coils_recompute_pending: true, support_coils_waiting_confirmation: true, formula_calculation_reason: "总圈数和有效圈数当前值均确认后，将自动重算单端支承圈数" });
-      return;
-    }
-    if (item.need_human_review === false && (value == null || !changedInputs || !(confirmed && edited))) { preserveCandidate(item, c); return; }
+    if (item.need_human_review === false && (value == null || !changedInputs)) { preserveCandidate(item, c); return; }
     if (value == null) {
       if (automatic) Object.assign(item, { derived_value_stale: true, formula_recommendation_stale: true, formula_recalculation_candidate: copy(c), formula_calculation_reason: c.reason || "缺少有效计算依据" });
       else item.support_coils_notice = c.reason || "缺少有效计算依据";
@@ -266,7 +280,7 @@
     const changed = number(target.value) !== Number(value.toFixed(4)) || changedInputs || !formula;
     Object.assign(target, { field: "support_coils", value: Number(value.toFixed(4)), unit: "turns", source: ["formula_calculation"], need_human_review: true,
       confidence: 0.88, formula: c.formula, evidence: c.basis, source_fields: c.source_fields, formula_calculation_kind: "support_coils",
-      formula_calculation_status: c.status, formula_calculation_inputs: copy(c.inputs), support_coils_input_baseline: copy(c.inputs), derived_value_stale: false, formula_recommendation_stale: false });
+      formula_calculation_status: c.status, formula_calculation_inputs: copy(c.inputs), support_coils_input_baseline: copy(c.inputs), derived_value_stale: false, formula_recommendation_stale: false, formula_calculation_status: "calculated" });
     if (changed) {
       const previous = review.manual_confirmations?.support_coils ?? null;
       delete review.manual_confirmations?.support_coils; delete target.confirmation_snapshot;
@@ -313,7 +327,7 @@
     valueResult.basis = g.model_id === "book_table" ? "书页公式补算；支承圈数按两端合计；待人工确认" : "不并紧补充公式；Victory Spring 表7.1；待人工确认";
     return valueResult;
   }
-  function applyPitch(review) {
+  function applyPitchValues(review) {
     const params = review.spring_parameters || {}, old = params.pitch;
     applySupportCoils(review);
     applyActiveCoils(review);
@@ -322,6 +336,9 @@
     const item = old && typeof old === "object" ? old : { value: old };
     const formula = item.formula_calculation_kind === "pitch";
     const calculation = calculatePitch(params, review.spring_features || {});
+    delete item.formula_check_warning;
+    const inputPitch = input(params,"pitch",{},true);
+    if (!formula && inputPitch != null && calculation.value != null && Math.abs(inputPitch - calculation.value) > 1e-4) item.formula_check_warning = `原值节距${inputPitch} mm与端部公式补算${Number(calculation.value.toFixed(4))} mm不一致，请核对端部结构及公式适用性`;
     if (humanOverride(item)) {
       if (formula) { delete item.derived_value_stale; delete item.formula_recommendation_stale; }
       return;
@@ -340,6 +357,26 @@
       formula_calculation_inputs: calculation.inputs, formula_calculation_reason: calculation.reason,
       derived_value_stale: value == null, formula_recommendation_stale: false });
     delete target.formula_recalculation_candidate;
+  }
+  function applyPitch(review) {
+    const params = review.spring_parameters || {}, fields = ["active_coils", "support_coils", "pitch", "solid_height"];
+    const before = Object.fromEntries(fields.map(f => [f, copy(params[f] || {})]));
+    applyPitchValues(review);
+    for (const field of fields) {
+      const item = params[field], old = before[field];
+      if (!item || humanOverride(item) || !item.formula_calculation_kind && !sources(item).includes("company_active_coil_rule")) continue;
+      if (item.value == null && number(old.value) != null && !sources(old).includes("solidworks_protocol_default")) { item.value = old.value; item.derived_value_stale = true; }
+      const signature = p => JSON.stringify([p.value ?? null, p.formula_calculation_inputs ?? null, p.derived_value_stale || false]);
+      if (signature(item) === signature(old)) continue;
+      item.need_human_review = true; delete item.confirmation_snapshot;
+      const adjustments = review.automatic_calculation_adjustments ||= {}, prior = adjustments[field] || {};
+      adjustments[field] = { version:VERSION, before:prior.pending_save ? prior.before : copy(old), after:copy(item), pending_save:true, audit_recorded:false };
+      for (const [key, confirmation] of Object.entries(review.manual_confirmations || {})) {
+        if (key !== field && confirmation?.target_field !== field && !key.endsWith("_" + field)) continue;
+        (review.confirmation_history ||= []).push({ event:"confirmation_reopened", field, reason:"automatic_inputs_changed", previous_confirmation:copy(confirmation) });
+        delete review.manual_confirmations[key];
+      }
+    }
   }
   function calculateNominalHeight(params, features = {}) {
     const c = context(params, features), g = geometry(c), d = c.wire_diameter, n = c.active_coils, total = c.total_coils;
@@ -393,7 +430,7 @@
     const matches = (catalog?.items || []).filter((p) => [p.display_name, p.standard_value, ...(p.aliases || [])].some((v) => materialKey(v) === value));
     return matches.length === 1 ? matches[0] : null;
   }
-  const isSolidPoint = (point) => ["fb", "pb", "压并载荷", "压并负荷", "压并力"].includes(String(point.label || "").trim().toLowerCase().replace(/[ _]/g, ""));
+  const isSolidPoint = (point) => ["working", "solid", "unknown"].includes(point.load_role) ? point.load_role === "solid" : ["fb", "pb", "压并载荷", "压并负荷", "压并力"].includes(String(point.label || "").trim().toLowerCase().replace(/[ _]/g, ""));
   function calculate(params, features = {}, catalog = {}) {
     const c = context(params, features), profile = materialProfile(params, catalog);
     c.material = profile ? raw(params.material) : null;
@@ -406,6 +443,9 @@
     const K = index != null && index > 1 ? safe(() => (4 * index - 1) / (4 * index - 4) + 0.615 / index) : null;
     let rate = c.G != null && d != null && mean != null && n != null ? c.G * d ** 4 / (8 * mean ** 3 * n) : null;
     if (rate != null && (!Number.isFinite(rate) || rate <= 0)) rate = null;
+    const declared = params.spring_rate || {}, declaredValue = number(declared.value), declaredFactor = {"n/mm":1,"n/cm":.1,"kn/m":1,"n/m":.001}[String(declared.unit || "N/mm").trim().toLowerCase()];
+    const useDeclared = declared.need_human_review === false && fresh(params,"spring_rate") && !["conflict","material_conflict","tolerance_input_draft"].some(k => declared[k]) && declaredFactor != null && declaredValue != null && declaredValue > 0;
+    const effectiveRate = useDeclared ? declaredValue * declaredFactor : rate, rateSource = useDeclared ? "input" : "theoretical";
     const alpha = pitch != null && mean != null ? Math.atan2(pitch, Math.PI * mean) : null;
     const length = alpha != null && total != null ? safe(() => Math.PI * mean * total / Math.cos(alpha)) : null;
     const mass = d != null && length != null && c.rho != null ? safe(() => Math.PI * d ** 2 / 4 * length * c.rho * 1e-6) : null;
@@ -437,7 +477,7 @@
       helix_angle: result(alpha != null ? alpha * 180 / Math.PI : null, "°", "α = atan(t / (π*Dm))", ["pitch", "mean_diameter"], c),
       wire_length: result(length, "mm", "L ≈ π*Dm*n1 / cos(α)", ["pitch", "mean_diameter", "total_coils"], c, { estimated: true, basis: "展开长度近似值" }),
       theoretical_spring_rate: result(rate, "N/mm", "P′ = G*d^4 / (8*Dm^3*n)", ["material", "wire_diameter", "mean_diameter", "active_coils"], c),
-      unit_mass: result(mass, "kg", "Q ≈ π*d²*L*ρ/4 × 10⁻⁶", ["material", "wire_diameter", "mean_diameter", "total_coils", "pitch"], c, { estimated: true, basis: "单件重量估算" }),
+      unit_mass: result(mass, "kg", "Q ≈ π*d²*L*ρ/4 × 10⁻⁶", ["material", "wire_diameter", "mean_diameter", "total_coils", "pitch"], c, { estimated: true, basis: "单件重量估算", reason: c.rho == null ? "缺少可用材料密度，请核对材料目录" : "" }),
       nominal_solid_height: nominalResult,
       reference_solid_height_limit: referenceResult,
       solid_height_used: result(hb, "mm", "用于 Pb = P′*(H0-Hb)", ["solid_height"], c, { reason: hbReason, estimated: heightSource.endsWith("nominal"), basis: heightBasis }),
@@ -457,7 +497,7 @@
         const height = solid ? hb : input({ height: { value: point.height, unit: point.height_unit || "mm" } }, "height", c.notes, true);
         if (height == null) reason = solid ? hbReason || "缺少可用压并高度" : c.notes.height || "缺少有效高度";
         else if (h != null && (height > h || hb != null && height < hb || solid && height >= h)) reason = "高度超出有效压缩范围，请核对";
-        else if (rate != null && h != null) force = rate * (h - height);
+        else if (effectiveRate != null && h != null) force = effectiveRate * (h - height);
         else reason = "缺少理论刚度或自由高度，无法估算力值";
       }
       const value = force != null && mean != null && d != null && K != null ? safe(() => 8 * force * mean * K / (Math.PI * d ** 3)) : null;
@@ -472,6 +512,11 @@
         Object.assign(stressResult, { height_source: estimated ? heightSource : null, model_id: estimated ? heightSource.endsWith("nominal") ? g.model_id : "input_height" : "provided_load" });
         stressResult.inputs.solid_height_mm = estimated ? hb : null;
         stressResult.basis = estimated ? "估算压并载荷；" + heightBasis : "已有压并载荷";
+      }
+      if (estimated) {
+        Object.assign(stressResult.inputs, { spring_rate_used:effectiveRate, spring_rate_source:rateSource });
+        stressResult.source_fields = ["wire_diameter","mean_diameter","free_length",solid ? "solid_height" : "load_points", ...(useDeclared ? ["spring_rate"] : ["material","active_coils"])];
+        stressResult.basis += useDeclared ? "；采用已确认输入刚度" : "；采用理论刚度";
       }
       return stressResult;
     }

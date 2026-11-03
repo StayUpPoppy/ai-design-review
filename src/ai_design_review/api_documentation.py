@@ -181,6 +181,7 @@ class ReviewParameterValue(BaseModel):
     evidence: str | None = Field(default=None, description="支持该参数值的图纸文字或计算依据。")
     confidence: float | None = Field(default=None, ge=0, le=1, description="识别置信度，范围为 0 至 1。")
     need_human_review: bool | None = Field(default=None, description="是否仍需人工核对。")
+    formula_check_warning: str | None = Field(default=None, exclude_if=lambda value: value is None, description="原图/人工节距与当前适用端型公式差异；不覆盖原值。")
     roughness_reference_dismissed: bool | None = Field(default=None, description="仅用于粗糙度缺值时记住不添加选择；true收起项目参考提示，保留重新展开入口。不是确认状态，不发送给SW。")
     roughness_candidates: list[ReviewRoughnessCandidate] | None = Field(default=None, description="粗糙度原图候选及可选依据分类；不含项目参考值，不能单凭候选直接输出SW。")
     value_verified: bool | None = Field(default=None, description="仅粗糙度：当前参数值是否具有本地原图数字证据，不等同于人工确认或位置已定位。")
@@ -219,6 +220,7 @@ class DrawingSummaryDocument(BaseModel):
 
 
 class ReviewLoadPointDocument(BaseModel):
+    load_role: Literal["working", "solid", "unknown"] | None = Field(default=None, description="可选原图载荷用途；压并用途须有明确说明，编号不决定用途。不发送给SW。")
     """审图阶段的载荷测试点；内部ID仅用于当前系统稳定定位。"""
 
     model_config = ConfigDict(extra="allow")
@@ -273,7 +275,7 @@ class SpringParametersDocument(BaseModel):
     solid_height: ReviewParameterValue | None = Field(default=None, description="压并高度。")
     total_coils: ReviewParameterValue | None = Field(default=None, description="总圈数，有限正数，支持小数并完整传至SW。")
     active_coils: ReviewParameterValue | None = Field(default=None, description="有效圈数，有限正数，支持小数，不得大于总圈数。")
-    support_coils: ReviewSupportCoilsValue | None = Field(default=None, description="单端支承圈数；自动值统一为(总圈数－有效圈数)/2，人工改圈数后两项均确认时重算，结果仍待单独确认。")
+    support_coils: ReviewSupportCoilsValue | None = Field(default=None, description="单端支承圈数；明确单端原文优先。无依据不默认1；独立圈数可按(总圈数－有效圈数)/2推导，有效输入后立即重算自动项并撤销旧确认，禁止循环反推。")
     surface_roughness_ra: ReviewParameterValue | None = Field(
         default=None,
         description="表面粗糙度Ra，内部单位μm；当前有效且人工确认后，以数字写入SolidWorks titleBlockProperties.表面粗糙度。对应独立技术要求句移除，其它部位和额外工程条件保留。",
@@ -421,6 +423,9 @@ class ReviewDocument(BaseModel):
     parameter_reasonableness: ParameterReasonablenessAssessment | None = Field(default=None, description="最近一次参数合理性诊断和可选建议。")
     accuracy_inference: dict[str, Any] | None = Field(default=None, description="可选内部精度反推元数据：selection_mode(auto/manual/drawing/legacy)、rules_version、input_snapshot、observed_inputs、results、inferred_grade、complete及calculation_fingerprint。热卷附standard_rules_version/source_document/applicability，T优先于1/2/3；仅独立原图/人工公差参与反推，当前有效刚度用于载荷最低限值，人工模式不回写；不进入SW请求。")
     diameter_linkage: dict[str, Any] | None = Field(default=None, description="可选三径联动元数据：version、driver_field、inputs、status、reason及original_parameters。首次人工编辑直径后固定线径、以最后编辑项为主控，联动三径并撤销变化项确认；旧订单打开不自动启用。不进入SW请求。")
+    automatic_calculation_adjustments: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None, description="compression-design-v3自动圈数/节距/名义高度的变更前后、依赖和待保存审计状态；只通过现有CAS保存，不进入SW。")
+    pitch_recovery: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None, description="pitch-evidence/v1本地原图节距恢复前值及待保存状态；人工值/清空受保护。")
+    design_checks: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None, description="compression-design-v3逐项计算结果、实际依赖和公式；应力inputs.spring_rate_source区分input/theoretical，spring_rate_used为实际采用N/mm，重量缺密度保留原因。")
     parameter_reasonableness_stale: bool = Field(default=False, description="参数变化后合理性结果是否已经过期。")
     conflicts: list[dict[str, Any]] = Field(default_factory=list, description="不同识别来源之间的参数冲突。")
     load_point_diagnostics: list[LoadPointDiagnosticDocument] = Field(default_factory=list, description="疑似载荷及公差表排除记录；不参与计算或SW输出。旧记录可省略。")

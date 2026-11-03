@@ -11,6 +11,7 @@ from .coil_counts import COMPANY_ACTIVE_COIL_RULE, derive_active_coils
 from .diameters import apply_formula_compression_diameter_completion
 from .stiffness import apply_formula_compression_spring_rate
 from .calculation_state import LENGTH_UNITS, number, solid_height_kind, preserve_candidate, parameter_current
+from ..coil_units import coil_unit_supported
 
 
 STANDARD_PATH = project_path("config", "spring_standards", "gbt_1239_2_2009.json")
@@ -116,7 +117,7 @@ def calculate_compression_solid_height(spring_parameters: dict[str, Any]) -> dic
         wire = None
     elif wire is not None:
         wire *= factor
-    if total_unit not in {"turns", "turn", "圈"} or not parameter_current(spring_parameters, "total_coils"):
+    if not coil_unit_supported("total_coils", total_unit) or not parameter_current(spring_parameters, "total_coils"):
         total = None
     end_mode = solid_height_mode(_param_value(spring_parameters, "end_grinding"))
 

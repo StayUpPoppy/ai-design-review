@@ -43,6 +43,7 @@ def load_point_snapshot(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "load_point_id": str(item.get("load_point_id") or ""),
         "label": normalize_load_point_label(item.get("label")),
+        **({"load_role": item["load_role"]} if item.get("load_role") in {"working", "solid", "unknown"} else {}),
         "height": item.get("height"),
         "height_unit": item.get("height_unit") or "mm",
         "force": item.get("force"),

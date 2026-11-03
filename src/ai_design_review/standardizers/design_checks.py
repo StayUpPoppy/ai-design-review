@@ -14,8 +14,9 @@ from .coil_counts import derive_active_coils
 from .compression import calculate_compression_solid_height
 from .calculation_state import solid_height_kind, preserve_candidate
 from .support_coils import prepare_support, reconcile_support, asymmetric_support
+from ..coil_units import coil_unit_supported
 
-VERSION = "compression-design-v2"
+VERSION = "compression-design-v3"
 PITCH_FIELDS = ["free_length", "wire_diameter", "active_coils", "total_coils", "support_coils", "end_type", "end_grinding", "pitch_type"]
 SUPPORT_FIELDS = ["total_coils", "active_coils", "end_type"]
 LENGTH_UNITS = {"mm": 1, "毫米": 1, "cm": 10, "m": 1000, "in": 25.4, "inch": 25.4, "英寸": 25.4}
@@ -67,6 +68,8 @@ def _fresh(parameters: dict[str, Any], field: str, path: tuple[str, ...] = ()) -
     item = parameters.get(field)
     if not isinstance(item, dict):
         return True
+    if field == "active_coils" and "solidworks_protocol_default" in _sources(item) and item.get("need_human_review") is not False:
+        return False
     if item.get("derived_value_stale") or item.get("formula_recommendation_stale") and not _human_override(item):
         return False
     if any(s in {"formula_calculation", "derived"} for s in _sources(item)) and not _human_override(item):
@@ -81,7 +84,7 @@ def _fresh(parameters: dict[str, Any], field: str, path: tuple[str, ...] = ()) -
                 if number is None or number <= 0:
                     return False
                 unit = str(parent.get("unit") or ("turns" if "coils" in source else "mm")).lower() if isinstance(parent, dict) else ("turns" if "coils" in source else "mm")
-                if unit.strip() not in ({"turns", "turn", "圈"} if "coils" in source else LENGTH_UNITS):
+                if not (coil_unit_supported(source, unit) if "coils" in source else unit.strip() in LENGTH_UNITS):
                     return False
             if not _fresh(parameters, source, (*path, field)):
                 return False
@@ -99,7 +102,7 @@ def _input(parameters: dict[str, Any], field: str, notes: dict[str, str], *, len
         notes[field] = f"待补充 {field}" if _empty(_raw(item)) else f"{field} 必须为有限正数"
         return None
     unit = str(item.get("unit") or ("mm" if length else "turns")).strip().lower() if isinstance(item, dict) else ("mm" if length else "turns")
-    factor = LENGTH_UNITS.get(unit) if length else (1 if unit in {"turns", "turn", "圈", ""} else None)
+    factor = LENGTH_UNITS.get(unit) if length else (1 if coil_unit_supported(field, unit) else None)
     if factor is None:
         notes[field] = f"{field} 不支持单位 {unit}"
         return None
@@ -306,6 +309,10 @@ def apply_formula_pitch(review: dict[str, Any]) -> None:
     item = old if isinstance(old, dict) else {"value": old}
     formula = item.get("formula_calculation_kind") == "pitch"
     calculated = calculate_pitch(parameters, review.get("spring_features") or {})
+    item.pop("formula_check_warning", None)
+    input_pitch=_input(parameters,"pitch",{},length=True)
+    if not formula and input_pitch is not None and calculated.get("value") is not None and not math.isclose(input_pitch, calculated["value"], abs_tol=1e-4, rel_tol=0):
+        item["formula_check_warning"] = f"原值节距{input_pitch:g} mm与端部公式补算{round(calculated['value'], 4)} mm不一致，请核对端部结构及公式适用性"
     if _human_override(item):
         if formula:
             item.pop("derived_value_stale", None)
@@ -344,6 +351,14 @@ def calculate_design_checks(parameters: dict[str, Any], features: dict[str, Any]
     b = _safe(lambda: h / mean) if h is not None and mean is not None else None
     K = _safe(lambda: (4 * index - 1) / (4 * index - 4) + 0.615 / index) if index is not None and index > 1 else None
     rate = spring_rate_from_geometry(c["G"], d, mean, n)
+    declared = parameters.get("spring_rate") or {}
+    declared_factor = {"n/mm": 1, "n/cm": .1, "kn/m": 1, "n/m": .001}.get(str(declared.get("unit") or "N/mm").strip().lower())
+    declared_value = _number(declared.get("value"))
+    use_declared = (declared.get("need_human_review") is False and _fresh(parameters, "spring_rate")
+                    and not any(declared.get(k) for k in ("conflict", "material_conflict", "tolerance_input_draft"))
+                    and declared_factor is not None and declared_value is not None and declared_value > 0)
+    effective_rate = declared_value * declared_factor if use_declared else rate
+    rate_source = "input" if use_declared else "theoretical"
     alpha = math.atan2(pitch, math.pi * mean) if pitch is not None and mean is not None else None
     length = _safe(lambda: math.pi * mean * total / math.cos(alpha)) if alpha is not None and total is not None else None
     mass = _safe(lambda: math.pi * d**2 / 4 * length * c["rho"] * 1e-6) if d is not None and length is not None and c["rho"] is not None else None
@@ -388,7 +403,7 @@ def calculate_design_checks(parameters: dict[str, Any], features: dict[str, Any]
         "helix_angle": _result(math.degrees(alpha) if alpha is not None else None, "°", "α = atan(t / (π*Dm))", ["pitch", "mean_diameter"], c),
         "wire_length": _result(length, "mm", "L ≈ π*Dm*n1 / cos(α)", ["pitch", "mean_diameter", "total_coils"], c, estimated=True, basis="展开长度近似值"),
         "theoretical_spring_rate": _result(rate, "N/mm", "P′ = G*d^4 / (8*Dm^3*n)", ["material", "wire_diameter", "mean_diameter", "active_coils"], c),
-        "unit_mass": _result(mass, "kg", "Q ≈ π*d²*L*ρ/4 × 10⁻⁶", ["material", "wire_diameter", "mean_diameter", "total_coils", "pitch"], c, estimated=True, basis="单件重量估算"),
+        "unit_mass": _result(mass, "kg", "Q ≈ π*d²*L*ρ/4 × 10⁻⁶", ["material", "wire_diameter", "mean_diameter", "total_coils", "pitch"], c, estimated=True, basis="单件重量估算", reason="缺少可用材料密度，请核对材料目录" if c["rho"] is None else ""),
         "nominal_solid_height": nominal_result,
         "reference_solid_height_limit": reference_result,
         "solid_height_used": _result(hb, "mm", "用于 Pb = P′*(H0-Hb)", ["solid_height"], c, reason=hb_reason, estimated=height_source.endswith("nominal"), basis=height_basis),
@@ -417,8 +432,8 @@ def calculate_design_checks(parameters: dict[str, Any], features: dict[str, Any]
                 reason = (hb_reason or "缺少可用压并高度") if solid else c["notes"].get("height", "缺少有效高度")
             elif h is not None and (height > h or hb is not None and height < hb or solid and height >= h):
                 reason = "高度超出有效压缩范围，请核对"
-            elif rate is not None and h is not None:
-                force = rate * (h - height)
+            elif effective_rate is not None and h is not None:
+                force = effective_rate * (h - height)
             else:
                 reason = "缺少理论刚度或自由高度，无法估算力值"
         value = _safe(lambda: 8 * force * mean * K / (math.pi * d**3)) if force is not None and mean is not None and d is not None and K is not None else None
@@ -434,6 +449,10 @@ def calculate_design_checks(parameters: dict[str, Any], features: dict[str, Any]
             result.update(height_source=height_source if estimated else None, model_id=geometry["model_id"] if estimated and height_source.endswith("nominal") else "input_height" if estimated else "provided_load")
             result["inputs"]["solid_height_mm"] = hb if estimated else None
             result["basis"] = "估算压并载荷；" + height_basis if estimated else "已有压并载荷"
+        if estimated:
+            result["inputs"].update(spring_rate_used=effective_rate, spring_rate_source=rate_source)
+            result["source_fields"] = ["wire_diameter", "mean_diameter", "free_length", "solid_height" if solid else "load_points", *(["spring_rate"] if use_declared else ["material", "active_coils"])]
+            result["basis"] += "；采用已确认输入刚度" if use_declared else "；采用理论刚度"
         return result
     if len(solid_points) > 1:
         solid = _result(None, "MPa", "τb = 8*Pb*Dm*K / (π*d³)", [], c, reason="存在多个压并载荷点，请核对")
@@ -454,6 +473,8 @@ def calculate_design_checks(parameters: dict[str, Any], features: dict[str, Any]
 
 
 def _is_solid_point(point: dict[str, Any]) -> bool:
+    if point.get("load_role") in {"working", "solid", "unknown"}:
+        return point["load_role"] == "solid"
     label = str(point.get("label") or "").strip().lower().replace(" ", "").replace("_", "")
     return label in {"fb", "pb", "压并载荷", "压并负荷", "压并力"}
 
@@ -463,9 +484,39 @@ def refresh_design_checks(review: dict[str, Any]) -> None:
         review.pop("design_checks", None)
         return
     parameters = review.get("spring_parameters") or {}
+    before = copy.deepcopy({f: parameters.get(f) for f in ("active_coils", "support_coils", "pitch", "solid_height")})
     apply_formula_support_coils(review)
     apply_company_simple_active_coils("compression_spring", parameters)
     apply_formula_support_coils(review)
     apply_formula_nominal_solid_height(review)
     apply_formula_pitch(review)
+    reconcile_automatic_updates(review, before)
     review["design_checks"] = calculate_design_checks(review.get("spring_parameters") or {}, review.get("spring_features") or {})
+
+
+def reconcile_automatic_updates(review: dict[str, Any], before: dict[str, Any]) -> None:
+    """Only auto-owned changes reopen confirmation; invalid drafts retain the last value."""
+    params = review.get("spring_parameters") or {}
+    for field, old in before.items():
+        item = params.get(field)
+        if not isinstance(item, dict) or _human_override(item):
+            continue
+        automatic = item.get("formula_calculation_kind") or "company_active_coil_rule" in _sources(item)
+        if not automatic:
+            continue
+        old = old if isinstance(old, dict) else {}
+        if item.get("value") is None and _number(old.get("value")) is not None and "solidworks_protocol_default" not in _sources(old):
+            item["value"] = old["value"]
+            item["derived_value_stale"] = True
+        signature = lambda p: (p.get("value"), p.get("formula_calculation_inputs"), p.get("derived_value_stale", False))
+        if signature(old) == signature(item):
+            continue
+        item["need_human_review"] = True
+        item.pop("confirmation_snapshot", None)
+        adjustments=review.setdefault("automatic_calculation_adjustments",{})
+        prior=adjustments.get(field) or {}
+        adjustments[field]={"version":VERSION,"before":prior.get("before") if prior.get("pending_save") else copy.deepcopy(old),"after":copy.deepcopy(item),"pending_save":True,"audit_recorded":False}
+        for key, confirmation in list((review.get("manual_confirmations") or {}).items()):
+            if key == field or isinstance(confirmation, dict) and confirmation.get("target_field") == field or key.endswith("_" + field):
+                review.setdefault("confirmation_history", []).append({"event": "confirmation_reopened", "field": field, "reason": "automatic_inputs_changed", "previous_confirmation": copy.deepcopy(confirmation)})
+                review["manual_confirmations"].pop(key)

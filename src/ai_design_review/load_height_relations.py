@@ -5,7 +5,7 @@ from copy import deepcopy
 import math
 from typing import Any
 
-VERSION = "load-height/v1"
+VERSION = "load-height/v2"
 KINDS = {"absolute_height", "free_deflection", "incremental_deflection", "unknown"}
 LENGTH_UNITS = {"mm": 1., "毫米": 1., "cm": 10., "厘米": 10., "m": 1000., "米": 1000., "in": 25.4, "inch": 25.4}
 
@@ -112,12 +112,12 @@ def refresh_load_heights(review: dict[str, Any]) -> list[dict[str, Any]]:
             return None
         visiting.add(key)
         distance = millimeters(relation.get("value"), relation.get("unit"))
-        if not relation.get("verified") or kind == "unknown":
-            reason = "高度尺寸的起止关系尚未核实，请核对原图"
+        if point.get("load_height_conflict"):
+            reason = "原图存在多个高度或公差证据冲突，请核对"
+        elif not relation.get("verified") or kind == "unknown":
+            reason = "表格中的高度与载荷关联尚未核实，请核对原图" if (point.get("source_context") or {}).get("kind")=="table" else "高度尺寸的起止关系尚未核实，请核对原图"
         elif distance is None or distance < 0:
             reason = "原始高度/行程的数值或单位无效"
-        elif point.get("load_height_conflict"):
-            reason = "原图高度或公差证据存在冲突，请核对"
         elif kind == "absolute_height":
             value, formula = distance, "H = 原图工作高度"
         elif kind == "free_deflection":

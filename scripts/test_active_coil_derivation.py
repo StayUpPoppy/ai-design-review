@@ -28,7 +28,8 @@ def main() -> None:
     assert derive_active_coils("compression_spring", open_parameters)["active_coils"]["value"] == 10
     open_parameters["end_grinding"]["value"] = "两端磨削"
     assert derive_active_coils("compression_spring", open_parameters)["active_coils"]["value"] == 9
-    assert _derived_value("compression_spring", 10, end_type="两端并紧") == 8
+    assert derive_active_coils("compression_spring", _parameters(10, end_type="两端并紧")) == {}
+    assert _derived_value("compression_spring", 10, end_type="两端并紧", support=1) == 8
     assert _derived_value("compression_spring", 10, end_type="两端并紧", support=1.5) == 7
     assert _derived_value("extension_spring", 10) == 10
     assert _derived_value("torsion_spring", 10) == 10
@@ -71,7 +72,7 @@ def _parameters(
 
 
 def _assert_company_default_refreshes_with_total_coils() -> None:
-    parameters = _parameters(10, end_type="两端并紧")
+    parameters = _parameters(10, end_type="两端并紧", support=1)
     assert apply_company_simple_active_coils("compression_spring", parameters) is True
     assert parameters["active_coils"]["value"] == 8
     parameters["total_coils"]["value"] = 12
@@ -85,15 +86,16 @@ def _assert_company_default_refreshes_with_total_coils() -> None:
 
 
 def _assert_confirmed_company_value_is_preserved() -> None:
-    parameters = _parameters(12, end_type="两端并紧")
+    parameters = _parameters(12, end_type="两端并紧", support=1)
     parameters["active_coils"] = {
         "value": 9,
         "source": ["company_active_coil_rule"],
         "derived_rule_id": "COMPANY-ACTIVE-COILS-END-CONDITION-V2",
         "need_human_review": False,
     }
-    assert apply_company_simple_active_coils("compression_spring", parameters) is False
-    assert parameters["active_coils"]["value"] == 9
+    assert apply_company_simple_active_coils("compression_spring", parameters) is True
+    assert parameters["active_coils"]["value"] == 10
+    assert parameters["active_coils"]["need_human_review"]
 
 
 def _assert_confirmed_end_wording_is_preserved() -> None:

@@ -16,8 +16,8 @@ def support_origin(item: dict[str, Any]) -> str:
         return "inferred"
     if re.search(r"(?:两端|双端|左右两端).{0,8}(?:合计|共|总)|总支承圈数|支承圈数合计|total\s+support", text, re.I):
         return "drawing_total"
-    if re.search(r"单端|每端|各端|两端各|每一端|per\s*end|each\s*end", text, re.I) and (
-        re.search(r"支承|支撑|support", text, re.I) or re.search(r"(?:单端|每端|各端|两端各|每一端)\s*[:：]?\s*\d+(?:\.\d+)?\s*圈", text)
+    if re.search(r"单端|每端|各端|两端各|每一端|per\s*end|each\s*(?:one\s*of\s*(?:the\s*)?two\s*)?ends?", text, re.I) and (
+        re.search(r"支承|支撑|support|number\s+of\s+end\s+coils|end\s+coils", text, re.I) or re.search(r"(?:单端|每端|各端|两端各|每一端)\s*[:：]?\s*\d+(?:\.\d+)?\s*圈", text)
     ):
         return "drawing_single_end"
     return "unknown"
@@ -63,6 +63,9 @@ def prepare_support(review: dict[str, Any]) -> None:
         # Unverified model arithmetic must not become an input to other formulas.
         if item["support_coils_origin"] != "drawing_single_end" and item.get("need_human_review") is not False:
             item["derived_value_stale"] = True
+        elif item["support_coils_origin"] == "drawing_single_end":
+            for key in ("derived_value_stale", "formula_recommendation_stale", "formula_recalculation_candidate", "formula_calculation_reason"):
+                item.pop(key, None)
 
 
 def reconcile_support(review: dict[str, Any], calculated: dict[str, Any]) -> None:
@@ -75,6 +78,10 @@ def reconcile_support(review: dict[str, Any], calculated: dict[str, Any]) -> Non
     protected = human_override(item) or origin == "drawing_single_end" or not automatic and item.get("value") not in (None, "")
     value = number(calculated.get("value"))
     input_changed = not same_inputs(item.get("formula_calculation_inputs") or item.get("support_coils_input_baseline"), calculated["inputs"])
+    if not formula and item.get("need_human_review") is False and not item.get("support_coils_input_baseline"):
+        item["support_coils_legacy_confirmed"] = True
+        item["support_coils_input_baseline"] = deepcopy(calculated["inputs"])
+    protected = protected or not formula and item.get("support_coils_legacy_confirmed") and same_inputs(item.get("support_coils_input_baseline"), calculated["inputs"])
     roots = [params.get(f) or {} for f in ("total_coils", "active_coils")]
     waiting = any(human_override(p) and p.get("need_human_review") is not False for p in roots)
     both_confirmed = all(p.get("need_human_review") is False for p in roots)
@@ -96,12 +103,7 @@ def reconcile_support(review: dict[str, Any], calculated: dict[str, Any]) -> Non
             if value is None:
                 item["support_coils_notice"] = calculated.get("reason") or "缺少有效计算依据"
         return
-    if waiting:
-        item.update(derived_value_stale=True, formula_recommendation_stale=True,
-                    formula_recalculation_candidate=deepcopy(calculated), support_coils_recompute_pending=True,
-                    support_coils_waiting_confirmation=True, formula_calculation_reason="总圈数和有效圈数当前值均确认后，将自动重算单端支承圈数")
-        return
-    if item.get("need_human_review") is False and (value is None or not input_changed or not (both_confirmed and edited)):
+    if item.get("need_human_review") is False and (value is None or not input_changed):
         from .calculation_state import preserve_candidate
         preserve_candidate(item, calculated)
         return

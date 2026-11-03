@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import re
 from typing import Any
+from ..coil_units import coil_unit_supported
 
 LENGTH_UNITS = {"mm": 1, "毫米": 1, "cm": 10, "m": 1000, "in": 25.4, "inch": 25.4, "英寸": 25.4}
 
@@ -33,6 +34,10 @@ def parameter_current(parameters: dict[str, Any], field: str, path: tuple[str, .
     item = parameters.get(field)
     if not isinstance(item, dict):
         return True
+    if field == "active_coils" and "solidworks_protocol_default" in sources(item) and item.get("need_human_review") is not False:
+        return False
+    if "coils" in field and not coil_unit_supported(field, item.get("unit")):
+        return False
     if item.get("derived_value_stale") or item.get("formula_recommendation_stale") and not human_override(item):
         return False
     if human_override(item) or not any(s in {"formula_calculation", "derived"} for s in sources(item)):
@@ -76,7 +81,17 @@ def preserve_candidate(item: dict[str, Any], calculation: dict[str, Any]) -> Non
     item.update(derived_value_stale=stale, formula_recommendation_stale=stale)
     if stale:
         item["formula_recalculation_candidate"] = calculation
-        item["formula_calculation_reason"] = "计算依据已变化或无法验证，请应用新候选值后重新确认"
+        item["formula_calculation_reason"] = calculation.get("reason") or "计算依据已变化或无法验证，请核对"
+        item["need_human_review"] = True
+        item.pop("confirmation_snapshot", None)
+        if calculation.get("value") is not None:
+            item.update(value=round(calculation["value"], 4), unit=calculation.get("unit", item.get("unit")),
+                        formula=calculation.get("formula", item.get("formula")),
+                        formula_calculation_inputs=calculation.get("inputs", {}),
+                        source_fields=calculation.get("source_fields", item.get("source_fields", [])),
+                        derived_value_stale=False, formula_recommendation_stale=False, formula_calculation_status="calculated")
+            item.pop("formula_recalculation_candidate", None)
+            item.pop("formula_calculation_reason", None)
     else:
         item.pop("formula_recalculation_candidate", None)
         item.pop("formula_calculation_reason", None)

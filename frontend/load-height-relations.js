@@ -1,6 +1,6 @@
 /* Original dimension types and deterministic load-height chains; no IO. */
 (() => {
-  const VERSION = "load-height/v1", units = { mm:1, "毫米":1, cm:10, "厘米":10, m:1000, "米":1000, in:25.4, inch:25.4 };
+  const VERSION = "load-height/v2", units = { mm:1, "毫米":1, cm:10, "厘米":10, m:1000, "米":1000, in:25.4, inch:25.4 };
   const number = value => typeof value === "boolean" || value == null || typeof value === "object" || String(value).trim() === "" ? null : Number.isFinite(Number(value)) ? Number(value) : null;
   const mm = (value,unit) => number(value) != null && units[String(unit || "").trim().toLowerCase()] != null ? Number((number(value)*units[String(unit).trim().toLowerCase()]).toFixed(12)) : null;
   const clone = value => value == null ? value : structuredClone(value);
@@ -36,9 +36,9 @@
       visiting.add(key);
       const before = clone(point), distance = mm(relation.value,relation.unit), inputs = {};
       let value = null, reason = "", formula = "";
-      if (!relation.verified || relation.kind === "unknown") reason = "高度尺寸的起止关系尚未核实，请核对原图";
+      if (point.load_height_conflict) reason = "原图存在多个高度或公差证据冲突，请核对";
+      else if (!relation.verified || relation.kind === "unknown") reason = point.source_context?.kind === "table" ? "表格中的高度与载荷关联尚未核实，请核对原图" : "高度尺寸的起止关系尚未核实，请核对原图";
       else if (distance == null || distance < 0) reason = "原始高度/行程的数值或单位无效";
-      else if (point.load_height_conflict) reason = "原图高度或公差证据存在冲突，请核对";
       else if (relation.kind === "absolute_height") { value = distance; formula = "H = 原图工作高度"; }
       else if (relation.kind === "free_deflection") {
         if (h0 == null || h0 <= 0) reason = "缺少有效自由高度，工作高度保持空值";

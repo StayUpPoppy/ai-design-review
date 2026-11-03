@@ -2625,6 +2625,7 @@ def _save_review_persistence(
     ensure_load_point_ids(review)
     ensure_technical_requirement_ids(review)
     revision = _expected_review_revision(expected_revision)
+    refresh_design_checks(review)
     audit_events = []
     for raw_event in events or []:
         event = dict(raw_event)
@@ -2642,6 +2643,20 @@ def _save_review_persistence(
         audit_events.append({"event_type":"load_height_evidence_reconciled","target_field":"load_points","source":"original_load_evidence",
             "before_state":load_adjustment["before"],"after_state":review.get("spring_parameters",{}).get("load_points",[]),
             "metadata":{"version":load_adjustment["version"]},"actor":identity.as_audit_actor()})
+    # Local repairs and server recomputations use the same normal CAS save/audit.
+    for field, adjustment in {**(previous.get("automatic_calculation_adjustments") or {}), **(review.get("automatic_calculation_adjustments") or {})}.items():
+        prior=(previous.get("automatic_calculation_adjustments") or {}).get(field) or {}
+        if (adjustment.get("pending_save") or prior.get("pending_save")) and not any(e.get("event_type")=="automatic_calculation_reconciled" and e.get("target_field")==field for e in audit_events):
+            audit_events.append({"event_type":"automatic_calculation_reconciled","target_field":field,"source":"formula_calculation",
+                "before_state":(prior if prior.get("pending_save") else adjustment).get("before"),"after_state":review.get("spring_parameters",{}).get(field),
+                "metadata":{"version":adjustment.get("version")},"actor":identity.as_audit_actor()})
+    pitch_adjustment=previous.get("pitch_recovery") or {}
+    if pitch_adjustment.get("pending_save") and not any(e.get("event_type")=="pitch_evidence_reconciled" for e in audit_events):
+        audit_events.append({"event_type":"pitch_evidence_reconciled","target_field":"pitch","source":"local_pitch_evidence",
+            "before_state":pitch_adjustment.get("before"),"after_state":review.get("spring_parameters",{}).get("pitch"),
+            "metadata":{"version":pitch_adjustment.get("version")},"actor":identity.as_audit_actor()})
+    for adjustment in (review.get("automatic_calculation_adjustments") or {}).values():
+        adjustment.update(pending_save=False,audit_recorded=True)
     history_status = "saved" if REVIEW_PERSISTENCE.configured else "saved_local"
     fallback_events = _merge_audit_events_into_review_history(review, audit_events, status=history_status)
     try:

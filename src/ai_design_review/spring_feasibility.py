@@ -25,6 +25,10 @@ def assess_parameter_reasonableness(
 
     parameters = review.get("spring_parameters") or {}
     issues = _compression_issues(parameters, review, include_missing_context=True)
+    for field in ("pitch",):
+        warning=(parameters.get(field) or {}).get("formula_check_warning")
+        if warning:
+            issues.append({"issue_id":field+"-formula-mismatch","rule_id":"FORMULA-CHECK","severity":"warning","fields":[field,"end_type","support_coils"],"message":warning,"basis":warning,"explanation":"保留原图或人工值；公式结果仅用于核对。"})
     linkage = review.get("diameter_linkage") or {}
     if linkage.get("status") == "invalid":
         reason = linkage.get("reason") or "三径联动条件无效，请核对线径及直径。"

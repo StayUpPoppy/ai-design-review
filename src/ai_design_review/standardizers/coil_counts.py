@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from typing import Any
 
 from ..end_conditions import END_TYPE_NOT_TIGHT, END_TYPE_TIGHT, normalize_end_type, normalize_end_grinding
 from .calculation_state import number, human_override, preserve_candidate, parameter_current
+from ..coil_units import coil_unit_supported
 
 COMPANY_ACTIVE_COIL_RULE = "COMPANY-ACTIVE-COILS-END-CONDITION-V2"
 LEGACY_COMPANY_SIMPLE_ACTIVE_COIL_RULE = "COMPANY-SIMPLE-ACTIVE-COILS-V1"
@@ -31,7 +33,7 @@ def derive_active_coils(
 
     total = _number(_param_value(spring_parameters, "total_coils"))
     total_item = spring_parameters.get("total_coils") or {}
-    if isinstance(total_item, dict) and (total_item.get("derived_value_stale") or total_item.get("formula_recommendation_stale") or str(total_item.get("unit") or "turns").strip().lower() not in {"turns", "turn", "圈"}):
+    if isinstance(total_item, dict) and (total_item.get("derived_value_stale") or total_item.get("formula_recommendation_stale") or not coil_unit_supported("total_coils", total_item.get("unit"))):
         total = None
     if total is None or not parameter_current(spring_parameters, "total_coils"):
         return {}
@@ -53,14 +55,13 @@ def derive_active_coils(
                 return {}
             support_coils = _number(_param_value(spring_parameters, "support_coils"))
             support_item = spring_parameters.get("support_coils") or {}
-            if isinstance(support_item, dict) and (human_override(support_item) and support_coils is None or support_item.get("derived_value_stale") or support_item.get("formula_recommendation_stale") or str(support_item.get("unit") or "turns").strip().lower() not in {"turns", "turn", "圈"}):
+            if isinstance(support_item, dict) and (human_override(support_item) and support_coils is None or support_item.get("derived_value_stale") or support_item.get("formula_recommendation_stale") or not coil_unit_supported("support_coils", support_item.get("unit")) or "active_coils" in (support_item.get("source_fields") or [])):
                 return {}
             if _param_value(spring_parameters, "support_coils") not in (None, "") and (support_coils is None or support_coils <= 0):
                 return {}
             support_source = "drawing_or_manual"
             if support_coils is None:
-                support_coils = 1.0
-                support_source = "company_default_per_end"
+                return {}
             value = total - 2 * support_coils
             formula = "total_coils - 2 * support_coils"
             basis = (
@@ -112,13 +113,14 @@ def apply_company_simple_active_coils(spring_type: str, spring_parameters: dict[
     """
     existing = spring_parameters.get("active_coils")
     if isinstance(existing, dict) and "company_active_coil_rule" in existing.get("source", []) and not human_override(existing) and existing.get("need_human_review") is False:
+        before = deepcopy(existing)
         shadow = {key: value for key, value in spring_parameters.items() if key != "active_coils"}
         calculated = derive_active_coils(spring_type, shadow).get("active_coils")
         candidate = {"value": calculated["value"] if calculated else None, "unit": "turns", "formula": calculated["formula"] if calculated else "", "basis": calculated["basis"] if calculated else "端部条件或圈数无效", "source_fields": calculated["source_fields"] if calculated else [], "inputs": calculated["inputs"] if calculated else {}}
         if "formula_calculation_inputs" not in existing and calculated and _number(existing.get("value")) == calculated["value"]:
             existing["formula_calculation_inputs"] = calculated["inputs"]
         preserve_candidate(existing, candidate)
-        return False
+        return existing != before
     derived = derive_active_coils(spring_type, spring_parameters, refresh_company_derived=True)
     item = derived.get("active_coils")
     if not item:
@@ -161,9 +163,7 @@ def _can_refresh_company_derived(item: Any) -> bool:
         return True
     if item.get("derived_rule_id") not in {COMPANY_ACTIVE_COIL_RULE, LEGACY_COMPANY_SIMPLE_ACTIVE_COIL_RULE}:
         return False
-    source = item.get("source", [])
-    values = source if isinstance(source, list) else [source]
-    return not any(str(value or "").lower().startswith("human") for value in values)
+    return not human_override(item)
 
 
 def _blank_company_derived_active_coils(existing: Any) -> dict[str, Any]:

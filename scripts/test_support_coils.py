@@ -82,8 +82,8 @@ def main():
     s["confirmation_snapshot"] = {"value": 1}; r["manual_confirmations"]["support_coils"] = {"confirmed": True, "value": 1}
     p = r["spring_parameters"]; p["total_coils"].update(value=18, source=["human_edited"], need_human_review=True)
     apply_formula_support_coils(r)
-    assert s["value"] == 1 and s["support_coils_waiting_confirmation"]
-    assert s["formula_recalculation_candidate"]["value"] == 2
+    assert s["value"] == 2 and s["need_human_review"] and not s["derived_value_stale"]
+    assert "formula_recalculation_candidate" not in s
     p["total_coils"]["need_human_review"] = False; apply_formula_support_coils(r)
     assert s["value"] == 2 and s["need_human_review"] and not s["derived_value_stale"]
     assert "support_coils" not in r["manual_confirmations"] and "confirmation_snapshot" not in s

@@ -50,7 +50,7 @@
   }
   function scaled(p = {}, kind = "length") {
     const unit = String(p.unit || (kind === "load" ? "N" : kind === "stiffness" ? "N/mm" : kind === "coils" ? "turns" : "mm")).trim().toLowerCase();
-    const factor = kind === "load" ? FORCE[unit] : kind === "stiffness" ? { "n/mm": 1, "n/cm": .1, "kn/m": 1, "n/m": .001 }[unit] : kind === "coils" && ["turns", "turn", "圈"].includes(unit) ? 1 : LENGTH[unit];
+    const factor = kind === "load" ? FORCE[unit] : kind === "stiffness" ? { "n/mm": 1, "n/cm": .1, "kn/m": 1, "n/m": .001 }[unit] : kind === "coils" && ["turns", "turn", "coil", "coils", "圈"].includes(unit) ? 1 : LENGTH[unit];
     const value = num(p.value);
     return p.invalid || factor == null || value == null || value <= 0 ? [null, null] : [value * factor, factor];
   }

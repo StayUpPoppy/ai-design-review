@@ -132,7 +132,7 @@ formattedRequirementsReview.technical_requirements = [
 ];
 assert.equal(
   context.makeGenerationParameterPackage(formattedRequirementsReview).generation_parameters.technical_requirements_text,
-  "1.表面处理：表面镀锌。\n2.盐雾试验：96小时。\n3.工艺要求：去除毛刺。；不得有锐边。",
+  "1.表面处理：表面镀锌。\n2.96小时。\n3.去除毛刺。；不得有锐边。",
 );
 
 const noRequirementsReview = structuredClone(review);
@@ -140,12 +140,12 @@ noRequirementsReview.technical_requirements = [];
 assert.equal(context.makeGenerationParameterPackage(noRequirementsReview).generation_parameters.technical_requirements_text, "");
 const originalNumberReview = structuredClone(review);
 originalNumberReview.technical_requirements = [{ type: "other", content: "9.未注尺寸以3D为准", original_number: "9", need_human_review: false }];
-assert.equal(context.makeGenerationParameterPackage(originalNumberReview).generation_parameters.technical_requirements_text, "1.其他要求：未注尺寸以3D为准");
+assert.equal(context.makeGenerationParameterPackage(originalNumberReview).generation_parameters.technical_requirements_text, "1.未注尺寸以3D为准");
 delete originalNumberReview.technical_requirements[0].original_number;
-assert.equal(context.makeGenerationParameterPackage(originalNumberReview).generation_parameters.technical_requirements_text, "1.其他要求：未注尺寸以3D为准");
+assert.equal(context.makeGenerationParameterPackage(originalNumberReview).generation_parameters.technical_requirements_text, "1.未注尺寸以3D为准");
 originalNumberReview.technical_requirements[0].content = "12.5 mm";
 originalNumberReview.technical_requirements[0].original_number = "12";
-assert.equal(context.makeGenerationParameterPackage(originalNumberReview).generation_parameters.technical_requirements_text, "1.其他要求：12.5 mm");
+assert.equal(context.makeGenerationParameterPackage(originalNumberReview).generation_parameters.technical_requirements_text, "1.12.5 mm");
 
 const engineeringNoteReview = structuredClone(review);
 const engineeringNote = { requirement_id: "3d-note", type: "other", content: "未注尺寸以3D为准", need_human_review: false };
@@ -225,9 +225,8 @@ assert.equal(staleReadiness.warnings.some((item) => item.field === "standardizat
 assert.equal(staleReadiness.warnings.some((item) => item.field === "surface"), true);
 
 review.spring_parameters.active_coils.value = null;
-assert.equal(context.assessGenerationReadiness(review).status, "needs_confirmation");
-assert.equal(review.spring_parameters.active_coils.value, 8);
-assert.equal(review.spring_parameters.active_coils.need_human_review, true);
+assert.equal(context.assessGenerationReadiness(review).status, "needs_input");
+assert.equal(review.spring_parameters.active_coils.value, null);
 const incompletePackage = context.makeGenerationParameterPackage(review);
 assert.ok(incompletePackage);
 assert.equal(incompletePackage.generation_parameters.spring_parameters.active_coils, undefined);

@@ -225,7 +225,7 @@ def _merge_load_point(
         "load_tolerance_upper",
         "load_tolerance_lower",
         "load_tolerance_percent",
-        "test_height_type", "deflection", "deflection_unit", "height_calculation", "height_relation",
+        "test_height_type", "deflection", "deflection_unit", "height_calculation", "height_relation", "load_role",
     )
     for key in value_keys:
         merged_value[key] = _first_load_point_value(ordered, key)

@@ -36,7 +36,7 @@ def main():
             p["total_coils"].update(value=18, source=["human_edited"], need_human_review=True)
             assert client.patch("/api/reviews/support", json={"review": r}).status_code == 200
             r = client.get("/api/reviews/support").json(); p = r["spring_parameters"]
-            assert p["support_coils"]["value"] == 1 and p["support_coils"]["support_coils_waiting_confirmation"]
+            assert p["support_coils"]["value"] == 2 and p["support_coils"]["need_human_review"]
             p["total_coils"]["need_human_review"] = False
             assert client.patch("/api/reviews/support", json={"review": r}).status_code == 200
             r = client.get("/api/reviews/support").json(); s = r["spring_parameters"]["support_coils"]

@@ -48,7 +48,10 @@ def classify_load_candidate(candidate: dict[str, Any]) -> tuple[str, str, str]:
     headers = " ".join(context.get("headers", []))
     declared_force_unit = bool(_DECLARED_FORCE_UNIT.search(" ".join([headers, context.get("unit_evidence", "")])))
     table_load = bool(_HEIGHT.search(headers) and _FORCE.search(headers) and re.search(_NUMBER, context.get("row_text", "")))
-    annotation_load = bool(_F_SYMBOL.search(evidence) and (_H_SYMBOL.search(evidence) or _FORCE_UNIT.search(evidence) or declared_force_unit))
+    from .load_point_evidence import extract_force_annotations
+    annotations=extract_force_annotations(evidence, (candidate.get("value") or {}).get("force_unit") if declared_force_unit else None)
+    # The force unit/engineering context establishes a load; its name is not a whitelist.
+    annotation_load = bool(annotations) or bool(_F_SYMBOL.search(evidence) and _H_SYMBOL.search(evidence))
     sentence_load = bool(not _GENERIC_TABLE.search(evidence) and _HEIGHT.search(evidence) and _FORCE.search(evidence)
                          and re.search(r"当|压缩(?:到|至)|压至|工作|试验|测试|when|compressed|test|working|height", evidence, re.I)
                          and re.search(_NUMBER, evidence) and (_FORCE_UNIT.search(evidence) or _H_SYMBOL.search(evidence) or declared_force_unit))
