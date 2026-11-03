@@ -154,13 +154,13 @@ SW专用文本将条目标签“绕制方向：”改为“旋向：”，`custo
 
 同位指同页数字框中心位于模型框内，向外最多扩展一个OCR数字框短边；区域内多处同值不选点。模型框缺失时，可复核相同原图标识下的历史原图锚点／数字框（不使用气泡圆心）；没有历史依据时，仅同页唯一、无尺寸角色冲突的数字可自动恢复。多处同值保留“位置待核对”候选，允许采用数值后人工定位。新Qwen请求的粗糙度对象允许`occurrences: [{value, page, position, evidence, surface_location}]`，每处数字分别给归一化左上角框，无法确定时返回null，不新增请求。
 
-v3增加无模型坐标的两端同值配对：声明为两端面或同值左右端面时，复用现有图形分区；仅唯一视图区内恰有两处独立同值数字、视图区像素长短轴比至少1.3、数字中心分别位于长轴首尾35%区域时生成两处12号气泡。多个视图或无法配对时只提示“数值已核实，位置待核对”，不抹去数值；一端定位成功则先显示一处气泡。结构化父字段及occurrences继承相同识别身份，保留父子原文，左右端同值归为两端面。旧误分类仅凭实际保存的结构化模型响应恢复；分析性备注、推测或推荐不会被升级。
+v3增加无模型坐标的两端同值配对：声明为两端面或同值左右端面时，复用现有图形分区；仅唯一视图区内恰有两处独立同值数字、视图区像素长短轴比至少1.3、数字中心分别位于长轴首尾35%区域时生成两处11号气泡（显示编号）。多个视图或无法配对时只提示“数值已核实，位置待核对”，不抹去数值；一端定位成功则先显示一处气泡。结构化父字段及occurrences继承相同识别身份，保留父子原文，左右端同值归为两端面。旧误分类仅凭实际保存的结构化模型响应恢复；分析性备注、推测或推荐不会被升级。
 
 可选元数据：`verification_version: "roughness_original_evidence/v3"`、`source_document_id`、`value_verified: boolean`、`verification_method: "explicit_label" | "model_position" | "historical_anchor" | "unique_number" | "end_pair" | "needs_location" | "unverified"`、`recognition_state: "located" | "needs_location" | "unverified" | "missing" | "failed"`。`independent_evidence: [{source: "pdf_text" | "ocr" | "local_ocr", page: number, position: {x,y,width,height}, text: string, location?: string}]`记录已定位证据，`numeric_evidence`保留核实数值的独立数字框；`expected_locations`记录明确端面声明需要的位置数。候选value_verified不等同于direct；参数value_verified对应当前值，不是人工确认状态。`recognition_position`保留原模型框。坐标均相对显示方向规范化页面；前端只读取服务端核验标记，不凭文字自行升级。旧记录允许缺少这些字段。原始识别快照、核验警告及升级审计不进入SW。
 
 核验复用`annotation_ocr_v3.json`，粗糙度候选独立触发，不要求正式值或气泡已有位置。每页整页OCR完成后复用，失败可手动重试；单次补定位每页最多12个局部输入，旋转计入。完成区域不重复识别，历史缓存总数不限制新必要区域。`roughness_verification.json`按原图、v3、候选、有效历史锚点和OCR缓存修订复用；旧v1/v2拦截结果重判，失败普通打开不反复执行。不调用Qwen或新增云端服务。
 
-未确认模型项没有独立数字证据时，正式值留空，疑似值折叠保存，不显示项目参考按钮；OCR失败显示失败原因。数值核实但位置不唯一时保留正式值、允许人工确认，并提示待定位。真正没有候选时才显示12.5／6.3／不添加。两端同值归为一个参数、两处12号气泡，多值或明确不同用途保持冲突。自动气泡只使用已定位direct证据，不依赖正式值是否为空、确认或冲突，位置可带`evidence_value`供提示；定位尚未完成不会阻止已确认有效数值输出SW。
+未确认模型项没有独立数字证据时，正式值留空，疑似值折叠保存，不显示项目参考按钮；OCR失败显示失败原因。数值核实但位置不唯一时保留正式值、允许人工确认，并提示待定位。真正没有候选时才显示12.5／6.3／不添加。两端同值归为一个参数、两处11号气泡（显示编号），多值或明确不同用途保持冲突。自动气泡只使用已定位direct证据，不依赖正式值是否为空、确认或冲突，位置可带`evidence_value`供提示；定位尚未完成不会阻止已确认有效数值输出SW。
 
 旧v3标注仅刷新粗糙度自动位置；其他标注和最新人工位置保留，未变化的证据不增加标注修订。`POST /api/reviews/{id}/annotations/relocalize`仍返回完整标注文档，可选附带`roughness_update: {based_on_revision, parameter}`供前端通过保存队列同步草稿；并发编辑、修订或切换订单后不应用旧响应。人工填写、参考、人工确认及无法判断来源的旧值不静默修改；GET草稿经普通保存队列记录`roughness_evidence_verified`。旧技术要求不能未经核验填回。无新增业务接口或数据库迁移，冻结SW请求和重试保持原样。
 

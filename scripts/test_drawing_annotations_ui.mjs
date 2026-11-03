@@ -36,6 +36,8 @@ for (const anchor of [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 15, y: 0 }]) {
   assert.equal(ui.leaderEndpoint(anchor, { x: 0, y: 0 }), null, "No leader is drawn inside or on the circle");
 }
 const document = { source_document_id: "source-1", annotation_revision: 1, pages: [{ page: 1, image_url: "/one.png", width: 1000, height: 800 }, { page: 2, image_url: "/two.png", width: 1000, height: 800 }], annotations: [{ annotation_id: "wire_diameter", field: "wire_diameter", label: "线径", number: 4, original_value: 2, locations: [{ location_id: "wire_diameter-1", page: 2, anchor: { x: .2, y: .3 }, bubble: { x: .25, y: .25 } }] }, { annotation_id: "mean_diameter", field: "mean_diameter", label: "中径", number: 7, original_value: null, locations: [], reason: "无直接标注" }], warnings: [] };
+document.annotations.push({annotation_id:"standard_no",field:"standard_no",label:"标准号",number:2,original_value:"GB/T 1239.2-2009",locations:[{location_id:"standard-legacy",page:2,anchor:{x:.4,y:.4},bubble:{x:.45,y:.35},source:"manual"}]});
+document.diagnostics=[{field:"standard_no",kind:"value_mismatch",reason:"隐藏标准号旧诊断"}];
 const params = { wire_diameter: { value: 3 }, mean_diameter: { value: 26 } };
 const beforeParams = JSON.stringify(params);
 let job = "job-1", requestCount = 0, loadCount = 0, failLoad = false, fail = false, conflict = false, updates = 0, hold = null, isCompression = true;
@@ -59,9 +61,9 @@ assert.match(ui.infoHtml(), /原图识别值：2/);
 assert.match(ui.infoHtml(), /当前值：3/);
 assert.equal(ui.screenPoint({ x: .2, y: .3 }).x, 120);
 assert.equal(ui.imagePoint({ clientX: 130, clientY: 170 }).y, .3);
-assert.match(ui.badgeHtml("wire_diameter", params.wire_diameter), />4<\/button>/);
+assert.match(ui.badgeHtml("wire_diameter", params.wire_diameter), />3<\/button>/);
 assert.equal(ui.badgeHtml("pitch", { value: 5 }), "");
-const numberedFields = ["material", "standard_no", "accuracy_grade", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "solid_height", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"];
+const numberedFields = ["material", "accuracy_grade", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "solid_height", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"];
 for (const [index, field] of numberedFields.entries()) {
   for (const param of [undefined, {}, { value: null }, { value: "", evidence: "" }, { value: 0 }, { value: "识别值", need_human_review: true }, { value: "已确认值", need_human_review: false }]) {
     const before = JSON.stringify(param);
@@ -72,8 +74,17 @@ for (const [index, field] of numberedFields.entries()) {
 isCompression = false;
 for (const field of numberedFields) assert.equal(ui.badgeHtml(field, { value: "" }), "", "Other spring types do not gain numbers");
 isCompression = true;
-const beforeUnlocated = JSON.stringify(ui.entry().document);
+assert.equal(ui.badgeHtml("standard_no", {value:"GB/T 1239.2-2009"}), "");
+assert.equal(ui.numberForField("standard_no"), null);
+assert.equal(ui.numberForField("surface_roughness_ra"), 11);
+assert.match(ui.infoHtml(), /3 · 线径/);
+assert.match(ui.infoHtml(), /6 · 中径/);
+assert.doesNotMatch(ui.infoHtml(), /标准号/);
+const selectedBeforeHidden=ui.entry().selected;
 await ui.focusField("standard_no");
+assert.equal(ui.entry().selected,selectedBeforeHidden,"Hidden legacy fields cannot be selected");
+const beforeUnlocated = JSON.stringify(ui.entry().document);
+await ui.focusField("mean_diameter");
 assert.match(ui.infoHtml(), /未找到可靠原图位置/);
 assert.equal(JSON.stringify(ui.entry().document), beforeUnlocated, "An empty/unlocated badge cannot fabricate a drawing location");
 assert.equal(requestCount, 0, "Focusing a badge never saves annotations or parameters");
@@ -156,8 +167,8 @@ await backfilling;
 hold = null;
 assert.equal(updates, beforeOtherOrder, "an old backfill response cannot redraw a new order");
 assert.equal(JSON.stringify(params), beforeParams);
-// Annotation #2 must target its parameter row; legacy standardization links retain
-// their standards-pane path and never confirm a field just because it was focused.
+// Annotation #2 and standard links use the existing standards pane now that
+// the editor row is hidden; focusing never confirms a field.
 const appSource = fs.readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 assert.match(appSource, /focusParameter:.*parameterRow: true/);
 const focusStart = appSource.indexOf("function focusMissingStandardizationField(");
@@ -172,9 +183,9 @@ const navigation = { state: { review: {}, compareOpen: true, activeReviewMessage
 vm.createContext(navigation);
 vm.runInContext(appSource.slice(focusStart, focusEnd), navigation);
 navigation.focusMissingStandardizationField("standard_no", null, { highlight: true, parameterRow: true });
-assert.equal(navigation.state.compareTab, "parameters");
-assert.equal(rowFocused, true);
-assert.equal(standardFocused, false);
+assert.equal(navigation.state.compareTab, "standards");
+assert.equal(rowFocused, false);
+assert.equal(standardFocused, true);
 navigation.focusMissingStandardizationField("standard_no", null, { highlight: true });
 assert.equal(navigation.state.compareTab, "standards");
 assert.equal(standardFocused, true);
@@ -189,4 +200,4 @@ assert.equal(JSON.stringify([...solved.positions]), JSON.stringify([...ui.layout
 const manualEntries = [{ key: "fixed", location: { source: "manual", anchor: { x: .2, y: .2 }, bubble: { x: .6, y: .4 } } }, ...entries.slice(0, 5)];
 assert.equal(JSON.stringify(ui.layoutLocations(manualEntries, [], 600, 400).positions.get("fixed")), JSON.stringify({ x: 360, y: 160 }), "automatic layout never moves a manual location");
 assert.equal(ui.layoutLocations(entries, [], 45, 40).crowded, true, "crowded pages keep all labels and report the problem");
-console.log("drawing annotation UI tests passed: fixed numbers, pixel collision solver, manual protection, coordinates, navigation, offline retry, conflict and serial saves");
+console.log("drawing annotation UI tests passed: 14 display numbers over legacy records, pixel collision solver, manual protection, coordinates, navigation, offline retry, conflict and serial saves");

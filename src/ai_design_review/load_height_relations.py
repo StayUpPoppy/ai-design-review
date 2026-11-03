@@ -37,7 +37,10 @@ def normalize_relation(value: Any, *, trusted: bool = False) -> dict[str, Any] |
               "verified": bool(trusted and value.get("verified")),
               "evidence_refs": deepcopy(value.get("evidence_refs") or []),
               "page": value.get("page", 1), "scope": str(value.get("scope") or "")}
-    for key in ("last_inputs", "formula", "status", "reason", "verification_method", "source_document_id", "preserve_existing_value"):
+    if isinstance(value.get("graphic_hint"), dict):
+        # Model positions are preserved as candidates, never as verified evidence.
+        result["graphic_hint"] = deepcopy(value["graphic_hint"])
+    for key in ("last_inputs", "formula", "status", "reason", "verification_method", "source_document_id", "preserve_existing_value", "geometry_evidence", "verification_failure", "geometry_candidate"):
         if trusted and key in value:
             result[key] = deepcopy(value[key])
     return result
@@ -115,7 +118,7 @@ def refresh_load_heights(review: dict[str, Any]) -> list[dict[str, Any]]:
         if point.get("load_height_conflict"):
             reason = "原图存在多个高度或公差证据冲突，请核对"
         elif not relation.get("verified") or kind == "unknown":
-            reason = "表格中的高度与载荷关联尚未核实，请核对原图" if (point.get("source_context") or {}).get("kind")=="table" else "高度尺寸的起止关系尚未核实，请核对原图"
+            reason = relation.get("verification_failure") or ("表格中的高度与载荷关联尚未核实，请核对原图" if (point.get("source_context") or {}).get("kind")=="table" else "高度尺寸的起止关系尚未核实，请核对原图")
         elif distance is None or distance < 0:
             reason = "原始高度/行程的数值或单位无效"
         elif kind == "absolute_height":

@@ -144,6 +144,7 @@ const context = {
   },
 };
 vm.createContext(context);
+vm.runInContext(appSource.slice(appSource.indexOf("function getEditorParameterFieldGroups"), appSource.indexOf("function getParameterFieldGroups")), context);
 translationTestHelpers(context);
 for (const [startName, endName] of [["function applyManualSurfaceNormalization", "function clearSurfaceNormalization"],
   ["function technicalTranslationWarningAudit", "function refreshTechnicalTranslationControls"]]) {
@@ -216,7 +217,7 @@ assert.deepEqual(
   ],
 );
 assert.equal(plan.skipped.some((item) => item.field === "free_length" && item.reason.includes("未在图中识别，请单独确认")), true);
-assert.equal(plan.skipped.some((item) => item.field === "standard_no" && item.reason.includes("标准号与当前适用标准不一致")), true);
+assert.equal(plan.skipped.some((item) => item.field === "standard_no"), false, "hidden standard is not a parameter-list confirmation item");
 assert.equal(plan.skipped.some((item) => item.field === "solid_height" && item.reason.includes("公式来源字段")), true);
 assert.equal(plan.skipped.some((item) => item.field === "formula_chain" && item.reason.includes("公式来源字段")), true);
 assert.equal(plan.skipped.some((item) => item.field === "stale_formula" && item.reason.includes("公式结果已过期")), true);
@@ -252,14 +253,16 @@ supportedStandardReview.standardization_results.push({
 });
 context.state.review = supportedStandardReview;
 const standardPlan = context.buildSafeConfirmationPlan(supportedStandardReview);
-assert.equal(standardPlan.items.some((item) => item.field === "standard_no"), true);
+assert.equal(standardPlan.items.some((item) => item.field === "standard_no"), false);
 supportedStandardReview.standardization_results.push({
   target_field: "standard_no", suggested_value: "OTHER-STANDARD", status: "need_context",
 });
 assert.equal(context.buildSafeConfirmationPlan(supportedStandardReview).items.some((item) => item.field === "standard_no"), false);
 supportedStandardReview.standardization_results.pop();
 context.confirmSafeRecognizedFields(standardPlan);
-assert.equal(supportedStandardReview.spring_parameters.standard_no.need_human_review, false);
+assert.equal(supportedStandardReview.spring_parameters.standard_no.need_human_review, true, "bulk confirmation cannot confirm hidden standard");
+assert.notEqual(supportedStandardReview.standard_selection.human_confirmed, true);
+context.confirmStandardSelection();
 assert.equal(supportedStandardReview.standard_selection.human_confirmed, true);
 assert.equal(supportedStandardReview.manual_confirmations.standard_selection.confirmed, true);
 context.state.review = review;
@@ -275,7 +278,7 @@ let followup = context.bulkConfirmationFollowupReport(review);
 assert.equal(followup.confirmed_count, 9);
 assert.equal(followup.items.some((item) => item.field === "pitch" && item.state === "blocked"), true);
 assert.equal(followup.items.some((item) => item.field === "straightness" && item.state === "manual"), true);
-assert.equal(followup.items.some((item) => item.field === "standard_no" && item.state === "manual"), true);
+assert.equal(followup.items.some((item) => item.field === "standard_no"), false);
 assert.equal(followup.items.some((item) => item.kind === "technical" && item.state === "blocked"), true);
 assert.equal(followup.items.some((item) => item.field === "free_length" && item.state === "manual"), true, "visible defaults must be listed");
 assert.equal(followup.items.some((item) => item.field === "solid_height"), false, "formula values unlocked in the same batch must not remain in follow-up");

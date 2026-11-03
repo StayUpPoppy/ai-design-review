@@ -37,7 +37,7 @@
       const before = clone(point), distance = mm(relation.value,relation.unit), inputs = {};
       let value = null, reason = "", formula = "";
       if (point.load_height_conflict) reason = "原图存在多个高度或公差证据冲突，请核对";
-      else if (!relation.verified || relation.kind === "unknown") reason = point.source_context?.kind === "table" ? "表格中的高度与载荷关联尚未核实，请核对原图" : "高度尺寸的起止关系尚未核实，请核对原图";
+      else if (!relation.verified || relation.kind === "unknown") reason = relation.verification_failure || (point.source_context?.kind === "table" ? "表格中的高度与载荷关联尚未核实，请核对原图" : "高度尺寸的起止关系尚未核实，请核对原图");
       else if (distance == null || distance < 0) reason = "原始高度/行程的数值或单位无效";
       else if (relation.kind === "absolute_height") { value = distance; formula = "H = 原图工作高度"; }
       else if (relation.kind === "free_deflection") {

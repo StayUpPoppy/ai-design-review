@@ -56,7 +56,7 @@ node scripts/test_load_height_relations_browser.mjs
 
 `LOAD_HEIGHT_TEST_PDF`可指定验收PDF；本地提供的原图优先使用。接口测试在没有该附件时生成临时的同类尺寸链PDF。浏览器、Qwen及SW使用模拟响应；数据库使用临时SQLite，不修改真实订单。
 
-后端及前端更新后执行`docker compose up -d --build api worker`，检查服务健康并Ctrl+F5刷新。高度换算脚本缓存版本为`20261103-calculation-recovery`。
+后端及前端更新后执行`docker compose up -d --build api worker`，检查服务健康并Ctrl+F5刷新。高度换算及主脚本缓存版本为`20261103-load-graph-v1`。
 
 ## 通用名称与双语载荷表（v3）
 
@@ -65,3 +65,40 @@ Pn、Fmin、F_A、数字、下标和中文工况名只用于标识，不再用�
 本地核验支持Height/Load、安装高度/载荷等纵向相邻行及横向列头表格。高度和力值须各有单位，且属于同一列/行、同一载荷区块；合并标题不作为数值。OCR重复框合并，完整15框中的1和5不再制造多个高度；不同单元数字不能拼接。匹配仍限同页和本规格区域，多处不同高度保留冲突。核验方式为table_cells，折叠依据保留高度与力值单元的证据引用。
 
 NBM200M-2454采用表格15mm/142.1N，图示13±0.5独立保留；Pn±5N仍绑定原力值。表格关系无法核实时提示“表格中的高度与载荷关联尚未核实”，尺寸链提示起止关系，缺少参考点及多高度冲突分别保留原因。直接高度不会再次相减。旧订单复用保存响应与OCR缓存修复未确认自动值，人工/已确认值不静默替换。
+
+
+## 图形载荷直接高度补核（v4）
+
+新增通路只补核缺失/未核实高度；已有明确文字、载荷表、尺寸链及v3成功缓存优先保留。原轴向Hough线段输入不变；位图额外使用本地LSD保留倾斜线、引出线和折线，PDF复用原矢量线段，不增加云端调用。
+
+共同基准、尺寸基线两端界线和载荷曲线交点必须成立。根据标注直接接触或可追踪的引出线落点关联载荷竖线，多个可能配对不能唯一消歧时保持待核对；不按编号、数字大小、左右顺序或刚度反选。少量照片倾斜与四方向旋转在局部坐标核验后换回原图坐标。范围限定同页及本规格，尺寸之外的重复OCR和无关数字不会成为高度。短断线只在两侧共线支持时补连，交叉但不接端点的线不当作连通引出线。
+
+本地原照片重放：回位弹簧F1为22.5mm/29.26N、F2为20mm/42.56N，公差均空；主弹簧F1为32mm/805±81N、F2为29mm/1496±150N。主弹簧的26属于另一界线，不借给F2。两图均为absolute_height，改变自由高度也不再次相减。
+
+height_relation可选元数据：
+
+- `geometry_evidence`：`load-graph/v1`、基准、尺寸端点、载荷落点、曲线及引出线路径，坐标均为原图归一化坐标；核验方式为`dimension_graph`或`dimension_leader`。
+- `verification_failure`：引出线分叉、多个合理配对等具体原因；前后端显示同一待核对说明。
+- `graphic_hint`：当前Qwen请求提供的可选位置候选；不信任其自带核验标记，也不单独用于认证。
+- `geometry_candidate`：与成功结果不同的图形候选，仅追溯，不替换当前结果或确认。
+
+核验缓存为`load-evidence/v4`；原v3缓存的成功点继续复用，混合缓存仅补核未成功点。旧订单在内存恢复未确认自动高度，正常保存队列/CAS/审计落库，人工值、清空、已确认及成功原图关系受保护。辅助检测失败不会写入成功缓存。以上元数据不进入SW，冻结任务和原参数重试不变。
+
+参数编辑器的数值和公差事件绑定当前订单、用户/服务范围及审图对象；销毁旧输入框产生的迟到change/input不得重新激活上一订单。
+
+## 标准号显示精简
+
+标准号仅从主要参数和高级参数编辑列表隐藏，计数及该列表的批量确认不包含此项。模板、原值、原确认、识别保存、精度/标准化及确认单/PDF保留。气泡坐标和字段ID保留；前端显示编号现按14项重排，2号为通用精度等级，标准号气泡隐藏，标准号相关定位转到现有“标准化”页签。仅隐藏或导航不保存/撤销确认。
+
+新增离线检查：
+
+```powershell
+.venv/Scripts/python.exe scripts/test_load_graph_geometry.py
+.venv/Scripts/python.exe scripts/test_load_graph_geometry.py --local
+.venv/Scripts/python.exe scripts/test_load_graph_recovery_api.py --local
+node scripts/test_bulk_confirmation_ui.mjs
+node scripts/test_bulk_confirmation_browser.mjs
+node scripts/test_load_height_relations_browser.mjs
+```
+
+`--local`额外使用本地保存的两张原照片、原响应和OCR缓存；普通测试使用自带图形样例及临时SQLite。浏览器全部模拟接口，不发起识别或生产SW请求。部署仍为`docker compose up -d --build api worker`，无需数据库迁移，Ctrl+F5后重新打开旧订单即可补核。

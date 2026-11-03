@@ -17,7 +17,7 @@ from .load_height_relations import VERSION, number, millimeters, refresh_load_he
 
 _PDF_LOCK = RLock()
 LOGGER = logging.getLogger(__name__)
-EVIDENCE_VERSION = "load-evidence/v3"
+EVIDENCE_VERSION = "load-evidence/v4"
 
 
 def _verification_warning(stage, error, warnings=None):
@@ -182,7 +182,7 @@ def _pdf_pages(path: str, size: int, modified: int, limit: int) -> list[dict[str
                         if item[0] == "l":
                             a,b = _point(item[1].x,item[1].y,page), _point(item[2].x,item[2].y,page)
                             lines.append([*a,*b])
-                result.append({"page":index+1,"width":width,"height":height,"texts":texts,"lines":lines,"source":"pdf_text_layer"})
+                result.append({"page":index+1,"width":width,"height":height,"texts":texts,"lines":lines,"line_segments":deepcopy(lines),"source":"pdf_text_layer"})
     return result
 
 
@@ -355,6 +355,32 @@ def extract_page_points(page: dict[str, Any], *, region=None, document_id="", sc
                     if abs(target_x-zero)<=abs(base_x-zero):continue
                     target["height_relation"]=_relation("incremental_deflection",value,unit,t,page,document_id,scope,reference)
                     target["height_relation"]["base_label"]=base["label"]
+    # Supplement only unresolved relations. The established text/table/chain
+    # paths and their original coordinates remain authoritative.
+    if any(not p['height_relation'].get('verified') for p,_ in records) and page.get('line_segments'):
+        from .load_graph_geometry import geometry_relations
+        diagnostics=[]
+        for graph in geometry_relations(page,region=region,diagnostics=diagnostics):
+            matching=[p for p,_ in records if p['label'].casefold()==graph['label'].casefold()
+                      and p['force_unit']==graph['force_unit'] and abs(p['force']-graph['force'])<1e-8]
+            if len(matching)!=1:continue
+            point=matching[0]
+            existing=point['height_relation']
+            if existing.get('verified'):
+                if existing.get('kind')=='absolute_height' and millimeters(existing.get('value'),existing.get('unit'))!=graph['value']:
+                    existing['geometry_candidate']={'value':graph['value'],'unit':'mm','evidence':graph['dimension_text'],
+                        'geometry_evidence':deepcopy(graph['geometry_evidence'])}
+                continue
+            text={'text':graph['dimension_text'],'bbox':graph['dimension_bbox']}
+            relation=_relation('absolute_height',graph['value'],'mm',text,page,document_id,scope,graph['reference_only'])
+            relation.update(verification_method=graph['verification_method'],geometry_evidence=graph['geometry_evidence'])
+            point['height_relation']=relation
+        for diagnosis in diagnostics:
+            for point,_ in records:
+                if (not point['height_relation'].get('verified')
+                    and point['label'].casefold()==diagnosis['label'].casefold()
+                    and point['force_unit']==diagnosis['force_unit'] and abs(point['force']-diagnosis['force'])<1e-8):
+                    point['height_relation']['verification_failure']=diagnosis['reason']
     return [p for p,_ in records]
 
 
@@ -446,6 +472,14 @@ def raster_pages(job_dir, review, *, raw_payloads=None, allow_ocr=False, warning
                 # Text/force evidence remains usable; no lines means no inferred dimension chain.
                 _verification_warning(f"page {page['page']} lines", error, warnings)
                 lines=[]
+            # LSD recovers faint/tilted photographed rules without changing the
+            # legacy threshold/Hough input. This is local geometry, not an OCR/model call.
+            try:
+                detected=cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD).detect(np.asarray(image))[0]
+                segments=np.asarray(detected).reshape(-1,4).tolist() if detected is not None else []
+            except Exception as error:
+                _verification_warning(f"page {page['page']} load graph",error,warnings)
+                segments=[]
             texts=[]
             for block in blocks:
                 if block.get("page")!=page["page"]:continue
@@ -461,7 +495,7 @@ def raster_pages(job_dir, review, *, raw_payloads=None, allow_ocr=False, warning
                 coil_circles=[]
             lines=[[v/scale for v in line] for line in lines]
             texts=[{**t,"bbox":[v/scale for v in t["bbox"]]} for t in texts]
-            result.append({"page":page["page"],"width":width/scale,"height":height/scale,"lines":lines,"texts":texts,"epsilon":1.5,"source":"local_ocr","coil_circles":coil_circles})
+            result.append({"page":page["page"],"width":width/scale,"height":height/scale,"lines":lines,"line_segments":[[v/scale for v in l] for l in segments],"texts":texts,"epsilon":1.5,"source":"local_ocr","coil_circles":coil_circles})
     return result
 
 
@@ -538,27 +572,36 @@ def reconcile_load_points(review, job_dir):
         info=path.stat() if path.is_file() else None
         signatures.append((info.st_size,info.st_mtime_ns) if info else None)
     fingerprint=hashlib.sha256(f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:{EVIDENCE_VERSION}:{json.dumps(region,sort_keys=True)}:{signatures}".encode()).hexdigest()
+    legacy_fingerprint=hashlib.sha256(f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:load-evidence/v3:{json.dumps(region,sort_keys=True)}:{signatures}".encode()).hexdigest()
     cache_path=job_dir/"load_point_evidence.json"
     cache=_read_json(cache_path)
     from .pitch_evidence import recover_pitch
     pitch_item=(review.get("spring_parameters") or {}).get("pitch") or {}
     repair_pitch=(pitch_item.get("value") in (None,"") or pitch_item.get("formula_calculation_kind")=="pitch") and not any(str(s).startswith(("human_edited","manual")) for s in pitch_item.get("source",[]))
     evidence_pages=None
+    verification_warnings=[]
     if repair_pitch:
         try:
-            evidence_pages=raster_pages(job_dir,review,allow_ocr=True)
+            evidence_pages=raster_pages(job_dir,review,allow_ocr=True,warnings=verification_warnings)
             recover_pitch(review,evidence_pages,region=region)
         except Exception as error:
-            _verification_warning("pitch evidence",error)
+            _verification_warning("pitch evidence",error,verification_warnings)
     if cache.get("fingerprint")==fingerprint:
         recovered=cache.get("points",[])
+    elif cache.get("fingerprint")==legacy_fingerprint and cache.get('points') and all(p.get('height_relation',{}).get('verified') for p in cache['points']):
+        recovered=cache['points']
     else:
-        verification_warnings=[]
         try:
             hints=(review.get("spring_parameters") or {}).get("load_points") or []
             recovered=original_points(source,region=region,scope=scope,hints=hints)
             if not recovered or any(not p["height_relation"].get("verified") for p in recovered):
                 recovered=_merge_original_points(recovered,original_points(source,region=region,scope=scope,pages=evidence_pages if evidence_pages is not None else raster_pages(job_dir,review,allow_ocr=True,warnings=verification_warnings),hints=hints))
+            if cache.get('fingerprint')==legacy_fingerprint:
+                # Mixed old caches keep successful points verbatim; only pending
+                # siblings enter the additional geometry path.
+                key=lambda p:(p.get('page',1),p.get('label','').casefold(),p.get('force'),p.get('force_unit'))
+                successful={key(p):p for p in cache.get('points',[]) if p.get('height_relation',{}).get('verified')}
+                recovered=[deepcopy(successful.get(key(p),p)) for p in recovered]
         except Exception as error:
             _verification_warning("saved review", error)
             return
@@ -598,7 +641,8 @@ def reconcile_load_points(review, job_dir):
             relation=point.get("height_relation") or {}
             recognized_source=any(re.search(r"qwen|rapidocr|baidu|pdf_text|local_load_evidence|^ocr|^cad|^formula|^multi_spec",str(s),re.I) for s in sources)
             automatic=recognized_source or relation.get("verified") is True and relation.get("mode")=="automatic"
-            protected=not automatic or point.get("need_human_review") is False or any(re.search(r"human|manual",str(s),re.I) for s in sources) or relation.get("mode")=="manual"
+            verified_original=relation.get('verified') and (not relation.get('source_document_id') or relation.get('source_document_id')==original.get('source_document_id'))
+            protected=verified_original or not automatic or point.get("need_human_review") is False or any(re.search(r"human|manual",str(s),re.I) for s in sources) or relation.get("mode")=="manual"
             if protected:
                 existing=millimeters(point.get("height"),point.get("height_unit"))
                 if not relation.get("verified") and existing is not None and existing>0:

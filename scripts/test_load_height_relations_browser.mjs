@@ -14,6 +14,8 @@ base.spring_parameters.free_length.value=133.35;
 base.spring_parameters.load_points=shared[0].expected.spring_parameters.load_points;
 const orders={a:{review:structuredClone(base),revision:1},b:{review:structuredClone(base),revision:1}};
 orders.b.review.spring_parameters.free_length.value=200;
+const graphCases=JSON.parse(execFileSync(python,['scripts/test_load_graph_geometry.py','--json'],{encoding:'utf8',maxBuffer:4*1024*1024}));
+for(const [index,c] of graphCases.entries()) orders['graph'+index]={review:c.review,revision:1};
 const front=path.resolve('frontend');
 const server=http.createServer((request,response)=>{const file=path.resolve(front,new URL(request.url,'http://local').pathname.slice(1)||'index.html');if(!file.startsWith(front+path.sep)||!fs.existsSync(file))return response.writeHead(404).end();response.setHeader('Content-Type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html');response.end(fs.readFileSync(file));});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -22,7 +24,7 @@ const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];
 page.on('pageerror',error=>errors.push(error.message));
 let failSave=false,holdSave=false,releaseSave=null,generations=0;
 await page.route('**/api/**',async route=>{
-  const req=route.request(),api=new URL(req.url()).pathname,m=api.match(/^\/api\/reviews\/(a|b)(?:\/(.*))?$/);
+  const req=route.request(),api=new URL(req.url()).pathname,m=api.match(/^\/api\/reviews\/(a|b|graph\d+)(?:\/(.*))?$/);
   let body;
   if(api==='/api/session')body={mode:'mock',identity:{user_id:'load-height-ui',username:'载荷测试'}};
   else if(api==='/api/material-catalog')body=catalog;
@@ -47,7 +49,7 @@ await page.route('**/api/**',async route=>{
 const panel=page.locator('[data-compare-panel="parameters"]'),row=id=>panel.locator(`[data-kind="load_point"][data-load-point-id="${id}"]`);
 const height=id=>row(id).locator('[data-role="height"]');
 const h0=()=>panel.locator('[data-field="free_length"] [data-role="value"]');
-const open=async(id='a')=>{await page.evaluate(async id=>{await openPersistedReview(id);state.compareTab='parameters';renderCompareOverlay();},id);await page.waitForFunction(()=>state.materialCatalog.status==='ready');};
+const open=async(id='a')=>{await page.waitForFunction(()=>!state.busy);await page.evaluate(async id=>{await openPersistedReview(id);state.compareTab='parameters';renderCompareOverlay();},id);await page.waitForFunction(id=>state.lastJob?.job_id===id,id);await page.waitForFunction(()=>state.materialCatalog.status==='ready');};
 const flush=()=>page.evaluate(()=>flushReviewPersistence({throwOnError:true}));
 try{
   await page.goto(process.env.LOAD_HEIGHT_FRONTEND_URL || `http://127.0.0.1:${server.address().port}`);
@@ -104,6 +106,29 @@ try{
   await row('point1').locator('.load-height-evidence summary').click();
   fs.mkdirSync('outputs/load-height-qa',{recursive:true});
   if(!process.env.SKIP_UI_QA_SCREENSHOTS)for(const width of [1440,1100,390]){await page.setViewportSize({width,height:width<500?1200:1000});await row('point1').scrollIntoViewIfNeeded();assert.equal(await row('point1').evaluate(e=>e.scrollWidth>e.clientWidth+2),false);await page.screenshot({path:`outputs/load-height-qa/load-${width}.png`});}
+  for (const [index,c] of graphCases.entries()) {
+    await page.evaluate(()=>{globalThis.oldParameterInput=document.querySelector('[data-compare-panel="parameters"] [data-field="free_length"] [data-role="value"]');});
+    await open('graph'+index);
+    const currentOrder=await page.evaluate(()=>({job:state.lastJob.job_id,review:JSON.stringify(state.review.spring_parameters.load_points)}));
+    await page.evaluate(()=>{oldParameterInput.value='999';oldParameterInput.dispatchEvent(new Event('input',{bubbles:true}));oldParameterInput.dispatchEvent(new Event('change',{bubbles:true}));});
+    assert.deepEqual(await page.evaluate(()=>({job:state.lastJob.job_id,review:JSON.stringify(state.review.spring_parameters.load_points)})),currentOrder,'Detached old parameter events cannot reactivate a previous order');
+    const points=await page.evaluate(()=>structuredClone(state.review.spring_parameters.load_points));
+    for(const point of points){
+      const id=point.load_point_id;
+      assert.equal(await height(id).inputValue(),String(c.expected[point.label]),c.name);
+      assert.equal(await row(id).locator('.load-height-evidence').evaluate(e=>e.open),false);
+      assert.ok((await row(id).locator('.load-height-evidence').textContent()).includes('共同基准'));
+      assert.equal(point.height_relation.kind,'absolute_height');
+      assert.equal(point.need_human_review,true, JSON.stringify({name:c.name,point}));
+      await row(id).locator('[data-role="confirm"]').click();await flush();
+    }
+    const result=await page.evaluate(()=>makeGenerationParameterPackage());
+    assert.deepEqual(Object.fromEntries(result.generation_parameters.load_points.map(p=>[p.label,p.height.value])),c.expected);
+    if(c.name==='main')assert.ok(result.solidworks_preview.extraProperties['技术要求'].includes('±150'));
+    if(c.name==='return')assert.ok(!result.solidworks_preview.extraProperties['技术要求'].includes('±'));
+    await h0().fill('205');await h0().dispatchEvent('change');await flush();
+    for(const p of points)assert.equal(await height(p.load_point_id).inputValue(),String(c.expected[p.label]),'Direct heights must not be subtracted from H0');
+  }
   assert.equal(generations,0);assert.deepEqual(errors,[]);
   console.log('PASS: chain heights/force tolerances, confirmation/export, dependency/focus, force-only edit, manual/clear/rename, save retry/reopen and late-order isolation; mocked API only');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}

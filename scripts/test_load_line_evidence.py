@@ -54,6 +54,7 @@ class LoadLineEvidenceTests(unittest.TestCase):
             rules=json.loads((ROOT/"config/factory_rules.json").read_text(encoding="utf-8"))
             with patch("ai_design_review.drawing_annotations.annotation_source",return_value=(document,source)),\
                  patch("ai_design_review.drawing_annotations.ocr_blocks",return_value=blocks),\
+                 patch("ai_design_review.annotation_ocr.local_ocr_blocks",return_value=([],{},[])),\
                  patch.object(cv2,"HoughLinesP") as hough:
                 for shape in ((1,4),(1,1,4)):
                     hough.return_value=np.array([10,30,180,30]).reshape(shape)

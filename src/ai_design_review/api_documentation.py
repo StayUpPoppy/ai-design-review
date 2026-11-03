@@ -241,6 +241,7 @@ class ReviewLoadPointDocument(BaseModel):
     accuracy_value_source: Literal["human", "system"] | None = Field(default=None, description="载荷数值的可选反推来源标记。")
     need_human_review: bool = Field(default=True, description="是否待人工确认；仅false且内容完整的测试点写入生图参数包。")
     source_context: dict[str, Any] = Field(default_factory=dict, description="原图标注或表格的表头、对应行及单位依据；不发送给SW。")
+    height_relation: dict[str, Any] | None = Field(default=None, description="可选高度关系及服务端核验结果。geometry_evidence保存原图归一化基准、尺寸端点、载荷落点和引出线路径，verification_failure保存未消歧原因；graphic_hint仅是模型候选坐标，不能认证核验成功。均不发送给SW。")
 
 
 class LoadPointDiagnosticDocument(BaseModel):

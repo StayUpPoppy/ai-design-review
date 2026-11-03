@@ -1,6 +1,10 @@
 /* Original drawing UI. Parameter updates from relocalization belong to app.js. */
 window.DrawingAnnotations = (() => {
-  const fields = ["material", "standard_no", "accuracy_grade", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "solid_height", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"];
+  // Display order only. Persisted annotation IDs/numbers and locations stay unchanged.
+  const fields = Object.freeze(["material", "accuracy_grade", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "solid_height", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"]);
+  const displayNumbers = new Map(fields.map((field, index) => [field, index + 1]));
+  const numberForField = field => displayNumbers.get(field) ?? null;
+  const visibleAnnotations = item => (item?.document?.annotations || []).filter(a => numberForField(a.field) != null);
   const cache = new Map();
   let config;
   let resizeObserver;
@@ -99,30 +103,31 @@ window.DrawingAnnotations = (() => {
   function infoHtml() {
     const item = entry();
     if (!item?.document) return "";
-    const selected = annotation(item.selected);
+    const selected = numberForField(item.selected) != null ? annotation(item.selected) : null;
     const current = selected ? config.getParameter(selected.field) : null;
-    const unlocated = item.document.annotations.filter((a) => !a.locations.length && (a.original_value != null || config.getParameter(a.field)?.value != null && config.getParameter(a.field)?.value !== ""));
-    const diagnostics = (item.document.diagnostics || []).filter((d) => d.kind !== "unlocated" && (d.kind !== "value_mismatch" || String(d.evidence_value) !== String(config.getParameter(d.field)?.value)));
+    const unlocated = visibleAnnotations(item).filter((a) => !a.locations.length && (a.original_value != null || config.getParameter(a.field)?.value != null && config.getParameter(a.field)?.value !== ""));
+    const diagnostics = (item.document.diagnostics || []).filter((d) => d.field !== "standard_no" && d.kind !== "unlocated" && (d.kind !== "value_mismatch" || String(d.evidence_value) !== String(config.getParameter(d.field)?.value)));
     return `<div class="annotation-info" aria-live="polite">
-      ${selected ? `<span><strong>${selected.number} · ${esc(selected.label)}</strong>　原图识别值：${esc(selected.original_value ?? "无直接标注")}　当前值：${esc(current?.value ?? "未填写")}</span>${item.editing ? ` <button type="button" data-annotation-place="${esc(selected.field)}">重新定位</button>` : ""}` : ""}
+      ${selected ? `<span><strong>${numberForField(selected.field)} · ${esc(selected.label)}</strong>　原图识别值：${esc(selected.original_value ?? "无直接标注")}　当前值：${esc(current?.value ?? "未填写")}</span>${item.editing ? ` <button type="button" data-annotation-place="${esc(selected.field)}">重新定位</button>` : ""}` : ""}
       ${item.placing ? '<p>点击原图中的标注位置。Esc 可取消；拖动气泡或使用方向键仅调整气泡位置。</p>' : item.editing ? '<p>拖动气泡调整位置；选择未定位参数可在原图补位置。调整不改变参数。</p>' : ""}
       ${item.error ? `<p class="annotation-error">${esc(item.error)}</p>` : ""}
       ${diagnostics.length ? `<ul class="annotation-diagnostics">${diagnostics.map((d) => `<li><strong>${esc(config.fieldLabel(d.field))}</strong>：${d.kind === "value_mismatch" ? `原图证据 ${esc(d.evidence_value)}，当前参数 ${esc(config.getParameter(d.field)?.value ?? "未填写")}。请核对后修改并重新确认。` : esc(d.reason)}</li>`).join("")}</ul>` : ""}
-      ${unlocated.length ? `<details class="annotation-unlocated"><summary>${unlocated.length} 项暂无可靠原图位置</summary><ul>${unlocated.map((a) => `<li><span>${a.number} · ${esc(a.label)}：${esc(a.reason)}</span><button type="button" data-annotation-place="${esc(a.field)}">人工定位</button></li>`).join("")}</ul></details>` : ""}
+      ${unlocated.length ? `<details class="annotation-unlocated"><summary>${unlocated.length} 项暂无可靠原图位置</summary><ul>${unlocated.map((a) => `<li><span>${numberForField(a.field)} · ${esc(a.label)}：${esc(a.reason)}</span><button type="button" data-annotation-place="${esc(a.field)}">人工定位</button></li>`).join("")}</ul></details>` : ""}
       <small class="annotation-layout-warning" role="status">${esc(item.layoutWarning || "")}</small>
       ${selected?.locations?.length && selected.reason ? `<small>${esc(selected.reason)}</small>` : ""}
       ${(item.document.warnings || []).map((warning) => `<small>${esc(warning)}</small>`).join("")}
     </div>`;
   }
   function badgeHtml(field, param) {
-    const index = fields.indexOf(field);
-    if (index < 0 || !config?.isCompression()) return "";
-    return `<button type="button" class="parameter-annotation-number" data-annotation-field="${esc(field)}" aria-label="定位${esc(config.fieldLabel(field))}原图标注">${index + 1}</button>`;
+    const number = numberForField(field);
+    if (number == null || !config?.isCompression()) return "";
+    return `<button type="button" class="parameter-annotation-number" data-annotation-field="${esc(field)}" aria-label="定位${esc(config.fieldLabel(field))}原图标注">${number}</button>`;
   }
   function bindFields(root, before) {
     root.querySelectorAll("[data-annotation-field]").forEach((button) => button.addEventListener("click", () => { before?.(); config.openViewer(); void focusField(button.dataset.annotationField); }));
   }
   async function focusField(field) {
+    if (numberForField(field) == null) return;
     const item = entry();
     if (!item) return;
     await load(item);
@@ -221,7 +226,7 @@ window.DrawingAnnotations = (() => {
     const image = config.getImage();
     const item = entry();
     if (!layer || !image?.naturalWidth) return;
-    const entries = (item?.document?.annotations || []).flatMap((a) => a.locations.filter((l) => l.page === item.page).map((l) => ({ a, location: l, key: locationKey(a, l) })));
+    const entries = visibleAnnotations(item).flatMap((a) => a.locations.filter((l) => l.page === item.page).map((l) => ({ a, location: l, key: locationKey(a, l) })));
     const view = config.getView();
     const width = image.naturalWidth * view.scale, height = image.naturalHeight * view.scale;
     const key = JSON.stringify([item?.page, width, height, item?.document?.annotation_revision, entries.map((e) => [e.key, e.location.source, e.location.bubble])]);
@@ -235,7 +240,7 @@ window.DrawingAnnotations = (() => {
       const bubble = screenPoint({ x: p.x / width, y: p.y / height });
       const end = leaderEndpoint(anchor, bubble);
       return `${end ? `<line x1="${anchor.x}" y1="${anchor.y}" x2="${end.x}" y2="${end.y}"/>` : ""}<circle class="annotation-anchor" cx="${anchor.x}" cy="${anchor.y}" r="3"/>
-        <g class="annotation-bubble ${item.selected === a.field ? "selected" : ""}" transform="translate(${bubble.x} ${bubble.y})" role="button" tabindex="0" aria-label="${esc(`${a.number} ${a.label}，定位参数${item.editing ? '，方向键移动气泡' : ''}`)}" data-annotation-id="${esc(a.field)}" data-location-id="${esc(l.location_id)}"><title>${l.anchor_kind === "cell" ? "尺寸单元格；" : ""}${esc(a.label)}：原图 ${esc(l.evidence_value ?? a.original_value ?? "人工定位")}；当前 ${esc(config.getParameter(a.field)?.value ?? "未填写")}</title><circle r="${bubbleRadius}"/><text text-anchor="middle" dy=".35em">${a.number}</text></g>`;
+        <g class="annotation-bubble ${item.selected === a.field ? "selected" : ""}" transform="translate(${bubble.x} ${bubble.y})" role="button" tabindex="0" aria-label="${esc(`${numberForField(a.field)} ${a.label}，定位参数${item.editing ? '，方向键移动气泡' : ''}`)}" data-annotation-id="${esc(a.field)}" data-location-id="${esc(l.location_id)}"><title>${l.anchor_kind === "cell" ? "尺寸单元格；" : ""}${esc(a.label)}：原图 ${esc(l.evidence_value ?? a.original_value ?? "人工定位")}；当前 ${esc(config.getParameter(a.field)?.value ?? "未填写")}</title><circle r="${bubbleRadius}"/><text text-anchor="middle" dy=".35em">${numberForField(a.field)}</text></g>`;
     }).join("");
     const viewport = config.getViewport();
     const warning = viewport.parentElement?.querySelector(".annotation-layout-warning");
@@ -293,7 +298,7 @@ window.DrawingAnnotations = (() => {
     try { await item.saving; } finally { item.saving = null; notify(item); }
   }
   function place(item, field) {
-    if (item.relocalizing) return;
+    if (item.relocalizing || numberForField(field) == null) return;
     item.selected = field;
     item.placing = field;
     item.visible = true;
@@ -436,6 +441,6 @@ window.DrawingAnnotations = (() => {
     capturesPointer: (event) => Boolean(entry()?.placing || event.target.closest("[data-annotation-id]")),
     hasUnsaved: () => Array.from(cache.values()).some((item) => item.pending.size || item.saving),
     // Exposed pure helpers also make coordinate/saving tests independent of the application.
-    fields, viewTransform, screenPoint, imagePoint, leaderEndpoint, focusField, save, entry, layoutLocations, relocalize,
+    fields, numberForField, viewTransform, screenPoint, imagePoint, leaderEndpoint, focusField, save, entry, layoutLocations, relocalize,
   };
 })();

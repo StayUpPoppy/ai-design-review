@@ -21,6 +21,7 @@ function fixture(complete = false) {
     manual_confirmations: {}, change_history: [], standardization_results: [], parameter_reasonableness: { status: "pass", issues: [], suggestions: [] } });
   review.spring_parameters = {
     material: pending("", null, { raw_value: "VDCrSi-1.6-GB/T18983-2003", material_match_status: "unmatched" }),
+    standard_no: pending("GB/T 1239.2-2009", null),
     wire_diameter: pending(1.6), outer_diameter: pending(13), inner_diameter: pending(9.8), mean_diameter: pending(11.4),
     free_length: pending(28), total_coils: pending(7.5, "圈"), active_coils: pending(5.5, "圈"),
     handedness: pending("right", null), end_type: pending("两端并紧", null), end_grinding: pending("两端磨削", null),
@@ -84,7 +85,7 @@ try {
     else body = { status: "ok", generation_runtime: { status: "not_configured" }, recognition_queue_runtime: { status: "not_configured" } };
     await route.fulfill({ json: body });
   });
-  await page.goto(`http://127.0.0.1:${server.address().port}`);
+  await page.goto(process.env.BULK_TEST_BASE_URL || `http://127.0.0.1:${server.address().port}`);
   await page.waitForFunction(() => state.identityReady);
   const panel = page.locator('#compareOverlay [data-compare-panel="parameters"]');
   const loadRow = id => panel.locator(`.load-point[data-kind="load_point"][data-load-point-id="${id}"]`);
@@ -121,6 +122,23 @@ try {
   }
 
   await open("partial");
+  assert.equal(await panel.locator('[data-kind="param"][data-field="standard_no"]').count(), 0);
+  const untouchedStandard = await page.evaluate(() => structuredClone(state.review.spring_parameters.standard_no));
+  const displayCheck = await page.evaluate(async () => {
+    const review = state.review, count = getEditorParameterFieldGroups(review.spring_parameters, review);
+    const model = await buildConfirmationSheetSnapshot(activeReviewContext());
+    return { visibleCount: count.core.length + count.advanced.length,
+      commonHasStandard: getParameterFieldGroups(review.spring_parameters, review).core.includes("standard_no"),
+      printIncludesStandard: JSON.stringify(model).includes("标准号") };
+  });
+  assert.ok(displayCheck.commonHasStandard && displayCheck.printIncludesStandard, "Keep template and confirmation sheet standard");
+  assert.equal(await panel.locator('[data-kind="param"]').count(), displayCheck.visibleCount);
+  const countBeforeNavigation = mutations.length;
+  await page.evaluate(() => focusMissingStandardizationField("standard_no", { parameterRow: true }));
+  assert.equal(await page.evaluate(() => state.compareTab), "standards");
+  await page.evaluate(() => { state.compareTab = "parameters"; renderCompareOverlay(); }); await ready();
+  assert.equal(mutations.length, countBeforeNavigation, "Hiding/navigation cannot save or confirm the standard");
+  assert.deepEqual(await page.evaluate(() => state.review.spring_parameters.standard_no), untouchedStandard);
   await action("actual").click(); await action("rotate-right").click();
   const beforeBulk = await view();
   await panel.locator('[data-action="confirm-all-review-items"]').click();
@@ -132,6 +150,7 @@ try {
   assert.equal(await panel.locator('[data-role="focus-bulk-confirmation-target"][data-target-kind="technical"]').count(), 1);
   assert.equal(orders.get("partial").review.spring_parameters.material.value, "55CrSi");
   assert.equal(orders.get("partial").review.spring_parameters.material.need_human_review, false);
+  assert.deepEqual(orders.get("partial").review.spring_parameters.standard_no, untouchedStandard, "Batch confirmation leaves hidden standard unchanged");
   assert.ok(orders.get("partial").review.spring_parameters.load_points.every(point => point.height == null && point.need_human_review));
   assert.equal(orders.get("partial").review.technical_requirements.find(item => item.requirement_id === "untranslated").need_human_review, true);
   await viewerWorks();
@@ -193,6 +212,13 @@ try {
   assert.equal(calls.filter(call => call.method === "POST" && (call.pathname === "/api/reviews"
     || call.pathname.endsWith("/generation-jobs") || call.pathname.endsWith("/translate") && call.mode !== "revalidate")).length,
   0, "Only local revalidation of old failures is allowed; no recognition, model translation or SW submission");
+  fs.mkdirSync("outputs/load-graph-ui-qa", { recursive: true });
+  await page.screenshot({ path: "outputs/load-graph-ui-qa/desktop.png", fullPage: false });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await ready();
+  assert.equal(await panel.locator('[data-kind="param"][data-field="standard_no"]').count(), 0);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.screenshot({ path: "outputs/load-graph-ui-qa/mobile.png", fullPage: false });
   console.log("PASS bulk confirmation viewer: material selection, partial/complete loads, technical follow-ups, correct focus, save/reopen, failure/retry, slow responses, repeat click, malformed editors, viewer isolation and no cloud/SW calls");
 } finally {
   releaseSave?.();

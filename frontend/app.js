@@ -4568,7 +4568,7 @@ function confirmationSheetIssues(review) {
 function renderParameterTableHtml(review) {
   prepareCompressionDesignChecks(review);
   const params = review.spring_parameters || {};
-  const fieldGroups = getParameterFieldGroups(params, review);
+  const fieldGroups = getEditorParameterFieldGroups(params, review);
   const confirmationPlan = buildSafeConfirmationPlan(review);
   const parameterRows = fieldGroups.core.map((field) => {
     const meta = getFieldMeta(field, review);
@@ -4837,7 +4837,9 @@ function loadHeightRelationDetails(point) {
   const inputs = r.last_inputs || {};
   const origin = [inputs.free_length_mm != null ? `自由高度：${inputs.free_length_mm} mm` : "", inputs.base_height_mm != null ? `参考点高度：${inputs.base_height_mm} mm` : "", inputs.dimension_mm != null ? `原始尺寸：${inputs.dimension_mm} mm` : "", inputs.reference_only ? "换算包含原图参考尺寸，需核对" : ""].filter(Boolean).join("；");
   const proposal = candidate?.original?.height != null ? `原图换算参考高度：${candidate.original.height} mm` : "";
-  const lines = [r.mode === "manual" ? "当前高度为人工填写，原换算依据仅供追溯" : "", r.evidence, r.formula, origin, r.secant_rate != null ? `尺寸链与载荷对应刚度：${r.secant_rate} N/mm` : "", r.check_warning, candidate?.reason, candidate?.original?.evidence, proposal].filter(Boolean);
+  const graphicDifference = r.geometry_candidate ? `图形另有高度候选 ${r.geometry_candidate.value} mm，保留当前已核实结果，请核对` : "";
+  const graphicBasis = r.geometry_evidence ? (r.verification_method === "dimension_leader" ? "已按引出线落点、载荷竖线及尺寸端点核实" : "已按共同基准、载荷位置及尺寸端点核实") : "";
+  const lines = [r.mode === "manual" ? "当前高度为人工填写，原换算依据仅供追溯" : "", r.evidence, graphicBasis, graphicDifference, r.formula, origin, r.secant_rate != null ? `尺寸链与载荷对应刚度：${r.secant_rate} N/mm` : "", r.check_warning, candidate?.reason, candidate?.original?.evidence, proposal].filter(Boolean);
   return `<details class="load-height-evidence"><summary>查看高度依据</summary>${lines.map(text => `<div>${escapeHtml(text)}</div>`).join("")}</details>`;
 }
 
@@ -5117,6 +5119,11 @@ function getParameterFields(params, review) {
     return !PARAMETER_COLLECTION_FIELDS.has(field) && value && typeof value === "object" && !Array.isArray(value);
   });
   return Array.from(new Set([...templateFields, ...returnedFields]));
+}
+
+function getEditorParameterFieldGroups(params, review) {
+  const groups = getParameterFieldGroups(params, review);
+  return { core: groups.core.filter(field => field !== "standard_no"), advanced: groups.advanced.filter(field => field !== "standard_no") };
 }
 
 function getParameterFieldGroups(params, review) {
@@ -8650,8 +8657,10 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     if (field === "surface_roughness_ra" && isCompressionSpringReview(review)) bindSurfaceRoughnessReference(row, param, review, messageId, root);
     let valueBeforeState = null;
     let diameterBeforeState = null;
+    const editorJobId = state.lastJob?.job_id, editorScope = historyRecognitionScope();
+    const editorIsCurrent = () => state.review === review && state.lastJob?.job_id === editorJobId && historyRecognitionScope() === editorScope;
     const applyValueDraft = (event) => {
-      if (field === "accuracy_grade") return;
+      if (!editorIsCurrent() || field === "accuracy_grade") return;
       activateReviewContext(messageId);
       valueBeforeState ||= parameterAuditState(param);
       const linkedEdit = typeof DiameterLinkage !== "undefined" && DiameterLinkage.supported(review)
@@ -8725,6 +8734,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       refreshBulkConfirmationFollowupAfterLocalChange(messageId);
     });
     valueInput.addEventListener("change", (event) => {
+      if (!editorIsCurrent()) return;
       activateReviewContext(messageId);
       if (field === "accuracy_grade") {
         selectAccuracyGrade(root, review, event.target.value, messageId);
@@ -8769,6 +8779,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     const toleranceInput = row.querySelector('[data-role="tolerance"]');
     let toleranceBeforeState = null;
     const applyToleranceDraft = (event) => {
+      if (!editorIsCurrent()) return;
       activateReviewContext(messageId);
       toleranceBeforeState ||= parameterAuditState(param);
       rememberConfirmedSnapshot(param);
@@ -8781,6 +8792,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     };
     toleranceInput.addEventListener("input", applyToleranceDraft);
     toleranceInput.addEventListener("change", (event) => {
+      if (!editorIsCurrent()) return;
       if (!toleranceBeforeState) applyToleranceDraft(event);
       const afterState = parameterAuditState(param);
       if (JSON.stringify(toleranceBeforeState) !== JSON.stringify(afterState)) {
@@ -10358,7 +10370,7 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
   const target = String(field || "").trim();
   if (!target || !state.review) return;
   if (messageId) activateReviewContext(messageId);
-  if (target === "standardization" || (target === "standard_no" && !options.parameterRow)) {
+  if (target === "standardization" || target === "standard_no") {
     state.compareTab = "standards";
     if (!state.compareOpen) openCompareOverlay(messageId);
     else renderCompareOverlay();
@@ -10538,7 +10550,7 @@ function restoreComparePanelScrollPositions(positions, options = {}) {
 function buildSafeConfirmationPlan(review) {
   ensureLoadPointIds(review);
   const parameters = review?.spring_parameters || {};
-  const fieldGroups = getParameterFieldGroups(parameters, review);
+  const fieldGroups = getEditorParameterFieldGroups(parameters, review);
   const coreFields = new Set(fieldGroups.core);
   const advancedFields = new Set(fieldGroups.advanced);
   const items = [];
@@ -10946,7 +10958,7 @@ function bulkConfirmationFollowupSnapshot(review) {
   if (!event) return null;
   const currentPlan = buildSafeConfirmationPlan(review);
   const parameters = review?.spring_parameters || {};
-  const fieldGroups = getParameterFieldGroups(parameters, review);
+  const fieldGroups = getEditorParameterFieldGroups(parameters, review);
   const visibleParameterFields = new Set([...fieldGroups.core, ...fieldGroups.advanced]);
   const items = [];
   for (const stored of event.metadata.skipped) {

@@ -31,6 +31,16 @@ if (multi) {
     annotations: { schema_version: "original_annotations/v1", algorithm_version: "original_annotation_locator/v2", source_document_id: "demo", annotation_revision: 1, pages: [{ page: 1, width: 1200, height: 850, image_url: "/fixture/demo" }], warnings: [], text_obstacles: [],
       annotations: fields.map((field, i) => ({ field, annotation_id: field, label: field, number: i + 1, original_value: cases[0].review.spring_parameters[field]?.value, status: "located", reason: "", locations: [{ location_id: `${field}-demo`, source: "ocr", page: 1, anchor: { x: .18 + i % 4 * .18, y: .18 + Math.floor(i / 4) * .18 }, bubble: { x: .2 + i % 4 * .18, y: .16 + Math.floor(i / 4) * .18 } }] })) } }];
 }
+const displayFields = ["material", "accuracy_grade", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "solid_height", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"];
+if (!real) {
+  const doc=fixtures[0].annotations;
+  doc.pages.push({page:2,width:1200,height:850,image_url:"/fixture/demo/2"});
+  for (const field of ["free_length","surface_roughness_ra"]) {
+    const a=doc.annotations.find(a=>a.field===field);
+    a.locations.push({location_id:field+"-page2",page:2,source:"manual",anchor:{x:.3,y:.4},bubble:{x:.45,y:field==="free_length"?.3:.55}});
+  }
+  doc.annotations.find(a=>a.field==="standard_no").locations[0].source="manual";
+}
 const frontend = path.resolve("frontend");
 if (v3) for (const fixture of fixtures) fixture.annotations.pages.forEach((p) => { p.image_url = `/fixture/${fixture.id}/${p.page}`; });
 const server = http.createServer((request, response) => {
@@ -45,7 +55,7 @@ let browser;
 try {
   browser = await chromium.launch({ headless: true, channel: process.env.UNIT_TEST_BROWSER_CHANNEL || "msedge" });
   for (const fixture of fixtures) {
-    let saved = structuredClone(fixture.annotations), locationSaves = 0, parameterSaves = 0, failNext = false, failBackfill = false, backfills = 0;
+    let saved = structuredClone(fixture.annotations), persistedReview = structuredClone(fixture.review), reviewRevision = 1, locationSaves = 0, parameterSaves = 0, failNext = false, failBackfill = false, backfills = 0;
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = [], calls = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/*", async (route) => {
@@ -77,8 +87,11 @@ try {
         }
         body = saved;
       } else if (apiPath === `/api/reviews/${fixture.id}`) {
-        if (request.method() === "PATCH") parameterSaves++;
-        body = { ...fixture.review, job_id: fixture.id, review_revision: 1, image_url: saved.pages[0].image_url };
+        if (request.method() === "PATCH") {
+          const input=request.postDataJSON();assert.equal(input.expected_revision,reviewRevision);
+          persistedReview=input.review;parameterSaves++;
+          body={review_revision:++reviewRevision,events:(input.events || []).map(e=>({...e,sync_status:"saved"}))};
+        } else body = { ...persistedReview, job_id: fixture.id, review_revision: reviewRevision, image_url: saved.pages[0].image_url };
       } else if (apiPath === "/api/material-catalog") body = catalog;
       else if (apiPath === "/api/session") body = { identity: { user_id: "demo", username: "原图气泡回归" }, mode: "mock" };
       else if (apiPath === "/api/reviews") body = { reviews: [{ job_id: fixture.id, drawing_name: fixture.id, image_url: saved.pages[0].image_url, revision: 1 }] };
@@ -89,7 +102,7 @@ try {
       else body = { status: "ok", generation_runtime: { status: "not_configured" }, recognition_queue_runtime: { status: "not_configured" } };
       return route.fulfill({ json: body });
     });
-    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    await page.goto(process.env.ANNOTATION_TEST_BASE_URL || `http://127.0.0.1:${server.address().port}`);
     await page.waitForFunction((id) => state.recentReviews.some((r) => r.job_id === id), fixture.id);
     await page.evaluate(async (id) => { await openPersistedReview(id); state.compareTab = "parameters"; renderCompareOverlay(); }, fixture.id);
     try {
@@ -98,12 +111,47 @@ try {
       console.error({ errors, calls: calls.slice(-15), state: await page.evaluate(() => ({ job: state.lastJob, entry: DrawingAnnotations.entry(), src: document.querySelector("#compareImage")?.src, width: document.querySelector("#compareImage")?.naturalWidth })) });
       throw error;
     }
-    const expected = saved.annotations.reduce((n, a) => n + a.locations.length, 0);
+    // Old saved fixtures may queue unrelated calculation-recovery audits on open.
+    // Settle that real save path before measuring the read-only numbering/gesture checks.
+    await page.evaluate(()=>flushReviewPersistence({throwOnError:true}));
+    const baselineParameterSaves=parameterSaves;
+    if(!real)assert.equal(baselineParameterSaves,0);
+    const expected = saved.annotations.filter(a=>displayFields.includes(a.field)).reduce((n,a)=>n+a.locations.filter(l=>l.page===1).length,0);
+    const originalAnnotations=JSON.parse(JSON.stringify(saved));
+    const verifyNumbers=async()=>{
+      const pairs=await page.locator('.parameter-annotation-number').evaluateAll(es=>es.map(e=>[e.dataset.annotationField,e.textContent.trim()]));
+      for(const [field,text] of pairs)assert.equal(text,String(displayFields.indexOf(field)+1));
+      assert.ok(pairs.some(([f,n])=>f==="accuracy_grade" && n==="2"));
+      assert.equal(await page.locator('.annotation-bubble[data-annotation-id="standard_no"]').count(),0);
+      for(const [field,number] of displayFields.map((f,i)=>[f,String(i+1)])) {
+        const bubbles=page.locator(`.annotation-bubble[data-annotation-id="${field}"]`);
+        for(const b of await bubbles.all()) {
+          assert.equal(await b.locator('text').textContent(),number);
+          assert.ok((await b.getAttribute('aria-label')).startsWith(number+' '));
+        }
+      }
+    };
+    await verifyNumbers();
+    assert.deepEqual(await page.evaluate(()=>DrawingAnnotations.entry().document),originalAnnotations,"Legacy numbering stays untouched in the cached document");
+    assert.equal(locationSaves,0);assert.equal(parameterSaves,baselineParameterSaves);assert.equal(backfills,0,"Renumbering does not request relocalization");
+    if(!real){
+      const pairs=await page.locator('#compareOverlay [data-compare-panel="parameters"] .parameter-annotation-number').evaluateAll(es=>es.map(e=>[e.dataset.annotationField,e.textContent.trim()]));
+      assert.deepEqual(pairs,displayFields.map((f,i)=>[f,String(i+1)]));
+      await page.locator('[data-annotation-page]').selectOption('2');
+      await page.waitForFunction(()=>DrawingAnnotations.entry().page===2 && document.querySelector('#compareImage')?.complete);
+      assert.equal(await page.locator('.annotation-bubble').count(),2);
+      await verifyNumbers();
+      assert.deepEqual(await page.locator('.annotation-bubble text').allTextContents(),['7','11'],"A sparse page keeps parameter numbers instead of renumbering its bubbles");
+      await page.locator('[data-annotation-page]').selectOption('1');
+      await page.waitForFunction(()=>DrawingAnnotations.entry().page===1 && document.querySelector('#compareImage')?.complete);
+      assert.deepEqual(await page.evaluate(()=>DrawingAnnotations.entry().document),originalAnnotations);
+      assert.equal(locationSaves,0);assert.equal(parameterSaves,baselineParameterSaves);
+    }
     await page.evaluate(async () => { await document.querySelector('#compareImage').decode(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
     assert.equal(await page.locator(".annotation-bubble").count(), expected);
     const verifyAnchors = () => page.evaluate(() => {
       const image = document.querySelector("#compareImage"), view = state.compareView;
-      const locations = DrawingAnnotations.entry().document.annotations.flatMap((a) => a.locations.filter((l) => l.page === DrawingAnnotations.entry().page));
+      const locations = DrawingAnnotations.entry().document.annotations.filter(a=>DrawingAnnotations.numberForField(a.field)!=null).flatMap((a) => a.locations.filter((l) => l.page === DrawingAnnotations.entry().page));
       const anchors = [...document.querySelectorAll(".annotation-anchor")];
       return locations.every((l, i) => {
         const anchor = anchors[i], bubble = anchor.nextElementSibling;
@@ -118,8 +166,8 @@ try {
             || Math.abs(Math.hypot(ax - x, ay - y) + 15 - distance) > .001
             || Number(line.getAttribute("x1")) !== ax || Number(line.getAttribute("y1")) !== ay) return false;
         } else if (line?.tagName === "line") return false;
-        return Math.abs(ax - view.x - l.anchor.x * image.naturalWidth * view.scale) < .001
-          && Math.abs(ay - view.y - l.anchor.y * image.naturalHeight * view.scale) < .001;
+        const p=DrawingAnnotations.viewTransform.project(l.anchor,image.naturalWidth,image.naturalHeight,view);
+        return Math.abs(ax-p.x)<.001 && Math.abs(ay-p.y)<.001;
       });
     });
     assert.equal(await verifyAnchors(), true, "Evidence anchors stay fixed and leaders stop at circle edges");
@@ -173,9 +221,16 @@ try {
       assert.equal(await page.evaluate(() => JSON.stringify(DrawingAnnotations.entry().document)), beforeDocument, 'color and selection never edit saved locations');
       assert.equal(saved.annotation_revision, beforeRevision);
       assert.equal(locationSaves, beforeSaves, 'palette and click checks do not save annotations');
-      assert.equal(parameterSaves, 0);
+      assert.equal(parameterSaves, baselineParameterSaves);
     };
     assert.equal(await verifyAnchors(), true);
+    const beforeRotation=JSON.stringify(saved);
+    for (let turn=0;turn<4;turn++) {
+      await page.locator('[data-view-action="rotate-right"]').click();
+      await verifyNumbers();assert.equal(await verifyAnchors(),true);
+      assert.equal(await page.locator('.annotation-bubble text').first().evaluate(e=>{const m=e.getScreenCTM();return m.a>0 && Math.abs(m.b)<.001 && Math.abs(m.c)<.001 && m.d>0;}),true);
+    }
+    assert.equal(JSON.stringify(saved),beforeRotation);assert.equal(locationSaves,0);assert.equal(parameterSaves,baselineParameterSaves);
     failBackfill = true;
     const beforeBackfill = structuredClone(saved.annotations);
     await page.locator('[data-annotation-action="relocalize"]').click();
@@ -212,25 +267,40 @@ try {
     assert.notDeepEqual(after.bubble, before.bubble);
     assert.equal(after.source, "manual");
     assert.equal(locationSaves, 1);
-    assert.equal(parameterSaves, 0, "bubble gestures never save parameters");
+    assert.equal(parameterSaves, baselineParameterSaves, "bubble gestures never save parameters");
     await page.reload();
     await page.waitForFunction((id) => state.recentReviews.some((r) => r.job_id === id), fixture.id);
     await page.evaluate(async (id) => { await openPersistedReview(id); state.compareTab = "parameters"; renderCompareOverlay(); }, fixture.id);
     await page.waitForFunction(() => DrawingAnnotations.entry()?.document && document.querySelectorAll(".annotation-bubble").length);
     assert.deepEqual(await page.evaluate(() => DrawingAnnotations.entry().document.annotations.find((a) => a.field === "wire_diameter").locations[0].bubble), after.bubble);
     assert.equal(await verifyAnchors(), true);
+    await verifyNumbers();
     for (const width of [1440, 430]) {
       await page.setViewportSize({ width, height: 1000 });
       await page.locator('[data-view-action="fit"]').click();
       assert.equal(await page.locator(".annotation-bubble").count(), expected, "narrow panels never hide annotations");
       assert.equal(await verifyAnchors(), true);
       await verifyColors(width);
-      await page.screenshot({ path: path.join(qa, `${fixture.id}-${width}.png`) });
+      if (!process.env.SKIP_UI_QA_SCREENSHOTS) await page.screenshot({ path: path.join(qa, `${fixture.id}-${width}.png`) });
     }
+    await page.locator('[data-view-action="rotate-right"]').click();
+    await page.locator('[data-annotation-action="edit"]').click();
+    const keyBubble=page.locator('.annotation-bubble[data-annotation-id="wire_diameter"]').first();
+    await keyBubble.focus();
+    // Adopt the actual visual position first; this legacy location is already manual.
+    const keyboardStart=await page.evaluate(()=>{const a=DrawingAnnotations.entry().document.annotations.find(a=>a.field==="wire_diameter");return DrawingAnnotations.screenPoint(a.locations[0].bubble);});
+    const savedCount=locationSaves, keyboardRevision=saved.annotation_revision;
+    await keyBubble.press('ArrowRight');
+    await page.waitForFunction(n=>DrawingAnnotations.entry().phase==="saved" && DrawingAnnotations.entry().document.annotation_revision>n,keyboardRevision);
+    await page.waitForFunction(()=>!DrawingAnnotations.entry().pending.size && DrawingAnnotations.entry().phase==="saved");
+    const keyboardEnd=await page.evaluate(()=>{const a=DrawingAnnotations.entry().document.annotations.find(a=>a.field==="wire_diameter");return DrawingAnnotations.screenPoint(a.locations[0].bubble);});
+    assert.ok(Math.abs(keyboardEnd.x-keyboardStart.x-5)<.01 && Math.abs(keyboardEnd.y-keyboardStart.y)<.01);
+    assert.equal(locationSaves,savedCount+1);assert.equal(parameterSaves,baselineParameterSaves);
+    await verifyNumbers();
     assert.deepEqual(errors, []);
     await page.close();
   }
-  console.log(`drawing annotation browser tests passed (${fixtures.length} ${real ? "local drawings" : "synthetic fixture"}): backfill/retry, real pointer input, zoom/pan, focus, offline retry, saved manual positions and desktop/narrow screenshots`);
+  console.log(`drawing annotation browser tests passed (${fixtures.length} ${real ? "local drawings" : "synthetic fixture"}): 14 display numbers, hidden standard, legacy cache, sparse page numbers, rotation/keyboard, backfill/retry, drag, focus and saved manual positions`);
 } finally {
   await browser?.close();
   await new Promise((resolve) => server.close(resolve));
