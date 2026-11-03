@@ -19,7 +19,7 @@ API_DESCRIPTION = """
 
 ### 鉴权方式
 
-- **ERP 身份 Cookie**：审图、标准化、模板查询和用户生图接口按 ERP 用户隔离数据。本地 `mock` 身份模式不要求浏览器携带 Cookie。
+- **云平台身份 Cookie**：默认读取 `datynkinfo`（可通过 `ERP_IDENTITY_COOKIE_NAME` 配置），内容为 URL 编码的 JSON。`userId`、`username` 必填，`realName` 可选，`currentOrgId`、`currentOrgName` 可省略或为空。审图、标准化、模板查询和用户生图接口按 `userId` 隔离数据，不自动回退读取 ERP 的 `userinfo`。本地 `mock` 身份模式不要求浏览器携带 Cookie。
 - **GenerationAdminBearer**：模板管理员专用 Bearer API Key。
 - **GenerationWorkerBearer**：保留给模拟和兼容 Worker 链路的 Bearer API Key。
 - **SolidWorks 状态回调**：`POST /api/solidworks/status` 仅限可信内网调用，联调阶段不鉴权；请通过防火墙、反向代理或网络隔离限制来源。
@@ -45,7 +45,7 @@ API_DESCRIPTION = """
 
 OPENAPI_TAGS = [
     {"name": "系统状态", "description": "服务入口、健康检查和运行环境诊断。"},
-    {"name": "会话与示例", "description": "当前 ERP 身份和本地示例文件。"},
+    {"name": "会话与示例", "description": "当前云平台身份和本地示例文件。"},
     {"name": "标准知识库", "description": "按标准号、弹簧类型和目标字段检索标准知识。"},
     {"name": "图纸识别", "description": "图纸上传、异步识别进度、失败重试和候选参数。"},
     {"name": "审图管理", "description": "审图记录、人工修改、审计历史和原始产物管理。"},
@@ -73,8 +73,8 @@ def _operation(tag: str, summary: str, description: str) -> dict[str, str]:
 OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/api/reviews/{source_id}/variants"): _operation("审图管理", "读取多规格核对清单", "返回来源修订、按原顺序排列的候选、区域证据、问题及已创建子记录；不调用模型，不修改参数。来源仅供核对，不能编辑或生图。"),
     ("POST", "/api/reviews/{source_id}/variants/create-reviews"): _operation("审图管理", "创建所选规格的独立审图记录", "variant_ids选择1至50种规格，expected_source_revision校验来源修订，idempotency_key保证重试不重复建单。同键不同选择返回409；事务内整批创建，已有规格返回原ID。已删除规格不因原键重试恢复。子记录独立确认、保存和生图，不重新调用模型。"),
-    ("GET", "/api/surface-treatment-catalog"): _operation("审图管理", "获取公司表面处理目录", "按当前ERP身份返回无备注版公司目录的版本及49项稳定ID、名称；只读，不调用模型、不修改审图。每条要求关联一个公司类型，复合工艺取原顺序第一项、正文完整保留；关联原代号仅在识别来源展示，不再独立确认及输出。content为唯一成图正文，主动未指定保留正文；新任务冻结结果，历史请求不变。"),
-    ("GET", "/api/material-catalog"): _operation("审图管理", "获取公司压缩弹簧材料目录", "按当前 ERP 身份返回15种材料的稳定ID、完整名称、标准牌号、明确别名和公司表内固定剪切模量及目录版本。只读，不调用模型、不保存审图；新材料选择限定目录，历史人工原值兼容保留，确认后的完整名称用于参数包及SW材料字段。"),
+    ("GET", "/api/surface-treatment-catalog"): _operation("审图管理", "获取公司表面处理目录", "按当前云平台身份返回无备注版公司目录的版本及49项稳定ID、名称；只读，不调用模型、不修改审图。每条要求关联一个公司类型，复合工艺取原顺序第一项、正文完整保留；关联原代号仅在识别来源展示，不再独立确认及输出。content为唯一成图正文，主动未指定保留正文；新任务冻结结果，历史请求不变。"),
+    ("GET", "/api/material-catalog"): _operation("审图管理", "获取公司压缩弹簧材料目录", "按当前云平台身份返回15种材料的稳定ID、完整名称、标准牌号、明确别名和公司表内固定剪切模量及目录版本。只读，不调用模型、不保存审图；新材料选择限定目录，历史人工原值兼容保留，确认后的完整名称用于参数包及SW材料字段。"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): _operation("审图管理", "预览并核对遗漏技术要求", "按订单归属和当前修订读取原始识别列表，返回未保留的独立条目；不调用识别模型、不保存、不覆盖人工内容。客户端选择补回后使用既有保存接口，仍须逐条确认。"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): _operation("审图管理", "翻译或恢复技术要求译文", "校验订单归属、稳定ID及已保存文本快照。有效非空译文直接填入正文，不检查外文残留、中文充分性或工程内容差异，不生成差异警告；保留网络、空结果、格式、ID及无法还原占位符异常。mode=translate调用现有Qwen；mode=revalidate仅恢复实际保存的候选，不调用模型。translation_output_snapshot防止成功结果重复送译。返回自动恢复或待用户选择的候选；不保存、不代替人工确认，客户端通过现有串行保存持久化。"),
     ("GET", "/api/reviews/{job_id}/annotations"): _operation("审图管理", "获取原图关键参数气泡标注", "返回原图页面清单、稳定参数编号、定位依据和独立标注版本。历史订单按已有原图补建定位，不重新调用Qwen或RAG。"),
@@ -82,7 +82,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/reviews/{job_id}/annotations/relocalize"): _operation("审图管理", "重新补定位未定位的原图参数", "使用本地放大/旋转OCR重试缺项及失败区域，保留已可靠定位及人工位置。原图或独立标注版本冲突返回409，不修改工程参数。"),
     ("GET", "/"): _operation("系统状态", "查看 API 服务入口", "返回服务名称、健康检查地址和增强接口文档地址，不执行任何业务操作。"),
     ("GET", "/api/health"): _operation("系统状态", "检查服务运行状态", "返回数据库、识别队列、OCR、标准化、生图队列和模拟模板等运行状态；用于部署验收和故障诊断。"),
-    ("GET", "/api/session"): _operation("会话与示例", "获取当前 ERP 用户", "解析当前请求携带的 ERP 身份 Cookie，并返回脱敏后的用户与组织信息；本地 mock 模式返回配置的模拟身份。"),
+    ("GET", "/api/session"): _operation("会话与示例", "获取当前云平台用户", "解析当前请求携带的云平台身份 Cookie，返回用户信息；未提供的组织信息返回空字符串，未提供的真实姓名使用用户名。本地 mock 模式返回配置的模拟身份。"),
     ("GET", "/api/samples/mixed-review"): _operation("会话与示例", "下载示例审图 JSON", "下载项目内置的压缩弹簧审图示例，便于前端演示和接口联调。"),
     ("GET", "/api/samples/spring-preview"): _operation("会话与示例", "查看示例弹簧预览图", "返回项目内置的压缩弹簧 PNG 预览图。"),
     ("GET", "/api/standard-knowledge/search"): _operation("标准知识库", "检索弹簧标准知识", "按标准号、弹簧类型、目标字段和自然语言问题检索标准条款；结果仅用于审图辅助，最终仍需人工确认。"),
@@ -90,7 +90,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/api/reviews/{job_id}/recognition-status"): _operation("图纸识别", "查询图纸识别进度", "查询指定审图任务的排队位置、处理阶段、进度和错误信息；前端可定时轮询，完成后再获取审图结果。"),
     ("POST", "/api/reviews/{job_id}/retry"): _operation("图纸识别", "重试失败的识别任务", "仅允许重试 failed 状态的识别任务；成功后任务重新进入队列并返回202。布局兼容错误存在有效完整缓存时由worker本地恢复，校验原文件及响应指纹，不新增Qwen调用；缓存不可用沿用显式重试流程。任务options中的恢复信息不对外返回。"),
     ("GET", "/api/reviews/{job_id}/candidates"): _operation("图纸识别", "获取识别候选参数", "返回 OCR、视觉模型和几何识别产生的候选数据，用于追溯参数来源和人工复核。"),
-    ("GET", "/api/reviews"): _operation("审图管理", "查询审图记录列表", "按当前 ERP 用户隔离并返回最近的审图及识别任务；limit 范围为 1 至 100。"),
+    ("GET", "/api/reviews"): _operation("审图管理", "查询审图记录列表", "按当前云平台用户隔离并返回最近的审图及识别任务；limit 范围为 1 至 100。"),
     ("GET", "/api/reviews/{job_id}"): _operation("审图管理", "获取完整审图结果", "返回指定任务当前修订的完整审图 JSON。识别尚未完成时返回 409，其他用户的数据按不存在处理。"),
     ("PATCH", "/api/reviews/{job_id}"): _operation("审图管理", "保存人工修改的审图结果", "保存完整 review 对象并增加审图修订号。expected_revision 用于乐观锁，版本不一致时返回 409，避免覆盖其他修改。"),
     ("DELETE", "/api/reviews/{job_id}"): _operation("审图管理", "删除审图任务", "删除当前用户的审图记录和相关文件；识别进行中时先标记取消，由 Worker 完成清理。该操作不可通过接口撤销。"),
@@ -118,7 +118,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/generation-jobs/{generation_id}/approve"): _operation("生图任务", "设为最终生图版本", "允许从该审图单任一已完成的历史生图任务中选定最终版本，不要求与当前审图修订一致；以所选任务创建时冻结的参数包和产物为准，不修改当前审图参数。同一审图单最多一个最终版本；已有其他最终版本时返回409及final_generation_already_selected、current_final_generation_id，必须先取消原选择。重复确认已选版本幂等返回。模拟任务会保留 is_mock 标识。"),
     ("POST", "/api/generation-jobs/{generation_id}/unapprove"): _operation("生图任务", "取消设为最终生图版本", "仅清除目标任务的最终标记及确认人、时间，记录取消审计，保留完成状态、图纸、冻结参数和审图修订。重复取消幂等返回；目标不再是最终版本时不影响其他版本。需要当前用户拥有该任务。取消后允许暂时没有最终版本，并可选择其他已完成版本；不影响继续生图或SW回调。"),
     ("GET", "/api/generation-jobs/{generation_id}/artifacts"): _operation("生成产物", "查询生图任务产物", "列出任务上传的 PNG、PDF、模型、清单和日志文件，包含大小、MIME、SHA-256 和模拟标识。"),
-    ("GET", "/api/generation-jobs/{generation_id}/artifacts/{artifact_id}"): _operation("生成产物", "预览或下载生图任务产物", "按 artifact_id 获取指定任务的生成文件，并校验当前 ERP 用户的数据权限和安全路径。PDF 可使用 inline=1 在浏览器内预览；默认仍作为附件下载。"),
+    ("GET", "/api/generation-jobs/{generation_id}/artifacts/{artifact_id}"): _operation("生成产物", "预览或下载生图任务产物", "按 artifact_id 获取指定任务的生成文件，并校验当前云平台用户的数据权限和安全路径。PDF 可使用 inline=1 在浏览器内预览；默认仍作为附件下载。"),
     ("POST", "/api/admin/generation-templates"): _operation("模板管理", "注册生图模板", "使用管理员 Bearer Key 创建首个模板版本。template_code 与 version 组合必须唯一，模板内容创建后不可直接修改。"),
     ("POST", "/api/admin/generation-templates/{template_code}/versions"): _operation("模板管理", "创建模板新版本", "为已有 template_code 创建不可变新版本；参数映射、匹配规则或能力要求变化时使用此接口。"),
     ("PATCH", "/api/admin/generation-templates/{template_code}/versions/{version}/status"): _operation("模板管理", "启用或禁用模板版本", "只修改指定模板版本的 enabled 状态，不修改模板内容。被禁用版本不参与用户查询和自动匹配。"),
@@ -538,7 +538,7 @@ class VariantCreateResponse(BaseModel):
 
 
 class ReviewListResponse(BaseModel):
-    reviews: list[dict[str, Any]] = Field(default_factory=list, description="当前 ERP 用户可访问的审图记录。")
+    reviews: list[dict[str, Any]] = Field(default_factory=list, description="当前云平台用户可访问的审图记录。")
     persistence: dict[str, Any] | None = Field(default=None, description="持久化运行模式和状态。")
 
 
@@ -1193,7 +1193,7 @@ FIELD_DESCRIPTIONS = {
     "lease_expires_at": "当前 Worker 租约过期时间。",
     "is_final": "是否为审图单选定的最终版本。",
     "is_stale": "任务生成时的审图修订是否与当前修订不同；历史完成版本仍可选为最终版本。",
-    "approved_by": "确认最终版本的 ERP 用户信息。",
+    "approved_by": "确认最终版本的云平台用户信息。",
     "approved_at": "确认最终版本的时间。",
     "started_at": "首次开始处理的时间。",
     "completed_at": "完成时间。",
@@ -1211,8 +1211,8 @@ RESPONSE_DESCRIPTIONS = {
     "202": "请求已接受并进入异步处理。",
     "204": "当前没有可返回的内容。",
     "400": "请求参数或业务输入不合法。",
-    "401": "缺少有效的 ERP 身份或 API Key。",
-    "404": "资源不存在，或不属于当前 ERP 用户。",
+    "401": "缺少有效的云平台身份或 API Key。",
+    "404": "资源不存在，或不属于当前云平台用户。",
     "409": "修订、幂等键、任务状态、模板选择或 Worker 租约发生冲突。",
     "413": "上传文件超过配置的大小限制。",
     "415": "上传文件类型与 artifact_type 不匹配。",
@@ -1249,12 +1249,12 @@ def apply_chinese_openapi_documentation(schema: dict[str, Any]) -> dict[str, Any
     _describe_component_schemas(component_schemas)
 
     security_schemes = components.setdefault("securitySchemes", {})
-    cookie_name = str(os.getenv("ERP_IDENTITY_COOKIE_NAME", "erp_review_identity") or "erp_review_identity").strip()
+    cookie_name = str(os.getenv("ERP_IDENTITY_COOKIE_NAME", "datynkinfo") or "datynkinfo").strip()
     security_schemes["ErpIdentityCookie"] = {
         "type": "apiKey",
         "in": "cookie",
         "name": cookie_name,
-        "description": "ERP 注入的用户身份 Cookie；本地 mock 身份模式无需填写。",
+        "description": "云平台注入的用户身份 Cookie；用户 ID 和用户名必填，组织信息可选；本地 mock 身份模式无需填写。",
     }
     security_schemes.setdefault("GenerationAdminBearer", {"type": "http", "scheme": "bearer"})["description"] = (
         "模板管理员 API Key，对应 GENERATION_ADMIN_API_KEY。"

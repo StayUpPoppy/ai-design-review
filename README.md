@@ -368,15 +368,56 @@ http://127.0.0.1:8088/api/swagger
 # 公网地址
 http://111.170.173.2:8088/
 
-document.cookie = `userinfo=${encodeURIComponent(JSON.stringify({
+## 云平台身份 Cookie：datynkinfo
+
+云平台登录时写入 `datynkinfo`，值为 URL 编码的 JSON。`userId`、`username` 必填；`realName` 可选，缺失时使用用户名；`currentOrgId`、`currentOrgName` 可省略、为 `null` 或空字符串，后端统一保存为空字符串。数据继续按 `userId` 隔离，因此云平台用户 ID 必须唯一且稳定。
+
+审图默认只读取 `datynkinfo`，不会自动回退到 ERP 的 `userinfo`；后续登录 ERP 不应覆盖审图 Cookie。云平台管理员需确保 Cookie 的域、路径及浏览器跨站策略允许审图接口携带该 Cookie，在 Network 中检查 `/api/session` 的实际请求进行验证。
+
+项目保留 `ERP_IDENTITY_COOKIE_NAME` 配置名。本地及服务器项目根目录的 `.env` 设置为：
+
+```dotenv
+AI_REVIEW_IDENTITY_MODE=cookie_json
+ERP_IDENTITY_COOKIE_NAME=datynkinfo
+```
+
+代码、测试、`.env.example` 和 `.env.production.example` 可以提交到 GitHub；实际 `.env` 被 Git 忽略，本地修改不会同步到服务器，也不会被示例文件自动覆盖。服务器需手动修改 `.env`，拉取代码后重建 API 和识别 Worker，使代码与环境变量同时生效：
+
+```bash
+git pull
+# 手动修改服务器 .env，设置上面的身份配置后执行：
+docker compose up -d --build --force-recreate api worker
+```
+
+验收时，仅登录云平台应能获取 `/api/session` 并上传识别图纸；再次登录 ERP 后，该接口返回的用户 ID 应保持一致。已有图纸和任务不清理、不迁移，原归属仍然保留；上线前核对新旧用户 ID，避免同值不同人的账号误关联历史数据。此次无需数据库表结构迁移。
+
+以下为浏览器控制台联调示例；正式 Cookie 由云平台登录流程设置。
+
+```javascript
+document.cookie = `datynkinfo=${encodeURIComponent(JSON.stringify({
   userId: "123",
   username: "admin",
   realName: "管理员",
-  currentOrgId: "1",
-  currentOrgName: "总部"
+  currentOrgId: null,
+  currentOrgName: ""
 }))}; Path=/`;
 
 location.reload();
+```
+
+带组织信息的联调示例也继续支持：
+
+```javascript
+document.cookie = `datynkinfo=${encodeURIComponent(JSON.stringify({
+  userId: "31",
+  username: "张宇涵",
+  realName: "张宇涵",
+  currentOrgId: "2",
+  currentOrgName: "英科1厂"
+}))}; Path=/`;
+
+location.reload();
+```
 
 docker compose --profile mock-solidworks stop
 docker compose --profile mock-solidworks start

@@ -325,7 +325,7 @@ def require_identity(request: Request) -> IdentityContext:
     try:
         return resolve_request_identity(request)
     except IdentityError as exc:
-        raise HTTPException(status_code=401, detail="ERP identity is required to use the drawing review assistant.") from exc
+        raise HTTPException(status_code=401, detail="Cloud platform identity is required to use the drawing review assistant.") from exc
 
 
 def _configured_recognition_concurrency() -> int:
@@ -2880,8 +2880,8 @@ async def run_recognition_job_record(
         org_name=str(owner.get("org_name") or ""),
         source="recognition_worker",
     )
-    if not all((identity.user_id, identity.username, identity.org_id, identity.org_name)):
-        raise RuntimeError("Recognition job is missing its ERP ownership context.")
+    if not all((identity.user_id, identity.username)):
+        raise RuntimeError("Recognition job is missing its user ownership context.")
 
     existing = _reuse_multi_spec_source(job_id, identity, progress_callback)
     if existing is not None:

@@ -84,22 +84,22 @@ def _mock_identity() -> IdentityContext:
 
 
 def _cookie_json_identity(request: Request) -> IdentityContext:
-    cookie_name = str(os.getenv("ERP_IDENTITY_COOKIE_NAME", "erp_review_identity") or "erp_review_identity").strip()
+    cookie_name = str(os.getenv("ERP_IDENTITY_COOKIE_NAME", "datynkinfo") or "datynkinfo").strip()
     raw_cookie = request.cookies.get(cookie_name)
     if not raw_cookie:
-        raise IdentityError("ERP identity cookie is missing.")
+        raise IdentityError("Cloud platform identity cookie is missing.")
     try:
         payload = json.loads(unquote(str(raw_cookie)))
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise IdentityError("ERP identity cookie is invalid.") from exc
+        raise IdentityError("Cloud platform identity cookie is invalid.") from exc
     if not isinstance(payload, dict):
-        raise IdentityError("ERP identity cookie is invalid.")
+        raise IdentityError("Cloud platform identity cookie is invalid.")
     return IdentityContext(
         user_id=_required_text(payload.get("userId"), "userId"),
         username=_required_text(payload.get("username"), "username"),
         real_name=_optional_text(payload.get("realName")) or _required_text(payload.get("username"), "username"),
-        org_id=_required_text(payload.get("currentOrgId"), "currentOrgId"),
-        org_name=_required_text(payload.get("currentOrgName"), "currentOrgName"),
+        org_id=_optional_text(payload.get("currentOrgId")),
+        org_name=_optional_text(payload.get("currentOrgName")),
         source="erp_cookie_json",
     )
 
@@ -107,7 +107,7 @@ def _cookie_json_identity(request: Request) -> IdentityContext:
 def _required_text(value: Any, label: str) -> str:
     text = _optional_text(value)
     if not text:
-        raise IdentityError(f"ERP identity field '{label}' is missing.")
+        raise IdentityError(f"User identity field '{label}' is missing.")
     return text
 
 

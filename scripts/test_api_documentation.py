@@ -6,6 +6,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -15,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 os.environ["AI_REVIEW_IDENTITY_MODE"] = "mock"
 os.environ["GENERATION_ADMIN_API_KEY"] = "documentation-test-admin-secret"
 os.environ["GENERATION_WORKER_API_KEY"] = "documentation-test-worker-secret"
-os.environ["ERP_IDENTITY_COOKIE_NAME"] = "erp_review_identity"
+os.environ.pop("ERP_IDENTITY_COOKIE_NAME", None)
 
 from ai_design_review import api  # noqa: E402
 from ai_design_review.api_documentation import (  # noqa: E402
@@ -216,9 +217,18 @@ def main() -> None:
     assert schemes["ErpIdentityCookie"] == {
         "type": "apiKey",
         "in": "cookie",
-        "name": "erp_review_identity",
-        "description": "ERP 注入的用户身份 Cookie；本地 mock 身份模式无需填写。",
+        "name": "datynkinfo",
+        "description": "云平台注入的用户身份 Cookie；用户 ID 和用户名必填，组织信息可选；本地 mock 身份模式无需填写。",
     }
+    original_schema = api.app.openapi_schema
+    try:
+        with patch.dict(os.environ, {"ERP_IDENTITY_COOKIE_NAME": "custom_identity"}):
+            api.app.openapi_schema = None
+            custom_schema = client.get("/api/openapi.json").json()
+            assert custom_schema["components"]["securitySchemes"]["ErpIdentityCookie"]["name"] == "custom_identity"
+    finally:
+        api.app.openapi_schema = original_schema
+
     assert schemes["GenerationAdminBearer"]["scheme"] == "bearer"
     assert schemes["GenerationWorkerBearer"]["scheme"] == "bearer"
     assert operations[("GET", "/api/health")]["security"] == []
