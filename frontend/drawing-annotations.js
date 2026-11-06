@@ -1,7 +1,7 @@
 /* Original drawing UI. Parameter updates from relocalization belong to app.js. */
 window.DrawingAnnotations = (() => {
   // Display order only. Persisted annotation IDs/numbers and locations stay unchanged.
-  const fields = Object.freeze(["material", "accuracy_grade", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "solid_height", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"]);
+  const fields = Object.freeze(["material", "accuracy_grade", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"]);
   const displayNumbers = new Map(fields.map((field, index) => [field, index + 1]));
   const numberForField = field => displayNumbers.get(field) ?? null;
   const visibleAnnotations = item => (item?.document?.annotations || []).filter(a => numberForField(a.field) != null);
@@ -53,6 +53,8 @@ window.DrawingAnnotations = (() => {
       }
     },
   };
+  function imageSize(image){return {width:Number(image?.dataset?.logicalWidth)||image?.naturalWidth||0,height:Number(image?.dataset?.logicalHeight)||image?.naturalHeight||0};}
+  function release(id){const item=cache.get(id);if(item?.pending.size||item?.saving)return;cache.delete(id);}
   function entry() {
     const id = config?.getJobId();
     if (!id || !config.isCompression()) return null;
@@ -106,7 +108,7 @@ window.DrawingAnnotations = (() => {
     const selected = numberForField(item.selected) != null ? annotation(item.selected) : null;
     const current = selected ? config.getParameter(selected.field) : null;
     const unlocated = visibleAnnotations(item).filter((a) => !a.locations.length && (a.original_value != null || config.getParameter(a.field)?.value != null && config.getParameter(a.field)?.value !== ""));
-    const diagnostics = (item.document.diagnostics || []).filter((d) => d.field !== "standard_no" && d.kind !== "unlocated" && (d.kind !== "value_mismatch" || String(d.evidence_value) !== String(config.getParameter(d.field)?.value)));
+    const diagnostics = (item.document.diagnostics || []).filter((d) => numberForField(d.field) != null && d.kind !== "unlocated" && (d.kind !== "value_mismatch" || String(d.evidence_value) !== String(config.getParameter(d.field)?.value)));
     return `<div class="annotation-info" aria-live="polite">
       ${selected ? `<span><strong>${numberForField(selected.field)} · ${esc(selected.label)}</strong>　原图识别值：${esc(selected.original_value ?? "无直接标注")}　当前值：${esc(current?.value ?? "未填写")}</span>${item.editing ? ` <button type="button" data-annotation-place="${esc(selected.field)}">重新定位</button>` : ""}` : ""}
       ${item.placing ? '<p>点击原图中的标注位置。Esc 可取消；拖动气泡或使用方向键仅调整气泡位置。</p>' : item.editing ? '<p>拖动气泡调整位置；选择未定位参数可在原图补位置。调整不改变参数。</p>' : ""}
@@ -147,7 +149,7 @@ window.DrawingAnnotations = (() => {
   function screenPoint(point) {
     const image = config.getImage();
     const view = config.getView();
-    return viewTransform.project(point, image.naturalWidth, image.naturalHeight, view);
+    return viewTransform.project(point, imageSize(image).width, imageSize(image).height, view);
   }
   function leaderEndpoint(anchor, bubble) {
     const dx = anchor.x - bubble.x, dy = anchor.y - bubble.y;
@@ -160,7 +162,7 @@ window.DrawingAnnotations = (() => {
     const image = config.getImage();
     const view = config.getView();
     const rect = viewport.getBoundingClientRect();
-    const point = viewTransform.unproject({ x: event.clientX - rect.left, y: event.clientY - rect.top }, image.naturalWidth, image.naturalHeight, view);
+    const point = viewTransform.unproject({ x: event.clientX - rect.left, y: event.clientY - rect.top }, imageSize(image).width, imageSize(image).height, view);
     return { x: bound(point.x), y: bound(point.y) };
   }
   const automatic = (location) => ["ocr", "pdf_text", "candidate", "local_ocr"].includes(location.source);
@@ -219,7 +221,7 @@ window.DrawingAnnotations = (() => {
   function adoptVisualPosition(item, a, location) {
     const p = item.layout?.positions.get(locationKey(a, location));
     const image = config.getImage(), scale = config.getView().scale;
-    if (p && automatic(location)) location.bubble = { x: bound(p.x / (image.naturalWidth * scale)), y: bound(p.y / (image.naturalHeight * scale)) };
+    if (p && automatic(location)) location.bubble = { x: bound(p.x / (imageSize(image).width * scale)), y: bound(p.y / (imageSize(image).height * scale)) };
   }
   function renderLayer() {
     const layer = config.getViewport()?.querySelector(".drawing-annotation-layer");
@@ -228,7 +230,7 @@ window.DrawingAnnotations = (() => {
     if (!layer || !image?.naturalWidth) return;
     const entries = visibleAnnotations(item).flatMap((a) => a.locations.filter((l) => l.page === item.page).map((l) => ({ a, location: l, key: locationKey(a, l) })));
     const view = config.getView();
-    const width = image.naturalWidth * view.scale, height = image.naturalHeight * view.scale;
+    const width = imageSize(image).width * view.scale, height = imageSize(image).height * view.scale;
     const key = JSON.stringify([item?.page, width, height, item?.document?.annotation_revision, entries.map((e) => [e.key, e.location.source, e.location.bubble])]);
     if (item && item.layout?.key !== key) {
       const obstacles = (item.document?.text_obstacles || []).filter((o) => o.page === item.page).map((o) => o.bbox);
@@ -265,6 +267,7 @@ window.DrawingAnnotations = (() => {
     }
   }
   async function save(item = entry()) {
+    if(config.readOnly?.()) return false;
     if (!item?.pending.size || item.conflict || !item.document) return;
     if (item.saving) return item.saving;
     item.saving = (async () => {
@@ -360,9 +363,12 @@ window.DrawingAnnotations = (() => {
     });
     const viewport = config.getViewport();
     if (!viewport) return;
+    viewport.annotationEvents?.abort();
+    viewport.annotationEvents = new AbortController();
+    const listen = (type, callback) => viewport.addEventListener(type, callback, {signal:viewport.annotationEvents.signal});
     // Delegate so zoom redraws never accumulate pointer/key listeners.
-    viewport.addEventListener("pointerdown", (event) => {
-      if (item.relocalizing) return;
+    listen("pointerdown", (event) => {
+      if (item.relocalizing || config.readOnly?.()) return;
       if (event.button !== 0) return;
       const group = event.target.closest("[data-annotation-id]");
       if (group) {
@@ -388,7 +394,7 @@ window.DrawingAnnotations = (() => {
         }
       }
     });
-    viewport.addEventListener("pointermove", (event) => {
+    listen("pointermove", (event) => {
       if (!item.drag) return;
       const a = annotation(item.drag.field, item);
       const location = a?.locations.find((l) => l.location_id === item.drag.id);
@@ -399,15 +405,15 @@ window.DrawingAnnotations = (() => {
       renderLayer();
     });
     const finish = () => { if (item.drag) { item.drag = null; config.onGestureChange?.(); void save(item); } };
-    viewport.addEventListener("pointerup", finish);
-    viewport.addEventListener("pointercancel", finish);
-    viewport.addEventListener("lostpointercapture", finish);
-    viewport.addEventListener("click", (event) => {
+    listen("pointerup", finish);
+    listen("pointercancel", finish);
+    listen("lostpointercapture", finish);
+    listen("click", (event) => {
       const group = event.target.closest("[data-annotation-id]");
       if (group && item.editing) { item.selected = group.dataset.annotationId; notify(item); }
     });
-    viewport.addEventListener("keydown", (event) => {
-      if (item.relocalizing) return;
+    listen("keydown", (event) => {
+      if (item.relocalizing || config.readOnly?.()) return;
       if (event.key === "Escape") { item.placing = ""; notify(item); return; }
       const group = event.target.closest("[data-annotation-id]");
       if (!group) return;
@@ -420,7 +426,7 @@ window.DrawingAnnotations = (() => {
       adoptVisualPosition(item, a, l);
       const [dx, dy] = moves[event.key];
       const start = screenPoint(l.bubble);
-      const moved = viewTransform.unproject({ x: start.x + dx * 5, y: start.y + dy * 5 }, image.naturalWidth, image.naturalHeight, view);
+      const moved = viewTransform.unproject({ x: start.x + dx * 5, y: start.y + dy * 5 }, imageSize(image).width, imageSize(image).height, view);
       l.bubble = { x: bound(moved.x), y: bound(moved.y) };
       queue(item, a, l);
       renderLayer();
@@ -436,7 +442,7 @@ window.DrawingAnnotations = (() => {
     void load(item);
     renderLayer();
   }
-  return { configure: (options) => { config = options; }, toolsHtml, infoHtml, badgeHtml, bindFields, bindViewer, renderLayer,
+  return { release, imageSize, configure: (options) => { config = options; }, toolsHtml, infoHtml, badgeHtml, bindFields, bindViewer, renderLayer,
     imageUrl: () => page()?.image_url ? config.assetUrl(page().image_url) : null,
     capturesPointer: (event) => Boolean(entry()?.placing || event.target.closest("[data-annotation-id]")),
     hasUnsaved: () => Array.from(cache.values()).some((item) => item.pending.size || item.saving),

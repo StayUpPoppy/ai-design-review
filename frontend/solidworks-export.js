@@ -370,6 +370,7 @@
     return {
       ...(packageData.generation_settings ? { DrawingModel: packageData.generation_settings.drawing_model, Username: packageData.generation_settings.username,
         ...(Object.hasOwn(packageData.generation_settings, "typeface") ? { typeface: packageData.generation_settings.typeface } : {}) } : {}),
+      ...(Object.hasOwn(packageData.source || {}, "material_code") ? {materialCode: packageData.source.material_code || null} : {}),
       modelParameters,
       ...(Object.keys(tolerances).length ? { modelParametersTolerance: tolerances } : {}),
       customProperties: { "旋向": handedness(parameterValue(parameters.handedness)) }, extraProperties: extra, titleBlockProperties: titleBlock,

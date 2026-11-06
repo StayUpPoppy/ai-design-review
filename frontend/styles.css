@@ -6343,3 +6343,18 @@ button.technical-output-link:focus-visible { outline: 2px solid var(--accent); o
 .load-height-evidence summary { cursor: pointer; }
 .load-height-evidence div { margin-top: 4px; white-space: pre-wrap; }
 [data-role="height-relation-note"] { color: #526176; font-size: 12px; line-height: 1.5; }
+
+/* Page checklists retain the same four fields on a narrow panel. */
+@media (max-width: 760px) {
+  .pdf-pages-workbench .specification-checklist table { min-width: 0; table-layout: fixed; }
+  .pdf-pages-workbench .specification-checklist th,
+  .pdf-pages-workbench .specification-checklist td { min-width: 0 !important; padding: 10px 4px; overflow-wrap: anywhere; }
+  .pdf-pages-workbench th:nth-child(1) { width: 15%; }
+  .pdf-pages-workbench th:nth-child(2) { width: 34%; }
+  .pdf-pages-workbench th:nth-child(3) { width: 18%; }
+  .pdf-pages-workbench th:nth-child(4) { width: 33%; }
+  .pdf-pages-workbench .specification-problems button { padding: 6px; font-size: 12px; }
+}
+
+.review-load-notice { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 8; max-width: calc(100% - 24px); display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: #2452cb; font-size: 13px; }
+.review-load-notice[hidden] { display: none; }

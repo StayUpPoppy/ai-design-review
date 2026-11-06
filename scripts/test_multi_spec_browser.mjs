@@ -143,12 +143,12 @@ try {
   // Late child response cannot acknowledge a newer source round.
   let release;childGate=new Promise(r=>release=r);
   await autoRow.locator('[data-history-job-id="auto-child0"] [data-role="open-recent-review"]').click();
-  await page.waitForFunction(()=>state.busy);
+  await page.waitForFunction(()=>reviewReadOnly());
   await page.evaluate(()=>{
     mergeRecognitionStatus('auto',{status:'queued',attempt_count:2,progress:0,record_kind:'source'},{restart:true});
     mergeRecognitionStatus('auto',{status:'processing',attempt_count:3,progress:97,record_kind:'source'});
     mergeRecognitionStatus('auto',{status:'completed',attempt_count:3,progress:100,record_kind:'source',variant_count:3,created_count:3,creation_mode:'auto'});
-  });release(); await page.waitForFunction(()=>!state.busy&&state.compareOpen);
+  });release(); await page.waitForFunction(()=>!reviewReadOnly()&&state.compareOpen);
   assert.equal(await autoRow.locator(':scope > .history-select-button .history-unread-dot').isVisible(),true);
   await page.evaluate(()=>closeCompareOverlay());
   await autoRow.locator(':scope > [data-role="expand-specifications"]').click();

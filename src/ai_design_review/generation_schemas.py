@@ -135,6 +135,7 @@ class GenerationExportPolicyV1(BaseModel):
 
 
 class GenerationSourceV1(BaseModel):
+    material_code: str | None = Field(default=None, max_length=256, description="人工填写的物料编码快照，空值传SW materialCode:null；保留前导零及内部空格。")
     drawing_no: str | None = Field(default=None, description="原图纸编号；新建任务以字符串写入标题栏客户图号，仅去除首尾空白，保留前导零等内容。")
     drawing_name: str | None = Field(default=None, description="创建参数包时冻结的已保存图纸名称（可编辑，最多512字符，仅去首尾空白）；空值时SW模型名称回退到弹簧类型。")
     spring_type: str | None = Field(default=None, description="审图识别的弹簧类型代码。")
@@ -225,6 +226,7 @@ class GenerationSettings(BaseModel):
 
 class SolidWorksPreviewV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    materialCode: str | None = Field(default=None, max_length=256, description="冻结的人工物料编码；缺值为null，与材料牌号无关。")
 
     DrawingModel: Literal["X型", "Y型"] | None = Field(default=None, exclude_if=lambda value: value is None, description="X型横版、Y型竖版；旧冻结预览可缺少。")
     Username: str | None = Field(default=None, exclude_if=lambda value: value is None, description="本次输入的生图人姓名；旧冻结预览可缺少。")

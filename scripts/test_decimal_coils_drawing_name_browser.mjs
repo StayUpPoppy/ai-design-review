@@ -67,6 +67,23 @@ const title = () => page.evaluate(() => state.recentReviews.find((r) => r.job_id
 try {
   await page.goto(process.env.DECIMAL_FRONTEND_URL || `http://127.0.0.1:${server.address().port}`);
   await page.waitForFunction(() => state.identityReady && state.recentReviews.length === 2); await open('a');
+  const materialCode = () => root.locator('[data-role="material-code"]');
+  assert.equal(await materialCode().inputValue(), "");
+  const originalParameters = await page.evaluate(() => JSON.stringify(state.review.spring_parameters));
+  for (const code of [" 00123 ", "YB156b7509", "AB-01  02", ""]) {
+    await materialCode().fill(code); await materialCode().press('Tab'); await saved();
+    assert.equal(models.get('a').review.drawing_summary.material_code, code.trim());
+    const preview = await page.evaluate(() => makeGenerationParameterPackage());
+    assert.equal(preview.source.material_code, code.trim() || null);
+    assert.equal(preview.solidworks_preview.materialCode, code.trim() || null);
+  }
+  await materialCode().fill("YB156b7509"); await materialCode().press('Tab'); await saved();
+  await open('b'); assert.equal(await materialCode().inputValue(), "");
+  await open('a'); assert.equal(await materialCode().inputValue(), "YB156b7509");
+  assert.equal(await page.evaluate(() => JSON.stringify(state.review.spring_parameters)), originalParameters);
+  await materialCode().fill("X".repeat(257)); await materialCode().press('Tab');
+  assert.equal(await materialCode().getAttribute('aria-invalid'), 'true');
+  await materialCode().fill("00123"); await materialCode().press('Tab'); await saved();
   for (const [field, value] of [['total_coils', '10.5'], ['active_coils', '8.25']]) {
     await input(field).fill(value); await input(field).press('Tab'); await saved();
     const confirm = root.locator(`[data-kind="param"][data-field="${field}"] [data-role="confirm"]:visible`);

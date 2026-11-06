@@ -145,6 +145,7 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(appSource.slice(appSource.indexOf("function getEditorParameterFieldGroups"), appSource.indexOf("function getParameterFieldGroups")), context);
+vm.runInContext(appSource.slice(appSource.indexOf("function hasAdvancedParameterValue"), appSource.indexOf("const DEFAULT_CANDIDATE_NOTICE")), context);
 translationTestHelpers(context);
 for (const [startName, endName] of [["function applyManualSurfaceNormalization", "function clearSurfaceNormalization"],
   ["function technicalTranslationWarningAudit", "function refreshTechnicalTranslationControls"]]) {

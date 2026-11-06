@@ -217,3 +217,13 @@ v3验收（2026-10-20）：`test_roughness_v3.py --real`以图号YD4765020175的
 ### 成图技术要求输出选择
 
 “成图技术要求预览”支持逐条删除，包括自动旋向、合并圈数、端部及载荷描述。删除状态保存在审图JSON的可选`technical_output_deletions`，仅影响`extraProperties.技术要求`，不清空模型、标题栏、载荷或计算输入。对应生成依据改变后旧选择失效，满足原确认条件的新内容重新出现；新任务按当前保存修订冻结，历史请求及原参数重试不变。全部条目删除时保持`"技术要求": ""`，不补默认正文。来源投影只作为参数包读取接口的可选响应信息，不新增SW模型字段。详见[成图技术要求预览](technical-requirement-preview.md)。
+
+## 人工物料编码
+
+摘要中“图号”右侧的“物料编码”默认为空，手工填写且最多256字符。仅去首尾空白，保留00123、字母、连字符及内部空格，不使用材料目录ID、图号或文件名推测。允许清空，无新增确认或就绪条件。
+
+新包source.material_code及solidworks_preview.materialCode使用已保存快照；每个models对象的materialCode使用该值，缺值仍为null。前端预览、AI导出、实际请求一致；历史冻结任务及原参数重试不变。
+
+```json
+{"models":[{"DrawingModel":"X型","materialCode":"YB156b7509","Username":"阿拉伯特","typeface":"黑体","modelParameters":{}}]}
+```

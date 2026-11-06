@@ -15,8 +15,10 @@ base.spring_parameters.active_coils = { value: 8.25, unit: 'turns', source: ['hu
 base.spring_parameters.surface_roughness_ra = { value: null, unit: 'μm', source: [], need_human_review: true };
 base.spring_parameters.outer_diameter = { value: 9, unit: 'mm', tolerance_upper: .1, tolerance_lower: 0, need_human_review: true };
 base.spring_parameters.load_points = [{ load_point_id: 'zero', label: 'F1', height: 20, force: 0, height_unit: 'mm', force_unit: 'N', load_tolerance_percent: 10, need_human_review: true }];
+const noteContent = '其他要求：待客户确认 <script>window.reportInjected=true</script>';
 base.technical_requirements = [{ requirement_id: 'heat', type: 'heat_treatment', content: '热处理：消除应力退火', need_human_review: false },
-  { requirement_id: 'note', type: 'other', content: '其他要求：待客户确认 <script>window.reportInjected=true</script>', translation_status: 'translated', need_human_review: true }];
+  { requirement_id: 'note', type: 'other', content: noteContent, translation_status: 'translated',
+    translation_output_snapshot: { content: noteContent, type: 'other' }, need_human_review: true }];
 base.standardization_results = []; base.change_history = [];
 const optionalAdvanced = ['controlled_diameter_field', 'body_length', 'end_coils', 'straightness', 'permanent_set_limit'];
 const fixedAdvanced = ['support_coils', 'pitch', 'spring_rate', 'perpendicularity'];
@@ -125,7 +127,10 @@ try {
   for (const field of [...optionalAdvanced, ...specializedAdvanced]) assert.equal(await advancedPanel.locator(`[data-field="${field}"]`).count(), 0);
   await advancedPanel.screenshot({ path: path.join(out, 'advanced-desktop.png') });
   await page.setViewportSize({ width: 390, height: 844 });
-  await advancedPanel.screenshot({ path: path.join(out, 'advanced-mobile.png') });
+  await page.evaluate(() => focusMissingStandardizationField('solid_height'));
+  const mobileHeightRow = advancedPanel.locator('[data-kind="param"][data-field="solid_height"]');
+  await page.waitForFunction(() => document.activeElement?.closest('[data-kind="param"][data-field="solid_height"]'));
+  await mobileHeightRow.screenshot({ path: path.join(out, 'advanced-mobile.png') });
   assert.equal(await advancedPanel.evaluate(el => el.scrollWidth <= el.clientWidth + 1), true);
   await page.setViewportSize({ width: 1440, height: 1000 });
   const planFields = await page.evaluate(() => { const plan = buildSafeConfirmationPlan(state.review); return [...plan.items, ...plan.skipped].map(item => item.field); });
@@ -170,7 +175,8 @@ try {
   for (const field of advanced) assert.equal(await dialog.locator(`input[data-sheet-id="param:${field}"]`).isChecked(), true, `visible advanced ${field} selected`);
   const inputChoices = dialog.getByRole('group', { name: '输入参数', exact: true });
   const expectedRows = await page.evaluate(() => getParameterFields(state.review.spring_parameters, state.review).filter(field => COMPRESSION_CORE_PARAMETER_FIELDS.has(field)).map(field => `param:${field}`));
-  const rowIds = [...expectedRows, ...advanced.map(field => `param:${field}`)];
+  // Hb keeps its previous report position even though its editor row moved.
+  const rowIds = [...expectedRows, ...advanced.filter(field => field !== 'solid_height').map(field => `param:${field}`)];
   assert.deepEqual(await inputChoices.locator('input').evaluateAll(inputs => inputs.map(input => input.dataset.sheetId)), rowIds);
   assert.equal(new Set(rowIds).size, rowIds.length, 'merged input parameters have no duplicate rows');
   const inputRows = await frame().getByRole('heading', { name: '输入参数', exact: true }).locator('..').locator('.fields > .report-item').count();

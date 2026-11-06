@@ -128,7 +128,7 @@ docker compose logs -f mock-solidworks
 
 真实对接设置 `SOLIDWORKS_GENERATION_URL=http://192.168.31.200:5000/solidworks/command` 和 `SOLIDWORKS_REQUEST_TIMEOUT_SECONDS=10` 后，用户点击“生成图纸”时服务端会分配唯一、固定十位的正数 `TaskId`，冻结当前参数，并立即 `POST` 到 SolidWorks。相同幂等键的网络重试只返回原任务，不会分配或发送第二个 TaskId；修改参数或失败后点击“重新生图”会创建新的 TaskId。任何连接异常、超时或非 2xx 受理响应都会把本次任务置为 `failed`，错误码为 `solidworks_submit_failed`。
 
-发送给 SolidWorks 的数据以 `TaskId` 和 `models` 为根；`modelId` 固定为整型 `1`，`materialCode` 固定为 `null`。`modelParameters` 保存建模尺寸、圈数和端部状态，不并紧时省略有效圈数。`extraProperties.技术要求` 按现有规则合并已确认有效的旋向、圈数、端部、压并高度、载荷点及原图／人工要求；纯材料条目不再写入技术要求，材料和粗糙度在标题栏传递。技术要求区顶部的成图预览显示这份最终文字。`extraProperties` 另提供可用的 `P'`（N/mm）、`C`、`τ_b`（MPa），缺项独立省略。完整JSON、可选对称公差及标题栏字段见[SW命令格式](docs/solidworks-command.md)；计算依据与请求冻结在任务中，历史任务及原参数重试保持原请求。
+发送给 SolidWorks 的数据以 `TaskId` 和 `models` 为根；`modelId` 固定为整型 `1`，`materialCode` 使用摘要中人工填写的物料编码快照，未填写时为 `null`。`modelParameters` 保存建模尺寸、圈数和端部状态，不并紧时省略有效圈数。`extraProperties.技术要求` 按现有规则合并已确认有效的旋向、圈数、端部、压并高度、载荷点及原图／人工要求；纯材料条目不再写入技术要求，材料和粗糙度在标题栏传递。技术要求区顶部的成图预览显示这份最终文字。`extraProperties` 另提供可用的 `P'`（N/mm）、`C`、`τ_b`（MPa），缺项独立省略。完整JSON、可选对称公差及标题栏字段见[SW命令格式](docs/solidworks-command.md)；计算依据与请求冻结在任务中，历史任务及原参数重试保持原请求。
 
 SolidWorks 通过 `POST /api/solidworks/status` 回调 `generating_3d`、`generating_2d`、`generating_3d_error`、`generating_2d_error` 或 `completed` 状态；旧 `failed` 状态暂时保留兼容，新接入不再使用。完成状态必须附带：
 
@@ -431,3 +431,7 @@ docker compose logs -f --tail 100 web api
 ## 多规格图纸
 
 图片/PDF按参数区块或规格表行识别；新上传的多规格任务自动创建全部独立审图记录，并在历史栏展开。旧订单可一键补建，单规格流程保留。使用、兼容与部署步骤见 [多规格审图说明](docs/multi-spec-reviews.md)。
+
+新上传的多页PDF会按页自动创建独立审图记录，历史文件组自动展开；成功页可先审，失败页单独重试，每文件最多50页。旧订单不自动拆分。使用方式与物料编码说明见[多页PDF独立审图](docs/pdf-page-reviews.md)。
+
+多页识别图片限幅、后台本地核验与有上限的订单切换缓存见[识别及切换性能说明](docs/review-performance.md)。再次打开先显示缓存，服务器核对完成后才允许修改、确认或生图。

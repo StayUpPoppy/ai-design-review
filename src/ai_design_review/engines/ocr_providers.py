@@ -5,6 +5,7 @@ import importlib
 import importlib.util
 import os
 import time
+import threading
 import traceback
 import uuid
 from pathlib import Path
@@ -331,6 +332,9 @@ class BaiduPaddleOcrVlProvider(BaiduOcrProvider):
             time.sleep(self.poll_interval_seconds)
 
 
+_rapid_engine = None
+_rapid_engine_lock = threading.RLock()
+
 class RapidOcrProvider:
     """Local OCR backed by RapidOCR and ONNX Runtime."""
 
@@ -355,7 +359,12 @@ class RapidOcrProvider:
             factory = RapidOCR
 
         started = time.monotonic()
-        engine = factory()
+        global _rapid_engine
+        with _rapid_engine_lock:
+            if self.engine_factory is None:
+                if _rapid_engine is None: _rapid_engine = factory()
+                engine = _rapid_engine
+            else: engine = factory()
         provider_diagnostics["create_engine_duration_ms"] = _elapsed_ms(started)
         provider_diagnostics["pages"] = []
 
@@ -369,7 +378,8 @@ class RapidOcrProvider:
             }
             provider_diagnostics["pages"].append(page_diag)
             try:
-                raw = engine(str(image_path))
+                with _rapid_engine_lock:
+                    raw = engine(str(image_path))
                 blocks = rapidocr_result_to_text_blocks(raw, page_number)
                 page_diag["status"] = "success"
                 page_diag["duration_ms"] = _elapsed_ms(page_started)
@@ -402,7 +412,7 @@ class UnifiedOcrEngine(RecognitionEngine):
         work_dir: str | Path | None = None,
         diagnostics_path: str | Path | None = None,
         dpi: int = 220,
-        max_image_side: int = 8000,
+        max_image_side: int = 3000,
         providers: dict[str, OcrProvider] | None = None,
     ):
         self.provider = normalize_ocr_provider(provider or os.getenv("OCR_PROVIDER", DEFAULT_OCR_PROVIDER))

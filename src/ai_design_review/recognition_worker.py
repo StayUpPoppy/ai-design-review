@@ -53,6 +53,11 @@ class RecognitionWorker:
                     except Exception:
                         LOGGER.exception("Recognition worker thread stopped unexpectedly")
 
+                from .pdf_page_store import reap_cancelled
+                try:
+                    reap_cancelled(REVIEW_PERSISTENCE, API_RUN_ROOT)
+                except Exception:
+                    LOGGER.exception("Unable to finish cancelled PDF page cleanup")
                 claimed_any = False
                 while not STOP_EVENT.is_set() and len(futures) < self.concurrency:
                     job = REVIEW_PERSISTENCE.claim_next_recognition_job(
@@ -90,12 +95,18 @@ class RecognitionWorker:
 
         try:
             report("preparing_file", 5)
-            asyncio.run(run_recognition_job_record(job, progress_callback=report))
+            if (job.get('options') or {}).get('task_kind') == 'local_verification':
+                from .review_loading import execute
+                execute(REVIEW_PERSISTENCE, job, self.worker_id, API_RUN_ROOT, report)
+                REVIEW_PERSISTENCE.complete_recognition_job(job_id, worker_id=self.worker_id)
+                return
+            result = asyncio.run(run_recognition_job_record(job, progress_callback=report))
             if REVIEW_PERSISTENCE.recognition_job_cancel_requested(job_id, worker_id=self.worker_id):
                 self._finalize_cancelled(job)
                 return
-            completed = None
-            if (job.get("options") or {}).get("auto_create_variants"):
+            from . import pdf_page_store
+            completed = pdf_page_store.complete_page(REVIEW_PERSISTENCE, job, result, self.worker_id)
+            if completed is None and not result.get("pdf_pages_dispatched") and (job.get("options") or {}).get("auto_create_variants"):
                 from .multi_spec_store import complete_automatic
                 try:
                     completed = complete_automatic(REVIEW_PERSISTENCE, job_id, str(job["owner"]["user_id"]),
@@ -124,6 +135,11 @@ class RecognitionWorker:
             except PersistenceError:
                 LOGGER.exception("Unable to mark recognition job %s as failed", job_id)
             LOGGER.exception("Recognition job %s failed", job_id)
+        finally:
+            if (job.get('options') or {}).get('task_kind') == 'local_verification':
+                original_id=job['options']['review_id']
+                if REVIEW_PERSISTENCE.get_review(original_id,owner_user_id=str(job['owner']['user_id'])) is None:
+                    self._remove_artifacts(str(API_RUN_ROOT/original_id))
 
     def _finalize_cancelled(self, job: dict[str, Any]) -> None:
         job_id = str(job.get("job_id") or "")
@@ -133,8 +149,12 @@ class RecognitionWorker:
             # A lost lease is not authorization to erase another worker's result.
             if not artifact_dir:
                 return
+            if (job.get('options') or {}).get('task_kind') == 'local_verification': return
             REVIEW_PERSISTENCE.delete_review(job_id, owner_user_id=str(owner.get("user_id") or ""))
-            self._remove_artifacts(artifact_dir)
+            if not (Path(artifact_dir) / "pdf_delete_pending.json").is_file():
+                self._remove_artifacts(artifact_dir)
+            from .pdf_page_store import cleanup_cancelled_source
+            cleanup_cancelled_source(REVIEW_PERSISTENCE, job, API_RUN_ROOT)
         except PersistenceError:
             LOGGER.exception("Unable to finalize cancelled recognition job %s", job_id)
 

@@ -8,8 +8,6 @@ const coreFields = appSource.slice(
 );
 
 assert.match(coreFields, /"solid_height"/);
-assert.match(appSource, /function shouldShowSolidHeightCore\(param\)/);
-assert.match(appSource, /field !== "solid_height" \|\| shouldShowSolidHeightCore\(params\[field\]\)/);
 assert.match(appSource, /field === "solid_height"/);
 assert.match(appSource, /公式参考 \/ 待确认/);
 assert.match(appSource, /人工值/);

@@ -64,7 +64,7 @@ const geometry = ()=>page.evaluate(()=>{
 try{
   await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>state.identityReady&&state.recentReviews.length);
   await page.evaluate(async()=>{await openPersistedReview('normal');state.compareTab='parameters';renderCompareOverlay();});await ready();
-  assert.deepEqual(await page.locator('#compareOverlay .summary-strip').first().locator(':scope > .metric > span:first-child').allTextContents(),['类型','图纸名称','图号']);
+  assert.deepEqual(await page.locator('#compareOverlay .summary-strip').first().locator(':scope > .metric > span:first-child').allTextContents(),['类型','图纸名称','图号','物料编码']);
   const initial=await snapshot(),callsBefore=requests.length;
   const input=page.locator('#compareOverlay [data-role="drawing-name"]');await input.evaluate(el=>{window.rotationDraft=el;el.value='尚未提交的本地输入';});
   for(let n=0;n<4;n++){
@@ -112,5 +112,5 @@ try{
   await page.waitForFunction(()=>document.querySelector('#compareImage').complete&&!document.querySelector('#compareImage').naturalWidth);assert.equal(await page.locator('[data-view-action="rotate-right"]').isDisabled(),true);
   await page.reload();await page.waitForFunction(()=>state.identityReady&&state.recentReviews.length);failImage=false;await page.evaluate(()=>openPersistedReview('normal'));await ready();assert.equal(await angle(),0);
   assert.deepEqual(errors,[]);assert.equal(requests.filter(r=>r.m==='PATCH'&&!r.p.endsWith('/annotations')).length,0);
-  console.log('PASS preview rotation: source/bitmap mapping, upright bubbles/leaders, unchanged scale/center/layout/drafts, PDF memory, manual drag/keyboard/placement saves, order/close/reload reset, image failure, three summary cards and desktop/mobile');
+  console.log('PASS preview rotation: source/bitmap mapping, upright bubbles/leaders, unchanged scale/center/layout/drafts, PDF memory, manual drag/keyboard/placement saves, order/close/reload reset, image failure, four summary cards and desktop/mobile');
 }finally{await browser.close();server.close();}

@@ -66,12 +66,14 @@ def extract_pdf_text(path: str | Path) -> str:
         return ""
 
 
-def render_pdf_with_pdftoppm(
+def _render_pdf_uncached(
     pdf_path: str | Path,
     output_dir: str | Path,
     prefix: str = "page",
     dpi: int = 200,
     first_page_only: bool = False,
+    max_side: int | None = None,
+    page_number: int | None = None,
 ) -> list[str]:
     """Render a PDF with Poppler's pdftoppm if available."""
     candidates = _pdftoppm_candidates()
@@ -100,8 +102,11 @@ def render_pdf_with_pdftoppm(
             "-r",
             str(dpi),
         ]
-        if first_page_only:
-            command.extend(["-f", "1", "-l", "1", "-singlefile"])
+        if max_side:
+            command.extend(["-scale-to", str(max_side)])
+        if first_page_only or page_number:
+            number = str(page_number or 1)
+            command.extend(["-f", number, "-l", number, "-singlefile"])
         command.extend([
             str(pdf_path),
             str(output_prefix),
@@ -109,7 +114,7 @@ def render_pdf_with_pdftoppm(
         completed = subprocess.run(command, capture_output=True)
         rendered = (
             [str(single_page)]
-            if first_page_only and single_page.exists()
+            if (first_page_only or page_number) and single_page.exists()
             else [str(p) for p in sorted(output.glob(f"{prefix}-*.png"), key=lambda p: int(p.stem.rsplit("-", 1)[-1]))]
         )
         if completed.returncode == 0 and rendered:
@@ -119,6 +124,11 @@ def render_pdf_with_pdftoppm(
         detail = (stderr or stdout or "no output").strip()
         errors.append(f"{pdftoppm}: exit {completed.returncode}; {detail}")
     raise RuntimeError("pdftoppm failed to render PDF. Tried: " + " | ".join(errors))
+
+
+def render_pdf_with_pdftoppm(pdf_path, output_dir, prefix="page", dpi=200, first_page_only=False, *, max_side=3000):
+    from .page_images import render_pdf
+    return render_pdf(Path(pdf_path), Path(output_dir), prefix, dpi, first_page_only, max_side=max_side)
 
 
 def _pdftoppm_candidates() -> list[str]:

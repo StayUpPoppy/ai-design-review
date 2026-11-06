@@ -87,11 +87,34 @@ class QwenVisionEngine(RecognitionEngine):
         prepared_images = [Path(item) for item in image_paths] if image_paths else self._prepare_images(path)
         total_pages = len(prepared_images)
         prepared_images = prepared_images[: self.max_pages]
+        from ..page_images import qwen_images
+        prepared_images = qwen_images(prepared_images, self.work_dir or path.parent / '.qwen_inputs')
         if not prepared_images:
             raise QwenVisionError("No rendered page images are available for Qwen vision recognition.")
 
         started = time.monotonic()
-        raw_response = self._call_qwen(prepared_images)
+        try:
+            raw_response = self._call_qwen(prepared_images)
+        except Exception as exc:
+            if self.work_dir:
+                from ..page_images import write_json
+                from PIL import Image
+                response = getattr(exc, 'response', None)
+                details = {}
+                if response is not None:
+                    try:
+                        body = response.json(); error = body.get('error') or body
+                        details = {'http_status': response.status_code, 'code': str(error.get('code') or '')[:128], 'message': str(error.get('message') or '')[:800]}
+                    except (ValueError, AttributeError): details = {'http_status': response.status_code}
+                # Never persist request headers, keys, raw HTML or image data URLs.
+                import re
+                details['message'] = re.sub(r'(?i)(Bearer\s+|sk-)[A-Za-z0-9_\-]+', '[redacted]', details.get('message', ''))
+                details['message'] = re.sub(r'data:image/[^\s]+', '[image omitted]', details['message'])
+                sizes = []
+                for image in prepared_images:
+                    with Image.open(image) as im: sizes.append({'width': im.width, 'height': im.height, 'bytes': image.stat().st_size})
+                write_json(self.work_dir.parent/'qwen_error_diagnostics.json', {**details,'error_type':type(exc).__name__,'inputs':sizes,'duration_ms':int((time.monotonic()-started)*1000)})
+            raise
         if self.work_dir:
             self.work_dir.mkdir(parents=True, exist_ok=True)
             (self.work_dir / "response.json").write_text(json.dumps(raw_response, ensure_ascii=False), encoding="utf-8")

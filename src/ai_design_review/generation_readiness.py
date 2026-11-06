@@ -162,6 +162,7 @@ def build_generation_parameter_package(review: dict[str, Any], *, identity: dict
         "source": {
             "drawing_no": summary.get("drawing_no"),
             "drawing_name": summary.get("drawing_name"),
+            "material_code": normalize_material_code(summary.get("material_code")),
             "spring_type": summary.get("spring_type"),
             "spring_type_label": summary.get("spring_type_label"),
         },
@@ -490,3 +491,14 @@ def _technical_label(value: str) -> str:
         "other": "其他技术要求",
     }
     return labels.get(value, value)
+
+
+def normalize_material_code(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("物料编码必须为文本")
+    value = value.strip()
+    if len(value) > 256:
+        raise ValueError("物料编码最长256字符，请缩短后重试")
+    return value or None

@@ -204,20 +204,32 @@ def check_api():
                 repository.create_review(name, review, artifact_dir=str(d), owner=OWNER)
             with TestClient(api.app) as client, patch.object(api, "verify_review_roughness", return_value=None), patch.object(RapidOcrProvider, "recognize", side_effect=AssertionError("saved OCR must be reused")):
                 baseline = repository.get_review("legacy", owner_user_id=OWNER["user_id"])
-                real_build = api.build_annotations
-                with patch.object(api, "build_annotations", wraps=real_build) as build:
-                    result = client.get("/api/reviews/legacy/annotations"); assert result.status_code == 200, result.text
-                    document = result.json()
+                from ai_design_review import drawing_annotations as annotations, recognition_worker as workers
+                real_build = annotations.build_annotations
+                def complete_local(name):
+                    client.get(f"/api/reviews/{name}/annotations")
+                    task = repository.claim_next_recognition_job("annotation-local")
+                    assert task["options"]["review_id"] == name
+                    runner = workers.RecognitionWorker(); runner.worker_id = "annotation-local"
+                    with patch.object(workers,"REVIEW_PERSISTENCE",repository), patch.object(workers,"API_RUN_ROOT",root):
+                        runner._process_job(task)
+                    return client.get(f"/api/reviews/{name}/annotations").json()
+                with patch.object(annotations, "build_annotations", wraps=real_build) as build:
+                    first = client.get("/api/reviews/legacy/annotations").json()
+                    assert "multi_spec_location" not in first and build.call_count == 0, "Reads cannot run the upgrade"
+                    document = complete_local("legacy")
                     assert document["multi_spec_location"]["version"] == "multi-spec-locator/v2"
                     assert document["annotation_revision"] == 4
                     assert all(next(a for a in document["annotations"] if a["field"] == f)["locations"] for f in VALUES)
                     assert client.get("/api/reviews/legacy/annotations").json() == document
                     assert build.call_count == 1
                 after = repository.get_review("legacy", owner_user_id=OWNER["user_id"])
-                assert after["revision"] == baseline["revision"] == 1
-                for value in (baseline["review"], after["review"]): value.pop("drawing_annotations")
-                assert after["review"] == baseline["review"]
-                # A concurrent manual move wins over the old build snapshot.
+                assert after["revision"] == baseline["revision"] + 1
+                for field in VALUES:
+                    before_value = baseline["review"]["spring_parameters"][field]
+                    after_value = after["review"]["spring_parameters"][field]
+                    assert (after_value.get("value"), after_value.get("need_human_review")) == (before_value.get("value"), before_value.get("need_human_review")), field
+                # A concurrent manual move wins over the old background build snapshot.
                 expected = {}
                 def racing_builder(*args, **kwargs):
                     rebuilt = real_build(*args, **kwargs)
@@ -226,23 +238,24 @@ def check_api():
                     expected.update({"annotation_id": "free_length", "location_id": loc["location_id"], "page": 1, "anchor": {"x": .17, "y": .3}, "bubble": {"x": .22, "y": .25}})
                     repository.save_drawing_annotations("race", owner_user_id=OWNER["user_id"], patch={"source_document_id": current["source_document_id"], "expected_annotation_revision": 3, "changes": [expected]})
                     return rebuilt
-                with patch.object(api, "build_annotations", side_effect=racing_builder):
-                    race = client.get("/api/reviews/race/annotations").json()
+                with patch.object(annotations, "build_annotations", side_effect=racing_builder):
+                    race = complete_local("race")
                 manual = next(a for a in race["annotations"] if a["field"] == "free_length")["locations"]
                 assert any(l["source"] == "manual" and l["anchor"] == expected["anchor"] for l in manual)
                 assert race["annotation_revision"] == 5
                 again = client.post("/api/reviews/race/annotations/relocalize", json={"source_document_id": race["source_document_id"], "expected_annotation_revision": race["annotation_revision"]})
                 assert again.status_code == 200
                 assert any(l["source"] == "manual" and l["anchor"] == expected["anchor"] for l in next(a for a in again.json()["annotations"] if a["field"] == "free_length")["locations"])
-                # Relocalize replaces wrong automatic anchors but keeps manual ones.
                 retry = client.get("/api/reviews/retry/annotations").json()
                 response = client.post("/api/reviews/retry/annotations/relocalize", json={"source_document_id": retry["source_document_id"], "expected_annotation_revision": retry["annotation_revision"]})
                 assert response.status_code == 200, response.text
                 assert next(a for a in response.json()["annotations"] if a["field"] == "free_length")["locations"][0]["anchor"]["x"] < 1/3
-                with patch.object(api, "build_annotations", side_effect=RuntimeError("simulated local failure")) as build:
-                    failed = client.get("/api/reviews/failure/annotations").json()
-                    assert failed["multi_spec_location"] and failed["warnings"]
+                # Consume the queued task for retry before checking a failed background build.
+                complete_local("retry")
+                with patch.object(annotations, "build_annotations", side_effect=RuntimeError("simulated local failure")) as build:
+                    failed = complete_local("failure")
                     assert client.get("/api/reviews/failure/annotations").json() == failed
+                    assert client.get("/api/reviews/failure?metadata_only=true").json()["verification_state"] == "failed"
                     assert build.call_count == 1
                 # Normal single records do not need a new strategy marker or rebuild.
                 ordinary = deepcopy(repository.get_review("legacy", owner_user_id=OWNER["user_id"])["review"])
@@ -317,4 +330,4 @@ def check_saved_response():
 
 if __name__ == "__main__":
     check_scope(); check_rows(); check_cache_budget(); check_api(); check_saved_response()
-    print("PASS multi-spec scoped labels, 13 rows, no cross-spec anchors, cache reuse, legacy upgrade, manual race, retry and unchanged engineering revisions")
+    print("PASS multi-spec scoped labels, 13 rows, no cross-spec anchors, cache reuse, legacy upgrade, manual race, retry and protected engineering values")

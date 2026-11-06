@@ -106,6 +106,10 @@ const REQUIRED_FIELDS = [
   "handedness",
 ];
 
+const reviewSwitchCache = ReviewSwitchCache.create({ onEvict: id => globalThis.DrawingAnnotations?.release?.(id) });
+let reviewSync = {locked:false, error:"", token:0};
+let localVerificationWatcher = null;
+
 const FIELD_LABELS = {
   "generation_settings.drawing_model": "图纸版式",
   "generation_settings.typeface": "图纸字体",
@@ -564,8 +568,11 @@ const historyDeletion = HistoryBulkDeletion.create({
 
 const multiSpecUI = MultiSpecReview.create({
   request: (path, options) => apiFetch(path, options), scope: historyRecognitionScope,
+  track: id => trackRecognitionJob(id),
+  beginRead: () => ++state.recognitionRequestSerial,
+  reconcileChild: (incoming, previous, serial) => reconcileRecognitionListItem(previous, incoming, serial),
   storageScope: () => JSON.stringify([state.apiBaseUrl, state.identity?.user_id]),
-  save: () => flushReviewPersistence({ throwOnError: true }), openReview: openPersistedReview,
+  save: () => flushReviewPersistence({ throwOnError: true }), openReview: openPersistedReview, retryReview: retryRecognitionJob,
   assetUrl: toBackendAssetUrl, deleted: id => state.deletedReviewIds.has(id),
   changed: () => {
     const top = recentReviewList.scrollTop;
@@ -579,7 +586,8 @@ const multiSpecUI = MultiSpecReview.create({
 });
 
 function historyItems() { const roots = new Set(state.recentReviews.map(v => v.job_id)); return [...state.recentReviews, ...multiSpecUI.items().filter(v => roots.has(v.parent_review_id))]; }
-function findHistoryItem(id) { return state.recentReviews.find(v => v.job_id === id) || multiSpecUI.find(id); }
+function findHistoryItem(id) { return state.recentReviews.find(v => v.job_id === id) || multiSpecUI.find(id)
+  || state.recentReviews.flatMap(v => v.page_results || []).find(v => v.job_id === id); }
 
 apiBaseInput.value = state.apiBaseUrl;
 
@@ -646,7 +654,7 @@ historySidebarReducedMotion.addEventListener("change", (event) => {
   if (event.matches && historySidebarMotion) finishHistorySidebarMotion();
 });
 exportButton.addEventListener("click", () => {
-  if (!state.review) return;
+  if (!state.review || reviewReadOnly()) return;
   downloadJson(makeExportReview(), "spring_review_confirmed.json");
 });
 
@@ -665,6 +673,7 @@ async function initializeIdentity() {
     const payload = await response.json();
     if (apiBase !== state.apiBaseUrl || requestSerial !== identityRequestSerial) return;
     if (!response.ok || !payload?.identity) {
+      if ([401,403].includes(response.status)) { reviewSwitchCache.reset(null); resetDeletedReviewState(); }
       throw new Error(payload?.detail || "无法读取 ERP 登录身份");
     }
     state.identity = payload.identity;
@@ -1482,7 +1491,7 @@ function scheduleReviewPersistence() {
 }
 
 async function flushReviewPersistence(options = {}) {
-  document.querySelectorAll('[data-role="drawing-no"], [data-role="drawing-name"]').forEach((input) => input.commitDrawingNo?.());
+  document.querySelectorAll('[data-role="drawing-no"], [data-role="drawing-name"], [data-role="material-code"]').forEach((input) => input.commitDrawingNo?.());
   const summaryError = drawingSummaryValidationError(state.review);
   if (summaryError) {
     if (options.throwOnError) throw new Error(summaryError);
@@ -1686,7 +1695,7 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
   ]));
   const technicalId = (field) => field?.startsWith("technical_requirements.") ? field.slice("technical_requirements.".length) : null;
   const settingKey = (field) => ["generation_settings.drawing_model", "generation_settings.typeface", "generation_settings.username"].includes(field) ? field.split(".")[1] : null;
-  const summaryKey = (field) => ["drawing_summary.drawing_no", "drawing_summary.drawing_name"].includes(field) ? field.split(".")[1] : null;
+  const summaryKey = (field) => ["drawing_summary.drawing_no", "drawing_summary.drawing_name", "drawing_summary.material_code"].includes(field) ? field.split(".")[1] : null;
   const fieldItem = (review, field) => field === "diameter_linkage" ? DiameterLinkage.groupState(review) : summaryKey(field) ? { value: review.drawing_summary?.[summaryKey(field)] ?? "" } : settingKey(field) ? { value: review.generation_settings?.[settingKey(field)] ?? null } : loadId(field)
     ? review.spring_parameters?.load_points?.find((item) => item.load_point_id === loadId(field))
     : technicalId(field) ? review.technical_requirements?.find((item) => item.requirement_id === technicalId(field))
@@ -2574,6 +2583,9 @@ function configureHistoryUnread() {
   const scope = historyRecognitionScope();
   if (scope === historyUnreadScope) return;
   historyDeletion.reset();
+  if (historyUnreadScope) resetDeletedReviewState();
+  stopLocalVerificationWatch();
+  reviewSwitchCache.reset(scope);reviewSync={locked:false,error:"",token:reviewSync.token+1};
   historyUnread?.dispose();
   Object.keys(state.recognitionPollers).forEach(stopTrackingRecognitionJob);
   state.recentReviews = [];
@@ -2598,7 +2610,8 @@ function scheduleHistoryUnreadRefresh() {
 }
 
 function historyOrderIsUnread(item) {
-  return historyRecognitionScope() === historyUnreadScope && Boolean(historyUnread?.isUnread(item));
+  return historyRecognitionScope() === historyUnreadScope && (item?.source_kind === "pdf_pages"
+    ? (item.page_results || []).some(page => historyUnread?.isUnread(page)) : Boolean(historyUnread?.isUnread(item)));
 }
 
 function updateHistoryUnreadCount() {
@@ -2622,13 +2635,14 @@ function focusFirstUnreadHistoryOrder() {
 }
 
 function markDisplayedRecognitionRead() {
+  if(reviewReadOnly()) return;
   if (!state.review || !state.compareOpen || compareOverlay.hidden || document.visibilityState !== "visible") return;
   const displayed = displayedRecognitionRounds.get(state.review);
   if (!displayed || displayed.scope !== historyRecognitionScope() || displayed.controller !== historyUnread
       || displayed.jobId !== state.lastJob?.job_id) return;
   // Use the loaded snapshot's round, never the latest round observed by polling.
   historyUnread.markRead(displayed.jobId, displayed.round);
-  if (displayed.sourceId && displayed.sourceRound) historyUnread.markRead(displayed.sourceId, displayed.sourceRound);
+  if (displayed.sourceId && displayed.sourceRound && findHistoryItem(displayed.sourceId)?.source_kind !== "pdf_pages") historyUnread.markRead(displayed.sourceId, displayed.sourceRound);
   const item = state.recentReviews.find((entry) => entry.job_id === displayed.jobId);
   if (item) updateRecentReviewRow(item);
   const source = state.recentReviews.find((entry) => entry.job_id === displayed.sourceId);
@@ -2660,7 +2674,7 @@ async function loadRecentReviews() {
     const byId = new Map(merged.map((item) => [item.job_id, item]));
     state.recentReviews = [...addedDuringRequest, ...merged.filter((item) => !previous.has(item.job_id)),
       ...Array.from(previous.keys()).map((id) => byId.get(id)).filter(Boolean)];
-    historyUnread?.observeList(state.recentReviews.filter(historyOrderIsVisible));
+    historyUnread?.observeList(state.recentReviews.filter(historyOrderIsVisible).flatMap(item => item.source_kind === "pdf_pages" ? (item.page_results || []) : [item]));
     if (typeof drawingUploads !== "undefined") state.recentReviews.forEach((item) => drawingUploads.updateRecognition(item.job_id, item));
     if (refreshRecentReviewsButton) refreshRecentReviewsButton.title = "刷新历史订单";
     renderRecentReviews();
@@ -2670,7 +2684,12 @@ async function loadRecentReviews() {
     state.recentReviews
       .filter((item) => ["queued", "processing"].includes(item.recognition_status) && historyOrderIsVisible(item))
       .forEach((item) => trackRecognitionJob(item.job_id));
-    trackedIds.forEach((id) => trackRecognitionJob(id));
+    const pageOwners = new Map(state.recentReviews.filter(v => v.source_kind === "pdf_pages").flatMap(v => (v.page_results || []).map(p => [p.job_id, v])));
+    trackedIds.forEach((id) => {
+      const owner = pageOwners.get(id);
+      if (owner) { if (["queued", "processing"].includes(owner.recognition_status)) trackRecognitionJob(owner.job_id); }
+      else trackRecognitionJob(id);
+    });
     return true;
   } catch (error) {
     if (scope !== historyRecognitionScope()) return;
@@ -2699,6 +2718,7 @@ function recognitionProgressText(recognition = {}) {
     preparing_file: "准备文件",
     rendering_preview: "生成图纸预览",
     qwen_vision: "Qwen 视觉识别",
+    splitting_pdf: "正在拆分PDF页面", registering_pages: "正在登记页面任务", recognizing_pages: "正在逐页识别",
     dimension_ocr: "OCR 尺寸复核",
     ocr_review: "OCR 识别",
     ocr_fallback: "OCR 兜底识别",
@@ -2829,7 +2849,7 @@ function updateRecentReviewRow(item, row = null) {
   row.classList.toggle('has-retry', status.kind === "failed");
   const retry = row.querySelector('[data-role="retry-recognition"]');
   const retryFocused = document.activeElement === retry;
-  retry.hidden = status.kind !== "failed";
+  retry.hidden = status.kind !== "failed" || item.source_kind === "pdf_pages";
   if (retryFocused && retry.hidden) button.focus();
   const badge = row.querySelector('.history-recognition-status');
   if (badge.dataset.status !== status.kind) {
@@ -2881,7 +2901,7 @@ function trackRecognitionJob(jobId, messageId = null) {
       }
     } catch (error) {
       if (!active()) return;
-      const item = state.recentReviews.find((review) => review.job_id === jobId);
+      const item = findHistoryItem(jobId);
       if (item) {
         item.recognition_sync_error = error.message || "请重试"; updateRecentReviewRow(item);
         if (typeof drawingUploads !== "undefined") drawingUploads.updateRecognition(jobId, item);
@@ -2910,7 +2930,7 @@ function mergeRecognitionStatus(jobId, recognition, { requestSerial = ++state.re
   // including requests started while the retry POST was pending.
   if (restart) requestSerial = Math.max(requestSerial, ++state.recognitionRequestSerial);
   const index = state.recentReviews.findIndex((item) => item.job_id === jobId);
-  const previous = index >= 0 ? state.recentReviews[index] : null;
+  const previous = index >= 0 ? state.recentReviews[index] : findHistoryItem(jobId);
   const incoming = { job_id: jobId,
     recognition_status: recognition.status, recognition_stage: recognition.stage,
     recognition_progress: recognition.progress, recognition_error: recognition.error_message,
@@ -2919,13 +2939,18 @@ function mergeRecognitionStatus(jobId, recognition, { requestSerial = ++state.re
     updated_at: recognition.updated_at || previous?.updated_at,
   };
   if (!previous) incoming.drawing_name = recognition.drawing_name;
-  if (recognition.record_kind) Object.assign(incoming, { record_kind: recognition.record_kind, variant_count: recognition.variant_count, created_count: recognition.created_count, creation_mode: recognition.creation_mode });
+  if (recognition.record_kind) Object.assign(incoming, { record_kind: recognition.record_kind, variant_count: recognition.variant_count, created_count: recognition.created_count, creation_mode: recognition.creation_mode, source_kind: recognition.source_kind, page_state_revision: recognition.page_state_revision,
+    page_results: recognition.page_results, completed_count: recognition.completed_count, failed_count: recognition.failed_count });
   const next = reconcileRecognitionListItem(previous, incoming, requestSerial, { restart });
   if (next === previous) return false;
-  historyUnread?.observe(next, { restart, submission });
+  if (next.source_kind === "pdf_pages") multiSpecUI.observe(next);
+  if (next.source_kind === "pdf_pages") (next.page_results || []).forEach(page => historyUnread?.observe(page, {submission}));
+  else historyUnread?.observe(next, { restart, submission });
   if (index >= 0) {
     state.recentReviews[index] = next;
     updateRecentReviewRow(next);
+  } else if (previous?.page_origin) {
+    Object.assign(previous, next); updateRecentReviewRow(previous);
   } else {
     state.recentReviews.unshift(next);
     renderRecentReviews();
@@ -2996,77 +3021,126 @@ function createHistoryRow(item, row) {
     return row;
 }
 
+function reviewReadOnly() { return reviewSync.locked; }
+function reviewLoadingStatus(text = "", error = false) {
+  let notice = document.getElementById("reviewLoadNotice");
+  if (!notice) { notice = document.createElement("div"); notice.id="reviewLoadNotice"; notice.className="review-load-notice"; notice.setAttribute("role","status"); }
+  const host = compareOverlay.querySelector("#compareViewport") || conversation;
+  if (notice.parentNode !== host) host.append(notice);
+  notice.replaceChildren(); notice.hidden = !text;
+  if (text) { const label=document.createElement("span");label.textContent=text;notice.append(label); }
+  if (error) { const retry=document.createElement("button");retry.type="button";retry.textContent="重试加载";retry.onclick=()=>void openPersistedReview(reviewSync.target);notice.append(retry); }
+  for (const node of document.querySelectorAll("[data-review-message-id], .compare-data-panel")) node.inert = reviewSync.locked;
+  for (const button of [exportButton, ...compareOverlay.querySelectorAll('[data-action="export"], [data-annotation-action="edit"], [data-annotation-action="relocalize"]')]) {
+    if(reviewSync.locked){if(!button.dataset.syncDisabled)button.dataset.syncDisabled=String(button.disabled);button.disabled=true;}
+    else if(button.dataset.syncDisabled){button.disabled=button.dataset.syncDisabled==='true';delete button.dataset.syncDisabled;}
+  }
+  syncGenerationSettingsControls();
+}
+function stopLocalVerificationWatch(){if(localVerificationWatcher)clearInterval(localVerificationWatcher.timer);localVerificationWatcher=null;}
+function watchLocalVerification(jobId, metadata){
+  stopLocalVerificationWatch();
+  if(!['queued','processing'].includes(metadata?.verification_state))return;
+  const watch={scope:historyRecognitionScope(),navigation:state.reviewNavigationSerial,serial:state.reviewEditSerial,inFlight:false};
+  const active=()=>localVerificationWatcher===watch&&watch.scope===historyRecognitionScope()&&watch.navigation===state.reviewNavigationSerial&&state.lastJob?.job_id===jobId;
+  watch.timer=setInterval(async()=>{
+    if(!active()){if(localVerificationWatcher===watch)stopLocalVerificationWatch();return;}
+    if(watch.inFlight)return;watch.inFlight=true;
+    try{
+      const response=await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}?metadata_only=true`);const value=await response.json();
+      if(!active()||!response.ok)return;
+      if(!sameReviewMetadata(metadata,value)){
+        stopLocalVerificationWatch();
+        if(watch.serial===state.reviewEditSerial&&!state.pendingReviewAuditEvents.length&&!state.reviewPersistenceSaving&&state.compareOpen)void openPersistedReview(jobId,{recognitionCompleted:true});
+        else reviewSwitchCache.remove(jobId);
+      }else if(!['queued','processing'].includes(value.verification_state))stopLocalVerificationWatch();
+    }catch{ /* Preserve the last snapshot on a transient metadata read failure. */ }
+    finally{watch.inFlight=false;}
+  },2000);localVerificationWatcher=watch;
+}
+function cachedReviewMetadata(review, revision) {
+  return review.loading_metadata || {review_revision:revision,annotation_revision:review.drawing_annotations?.annotation_revision||0,
+    source_document_id:review.drawing_annotations?.source_document_id||null,preview_version:"legacy"};
+}
+function sameReviewMetadata(a,b){ return ["review_revision","annotation_revision","source_document_id","preview_version"].every(key=>a?.[key]===b?.[key]); }
+function showLoadedReview(jobId, payload, item, cached, scope, controller, round, sourceRound) {
+  resetGenerationState();state.lastJob={job_id:jobId,review_revision:payload.review_revision??item?.revision??null,persistence:{mode:"postgresql"}};
+  state.compareTab=cached?.tab||"workbench";state.reviewPersistenceFailedFields={};state.reviewDraftFields.clear();
+  setReview(normalizeReview(structuredClone(payload)), toBackendAssetUrl(payload.image_url||item?.image_url),{readOnlySnapshot:true});
+  displayedRecognitionRounds.set(state.review,{scope,controller,jobId,round,sourceId:item?.parent_review_id,
+    sourceRound});
+  if (state.activeReviewMessageId && state.reviewMessageContexts?.has?.(state.activeReviewMessageId)) updateLatestReviewMessage("已恢复审图结果，可继续核对与生图。");
+  else {
+    const existing=document.querySelector(`[data-review-message-id="${state.activeReviewMessageId||""}"]`);
+    if (existing) {const context=registerReviewContext(state.activeReviewMessageId,state.review,state.imageUrl,"已恢复审图记录");renderReviewBody(existing,"已恢复审图记录",context,state.activeReviewMessageId);}
+    else appendReviewMessage("已恢复审图记录，可继续核对与生图。");
+  }
+  const kept = cached?.view;
+  state.compareOpen=true;document.body.classList.add("compare-open");compareOverlay.hidden=false;
+  if (kept) state.compareView={...state.compareView,...kept,rotations:new Map(kept.rotations||[]),dragging:false};
+  else resetCompareRotation();
+  renderCompareOverlay();reviewLoadingStatus(reviewSync.locked?"正在核对最新版本…":"");
+  markDisplayedRecognitionRead();
+}
 async function openPersistedReview(jobId, options = {}) {
   if (!jobId || state.busy) return;
-  if (!options.recognitionCompleted) state.reviewNavigationSerial += 1;
-  const navigationSerial = state.reviewNavigationSerial;
-  const scope = historyRecognitionScope(), controller = historyUnread;
-  if (!await flushReviewPersistence()) {
-    appendAssistantText("当前参数尚未保存，请先重试保存后再切换订单。", true);
-    return;
+  if (!options.recognitionCompleted) state.reviewNavigationSerial++;
+  const navigation = state.reviewNavigationSerial, scope=historyRecognitionScope(), controller=historyUnread;
+  const current=()=>navigation===state.reviewNavigationSerial&&scope===historyRecognitionScope()&&!state.deletedReviewIds.has(jobId);
+  if (!await flushReviewPersistence()) { appendAssistantText("当前参数尚未保存，请先重试保存后再切换订单。",true);return; }
+  if (!current() || (options.uploadAutoOpen && !uploadAutoOpenIsCurrent(jobId))) return;
+  const annotation=DrawingAnnotations.entry();
+  if(annotation&&(annotation.pending.size||annotation.saving)){
+    await DrawingAnnotations.save(annotation);
+    if(annotation.pending.size||annotation.phase==='failed')return;
   }
-  if (scope !== historyRecognitionScope() || navigationSerial !== state.reviewNavigationSerial || (options.uploadAutoOpen && !uploadAutoOpenIsCurrent(jobId))) return;
-  const item = findHistoryItem(jobId);
-  const loadedRound = controller?.capture(item);
-  const sourceId = item?.parent_review_id;
-  const sourceRound = sourceId ? controller?.capture(findHistoryItem(sourceId)) : null;
-  if (["queued", "processing", "cancel_requested"].includes(item?.recognition_status)) {
-    const messageId = appendAssistantText(recognitionProgressText(item), false);
-    trackRecognitionJob(jobId, messageId);
-    return;
+  if(!current())return;
+  reviewSwitchCache.reset(scope);
+  if (state.lastJob?.job_id && state.review && !reviewSync.locked) {
+    const saved=reviewSwitchCache.get(state.lastJob.job_id);
+    if(saved){ saved.review=structuredClone(state.review);saved.metadata=cachedReviewMetadata(state.review,state.lastJob.review_revision);
+      saved.metadata.review_revision=state.lastJob.review_revision;saved.review.review_revision=state.lastJob.review_revision;
+      saved.view={...state.compareView,rotations:[...state.compareView.rotations]};saved.tab=state.compareTab; }
   }
-  if (item?.recognition_status === "failed") {
-    appendAssistantText(`该图纸识别失败：${item.recognition_error || "请点击历史订单右侧的重试。"}`, true);
-    return;
-  }
-  if (item?.recognition_status === "cancelled") {
-    appendAssistantText("该图纸识别已取消。", true);
-    return;
-  }
-  setBusy(true);
-  const thinkingId = appendAssistantText("正在恢复已保存的审图记录...");
+  stopLocalVerificationWatch();
+  const item=findHistoryItem(jobId),round=controller?.capture(item);
+  const sourceRound=item?.parent_review_id?controller?.capture(findHistoryItem(item.parent_review_id)):null;
+  if (item?.source_kind==='pdf_pages') {await multiSpecUI.open(jobId,round);return;}
+  if (["queued","processing","cancel_requested"].includes(item?.recognition_status)) {trackRecognitionJob(jobId);return;}
+  if (item?.recognition_status==='failed') {appendAssistantText(`该图纸识别失败：${item.recognition_error||"请重试"}`,true);return;}
+  const cached=reviewSwitchCache.get(jobId);
+  reviewSync={locked:true,target:jobId,error:"",token:reviewSync.token+1};
+  if(cached)showLoadedReview(jobId,cached.review,item,cached,scope,controller,round,sourceRound);
+  reviewLoadingStatus(cached?"正在核对最新版本…":"正在加载图纸…");
   try {
-    const response = await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}`);
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || "无法恢复该审图记录");
-    if (state.deletedReviewIds.has(jobId) || scope !== historyRecognitionScope() || navigationSerial !== state.reviewNavigationSerial
-        || (options.uploadAutoOpen && !uploadAutoOpenIsCurrent(jobId, { allowBusy: true }))) {
-      removeMessage(thinkingId); return;
+    let payload;
+    if(cached){
+      const response=await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}?metadata_only=true`);const metadata=await response.json();
+      if(!current())return;if(!response.ok)throw Error(metadata.detail||"无法核对最新版本");
+      if(sameReviewMetadata(cached.metadata,metadata)){cached.metadata=metadata;cached.review.loading_metadata=metadata;payload=cached.review;}
     }
-    removeMessage(thinkingId);
-    if (payload.record_kind === "source") {
-      if (item) { item.record_kind = "source"; item.variant_count = payload.multi_spec.variants.length; }
-      await multiSpecUI.open(jobId, loadedRound);
-      return;
+    if(!payload){const response=await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}`);payload=await response.json();
+      if(!current())return;if(!response.ok)throw Error(typeof payload.detail==='string'?payload.detail:"无法恢复审图记录");
+      if(payload.record_kind==='source'){reviewSync.locked=false;reviewLoadingStatus();await multiSpecUI.open(jobId,round);return;}
+      DrawingAnnotations.release(jobId);
+      showLoadedReview(jobId,payload,item,cached,scope,controller,round,sourceRound);
     }
-    resetGenerationState();
-    state.lastJob = {
-      job_id: jobId,
-      review_revision: payload.review_revision ?? item?.revision ?? null,
-      persistence: { mode: item?.revision ? "postgresql" : "json_fallback" },
-    };
-    state.compareTab = "workbench";
-    state.reviewPersistenceFailedFields = {};
-    state.reviewDraftFields.clear();
-    setReview(normalizeReview(payload), toBackendAssetUrl(payload.image_url || item?.image_url));
-    displayedRecognitionRounds.set(state.review, { scope, controller, jobId, round: loadedRound, sourceId, sourceRound });
-    await loadGenerationState(jobId, { render: false, silent: true });
-    if (scope !== historyRecognitionScope() || navigationSerial !== state.reviewNavigationSerial || state.lastJob?.job_id !== jobId) return;
+    if(!current())return;
+    reviewSync.locked=false;reviewLoadingStatus();markDisplayedRecognitionRead();
+    const metadata=cachedReviewMetadata(payload,state.lastJob.review_revision);
+    if(!cached||payload!==cached.review)reviewSwitchCache.put(jobId,{review:payload,metadata,view:cached?.view,tab:cached?.tab});
+    reviewSwitchCache.preload(jobId,toBackendAssetUrl(payload.image_url||item?.image_url));
+    watchLocalVerification(jobId,metadata);
     renderRecentReviews();
-    if (!options.recognitionCompleted) appendUserMessage(`打开已保存审图：${item?.drawing_name || item?.drawing_no || jobId}`);
-    appendReviewMessage("已恢复审图结果，可继续确认、标准化或与 AI 对话。");
-    openCompareOverlay();
+    void loadGenerationState(jobId,{render:false,silent:true});
     void refreshParameterReasonableness(state.activeReviewMessageId);
-  } catch (error) {
-    replaceMessage(thinkingId, error.message || String(error), true);
-  } finally {
-    setBusy(false);
-  }
+  } catch(error){if(current()){reviewSync.error=String(error.message||error);reviewLoadingStatus(`加载失败：${reviewSync.error}`,true);}}
 }
 
 async function retryRecognitionJob(jobId, { preserveCurrent = false } = {}) {
   if (!jobId || state.busy || state.deletedReviewIds.has(jobId)) return;
-  const item = state.recentReviews.find((review) => review.job_id === jobId);
+  const item = findHistoryItem(jobId);
+  reviewSwitchCache.remove(jobId);
   const requestSerial = ++state.recognitionRequestSerial;
   const scope = historyRecognitionScope();
   try {
@@ -3086,6 +3160,7 @@ async function retryRecognitionJob(jobId, { preserveCurrent = false } = {}) {
     mergeRecognitionStatus(jobId, recognition, { requestSerial, restart: true });
     renderRecentReviews();
     trackRecognitionJob(jobId, messageId);
+    if (item?.page_origin?.source_review_id) trackRecognitionJob(item.page_origin.source_review_id);
   } catch (error) {
     appendAssistantText(`无法重新识别：${error.message || String(error)}`, true);
   }
@@ -3114,7 +3189,7 @@ function applyHistoryManagementToRow(item, row) {
   row.querySelector('[data-role="delete-recent-review"]').hidden = management.managing;
   row.querySelector('[data-role="delete-recent-review"]').disabled = management.running;
   const retry = row.querySelector('[data-role="retry-recognition"]');
-  retry.hidden = management.managing || historyRecognitionState(item).kind !== "failed";
+  retry.hidden = management.managing || historyRecognitionState(item).kind !== "failed" || item.source_kind === "pdf_pages";
   retry.disabled = management.running;
 }
 
@@ -3234,6 +3309,7 @@ async function showHistoryDeletionDialog(items, { bulk = true } = {}) {
 function finishHistoryOrderDeletion(item, result) {
   const ids = result.deletedIds || [item.job_id];
   ids.forEach(id => historyDeletion.state.selected.delete(id));
+  ids.forEach(id=>reviewSwitchCache.remove(id));
   multiSpecUI.remove(ids);
   for (const id of ids.filter(id => id !== item.job_id)) finishHistoryOrderDeletion({ job_id: id }, { ...result, deletedIds: [id], suppressNotice: true });
   const title = item.drawing_name || item.drawing_no || item.job_id;
@@ -3254,6 +3330,8 @@ function finishHistoryOrderDeletion(item, result) {
 }
 
 function resetDeletedReviewState() {
+  stopLocalVerificationWatch();
+  reviewSync = {locked:false,error:"",token:reviewSync.token+1}; reviewLoadingStatus();
   clearTimeout(state.reviewPersistenceTimer);
   resetAccuracyGradeUpdate();
   resetPendingAccuracyGrade();
@@ -3294,6 +3372,8 @@ async function startNewReview() {
     state.pendingReviewAuditEvents = [];
     state.reviewPersistenceFailedFields = {};
     state.reviewDraftFields.clear();
+    stopLocalVerificationWatch();
+    reviewSync = {locked:false,error:"",token:reviewSync.token+1}; reviewLoadingStatus();
     state.reviewContexts = {};
     state.compareTab = "workbench";
     state.review = null;
@@ -3441,15 +3521,21 @@ function renderSummaryHtml(review) {
         <span data-role="drawing-no-save-status" role="status"></span>
         <button type="button" class="secondary-action" data-role="retry-drawing-no-save" hidden>重试保存</button>
       </label>
+      <label class="metric drawing-summary-editor material-code-editor">
+        <span>物料编码</span>
+        <input type="text" data-role="material-code" aria-label="物料编码" placeholder="请输入物料编码（可选）" value="${escapeHtml(String(info.material_code ?? ""))}">
+        <span data-role="material-code-save-status" role="status"></span>
+        <button type="button" class="secondary-action" data-role="retry-material-code-save" hidden>重试保存</button>
+      </label>
     </section>
   `;
 }
 
 function bindDrawingNoEditor(root, review, messageId) {
-  root.querySelectorAll('[data-role="drawing-no"], [data-role="drawing-name"]').forEach((input) => {
+  root.querySelectorAll('[data-role="drawing-no"], [data-role="drawing-name"], [data-role="material-code"]').forEach((input) => {
     if (input.commitDrawingNo) return;
     const role = input.dataset.role;
-    const key = role === "drawing-name" ? "drawing_name" : "drawing_no";
+    const key = role === "drawing-name" ? "drawing_name" : role === "material-code" ? "material_code" : "drawing_no";
     const field = `drawing_summary.${key}`;
     const node = input.closest(".drawing-summary-editor");
     const status = node.querySelector(`[data-role="${role}-save-status"]`);
@@ -3457,8 +3543,8 @@ function bindDrawingNoEditor(root, review, messageId) {
     input.setAttribute("aria-describedby", status.id);
     let before = null;
     input.addEventListener("input", () => {
+      if (!input.isConnected || state.review !== review) return;
       activateReviewContext(messageId);
-      if (state.review !== review) return;
       before ||= { value: String(review.drawing_summary?.[key] ?? "") };
       review.drawing_summary ||= {};
       review.drawing_summary[key] = input.value;
@@ -3469,7 +3555,7 @@ function bindDrawingNoEditor(root, review, messageId) {
     });
     input.commitDrawingNo = () => {
       if (!before || state.review !== review) return;
-      if (key === "drawing_name" && drawingSummaryValidationError(review)) { syncDrawingNoControls(); return; }
+      if (drawingSummaryValidationError(review, key)) { syncDrawingNoControls(); return; }
       const value = input.value.trim();
       review.drawing_summary[key] = value;
       input.value = value;
@@ -3486,9 +3572,12 @@ function bindDrawingNoEditor(root, review, messageId) {
   syncDrawingNoControls();
 }
 
-function drawingSummaryValidationError(review) {
-  const value = review?.drawing_summary?.drawing_name;
-  return value != null && Array.from(String(value).trim()).length > 512 ? "图纸名称最长512字符，请缩短后重试" : "";
+function drawingSummaryValidationError(review, key = null) {
+  for (const [field, label, limit] of [["drawing_name", "图纸名称", 512], ["material_code", "物料编码", 256]]) {
+    if (key && key !== field) continue;
+    if (Array.from(String(review?.drawing_summary?.[field] ?? "").trim()).length > limit) return `${label}最长${limit}字符，请缩短后重试`;
+  }
+  return "";
 }
 
 function syncDrawingNoControls() {
@@ -3496,9 +3585,9 @@ function syncDrawingNoControls() {
   document.querySelectorAll(".drawing-summary-editor").forEach((node) => {
     const input = node.querySelector("input");
     const role = input.dataset.role;
-    const key = role === "drawing-name" ? "drawing_name" : "drawing_no";
+    const key = role === "drawing-name" ? "drawing_name" : role === "material-code" ? "material_code" : "drawing_no";
     const persistence = parameterPersistenceState(`drawing_summary.${key}`);
-    const error = key === "drawing_name" ? drawingSummaryValidationError(state.review) : "";
+    const error = drawingSummaryValidationError(state.review, key);
     if (input !== document.activeElement) input.value = String(state.review.drawing_summary?.[key] ?? "");
     input.setCustomValidity(error);
     input.setAttribute("aria-invalid", String(Boolean(error)));
@@ -4456,7 +4545,7 @@ function confirmationSheetService() {
       navigation: state.reviewNavigationSerial, scope: JSON.stringify([state.apiBaseUrl, state.identity?.user_id, identityRequestSerial]),
       source: state.review?.record_kind === "source" || state.lastJob?.record_kind === "source",
       supported: isCompressionSpringReview(state.review), identity: state.identity }),
-    save: () => flushReviewPersistence(),
+    save: () => reviewReadOnly() ? Promise.resolve(false) : flushReviewPersistence(),
     build: buildConfirmationSheetSnapshot,
     message: message => updateLatestReviewMessage(message),
   });
@@ -4783,7 +4872,7 @@ function prepareCompressionDesignChecks(review) {
   if (typeof refreshLoadHeightRelations === "function") refreshLoadHeightRelations(review);
   CompressionDesignChecks.applyPitch(review);
   recordSupportCoilAdjustment(review);
-  if (review === state.review) {
+  if (review === state.review && !reviewReadOnly()) {
     for (const [field, adjustment] of Object.entries(review.automatic_calculation_adjustments || {})) {
       if (!adjustment.pending_save || adjustment.audit_recorded) continue;
       adjustment.audit_recorded = true;
@@ -4844,6 +4933,7 @@ function loadHeightRelationDetails(point) {
 }
 
 function recordSupportCoilAdjustment(review) {
+  if (reviewReadOnly()) return;
   const adjustment = review.spring_parameters?.support_coils?.support_coils_adjustment;
   if (!adjustment || adjustment.audit_recorded || typeof queueReviewAuditEvent !== "function" || state.review !== review) return;
   adjustment.audit_recorded = true;
@@ -5131,20 +5221,14 @@ function getParameterFieldGroups(params, review) {
   if (!isCompressionSpringReview(review)) {
     return { core: fields, advanced: [] };
   }
+  // Keep the confirmation sheet's grouping independent of this editor layout.
   return {
-    core: fields.filter((field) => (
-      COMPRESSION_CORE_PARAMETER_FIELDS.has(field)
-      && (field !== "solid_height" || shouldShowSolidHeightCore(params[field]))
-    )),
-    advanced: fields.filter((field) => {
-      if (COMPRESSION_CORE_PARAMETER_FIELDS.has(field)) return false;
-      return shouldShowAdvancedParameter(field, params[field], review);
-    }),
+    core: fields.filter(field => COMPRESSION_CORE_PARAMETER_FIELDS.has(field) && field !== "solid_height"),
+    advanced: [
+      "solid_height",
+      ...fields.filter(field => !COMPRESSION_CORE_PARAMETER_FIELDS.has(field) && shouldShowAdvancedParameter(field, params[field], review)),
+    ],
   };
-}
-
-function shouldShowSolidHeightCore(param) {
-  return hasParameterContent(param);
 }
 
 function shouldShowAdvancedParameter(field, param, review) {
@@ -5926,7 +6010,7 @@ function syncGenerationSettingsControls() {
   document.querySelectorAll('[data-action="create-generation-job"]').forEach((button) => {
     const messageId = button.closest('[data-message-id]')?.dataset.messageId;
     const active = !messageId || messageId === state.activeReviewMessageId;
-    button.disabled = !active || state.generationBusy || !generationCreationAvailable(state.review, readiness);
+    button.disabled = reviewReadOnly() || !active || state.generationBusy || !generationCreationAvailable(state.review, readiness);
     button.textContent = active && state.generationBusy ? "处理中…" : "生成图纸";
     button.setAttribute("aria-busy", String(Boolean(active && state.generationBusy)));
   });
@@ -5937,7 +6021,7 @@ function syncGenerationSettingsControls() {
   document.querySelectorAll('[data-kind="generation-settings"]').forEach((panel) => {
     panel.querySelectorAll('[data-generation-setting]').forEach((input) => {
       if (input !== document.activeElement) input.value = settings[input.dataset.generationSetting];
-      input.disabled = state.generationBusy;
+      input.disabled = reviewReadOnly() || state.generationBusy;
       if (input.dataset.generationSetting === "username") input.setAttribute("aria-invalid", String(Boolean(error)));
     });
     const hint = panel.querySelector('.generation-settings-error'); hint.textContent = error; hint.hidden = !error;
@@ -6815,7 +6899,7 @@ function finishGenerationPackageExport(operation) {
 }
 
 async function executeGenerationPackageExport(action, turnIndex, messageId = state.activeReviewMessageId, options = {}) {
-  if (!action || !state.review || state.generationBusy) return false;
+  if (reviewReadOnly() || !action || !state.review || state.generationBusy) return false;
   if (messageId) activateReviewContext(messageId, {
     preserveAccuracyGradeUpdate: true,
     preservePendingAccuracyGrade: true,
@@ -8562,6 +8646,7 @@ function targetFieldLabel(targetField) {
   if (targetField === "diameter_linkage") return "线径与三径联动";
   if (targetField === "drawing_summary.drawing_no") return "图号";
   if (targetField === "drawing_summary.drawing_name") return "图纸名称";
+  if (targetField === "drawing_summary.material_code") return "物料编码";
   const text = String(targetField || "");
   const loadTarget = parseLoadPointTarget(text);
   if (loadTarget) return `载荷测试点 ${loadTarget.label} ${loadTarget.field === "height" ? "高度" : "力值"}`;
@@ -10464,6 +10549,7 @@ function createCompareOverlay() {
 function renderCompareOverlay() {
   if (!state.review) return;
   const scrollState = captureCompareOverlayScrollState();
+  const keptViewport=compareOverlay.querySelector('#compareViewport');
   refreshDerivedStatus(state.review);
   const activeTab = validCompareTab(state.compareTab);
   compareOverlay.innerHTML = `
@@ -10490,6 +10576,11 @@ function renderCompareOverlay() {
       </div>
     </div>
   `;
+  if(keptViewport){
+    const replacement=compareOverlay.querySelector('#compareViewport'),image=keptViewport.querySelector('img');
+    if(replacement){const url=replacement.querySelector('img')?.getAttribute('src');replacement.replaceWith(keptViewport);
+      if(url&&image.getAttribute('src')!==url)image.src=url;}
+  }
   compareOverlay.querySelector('[data-action="close"]').addEventListener("click", closeCompareOverlay);
   compareOverlay.querySelector('[data-action="export"]').addEventListener("click", () => {
     downloadJson(makeExportReview(), "spring_review_confirmed.json");
@@ -10499,6 +10590,7 @@ function renderCompareOverlay() {
   initializeCompareViewer();
   bindReviewEditors(compareOverlay);
   restoreCompareOverlayScrollState(scrollState);
+  if(reviewSync.locked) reviewLoadingStatus(reviewSync.error?`加载失败：${reviewSync.error}`:'正在核对最新版本…',Boolean(reviewSync.error));
 }
 
 function captureCompareOverlayScrollState() {
@@ -10567,8 +10659,11 @@ function buildSafeConfirmationPlan(review) {
   [...coreFields, ...advancedFields].forEach((field) => {
     const param = parameters[field];
     if (!param?.need_human_review) return;
-    if (advancedFields.has(field) && [param.value, param.tolerance_upper, param.tolerance_lower, param.tolerance_input_draft]
-      .every(value => value == null || String(value).trim() === "")) return;
+    if (advancedFields.has(field)) {
+      // Preserve the existing review eligibility for an Hb record with evidence.
+      const hasContent = field === "solid_height" ? hasParameterContent(param) : hasAdvancedParameterValue(param);
+      if (!hasContent) return;
+    }
     const group = coreFields.has(field) ? "core" : "advanced";
     const label = targetFieldLabel(field);
     const sources = sourceValues(param.source);
@@ -11815,6 +11910,13 @@ function compareTabDescription(tab) {
   return descriptions[tab] || descriptions.parameters;
 }
 
+function drawingImageSize(image) { return DrawingAnnotations.imageSize(image); }
+function applyPreviewFrame(image) {
+  const number=DrawingAnnotations.entry()?.page||1;
+  const p=(state.review?.preview_pages||DrawingAnnotations.entry()?.document?.pages||[]).find(p=>p.page===number);
+  if(p?.width&&p?.height){image.dataset.logicalWidth=p.width;image.dataset.logicalHeight=p.height;image.style.width=`${p.width}px`;image.style.height=`${p.height}px`;}
+  else {delete image.dataset.logicalWidth;delete image.dataset.logicalHeight;image.style.width="";image.style.height="";}
+}
 function renderCompareViewerHtml() {
   if (!state.imageUrl) {
     return `<div class="compare-viewer empty-line">未加载图纸预览</div>`;
@@ -11842,10 +11944,23 @@ function renderCompareViewerHtml() {
   `;
 }
 
+function refreshCompareViewer() {
+  const old=compareOverlay.querySelector('.compare-viewer');if(!old)return;
+  const viewport=old.querySelector('#compareViewport');
+  const holder=document.createElement('div');holder.innerHTML=renderCompareViewerHtml();const replacement=holder.firstElementChild;
+  if(viewport){const image=viewport.querySelector('img'),placeholder=replacement.querySelector('#compareViewport'),url=placeholder?.querySelector('img')?.getAttribute('src');
+    if(placeholder){placeholder.replaceWith(viewport);if(url&&url!==image.getAttribute('src'))image.src=url;}}
+  old.replaceWith(replacement);
+  if(viewport)viewport.dataset.lastSize=`${viewport.clientWidth}:${viewport.clientHeight}`;
+  initializeCompareViewer();if(reviewSync.locked)reviewLoadingStatus(reviewSync.error?`加载失败：${reviewSync.error}`:'正在核对最新版本…',Boolean(reviewSync.error));
+}
 function initializeCompareViewer() {
   const viewport = compareOverlay.querySelector("#compareViewport");
   const image = compareOverlay.querySelector("#compareImage");
   if (!viewport || !image) return;
+  applyPreviewFrame(image);
+  viewport.viewerEvents?.abort();viewport.viewerEvents=new AbortController();
+  const listen=(node,type,callback,options={})=>node.addEventListener(type,callback,{...options,signal:viewport.viewerEvents.signal});
   syncCompareRotation();
   updateCompareRotationButtons();
 
@@ -11862,9 +11977,9 @@ function initializeCompareViewer() {
   if (image.complete) {
     setup();
   } else {
-    image.addEventListener("load", setup, { once: true });
+    listen(image,"load", setup, { once: true });
   }
-  image.addEventListener("error", updateCompareRotationButtons, { once: true });
+  listen(image,"error", updateCompareRotationButtons, { once: true });
 
   compareOverlay.querySelector('[data-view-action="fit"]').addEventListener("click", fitCompareImage);
   compareOverlay.querySelector('[data-view-action="actual"]').addEventListener("click", () => {
@@ -11879,13 +11994,13 @@ function initializeCompareViewer() {
   compareOverlay.querySelector('[data-view-action="rotate-left"]').addEventListener("click", () => rotateCompareImage(-90));
   compareOverlay.querySelector('[data-view-action="rotate-right"]').addEventListener("click", () => rotateCompareImage(90));
 
-  viewport.addEventListener("wheel", (event) => {
+  listen(viewport,"wheel", (event) => {
     event.preventDefault();
     zoomCompareImage(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX, event.clientY);
   }, { passive: false });
 
-  viewport.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
+  listen(viewport,"pointerdown", (event) => {
+    if (event.button !== 0 || event.target.closest('button,select,input')) return;
     if (typeof DrawingAnnotations !== "undefined" && DrawingAnnotations.capturesPointer(event)) return;
     state.compareView.dragging = true;
     state.compareView.startClientX = event.clientX;
@@ -11896,14 +12011,14 @@ function initializeCompareViewer() {
     viewport.classList.add("dragging");
     updateCompareRotationButtons();
   });
-  viewport.addEventListener("pointermove", (event) => {
+  listen(viewport,"pointermove", (event) => {
     if (!state.compareView.dragging) return;
     state.compareView.x = state.compareView.startX + event.clientX - state.compareView.startClientX;
     state.compareView.y = state.compareView.startY + event.clientY - state.compareView.startClientY;
     applyCompareTransform();
   });
   ["pointerup", "pointercancel", "pointerleave"].forEach((eventName) => {
-    viewport.addEventListener(eventName, () => {
+    listen(viewport,eventName, () => {
       state.compareView.dragging = false;
       viewport.classList.remove("dragging");
       updateCompareRotationButtons();
@@ -11946,10 +12061,10 @@ function rotateCompareImage(degrees) {
   if (!transform || !viewport || !image?.complete || !image.naturalWidth || !image.naturalHeight || state.compareView.dragging || DrawingAnnotations.entry()?.drag) return;
   const page = syncCompareRotation(), view = state.compareView;
   const center = { x: viewport.clientWidth / 2, y: viewport.clientHeight / 2 };
-  const source = transform.unproject(center, image.naturalWidth, image.naturalHeight, view);
+  const source = transform.unproject(center, drawingImageSize(image).width, drawingImageSize(image).height, view);
   view.rotation = transform.normalize(view.rotation + degrees);
   view.rotations.set(page, view.rotation);
-  const point = transform.oriented(source, image.naturalWidth, image.naturalHeight, view.rotation);
+  const point = transform.oriented(source, drawingImageSize(image).width, drawingImageSize(image).height, view.rotation);
   view.x = center.x - point.x * view.scale;
   view.y = center.y - point.y * view.scale;
   view.initialized = true;
@@ -11962,7 +12077,7 @@ function fitCompareImage() {
   if (!viewport || !image || !image.naturalWidth || !image.naturalHeight) return;
   syncCompareRotation();
   const transform = typeof DrawingAnnotations !== "undefined" && DrawingAnnotations.viewTransform;
-  const size = transform ? transform.size(image.naturalWidth, image.naturalHeight, state.compareView.rotation) : { width: image.naturalWidth, height: image.naturalHeight };
+  const size = transform ? transform.size(drawingImageSize(image).width, drawingImageSize(image).height, state.compareView.rotation) : { width: drawingImageSize(image).width, height: drawingImageSize(image).height };
   const padding = 28;
   const viewportWidth = Math.max(1, viewport.clientWidth - padding * 2);
   const viewportHeight = Math.max(1, viewport.clientHeight - padding * 2);
@@ -12006,7 +12121,7 @@ function applyCompareTransform() {
   const label = compareOverlay.querySelector("#compareZoomLabel");
   if (!image) return;
   const transform = typeof DrawingAnnotations !== "undefined" && DrawingAnnotations.viewTransform;
-  image.style.transform = transform ? transform.css(image.naturalWidth, image.naturalHeight, state.compareView) : `translate(${state.compareView.x}px, ${state.compareView.y}px) scale(${state.compareView.scale})`;
+  image.style.transform = transform ? transform.css(drawingImageSize(image).width, drawingImageSize(image).height, state.compareView) : `translate(${state.compareView.x}px, ${state.compareView.y}px) scale(${state.compareView.scale})`;
   if (label) {
     label.textContent = `${Math.round(state.compareView.scale * 100)}%`;
   }
@@ -12039,6 +12154,7 @@ if (typeof DrawingAnnotations !== "undefined") {
     assetUrl: toBackendAssetUrl,
     getView: () => state.compareView,
     onGestureChange: updateCompareRotationButtons,
+    readOnly: reviewReadOnly,
     getImage: () => compareOverlay.querySelector("#compareImage"),
     getViewport: () => compareOverlay.querySelector("#compareViewport"),
     openViewer: () => { if (!state.compareOpen) openCompareOverlay(); },
@@ -12050,14 +12166,13 @@ if (typeof DrawingAnnotations !== "undefined") {
       const oldSource = old.querySelector("#compareImage")?.getAttribute("src");
       const nextSource = DrawingAnnotations.imageUrl() || state.imageUrl;
       if (oldSource !== nextSource) state.compareView.initialized = false;
-      old.outerHTML = renderCompareViewerHtml();
-      initializeCompareViewer();
+      refreshCompareViewer();
     },
     changePage: () => {
       state.compareView.initialized = false;
       DrawingAnnotations.entry().selected = "";
       const old = compareOverlay.querySelector(".compare-viewer");
-      if (old) { old.outerHTML = renderCompareViewerHtml(); initializeCompareViewer(); }
+      if (old) refreshCompareViewer();
     },
     center: (anchor) => {
       const image = compareOverlay.querySelector("#compareImage");
@@ -12066,13 +12181,13 @@ if (typeof DrawingAnnotations !== "undefined") {
         if (!viewport || !image?.naturalWidth || image !== compareOverlay.querySelector("#compareImage")) return;
         syncCompareRotation();
         state.compareView.scale = Math.max(.35, state.compareView.scale);
-        const point = DrawingAnnotations.viewTransform.oriented(anchor, image.naturalWidth, image.naturalHeight, state.compareView.rotation);
+        const point = DrawingAnnotations.viewTransform.oriented(anchor, drawingImageSize(image).width, drawingImageSize(image).height, state.compareView.rotation);
         state.compareView.x = viewport.clientWidth / 2 - point.x * state.compareView.scale;
         state.compareView.y = viewport.clientHeight / 2 - point.y * state.compareView.scale;
         state.compareView.initialized = true;
         applyCompareTransform();
       };
-      if (image?.complete) requestAnimationFrame(center);
+      if (image?.complete) center();
       else image?.addEventListener("load", center, { once: true });
     },
     onResize: () => {
@@ -12120,6 +12235,10 @@ function activateReviewContext(messageId = state.activeReviewMessageId, options 
 }
 
 function setReview(review, imageUrl, options = {}) {
+  if (!options.readOnlySnapshot && reviewReadOnly()) {
+    state.reviewNavigationSerial++; stopLocalVerificationWatch();
+    reviewSync = {locked:false,error:"",token:reviewSync.token+1}; reviewLoadingStatus();
+  }
   if (!options.preserveAccuracyGradeUpdate) resetAccuracyGradeUpdate();
   if (!options.preservePendingAccuracyGrade) resetPendingAccuracyGrade();
   ensureTechnicalRequirementIds(review);
@@ -12134,15 +12253,18 @@ function setReview(review, imageUrl, options = {}) {
     }
   }
   state.review = review;
-  recordRoughnessVerificationAdjustment(review);
-  recordMultiSpecReconciliation(review);
-  recordLoadHeightAdjustment(review);
+  if (!options.readOnlySnapshot) {
+    recordRoughnessVerificationAdjustment(review);
+    recordMultiSpecReconciliation(review);
+    recordLoadHeightAdjustment(review);
+  }
   state.imageUrl = imageUrl;
   exportButton.disabled = false;
-  scheduleTechnicalRequirementTranslation();
+  if(!options.readOnlySnapshot) scheduleTechnicalRequirementTranslation();
 }
 
 function recordLoadHeightAdjustment(review) {
+  if (reviewReadOnly()) return;
   const pitch = review.pitch_recovery;
   if (pitch?.pending_save && !pitch.audit_recorded && state.review === review) {
     pitch.audit_recorded = true;
@@ -12352,7 +12474,20 @@ function apiUrl(path) {
 }
 
 function apiFetch(path, options = {}) {
-  return fetch(apiUrl(path), { ...options, credentials: "include" });
+  if (reviewReadOnly() && /^(PATCH|PUT|POST)$/i.test(options.method||"GET") &&
+      (path.includes(`/reviews/${state.lastJob?.job_id}/`) || path === `/api/reviews/${state.lastJob?.job_id}` || path === '/api/reviews/standardize'))
+    return Promise.reject(new Error('正在核对最新版本，请稍后重试'));
+  const requestBase = state.apiBaseUrl, requestIdentity = state.identity;
+  return fetch(apiUrl(path), { ...options, credentials: "include" }).then(response => {
+    if (response.status === 401 && requestBase === state.apiBaseUrl && requestIdentity === state.identity) {
+      reviewSwitchCache.reset(null); resetDeletedReviewState();
+      state.reviewNavigationSerial++; state.identity = null; state.identityReady = false;
+      state.identityError = "登录已失效，请重新登录";
+      Object.keys(state.recognitionPollers).forEach(stopTrackingRecognitionJob);
+      state.recentReviews = []; state.reviewContexts = {}; renderEmptyConversation(); renderRecentReviews(); refreshIdentityUi();
+    }
+    return response;
+  });
 }
 
 async function loadGenerationState(reviewId = state.lastJob?.job_id, options = {}) {
@@ -12404,6 +12539,7 @@ async function reloadGenerationReadiness(reviewId = state.lastJob?.job_id) {
 }
 
 async function createGenerationJob(options = {}) {
+  if(reviewReadOnly()) return;
   const reviewId = state.lastJob?.job_id;
   if (!reviewId || state.generationBusy) return;
   const scope = historyRecognitionScope(), navigation = state.reviewNavigationSerial;
@@ -13633,7 +13769,7 @@ function makeExportReview() {
 function makeGenerationParameterPackage(review = state.review, options = {}) {
   review = structuredClone(review);
   globalThis.LoadHeightRelations?.refresh(review);
-  if (!options.technicalPreview && Array.from(String(review.drawing_summary?.drawing_name ?? "").trim()).length > 512) throw new Error("图纸名称最长512字符，请缩短后重试");
+  if (!options.technicalPreview && drawingSummaryValidationError(review)) throw new Error(drawingSummaryValidationError(review));
   const confirmedParameters = {};
   COMPRESSION_GENERATION_EXPORT_FIELDS.forEach((field) => {
     const param = generationSourceParameter(review.spring_parameters || {}, field);
@@ -13685,6 +13821,7 @@ function makeGenerationParameterPackage(review = state.review, options = {}) {
     source: {
       drawing_no: summary.drawing_no || null,
       drawing_name: String(summary.drawing_name ?? "").trim() || null,
+      material_code: String(summary.material_code ?? "").trim() || null,
       spring_type: currentSpringType(review),
       spring_type_label: summary.spring_type_label || SPRING_TYPE_LABELS[currentSpringType(review)] || null,
     },
@@ -13794,6 +13931,7 @@ function generationDerivedParameter(field, value, unit, formula, sourceFields) {
 }
 
 function downloadJson(data, filename) {
+  if(reviewReadOnly()) return;
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");

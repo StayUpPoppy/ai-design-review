@@ -38,7 +38,8 @@ def prepare_retry_options(job, run_root):
     options = deepcopy(job.get("options") or {})
     old_replay = options.pop(REPLAY_OPTION, None)
     error = str(job.get("error_message") or "")
-    if not any(text in error for text in ("无法确定规格表格/区块布局", "多规格布局字段不兼容")) and not old_replay:
+    page_retry = bool(options.get("page_origin"))
+    if not page_retry and not any(text in error for text in ("无法确定规格表格/区块布局", "多规格布局字段不兼容")) and not old_replay:
         return options
     try:
         directory = (Path(run_root) / job["job_id"]).resolve()
@@ -50,13 +51,13 @@ def prepare_retry_options(job, run_root):
         raw = json.loads(response.read_bytes())
         pages = len(PdfReader(str(drawing)).pages) if drawing.suffix.lower() == ".pdf" else 1
         decoded = QwenVisionEngine().parse_response(raw, [], total_pages=pages)
-        if not decoded.get("multi_spec"):
+        if not decoded.get("multi_spec") and not (page_retry and decoded.get("candidates")):
             return options
         options[REPLAY_OPTION] = {
             "version": VERSION, "layout_rules_version": LAYOUT_RULE_VERSION,
             "response_path": RESPONSE_PATH, "response_sha256": fingerprint(response),
             "drawing_path": options["drawing_path"], "drawing_sha256": fingerprint(drawing),
-            "page_count": pages,
+            "page_count": pages, "page_retry": page_retry,
             "previous_error": error, "prepared_at": datetime.now(UTC).isoformat(),
         }
     except (OSError, ValueError, PyPdfError, QwenVisionError, KeyError, TypeError, IndexError, AttributeError):

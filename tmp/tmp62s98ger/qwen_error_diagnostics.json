@@ -1,0 +1,1 @@
+{"http_status": 400, "code": "InvalidParameter", "message": "invalid image [redacted] [image omitted]", "error_type": "HTTPStatusError", "inputs": [{"width": 200, "height": 100, "bytes": 991}], "duration_ms": 0}

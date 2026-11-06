@@ -193,8 +193,14 @@ def _local_ocr_blocks_locked(job_dir, pages, document_id, review, candidates, ex
                             states[field] = "failed" if record["status"] == "failed" else "completed_unmatched"
                         continue
                     # The cap is per invocation/page, not a lifetime cache cap.
-                    crop = image.crop(bounds)
-                    crop = crop.resize((crop.width * 2, crop.height * 2)).rotate(angle, expand=True)
+                    originals = [p for p in (job_dir / 'inputs').glob('*.pdf')]
+                    if originals:
+                        from .page_images import render_region
+                        crop = render_region(originals[0], number, (x0,y0,x1,y1))
+                    else:
+                        crop = image.crop(bounds)
+                        crop = crop.resize((min(1800,crop.width*2),min(1800,crop.height*2)))
+                    crop = crop.rotate(angle, expand=True)
                     target = folder / f"crop-{signature}.png"
                     crop.save(target)
                     inputs.append(target)

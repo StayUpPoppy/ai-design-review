@@ -5,7 +5,7 @@ import os
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text, case, or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
@@ -224,6 +224,8 @@ class ReviewPersistence:
                 if record is None or not _record_matches_owner(record, owner_user_id):
                     return None
                 return {
+                    "job_id": record.job_id,
+                    "artifact_dir": record.artifact_dir,
                     "review": copy.deepcopy(record.review_snapshot),
                     "revision": record.revision,
                     "file_info": copy.deepcopy(record.file_info),
@@ -451,7 +453,7 @@ class ReviewPersistence:
             with self._session() as session:
                 rows = session.execute(
                     select(RecognitionJobRecord)
-                    .where(*_recognition_job_owner_filter_clauses(owner_user_id))
+                    .where(*_recognition_job_owner_filter_clauses(owner_user_id), or_(RecognitionJobRecord.options["task_kind"].as_string().is_(None), RecognitionJobRecord.options["task_kind"].as_string() != "local_verification"))
                     .order_by(RecognitionJobRecord.updated_at.desc())
                     .limit(bounded_limit)
                 ).scalars()
@@ -494,7 +496,7 @@ class ReviewPersistence:
                         RecognitionJobRecord.status == "queued",
                         RecognitionJobRecord.cancellation_requested.is_(False),
                     )
-                    .order_by(RecognitionJobRecord.created_at.asc())
+                    .order_by(case((RecognitionJobRecord.options["task_kind"].as_string() == "local_verification", 1), else_=0), RecognitionJobRecord.created_at.asc())
                     .with_for_update(skip_locked=True)
                     .limit(1)
                 ).scalar_one_or_none()
@@ -703,6 +705,7 @@ class ReviewPersistence:
                 RecognitionJobRecord.status == "queued",
                 RecognitionJobRecord.cancellation_requested.is_(False),
                 RecognitionJobRecord.created_at < record.created_at,
+                or_(RecognitionJobRecord.options["task_kind"].as_string().is_(None), RecognitionJobRecord.options["task_kind"].as_string() != "local_verification"),
             )
         ).all()
         return len(earlier) + 1
@@ -716,6 +719,7 @@ class ReviewPersistence:
     ) -> dict[str, Any]:
         result = {
             "job_id": record.job_id,
+            "page_origin": copy.deepcopy((record.options or {}).get("page_origin")),
             "drawing_name": record.drawing_name,
             "status": record.status,
             "stage": record.stage,
@@ -731,6 +735,7 @@ class ReviewPersistence:
         if include_execution_details:
             result.update(
                 {
+                    "worker_id": record.worker_id,
                     "artifact_dir": record.artifact_dir,
                     "input_filename": record.input_filename,
                     "options": copy.deepcopy(record.options),
@@ -763,8 +768,8 @@ class ReviewPersistence:
         return ReviewRecord(
             job_id=job_id,
             record_kind=review.get("record_kind", "single"),
-            parent_review_id=(review.get("multi_spec_origin") or {}).get("source_review_id"),
-            variant_id=(review.get("multi_spec_origin") or {}).get("variant_id"),
+            parent_review_id=(review.get("page_origin") or review.get("multi_spec_origin") or {}).get("source_review_id"),
+            variant_id=(review.get("page_origin") or {}).get("page_id") or (review.get("multi_spec_origin") or {}).get("variant_id"),
             drawing_no=_optional_text(summary.get("drawing_no")),
             drawing_name=_optional_text(summary.get("drawing_name")),
             spring_type=_optional_text(summary.get("spring_type")),
@@ -833,6 +838,8 @@ class ReviewPersistence:
             "job_id": record.job_id,
             "record_kind": record.record_kind,
             "parent_review_id": record.parent_review_id,
+            "page_origin": copy.deepcopy(snapshot.get("page_origin")),
+            "source_kind": snapshot.get("source_kind"),
             "variant_id": record.variant_id,
             "variant_count": len((snapshot.get("multi_spec") or {}).get("variants", [])),
             "created_count": (snapshot.get("multi_spec") or {}).get("created_count", 0),

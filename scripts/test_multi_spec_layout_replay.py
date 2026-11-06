@@ -130,7 +130,7 @@ def queue_tests(replies):
                     from ai_design_review.review_persistence import RecognitionJobRecord
                     with repo._session() as session, session.begin():
                         record=session.get(RecognitionJobRecord,job)
-                        options=deepcopy(record.options);options.pop("auto_create_variants",None);record.options=options
+                        options=deepcopy(record.options);options.pop("auto_create_variants",None);options.pop("auto_split_pdf_pages",None);record.options=options
                     with patch("ai_design_review.multi_spec.normalize_layout",side_effect=MultiSpecError("无法确定规格表格/区块布局。")),patch.object(QwenVisionEngine,"_call_qwen",return_value=raw) as model:
                         runner._process_job(repo.claim_next_recognition_job(runner.worker_id))
                         assert model.call_count==1

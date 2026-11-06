@@ -277,7 +277,7 @@ def run():
         if complete_contract:
             GenerationParameterPackageV2.model_validate(package)
         preview = package["solidworks_preview"]
-        assert list(preview) == ["modelParameters", *(["modelParametersTolerance"] if "modelParametersTolerance" in preview else []), "customProperties", "extraProperties", "titleBlockProperties"]
+        assert list(preview) == [*(["materialCode"] if "material_code" in package.get("source", {}) else []), "modelParameters", *(["modelParametersTolerance"] if "modelParametersTolerance" in preview else []), "customProperties", "extraProperties", "titleBlockProperties"]
         command = build_solidworks_command("1000000099", package, review)
         model = command["models"][0]
         assert {k: model[k] for k in preview} == preview

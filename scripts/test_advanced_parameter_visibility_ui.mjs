@@ -11,10 +11,10 @@ const between = (start, end) => {
 const optional = ['controlled_diameter_field', 'body_length', 'end_coils', 'straightness', 'permanent_set_limit'];
 const fixed = ['support_coils', 'pitch', 'spring_rate', 'perpendicularity'];
 const specialized = ['diameter_accuracy_grade', 'free_length_accuracy_grade', 'load_accuracy_grade', 'stiffness_accuracy_grade'];
-const fields = ['wire_diameter', ...optional, ...fixed, ...specialized, 'legacy_value', 'legacy_empty'];
+const fields = ['wire_diameter', 'solid_height', ...optional, ...fixed, ...specialized, 'legacy_value', 'legacy_empty'];
 const context = vm.createContext({
   PARAMETER_COLLECTION_FIELDS: new Set(['load_points', 'torque_points']),
-  COMPRESSION_CORE_PARAMETER_FIELDS: new Set(['wire_diameter']),
+  COMPRESSION_CORE_PARAMETER_FIELDS: new Set(['wire_diameter', 'solid_height']),
   getSpringTemplate: () => ({ fields: fields.map(key => ({ key })) }),
   isCompressionSpringReview: review => review.drawing_summary.spring_type === 'compression_spring',
 });
@@ -40,10 +40,19 @@ for (const field of fixed) assert.equal(visible(field, undefined), true, `${fiel
 for (const field of specialized) assert.equal(visible(field, { value: 'T级', need_human_review: false, source: ['human_confirmed'] }), false);
 review.spring_parameters = { legacy_value: { value: 7 }, legacy_empty: { evidence: '说明而非数值' } };
 const before = JSON.stringify(review);
-assert.deepEqual(Array.from(context.getParameterFieldGroups(review.spring_parameters, review).advanced), [...fixed, 'legacy_value']);
+assert.deepEqual(Array.from(context.getParameterFieldGroups(review.spring_parameters, review).advanced), ['solid_height', ...fixed, 'legacy_value']);
+assert.deepEqual(Array.from(context.getParameterFieldGroups(review.spring_parameters, review).core), ['wire_diameter']);
 assert.equal(JSON.stringify(review), before, 'grouping never changes data or confirmations');
+for (const solidHeight of [{ value: 12 }, { tolerance_upper: 0 }, { value: 11, derived_value_stale: true }]) {
+  review.spring_parameters.solid_height = solidHeight;
+  const groups = context.getParameterFieldGroups(review.spring_parameters, review);
+  assert.equal(groups.advanced[0], 'solid_height');
+  assert.equal(groups.advanced.filter(field => field === 'solid_height').length, 1);
+  assert.ok(!groups.core.includes('solid_height'));
+}
+delete review.spring_parameters.solid_height;
 review.record_kind = 'variant'; review.multi_spec_origin = { variant_id: 'v1' };
-assert.deepEqual(Array.from(context.getParameterFieldGroups(review.spring_parameters, review).advanced), [...fixed, 'legacy_value']);
+assert.deepEqual(Array.from(context.getParameterFieldGroups(review.spring_parameters, review).advanced), ['solid_height', ...fixed, 'legacy_value']);
 review.drawing_summary.spring_type = 'torsion_spring';
 assert.deepEqual(Array.from(context.getParameterFieldGroups(review.spring_parameters, review).core), fields, 'other spring types keep their current presentation');
 review.parameter_reasonableness = { issues: [

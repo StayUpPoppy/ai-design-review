@@ -200,6 +200,7 @@ def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str
     tolerances = _model_parameters_tolerance(review)
     return {**({"DrawingModel": settings["drawing_model"], "Username": settings["username"],
                 **({"typeface": settings["typeface"]} if "typeface" in settings else {})} if settings else {}),
+            **({"materialCode": parameter_package["source"].get("material_code") or None} if "material_code" in (parameter_package.get("source") or {}) else {}),
             "modelParameters": build_solidworks_model_parameters(parameter_package, review),
             **({"modelParametersTolerance": tolerances} if tolerances else {}),
             "customProperties": {"旋向": handedness_label(_parameter_value(parameters.get("handedness")))},

@@ -11,6 +11,7 @@ import secrets
 import hashlib
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -112,7 +113,7 @@ from .technical_requirement_recognition import collect_technical_requirements, r
 from .technical_translation import TechnicalTranslationEngine, prepare_review_translations, translation_snapshot
 from .workflow import DrawingReviewWorkflow, apply_standardization_to_review
 from .multi_spec import MultiSpecError
-from . import multi_spec_store
+from . import multi_spec_store, pdf_page_store
 from .accuracy_inference import refresh_accuracy_inference
 from .drawing_annotations import (
     AnnotationConflictError, annotation_file_lock, apply_annotation_patch,
@@ -414,10 +415,11 @@ def require_generation_admin(
 @app.get("/api/reviews/{job_id}/generation-readiness", response_model=GenerationReadinessResponse, tags=["Generation"])
 def get_generation_readiness(job_id: str, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     review, revision = _load_generation_review(job_id, identity)
+    from .review_loading import cached_readiness
     return {
         "review_id": job_id,
         "review_revision": revision,
-        "generation_readiness": assess_generation_readiness(review),
+        "generation_readiness": cached_readiness(job_id, revision, identity, review),
     }
 
 
@@ -1170,6 +1172,7 @@ async def run_recognition_execution(
     job_id: str | None = None,
     progress_callback: Callable[[str, int], None] | None = None,
     qwen_replay: dict[str, Any] | None = None,
+    page_origin: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if identity is None:
         raise RuntimeError("Recognition execution requires an identity context.")
@@ -1202,18 +1205,19 @@ async def run_recognition_execution(
     candidate_sources: list[str] = []
     raw_payloads: dict[str, Any] = {}
 
+    replay_payload = None
     if qwen_replay is not None:
         _report_recognition_progress(progress_callback, "qwen_vision", 35)
         page_count = qwen_replay["metadata"]["page_count"]
         if not images or len(images) != page_count:
             raise MultiSpecError("本地恢复失败：预览页数与原文件不一致；未重新调用Qwen。")
-        qwen_payload = QwenVisionEngine().parse_response(qwen_replay["raw_response"], images or [],
-            total_pages=page_count)
-        if not qwen_payload.get("multi_spec"):
-            raise MultiSpecError("本地恢复失败：缓存不是完整多规格结果；未重新调用Qwen。")
-        qwen_payload["local_recovery"] = qwen_replay["metadata"]
-        write_json(job_dir / "qwen_vision_raw.json", qwen_payload)
-        return _persist_multi_spec_source(job_id, qwen_payload, uploaded_file_info, identity, image_url, progress_callback)
+        replay_payload = QwenVisionEngine().parse_response(qwen_replay["raw_response"], images or [], total_pages=page_count)
+        replay_payload["local_recovery"] = qwen_replay["metadata"]
+        if not qwen_replay["metadata"].get("page_retry"):
+            if not replay_payload.get("multi_spec"):
+                raise MultiSpecError("本地恢复失败：缓存不是完整多规格结果；未重新调用Qwen。")
+            write_json(job_dir / "qwen_vision_raw.json", replay_payload)
+            return _persist_multi_spec_source(job_id, replay_payload, uploaded_file_info, identity, image_url, progress_callback)
 
     if candidate_json is not None and candidate_json.filename:
         candidate_json_path = input_dir / _safe_filename(candidate_json.filename)
@@ -1246,7 +1250,7 @@ async def run_recognition_execution(
     if use_qwen:
         _report_recognition_progress(progress_callback, "qwen_vision", 35)
         try:
-            qwen_payload = await run_in_threadpool(
+            qwen_payload = replay_payload or await run_in_threadpool(
                 QwenVisionEngine(work_dir=job_dir / "qwen_pages").extract_with_raw,
                 drawing_path,
                 [Path(item) for item in images] if images else None,
@@ -1263,6 +1267,9 @@ async def run_recognition_execution(
 
     multi_payload = raw_payloads.get("qwen_vision") or {}
     if multi_payload.get("multi_spec"):
+        persisted = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id) if REVIEW_PERSISTENCE.configured else None
+        if page_origin or (persisted and persisted["review"].get("page_origin")):
+            raise MultiSpecError("本页包含多规格，请将该页单独上传处理；其他页不受影响。")
         return _persist_multi_spec_source(job_id, multi_payload, uploaded_file_info, identity, image_url,
                                           progress_callback, raw_payloads=raw_payloads)
 
@@ -1463,19 +1470,29 @@ async def run_recognition_execution(
         except Exception:
             LOGGER.exception("Original annotation localization failed for %s", job_id)
             warnings.append("关键参数定位未完成，审图和生图不受影响，可在原图中人工标注。")
+    review.setdefault("drawing_summary", {}).pop("material_code", None)
+    from .review_loading import VERSION as LOCAL_VERIFICATION_VERSION
+    review['local_verification'] = {'version':LOCAL_VERIFICATION_VERSION}
     _report_recognition_progress(progress_callback, "saving_result", 95)
     write_json(job_dir / "candidates.json", candidates_payload)
     write_json(job_dir / "review.json", review)
     write_json(job_dir / "file_info.json", uploaded_file_info)
     write_json(job_dir / "warnings.json", {"warnings": warnings})
     write_json(job_dir / "owner.json", identity.as_owner_dict())
-    persistence = _create_review_persistence(
-        job_id,
-        review,
-        file_info=uploaded_file_info,
-        artifact_dir=str(job_dir),
-        identity=identity,
-    )
+    if page_origin:
+        # Only the lease-checked atomic page finalizer may publish this result.
+        stored = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id)
+        if stored is None:
+            raise RuntimeError("页面已删除或取消，未恢复审图记录。")
+        persistence = {"mode": "postgresql", "revision": stored["revision"]}
+    else:
+        persistence = _create_review_persistence(
+            job_id,
+            review,
+            file_info=uploaded_file_info,
+            artifact_dir=str(job_dir),
+            identity=identity,
+        )
 
     return {
         "job_id": job_id,
@@ -1537,6 +1554,7 @@ async def create_review(
     options: dict[str, Any] = {
         "drawing_path": str(drawing_path.relative_to(job_dir)),
         "auto_create_variants": True,
+        "auto_split_pdf_pages": "pdf-pages/v1",
         "use_werk24": use_werk24,
         "confirm_upload_to_werk24": confirm_upload_to_werk24,
         "use_cached_werk24": use_cached_werk24,
@@ -1600,6 +1618,8 @@ def list_reviews(limit: int = 20, root_only: bool = False, identity: IdentityCon
             job_id = str(job.get("job_id") or "")
             if not job_id:
                 continue
+            if root_only and job.get("page_origin"):
+                continue
             existing = reviews_by_id.get(job_id)
             if existing is None:
                 existing = {
@@ -1612,6 +1632,8 @@ def list_reviews(limit: int = 20, root_only: bool = False, identity: IdentityCon
                     "created_at": job.get("created_at"),
                     "updated_at": job.get("updated_at"),
                 }
+                if job.get("page_origin"):
+                    existing.update(record_kind="variant", parent_review_id=job["page_origin"]["source_review_id"], page_origin=job["page_origin"])
                 reviews.append(existing)
                 reviews_by_id[job_id] = existing
             existing.update(
@@ -1628,6 +1650,8 @@ def list_reviews(limit: int = 20, root_only: bool = False, identity: IdentityCon
         reviews.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
         reviews = reviews[:bounded_limit]
         for item in reviews:
+            if item.get("source_kind") == "pdf_pages":
+                item.update(pdf_page_store.aggregate(pdf_page_store.describe(REVIEW_PERSISTENCE, item["job_id"], identity.user_id)))
             item["image_url"] = _review_preview_url(item["job_id"])
         return {
             "persistence": _persistence_response({"mode": "postgresql"}),
@@ -2030,7 +2054,8 @@ def delete_existing_review(job_id: str, expected_source_revision: int | None = N
         record = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id)
         if record and record.get("record_kind") in {"source", "variant"}:
             try:
-                result = multi_spec_store.delete_family(REVIEW_PERSISTENCE, job_id, identity.user_id, expected_source_revision)
+                handler = pdf_page_store if pdf_page_store.is_source(record["review"]) or pdf_page_store.origin(record["review"]) else multi_spec_store
+                result = handler.delete_family(REVIEW_PERSISTENCE, job_id, identity.user_id, expected_source_revision)
             except multi_spec_store.VariantStoreError as exc:
                 raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
             pending = False
@@ -2090,6 +2115,11 @@ def get_recognition_status(job_id: str, identity: IdentityContext = Depends(requ
         raise _persistence_http_error(exc) from exc
     if job is None:
         raise HTTPException(status_code=404, detail="Recognition job not found.")
+    description = pdf_page_store.describe(REVIEW_PERSISTENCE, job_id, identity.user_id) if (REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id) or {}).get("review", {}).get("source_kind") == "pdf_pages" else None
+    if description:
+        values = pdf_page_store.aggregate(description)
+        job.update(values, status=values["recognition_status"], stage=values["recognition_stage"], progress=values["recognition_progress"], error_message=values["recognition_error"])
+        return {"job_id": job_id, "recognition": job}
     # The frontend may open a review as soon as this poll reports completion,
     # before its history refresh has supplied the preview URL.
     if job.get("status") == "completed":
@@ -2152,7 +2182,8 @@ def get_review_changes(
 
 
 @app.get("/api/reviews/{job_id}")
-def get_review(job_id: str, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+def get_review(job_id: str, metadata_only: bool = False, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
+    started = time.perf_counter()
     job_dir = _job_dir(job_id)
     review_path = job_dir / "review.json"
     if REVIEW_PERSISTENCE.configured:
@@ -2162,20 +2193,42 @@ def get_review(job_id: str, identity: IdentityContext = Depends(require_identity
             raise _persistence_http_error(exc) from exc
         if job is not None and job.get("status") != "completed":
             raise HTTPException(status_code=409, detail={"message": "Recognition is not complete.", "recognition": job})
+    from . import review_loading
+    stored = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id) if REVIEW_PERSISTENCE.configured else None
+    if stored:
+        review_loading.enqueue(REVIEW_PERSISTENCE, stored, identity)
+        if metadata_only:
+            result = review_loading.metadata(REVIEW_PERSISTENCE, stored)
+            LOGGER.info('Review metadata %s elapsed_ms=%.1f',job_id,(time.perf_counter()-started)*1000)
+            return JSONResponse(content=result)
+    elif metadata_only:
+        _ensure_review_owned(job_id, review_path, identity, allow_source=True)
+        return {"job_id":job_id,"review_revision":None,"annotation_revision":0,"source_document_id":None,"preview_version":"local","verification_state":"completed"}
     review, revision = _load_persisted_review(job_id, review_path, identity, allow_source=True)
+    if stored:
+        if stored['revision'] != revision:
+            stored = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id)
+        if stored: review['loading_metadata'] = review_loading.metadata(REVIEW_PERSISTENCE, stored)
+    from .drawing_annotations import preview_manifest
+    review['preview_pages'] = preview_manifest(job_dir, lambda p: _artifact_url(job_id, p))
     if revision is not None:
         review["review_revision"] = revision
     review["image_url"] = _review_preview_url(job_id)
+    LOGGER.info('Review read %s elapsed_ms=%.1f',job_id,(time.perf_counter()-started)*1000)
     return review
 
 
 @app.get("/api/reviews/{source_id}/variants")
 def get_review_variants(source_id: str, identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     try:
-        result = multi_spec_store.describe(REVIEW_PERSISTENCE, source_id, identity.user_id)
+        result = pdf_page_store.describe(REVIEW_PERSISTENCE, source_id, identity.user_id) or multi_spec_store.describe(REVIEW_PERSISTENCE, source_id, identity.user_id)
         result["image_url"] = _review_preview_url(source_id)
         from .drawing_annotations import preview_manifest
-        result["pages"] = preview_manifest(API_RUN_ROOT / source_id, lambda p: _artifact_url(source_id, p))
+        if result.get("source_kind") == "pdf_pages":
+            result["pages"] = [{"page": v["page"], "image_url": _review_preview_url(v["review"]["job_id"])} for v in result["variants"] if v["review"]]
+            result.update(pdf_page_store.aggregate(result))
+        else:
+            result["pages"] = preview_manifest(API_RUN_ROOT / source_id, lambda p: _artifact_url(source_id, p))
         return result
     except multi_spec_store.VariantStoreError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
@@ -2184,6 +2237,8 @@ def get_review_variants(source_id: str, identity: IdentityContext = Depends(requ
 @app.post("/api/reviews/{source_id}/variants/create-reviews")
 def create_variant_reviews(source_id: str, payload: dict[str, Any] = Body(...), identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     try:
+        if pdf_page_store.describe(REVIEW_PERSISTENCE, source_id, identity.user_id):
+            raise multi_spec_store.VariantStoreError(409, "PDF页面已自动创建，无需规格建单。")
         return multi_spec_store.create_children(REVIEW_PERSISTENCE, source_id, identity.user_id, payload, identity.as_audit_actor(), API_RUN_ROOT)
     except multi_spec_store.VariantStoreError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
@@ -2278,40 +2333,20 @@ async def translate_technical_requirements(job_id: str, payload: dict[str, Any] 
 
 
 def _load_drawing_annotations(job_id: str, identity: IdentityContext) -> dict[str, Any]:
-    from .drawing_annotations import ALGORITHM_VERSION, failed_annotation_upgrade, merge_annotation_upgrade, roughness_refresh_key, refresh_roughness_annotations
-    from .multi_spec import annotation_context, location_policy
-
+    from .drawing_annotations import annotation_source, preview_manifest
+    from . import review_loading
     job_dir = _job_dir(job_id)
-    review, _ = _load_persisted_review(job_id, job_dir / "review.json", identity)
-    review = annotation_context(review, job_dir)
-    policy = location_policy(review)
-    current = review.get("drawing_annotations")
-    if REVIEW_PERSISTENCE.configured and isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION and current.get("multi_spec_location") == policy and current.get("roughness_evidence_signature") == roughness_refresh_key(review):
-        return current
-    # Serialize local OCR/cache work, but do not hold a database row lock while
-    # recognizing. The final database merge reads the newest manual locations.
-    with annotation_file_lock(job_dir):
-        path = job_dir / "annotations.json"
-        if not REVIEW_PERSISTENCE.configured and path.exists():
-            current = read_json(path)
-        if isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION and current.get("multi_spec_location") == policy and current.get("roughness_evidence_signature") == roughness_refresh_key(review):
-            return current
-        try:
-            document = refresh_roughness_annotations(current, review) if isinstance(current, dict) and current.get("algorithm_version") == ALGORITHM_VERSION and current.get("multi_spec_location") == policy else build_annotations(review, job_dir, lambda relative: _artifact_url(job_id, relative))
-        except Exception:
-            if not isinstance(current, dict):
-                raise
-            LOGGER.exception("Original annotation upgrade failed for %s", job_id)
-            document = failed_annotation_upgrade(current)
-            if policy:
-                document["multi_spec_location"] = policy
-        document["roughness_evidence_signature"] = roughness_refresh_key(review)
-        if not REVIEW_PERSISTENCE.configured:
-            if isinstance(current, dict):
-                document = merge_annotation_upgrade(current, document)
-            atomic_annotation_write(path, document)
-            return document
-    return REVIEW_PERSISTENCE.save_drawing_annotations(job_id, owner_user_id=identity.user_id, initial=document, upgrade=True)
+    review, _ = _load_persisted_review(job_id, job_dir / 'review.json', identity)
+    if REVIEW_PERSISTENCE.configured:
+        stored = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id)
+        review_loading.enqueue(REVIEW_PERSISTENCE, stored, identity)
+        current = review.get('drawing_annotations')
+    else:
+        current = read_json(job_dir / 'annotations.json') if (job_dir / 'annotations.json').is_file() else review.get('drawing_annotations')
+    if not isinstance(current, dict):
+        return annotation_source(job_dir,lambda p:_artifact_url(job_id,p))[0]
+    current['pages'] = preview_manifest(job_dir,lambda p:_artifact_url(job_id,p))
+    return current
 
 
 @app.get("/api/reviews/{job_id}/annotations", tags=["审图管理"], summary="获取原图关键参数气泡标注")
@@ -2447,7 +2482,7 @@ def _load_persisted_review(
     job_id: str,
     review_path: Path,
     identity: IdentityContext,
-    *, allow_source: bool = False,
+    *, allow_source: bool = False, recover: bool = False,
 ) -> tuple[dict[str, Any], int | None]:
     if REVIEW_PERSISTENCE.configured:
         try:
@@ -2460,7 +2495,9 @@ def _load_persisted_review(
         if stored.get("record_kind") == "source":
             if not allow_source: raise HTTPException(status_code=409, detail="来源记录只读，请从规格核对表创建并打开子审图记录。")
             return review, stored["revision"]
-        if stored.get("record_kind") == "variant":
+        if not recover:
+            return review, stored["revision"]
+        if stored.get("record_kind") == "variant" and not review.get("page_origin"):
             try: multi_spec_store.materialize(REVIEW_PERSISTENCE, job_id, identity.user_id, API_RUN_ROOT)
             except multi_spec_store.VariantStoreError as exc: raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
             from .multi_spec_evidence import reconcile_review
@@ -2477,6 +2514,7 @@ def _load_persisted_review(
     if not _local_job_owned(review_path.parent, identity.user_id) or not review_path.exists():
         raise HTTPException(status_code=404, detail="Review not found.")
     review = read_json(review_path)
+    if not recover: return review, None
     ensure_compression_material(review)
     ensure_surface_roughness_parameter(review)
     verify_review_roughness(review, review_path.parent, lambda path: _artifact_url(job_id, path))
@@ -2491,7 +2529,12 @@ def _load_persisted_review(
 def _ensure_review_owned(job_id: str, review_path: Path, identity: IdentityContext, *, allow_source: bool = False) -> None:
     # Source records are read-only engineering records, but their owner may
     # still read the original drawing. Only file-reading callers opt in.
-    _load_persisted_review(job_id, review_path, identity, allow_source=allow_source)
+    if REVIEW_PERSISTENCE.configured:
+        stored = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id)
+        if stored is None: raise HTTPException(status_code=404, detail="Review not found.")
+        if stored.get('record_kind') == 'source' and not allow_source: raise HTTPException(status_code=409, detail="来源记录只读。")
+    elif not _local_job_owned(review_path.parent, identity.user_id):
+        raise HTTPException(status_code=404, detail="Review not found.")
 
 
 def _prepare_review_reasonableness(review: dict[str, Any], revision: int | None) -> None:
@@ -2528,6 +2571,10 @@ def _save_review_persistence(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail={"code": "generation_settings_invalid", "message": str(exc)}) from exc
     previous, _ = _load_persisted_review(job_id, review_path, identity)
+    for key in ('loading_metadata', 'preview_pages'):
+        review.pop(key, None)
+    if 'local_verification' in previous: review['local_verification'] = deepcopy(previous['local_verification'])
+    else: review.pop('local_verification', None)
     load_changes = prepare_load_height_save(review, previous)
     events = list(events or [])
     for change in load_changes:
@@ -2536,7 +2583,6 @@ def _save_review_persistence(
                 "before_state":change["before"],"after_state":change["after"],"metadata":{"load_point_id":change["load_point_id"],"version":"load-height/v1"}})
     prepare_recovery_save(review, previous)
     # Derive repair metadata from server evidence, never from a client's claim.
-    from copy import deepcopy
     repair = previous.get("multi_spec_reconciliation") or {}
     if repair.get("pending_save"):
         review.pop("multi_spec_reconciliation", None)
@@ -2559,7 +2605,7 @@ def _save_review_persistence(
     if isinstance(review.get("multi_spec_reconciliation"), dict):
         review["multi_spec_reconciliation"].pop("pending_save", None)
         review["multi_spec_reconciliation"]["audit_recorded"] = True
-    if review.get("record_kind", "single") != previous.get("record_kind", "single") or review.get("multi_spec_origin") != previous.get("multi_spec_origin"):
+    if review.get("record_kind", "single") != previous.get("record_kind", "single") or review.get("multi_spec_origin") != previous.get("multi_spec_origin") or review.get("page_origin") != previous.get("page_origin") or review.get("source_kind") != previous.get("source_kind"):
         raise HTTPException(status_code=422, detail="不能更改审图记录的来源关系。")
     from .surface_catalog import synchronize_surface_review
     confirmed_surface_ids = {e.get("metadata", {}).get("requirement_id") for e in events or [] if e.get("event_type") == "technical_requirement_confirmed" and isinstance(e.get("metadata"), dict)}
@@ -2577,7 +2623,6 @@ def _save_review_persistence(
                       and previous_sources.get(v.get("requirement_id"), []) != (v.get("surface_mapping") or {}).get("source_requirement_ids", [])]
     if source_changes:
         events = [*(events or []), {"event_type": "surface_requirement_sources_linked", "source": "source_association", "metadata": {"changes": source_changes}}]
-    from copy import deepcopy
     from .diameter_linkage import apply_diameter_linkage, DIAMETERS
     direct = [e.get("target_field") for e in events or [] if e.get("event_type") == "parameter_value_updated" and e.get("target_field") in DIAMETERS]
     linkage = apply_diameter_linkage(review, direct[-1] if direct else None)
@@ -2598,6 +2643,12 @@ def _save_review_persistence(
         if len(name) > 512:
             raise HTTPException(status_code=422, detail={"code": "drawing_name_invalid", "message": "图纸名称最长512字符，请缩短后重试"})
         summary["drawing_name"] = name
+    if "material_code" in summary:
+        from .generation_readiness import normalize_material_code
+        try:
+            summary["material_code"] = normalize_material_code(summary["material_code"]) or ""
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail={"code": "material_code_invalid", "message": str(exc)}) from exc
     before_accuracy = deepcopy((review.get("spring_parameters") or {}).get("accuracy_grade"))
     if refresh_accuracy_inference(review, previous=previous) and not any(e.get("target_field") == "accuracy_grade" for e in events or []):
         events = [*(events or []), {"client_event_id": f"accuracy_{uuid.uuid4().hex}", "event_type": "accuracy_grade_inferred",
@@ -2813,6 +2864,8 @@ def _reuse_multi_spec_source(job_id, identity, progress_callback):
     stored = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id)
     if not stored or stored.get("record_kind") != "source":
         return None
+    if pdf_page_store.is_source(stored["review"]):
+        return {"pdf_pages_dispatched": True}
     _report_recognition_progress(progress_callback, "saving_result", 95)
     directory = _job_dir(job_id)
     write_json(directory / "review.json", stored["review"])
@@ -2890,6 +2943,9 @@ async def run_recognition_job_record(
     qwen_replay = load_replay(job, job_dir)
 
     drawing_path = _job_relative_input_path(job_dir, options.get("drawing_path"))
+    dispatched = await run_in_threadpool(pdf_page_store.dispatch, REVIEW_PERSISTENCE, job, drawing_path, API_RUN_ROOT, progress_callback or (lambda *_: None))
+    if dispatched is not None:
+        return dispatched
     candidate_path = _job_relative_input_path(job_dir, options.get("candidate_json_path"), required=False)
     ocr_path = _job_relative_input_path(job_dir, options.get("ocr_json_path"), required=False)
     opened_files = []
@@ -2931,6 +2987,7 @@ async def run_recognition_job_record(
             job_id=job_id,
             progress_callback=progress_callback,
             qwen_replay=qwen_replay,
+            page_origin=options.get("page_origin"),
         )
     finally:
         for upload in uploads:
@@ -3070,9 +3127,8 @@ def _make_preview_images(drawing_path: Path, page_dir: Path, warnings: list[str]
             warnings.append(f"PDF preview rendering failed: {exc}")
             return []
     if suffix in IMAGE_EXTENSIONS:
-        target = page_dir / f"source{suffix}"
-        shutil.copyfile(drawing_path, target)
-        return [str(target)]
+        from .page_images import bounded_image
+        return [bounded_image(drawing_path, page_dir / 'source.png')]
     warnings.append(f"No preview renderer for file type: {suffix}")
     return []
 
@@ -3224,6 +3280,10 @@ def _review_preview_url(job_id: str) -> str | None:
     page_dir = job_dir / "pages"
     if not page_dir.exists():
         return None
+    from .drawing_annotations import preview_manifest
+    manifest = preview_manifest(job_dir, lambda path: _artifact_url(job_id, path))
+    if manifest:
+        return manifest[0]["image_url"]
     supported_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
     candidates = sorted(
         (

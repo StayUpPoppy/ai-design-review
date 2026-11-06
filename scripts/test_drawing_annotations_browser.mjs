@@ -31,7 +31,7 @@ if (multi) {
     annotations: { schema_version: "original_annotations/v1", algorithm_version: "original_annotation_locator/v2", source_document_id: "demo", annotation_revision: 1, pages: [{ page: 1, width: 1200, height: 850, image_url: "/fixture/demo" }], warnings: [], text_obstacles: [],
       annotations: fields.map((field, i) => ({ field, annotation_id: field, label: field, number: i + 1, original_value: cases[0].review.spring_parameters[field]?.value, status: "located", reason: "", locations: [{ location_id: `${field}-demo`, source: "ocr", page: 1, anchor: { x: .18 + i % 4 * .18, y: .18 + Math.floor(i / 4) * .18 }, bubble: { x: .2 + i % 4 * .18, y: .16 + Math.floor(i / 4) * .18 } }] })) } }];
 }
-const displayFields = ["material", "accuracy_grade", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "solid_height", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"];
+const displayFields = ["material", "accuracy_grade", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"];
 if (!real) {
   const doc=fixtures[0].annotations;
   doc.pages.push({page:2,width:1200,height:850,image_url:"/fixture/demo/2"});
@@ -40,6 +40,10 @@ if (!real) {
     a.locations.push({location_id:field+"-page2",page:2,source:"manual",anchor:{x:.3,y:.4},bubble:{x:.45,y:field==="free_length"?.3:.55}});
   }
   doc.annotations.find(a=>a.field==="standard_no").locations[0].source="manual";
+  doc.annotations.find(a=>a.field==="solid_height").locations[0].source="manual";
+  fixtures[0].review.spring_parameters.solid_height = {
+    value: "", unit: "mm", source: ["human_edited"], value_kind: "input_height", need_human_review: true,
+  };
 }
 const frontend = path.resolve("frontend");
 if (v3) for (const fixture of fixtures) fixture.annotations.pages.forEach((p) => { p.image_url = `/fixture/${fixture.id}/${p.page}`; });
@@ -123,6 +127,7 @@ try {
       for(const [field,text] of pairs)assert.equal(text,String(displayFields.indexOf(field)+1));
       assert.ok(pairs.some(([f,n])=>f==="accuracy_grade" && n==="2"));
       assert.equal(await page.locator('.annotation-bubble[data-annotation-id="standard_no"]').count(),0);
+      assert.equal(await page.locator('.annotation-bubble[data-annotation-id="solid_height"]').count(),0);
       for(const [field,number] of displayFields.map((f,i)=>[f,String(i+1)])) {
         const bubbles=page.locator(`.annotation-bubble[data-annotation-id="${field}"]`);
         for(const b of await bubbles.all()) {
@@ -135,13 +140,25 @@ try {
     assert.deepEqual(await page.evaluate(()=>DrawingAnnotations.entry().document),originalAnnotations,"Legacy numbering stays untouched in the cached document");
     assert.equal(locationSaves,0);assert.equal(parameterSaves,baselineParameterSaves);assert.equal(backfills,0,"Renumbering does not request relocalization");
     if(!real){
+      const advanced = page.locator('#compareOverlay [data-compare-panel="parameters"] .advanced-parameters');
+      const firstAdvanced = advanced.locator('[data-kind="param"]').first();
+      assert.equal(await advanced.evaluate(el => el.open), false);
+      assert.equal(await firstAdvanced.getAttribute('data-field'), 'solid_height');
+      assert.equal(await firstAdvanced.locator('.parameter-annotation-number').count(), 0);
+      await page.evaluate(() => focusMissingStandardizationField('solid_height'));
+      await page.waitForFunction(() => document.activeElement?.closest('[data-kind="param"][data-field="solid_height"]'));
+      assert.equal(await advanced.evaluate(el => el.open), true);
+      assert.equal(await firstAdvanced.locator('[data-role="value"]').inputValue(), '');
+      assert.equal(parameterSaves, baselineParameterSaves);
+      assert.equal(locationSaves, 0);
+      await advanced.locator('summary').click();
       const pairs=await page.locator('#compareOverlay [data-compare-panel="parameters"] .parameter-annotation-number').evaluateAll(es=>es.map(e=>[e.dataset.annotationField,e.textContent.trim()]));
       assert.deepEqual(pairs,displayFields.map((f,i)=>[f,String(i+1)]));
       await page.locator('[data-annotation-page]').selectOption('2');
       await page.waitForFunction(()=>DrawingAnnotations.entry().page===2 && document.querySelector('#compareImage')?.complete);
       assert.equal(await page.locator('.annotation-bubble').count(),2);
       await verifyNumbers();
-      assert.deepEqual(await page.locator('.annotation-bubble text').allTextContents(),['7','11'],"A sparse page keeps parameter numbers instead of renumbering its bubbles");
+      assert.deepEqual(await page.locator('.annotation-bubble text').allTextContents(),['7','10'],"A sparse page keeps parameter numbers instead of renumbering its bubbles");
       await page.locator('[data-annotation-page]').selectOption('1');
       await page.waitForFunction(()=>DrawingAnnotations.entry().page===1 && document.querySelector('#compareImage')?.complete);
       assert.deepEqual(await page.evaluate(()=>DrawingAnnotations.entry().document),originalAnnotations);
@@ -181,7 +198,12 @@ try {
       })));
       const resetSelection = async () => {
         await page.mouse.move(0, 0);
-        await page.evaluate(() => { document.activeElement?.blur(); DrawingAnnotations.entry().selected = ''; DrawingAnnotations.renderLayer(); });
+        await page.evaluate(() => {
+          document.activeElement?.blur();
+          DrawingAnnotations.entry().selected = '';
+          refreshCompareViewer();
+          fitCompareImage();
+        });
       };
       await resetSelection();
       const currentGeometry = await geometry();
@@ -297,10 +319,27 @@ try {
     assert.ok(Math.abs(keyboardEnd.x-keyboardStart.x-5)<.01 && Math.abs(keyboardEnd.y-keyboardStart.y)<.01);
     assert.equal(locationSaves,savedCount+1);assert.equal(parameterSaves,baselineParameterSaves);
     await verifyNumbers();
+    if (!real) {
+      await page.evaluate(() => focusMissingStandardizationField('solid_height'));
+      const row = page.locator('#compareOverlay .advanced-parameters [data-kind="param"][data-field="solid_height"]');
+      const height = row.locator('[data-role="value"]');
+      await height.fill('7.25');
+      await height.press('Tab');
+      await row.locator('[data-role="confirm"]').click();
+      await page.evaluate(() => flushReviewPersistence({throwOnError:true}));
+      assert.equal(Number(persistedReview.spring_parameters.solid_height.value), 7.25);
+      assert.equal(persistedReview.spring_parameters.solid_height.need_human_review, false);
+      assert.deepEqual(saved.annotations.find(a => a.field === 'solid_height'), originalAnnotations.annotations.find(a => a.field === 'solid_height'));
+      await page.reload();
+      await page.waitForFunction((id) => state.recentReviews.some((r) => r.job_id === id), fixture.id);
+      await page.evaluate(async (id) => { await openPersistedReview(id); focusMissingStandardizationField('solid_height'); }, fixture.id);
+      assert.equal(await height.inputValue(), '7.25');
+      await verifyNumbers();
+    }
     assert.deepEqual(errors, []);
     await page.close();
   }
-  console.log(`drawing annotation browser tests passed (${fixtures.length} ${real ? "local drawings" : "synthetic fixture"}): 14 display numbers, hidden standard, legacy cache, sparse page numbers, rotation/keyboard, backfill/retry, drag, focus and saved manual positions`);
+  console.log(`drawing annotation browser tests passed (${fixtures.length} ${real ? "local drawings" : "synthetic fixture"}): 13 display numbers, hidden Hb and standard, advanced Hb focus/save, legacy cache, sparse pages, rotation/keyboard, backfill/retry and manual positions`);
 } finally {
   await browser?.close();
   await new Promise((resolve) => server.close(resolve));

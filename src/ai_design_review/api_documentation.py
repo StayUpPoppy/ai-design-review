@@ -77,7 +77,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/api/material-catalog"): _operation("审图管理", "获取公司压缩弹簧材料目录", "按当前云平台身份返回15种材料的稳定ID、完整名称、标准牌号、明确别名和公司表内固定剪切模量及目录版本。只读，不调用模型、不保存审图；新材料选择限定目录，历史人工原值兼容保留，确认后的完整名称用于参数包及SW材料字段。"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): _operation("审图管理", "预览并核对遗漏技术要求", "按订单归属和当前修订读取原始识别列表，返回未保留的独立条目；不调用识别模型、不保存、不覆盖人工内容。客户端选择补回后使用既有保存接口，仍须逐条确认。"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): _operation("审图管理", "翻译或恢复技术要求译文", "校验订单归属、稳定ID及已保存文本快照。有效非空译文直接填入正文，不检查外文残留、中文充分性或工程内容差异，不生成差异警告；保留网络、空结果、格式、ID及无法还原占位符异常。mode=translate调用现有Qwen；mode=revalidate仅恢复实际保存的候选，不调用模型。translation_output_snapshot防止成功结果重复送译。返回自动恢复或待用户选择的候选；不保存、不代替人工确认，客户端通过现有串行保存持久化。"),
-    ("GET", "/api/reviews/{job_id}/annotations"): _operation("审图管理", "获取原图关键参数气泡标注", "返回原图页面清单、稳定参数编号、定位依据和独立标注版本。历史订单按已有原图补建定位，不重新调用Qwen或RAG。"),
+    ("GET", "/api/reviews/{job_id}/annotations"): _operation("审图管理", "获取原图关键参数气泡标注", "返回原图页面清单、稳定参数编号、定位依据和独立标注版本。普通读取仅返回保存标注，历史订单需补建时登记去重的后台本地核验任务，不在读取链路执行OCR，不重新调用Qwen或RAG。"),
     ("PATCH", "/api/reviews/{job_id}/annotations"): _operation("审图管理", "独立保存原图标注位置", "仅调整原图定位点和气泡位置，不改变参数、审图修订号或SW生图状态。标注版本冲突返回409并附带服务器位置。"),
     ("POST", "/api/reviews/{job_id}/annotations/relocalize"): _operation("审图管理", "重新补定位未定位的原图参数", "使用本地放大/旋转OCR重试缺项及失败区域，保留已可靠定位及人工位置。原图或独立标注版本冲突返回409，不修改工程参数。"),
     ("GET", "/"): _operation("系统状态", "查看 API 服务入口", "返回服务名称、健康检查地址和增强接口文档地址，不执行任何业务操作。"),
@@ -91,7 +91,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/reviews/{job_id}/retry"): _operation("图纸识别", "重试失败的识别任务", "仅允许重试 failed 状态的识别任务；成功后任务重新进入队列并返回202。布局兼容错误存在有效完整缓存时由worker本地恢复，校验原文件及响应指纹，不新增Qwen调用；缓存不可用沿用显式重试流程。任务options中的恢复信息不对外返回。"),
     ("GET", "/api/reviews/{job_id}/candidates"): _operation("图纸识别", "获取识别候选参数", "返回 OCR、视觉模型和几何识别产生的候选数据，用于追溯参数来源和人工复核。"),
     ("GET", "/api/reviews"): _operation("审图管理", "查询审图记录列表", "按当前云平台用户隔离并返回最近的审图及识别任务；limit 范围为 1 至 100。"),
-    ("GET", "/api/reviews/{job_id}"): _operation("审图管理", "获取完整审图结果", "返回指定任务当前修订的完整审图 JSON。识别尚未完成时返回 409，其他用户的数据按不存在处理。"),
+    ("GET", "/api/reviews/{job_id}"): _operation("审图管理", "获取完整审图结果", "返回指定任务当前修订的完整审图 JSON。metadata_only=true只返回审图/标注修订、原图标识、预览版本和后台核验状态；普通读取不执行OCR、图形解析或工程恢复，必要时登记后台去重的本地核验任务。识别尚未完成时返回 409，其他用户的数据按不存在处理。"),
     ("PATCH", "/api/reviews/{job_id}"): _operation("审图管理", "保存人工修改的审图结果", "保存完整 review 对象并增加审图修订号。expected_revision 用于乐观锁，版本不一致时返回 409，避免覆盖其他修改。"),
     ("DELETE", "/api/reviews/{job_id}"): _operation("审图管理", "删除审图任务", "删除当前用户的审图记录和相关文件；识别进行中时先标记取消，由 Worker 完成清理。该操作不可通过接口撤销。"),
     ("GET", "/api/reviews/{job_id}/changes"): _operation("审图管理", "查询审图修改历史", "按时间返回人工确认、标准化和 AI 对话产生的审计事件，最多返回 500 条。"),
@@ -105,7 +105,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/apply"): _operation("标准化与合理性", "应用完整参数修改方案", "按方案版本和审图修订执行乐观锁校验，重新求解全部关联参数并原子写入。ready 或 warning 方案可以应用；过期、缺信息或存在冲突时返回409。"),
     ("POST", "/api/reviews/{job_id}/parameter-change-proposals/{proposal_id}/discard"): _operation("标准化与合理性", "放弃参数修改方案", "关闭尚未应用的方案草稿并保存审计事件，不修改正式参数；已应用或版本已变化时返回409。"),
     ("GET", "/api/reviews/{job_id}/generation-readiness"): _operation("生图准备", "检查审图是否可以生图", "由服务端根据当前审图修订重新计算缺失字段、待确认字段、警告和参数矛盾，是前端启用“生成图纸”的唯一可信依据。标准化为可选功能；未标准化、标准未确认或标准化结果过期只产生警告，不阻止按当前人工确认参数生图。"),
-    ("GET", "/api/reviews/{job_id}/generation-package"): _operation("生图准备", "获取 SolidWorks 生图参数包", "仅 ready 或 ready_with_warnings 状态返回冻结的 spring_generation_parameters/v2 参数快照。总圈数、有效圈数为有限正数，支持小数且不取整或截断；有效圈数不得大于总圈数。source.drawing_name冻结已保存图纸名称，SW models[].modelName使用该快照，空值回退弹簧类型；名称编辑最多512字符，允许清空，仅去首尾空白。历史冻结任务及原参数重试保持原名称和圈数。spring_parameters 包含线径、中径、自由长度、总圈数、有效圈数、旋向、两端磨削和端圈压并八个必填字段，以及可选的已确认材料字段 material；solidworks_preview.modelParameters 展示实际发送给 SolidWorks 的建模字段映射（不含尚未创建的 TaskId），其中有效圈数n为已确认有效圈数，但是否并紧为0时直接省略该建模键；内部有效圈数及确认要求保留；技术要求在不并紧时不自动生成圈数行，并紧时自动使用“有效圈数”名称。原图或人工填写的圈数要求按现有确认和去重规则保留。是否磨平和其后的是否并紧均为整数 1 或 0；是否并紧的 1 表示两端并紧，0 表示两端不并紧。solidworks_preview.modelParametersTolerance为可选对象，紧随modelParameters，按外径、自由高度、中径输出各参数自身已确认有效的对称公差幅值（mm数字，±1.5传1.5，0有效，不截断小公差）；非对称、单边、待确认、非法、冲突、失效或单位不支持时独立省略，全部缺失时省略对象。solidworks_preview.titleBlockProperties 按材料、重量、客户图号、垂直度A、表面粗糙度顺序展示标题栏属性；客户图号来自当前审图drawing_summary.drawing_no创建的source.drawing_no快照，以字符串输出，仅去首尾空白，保留前导零、字母和连字符，缺失时独立省略且不增加确认或拦截；材料为已确认纯牌号，单件重量为数字（kg、最多八位小数），表面粗糙度Ra为数字（μm）；垂直度A读取高级参数perpendicularity的已确认有效值，统一mm有限非负数字，0有效，图号缺失不影响其输出；无值、待确认、冲突、非法或失效时省略。新任务冻结公差、垂直度和客户图号，历史冻结请求及重试不补入新键；对应独立粗糙度技术要求句移除，其它部位和附加条件保留，缺失键独立省略，都缺失时为空对象；技术要求不输出自动材料行或独立纯材料条目，含工艺或检验条件的材料复合要求保留，材料仍在标题栏。技术要求前三项依次为旋向左/右、总圈数和有效圈数合并行、已确认有效的端部状态；小数圈数完整保留，不并紧时省略自动有效圈数。仅并紧且磨平时输出“两端并紧并磨平，磨面角≥270°。”；其他端部组合沿用原文字且不自动追加角度。缺项跳过、连续编号，其余要求相对顺序及F/P载荷描述不变；仅同值、同范围且无附加条件的独立重复句合并，不改写审图编辑正文。SolidWorks 根据中径和线径计算外径、内径。材料缺失或待确认时仍可生成，但参数包省略 material 并在就绪状态中给出警告。未执行标准化时 standard_context 保持空值，参数包仍可用于生图；其他未就绪状态返回 409 和具体原因。"),
+    ("GET", "/api/reviews/{job_id}/generation-package"): _operation("生图准备", "获取 SolidWorks 生图参数包", "仅 ready 或 ready_with_warnings 状态返回冻结的 spring_generation_parameters/v2 参数快照。物料编码为可选drawing_summary.material_code人工字符串，最多256字符；新参数包冻结source.material_code并输出solidworks_preview.materialCode，空值为null，不从材料、图号或文件名推测。总圈数、有效圈数为有限正数，支持小数且不取整或截断；有效圈数不得大于总圈数。source.drawing_name冻结已保存图纸名称，SW models[].modelName使用该快照，空值回退弹簧类型；名称编辑最多512字符，允许清空，仅去首尾空白。历史冻结任务及原参数重试保持原名称和圈数。spring_parameters 包含线径、中径、自由长度、总圈数、有效圈数、旋向、两端磨削和端圈压并八个必填字段，以及可选的已确认材料字段 material；solidworks_preview.modelParameters 展示实际发送给 SolidWorks 的建模字段映射（不含尚未创建的 TaskId），其中有效圈数n为已确认有效圈数，但是否并紧为0时直接省略该建模键；内部有效圈数及确认要求保留；技术要求在不并紧时不自动生成圈数行，并紧时自动使用“有效圈数”名称。原图或人工填写的圈数要求按现有确认和去重规则保留。是否磨平和其后的是否并紧均为整数 1 或 0；是否并紧的 1 表示两端并紧，0 表示两端不并紧。solidworks_preview.modelParametersTolerance为可选对象，紧随modelParameters，按外径、自由高度、中径输出各参数自身已确认有效的对称公差幅值（mm数字，±1.5传1.5，0有效，不截断小公差）；非对称、单边、待确认、非法、冲突、失效或单位不支持时独立省略，全部缺失时省略对象。solidworks_preview.titleBlockProperties 按材料、重量、客户图号、垂直度A、表面粗糙度顺序展示标题栏属性；客户图号来自当前审图drawing_summary.drawing_no创建的source.drawing_no快照，以字符串输出，仅去首尾空白，保留前导零、字母和连字符，缺失时独立省略且不增加确认或拦截；材料为已确认纯牌号，单件重量为数字（kg、最多八位小数），表面粗糙度Ra为数字（μm）；垂直度A读取高级参数perpendicularity的已确认有效值，统一mm有限非负数字，0有效，图号缺失不影响其输出；无值、待确认、冲突、非法或失效时省略。新任务冻结公差、垂直度和客户图号，历史冻结请求及重试不补入新键；对应独立粗糙度技术要求句移除，其它部位和附加条件保留，缺失键独立省略，都缺失时为空对象；技术要求不输出自动材料行或独立纯材料条目，含工艺或检验条件的材料复合要求保留，材料仍在标题栏。技术要求前三项依次为旋向左/右、总圈数和有效圈数合并行、已确认有效的端部状态；小数圈数完整保留，不并紧时省略自动有效圈数。仅并紧且磨平时输出“两端并紧并磨平，磨面角≥270°。”；其他端部组合沿用原文字且不自动追加角度。缺项跳过、连续编号，其余要求相对顺序及F/P载荷描述不变；仅同值、同范围且无附加条件的独立重复句合并，不改写审图编辑正文。SolidWorks 根据中径和线径计算外径、内径。材料缺失或待确认时仍可生成，但参数包省略 material 并在就绪状态中给出警告。未执行标准化时 standard_context 保持空值，参数包仍可用于生图；其他未就绪状态返回 409 和具体原因。"),
     ("POST", "/api/reviews/{job_id}/generation-template-match"): _operation("生图准备", "匹配 SolidWorks 生图模板", "根据图纸类型、必填字段、匹配规则和优先级返回模板候选；可指定 template_code，也可由后端自动选择。"),
     ("GET", "/api/generation-templates"): _operation("模板查询", "查询启用的生图模板", "返回当前启用的模板及匹配规则、参数映射和 Worker 能力要求；不返回已禁用版本。"),
     ("GET", "/api/generation-templates/{template_code}/versions"): _operation("模板查询", "查询模板的启用版本", "返回指定 template_code 当前所有启用版本；模板代码可包含斜杠。"),
@@ -206,6 +206,7 @@ class ReviewMaterialValue(ReviewParameterValue):
 
 
 class DrawingSummaryDocument(BaseModel):
+    material_code: str | None = Field(default=None, max_length=256, description="可选人工物料编码，仅去首尾空白，不从其他字段推测；新参数包冻结source.material_code，SW materialCode空值为null。")
     model_config = ConfigDict(extra="allow")
 
     drawing_name: str | None = Field(default=None, max_length=512, description="可编辑的图纸名称；仅去首尾空白，允许清空。保存后同步历史标题，新参数包冻结至source.drawing_name及SW modelName。")
@@ -407,6 +408,9 @@ class ReviewDocument(BaseModel):
         }]},
     )
 
+    loading_metadata: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None, description="只读缓存版本：job_id、review_revision、annotation_revision、source_document_id、preview_version及verification_state；metadata_only=true直接返回这些字段，不执行OCR或工程恢复。")
+    preview_pages: list[dict[str, Any]] | None = Field(default=None, exclude_if=lambda value: value is None, description="可选预览页：width/height为原图逻辑尺寸，preview_width/preview_height为受控像素尺寸，scale_x/y及image_version用于坐标映射。")
+    local_verification: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None, description="服务器本地核验版本及完成时间；后台CAS保存，不进入SW，不接受客户端改写。")
     record_kind: Literal["single", "source", "variant"] = Field(default="single", description="普通记录、只读来源或独立规格子记录；旧记录默认single。")
     multi_spec: dict[str, Any] | None = Field(default=None, description="来源保存的完整共用信息及稳定ID候选集合。layout统一为rows/blocks，输入columns兼容为blocks；可选layout_normalization记录original/normalized/version，原始响应不改写。仅来源包含，不能作为弹簧参数编辑或生图。")
     multi_spec_origin: dict[str, Any] | None = Field(default=None, description="规格子记录的不可变来源ID、候选ID、序号、原图/公共区域和字段来源、布局、规格区域集合、问题及计算参考；旧记录兼容读取，不进入SW。")
@@ -522,7 +526,11 @@ class VariantCreateRequest(BaseModel):
 
 
 class VariantsResponse(BaseModel):
-    """只读规格核对投影，不触发模型识别。"""
+    """只读规格或PDF页面核对投影，不触发模型识别。"""
+    model_config = ConfigDict(extra="allow")
+    source_kind: Literal["pdf_pages"] | None = Field(default=None, description="多页PDF来源；缺少时为原多规格来源。")
+    creation_mode: str | None = Field(default=None, description="新多页来源auto，任务独立按页运行。")
+    page_results: list[dict[str, Any]] | None = Field(default=None, description="按原页顺序保存各页独立识别状态、轮次和已创建记录，支持逐页未查看提示。")
     source_id: str = Field(description="来源记录ID。")
     source_revision: int = Field(description="来源当前修订。")
     drawing_summary: dict[str, Any] = Field(description="整图图名、图号，不从规格代号推断图号。")

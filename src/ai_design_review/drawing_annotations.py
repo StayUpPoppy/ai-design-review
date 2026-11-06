@@ -45,8 +45,12 @@ def page_sort_key(path: Path) -> tuple[int, str]:
 def preview_manifest(job_dir: Path, url_for: Callable[[Path], str]) -> list[dict[str, Any]]:
     from PIL import Image, ImageOps
 
+    from .page_images import read_json
+    metadata = read_json(job_dir / 'pages' / '.page_metadata.json')
+    active = metadata.get('active_files')
     pages = []
     for path in sorted((job_dir / "pages").glob("*"), key=page_sort_key):
+        if active and path.name not in active: continue
         if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}:
             continue
         try:
@@ -54,8 +58,12 @@ def preview_manifest(job_dir: Path, url_for: Callable[[Path], str]) -> list[dict
                 width, height = image.size
                 if image.getexif().get(274) in (5, 6, 7, 8):
                     width, height = height, width
+            info = metadata.get(path.name, {})
             pages.append({"page": page_sort_key(path)[0], "image_url": url_for(path.relative_to(job_dir)),
-                          "width": width, "height": height})
+                          "width": info.get('width', width), "height": info.get('height', height),
+                          "preview_width": width, "preview_height": height,
+                          "image_version": info.get('image_version', 'legacy'),
+                          "scale_x": info.get('scale_x', 1), "scale_y": info.get('scale_y', 1)})
         except (OSError, ValueError):
             continue
     return pages
@@ -666,7 +674,10 @@ def annotation_source(job_dir: Path, url_for: Callable[[Path], str]) -> tuple[di
     from .multi_spec import shared_ocr_dir
     source_id = shared_ocr_dir(job_dir).name
     digest.update(json.dumps([(p["page"], p["width"], p["height"], p["image_url"].replace(f"/reviews/{job_dir.name}/", f"/reviews/{source_id}/")) for p in pages]).encode())
-    document = {"schema_version": "original_annotations/v1", "algorithm_version": ALGORITHM_VERSION, "source_document_id": digest.hexdigest(),
+    from .page_images import read_json, fingerprint
+    transform = read_json(job_dir / 'preview_transform.json')
+    identity = transform.get('source_document_id') if source and transform.get('source_sha256') == fingerprint(source) else None
+    document = {"schema_version": "original_annotations/v1", "algorithm_version": ALGORITHM_VERSION, "source_document_id": identity or digest.hexdigest(),
                 "annotation_revision": 1, "pages": pages, "annotations": [], "warnings": []}
     return document, source
 
