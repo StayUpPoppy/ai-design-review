@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from .calculation_state import uses_unadopted_diameter_default
 
 
 FORMULA_CALCULATION_SOURCE = "formula_calculation"
@@ -145,6 +146,8 @@ def _values(spring_parameters: dict[str, Any]) -> dict[str, float | None]:
 
 
 def _param_value(parameters: dict[str, Any], field: str) -> Any:
+    if uses_unadopted_diameter_default(parameters, field):
+        return None
     item = parameters.get(field)
     return item.get("value") if isinstance(item, dict) else item
 

@@ -16,6 +16,15 @@
   const sources = (item) => (Array.isArray(item?.source) ? item.source : [item?.source]).filter(Boolean).map((v) => String(v).toLowerCase());
   const safe = (calculate) => number(calculate());
   const humanOverride = (item) => Boolean(item?.human_modified) || sources(item).some((s) => s.startsWith("human") && s !== "human_confirmed" || ["manual", "manual_input", "standardization_chat", "ai_chat"].includes(s));
+  const unadoptedDiameterDefault = (item, field) => ["wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter"].includes(field)
+    && sources(item).includes("solidworks_protocol_default") && item.need_human_review !== false && !humanOverride(item);
+  function usesUnadoptedDiameterDefault(params, field, path = []) {
+    if (path.includes(field)) return false;
+    const item = params[field];
+    return unadoptedDiameterDefault(item, field) || Boolean(item && !humanOverride(item)
+      && sources(item).some(s => ["formula_calculation", "derived"].includes(s))
+      && (item.source_fields || []).some(parent => usesUnadoptedDiameterDefault(params, parent, [...path, field])));
+  }
   const sameInputs = (old, current) => old && Object.entries(current).every(([key, value]) => ["model_version", "model_id"].includes(key) || old[key] === value);
   function coilUnitSupported(field, unit) {
     const text = String(unit || "turns").normalize("NFKC").replace(/\s+/g, "").toLowerCase(), common = ["turns", "turn", "coil", "coils", "圈"];
@@ -52,6 +61,7 @@
     if (path.includes(field)) return false;
     const item = params[field];
     if (!item || typeof item !== "object") return true;
+    if (unadoptedDiameterDefault(item, field)) return false;
     if (field === "active_coils" && sources(item).includes("solidworks_protocol_default") && item.need_human_review !== false) return false;
     if (item.derived_value_stale || item.formula_recommendation_stale && !humanOverride(item)) return false;
     return !sources(item).some((s) => ["formula_calculation", "derived"].includes(s)) || humanOverride(item)
@@ -547,5 +557,5 @@
     delete item.formula_calculation_reason;
     return true;
   }
-  globalThis.CompressionDesignChecks = { calculate, calculatePitch, calculateSupportCoils, applySupportCoils, prepareSupportCoils, supportOrigin, calculateReferenceHeight, calculateNominalHeight, activeCalculation, solidHeightKind, applyReferenceHeight, applyNominalHeight, applyCandidate, applyPitch, materialEntry, materialDisplayValue };
+  globalThis.CompressionDesignChecks = { calculate, calculatePitch, calculateSupportCoils, applySupportCoils, prepareSupportCoils, supportOrigin, calculateReferenceHeight, calculateNominalHeight, activeCalculation, solidHeightKind, applyReferenceHeight, applyNominalHeight, applyCandidate, applyPitch, materialEntry, materialDisplayValue, usesUnadoptedDiameterDefault };
 })();

@@ -41,6 +41,19 @@ await page.route('**/api/**', async (route) => {
         const input = request.postDataJSON();
         if (input.expected_revision !== model.revision) return route.fulfill({ status: 409, json: { detail: '修订冲突' } });
         model.review = input.review; model.revision++;
+        const choice = input.events.find(event => event.event_type === 'diameter_role_selected');
+        if (choice) {
+          const candidates = model.review.diameter_role_candidates;
+          const mark = candidates.find(item => item.candidate_id === choice.metadata.candidate_id);
+          assert.equal(choice.metadata.field, 'inner_diameter');
+          mark.selected_field = choice.metadata.field;
+          const parameters = Object.fromEntries(Object.entries({ inner_diameter: 111, mean_diameter: 143, outer_diameter: 175 })
+            .map(([field, value]) => [field, { value, unit: 'mm', need_human_review: true, source: ['fixture'],
+              tolerance_upper: field === 'inner_diameter' ? 2 : null, tolerance_lower: field === 'inner_diameter' ? 0 : null }]));
+          Object.assign(model.review.spring_parameters, parameters);
+          return route.fulfill({ json: { review_revision: model.revision, events: input.events,
+            diameter_role_update: { candidates, parameters, linkage: null, manual_confirmations: {} } } });
+        }
         return route.fulfill({ json: { review_revision: model.revision, events: input.events } });
       }
       return route.fulfill({ json: { ...model.review, job_id: id, review_revision: model.revision } });
@@ -124,6 +137,25 @@ try {
   await page.setViewportSize({ width: 390, height: 844 }); await drawing().scrollIntoViewIfNeeded();
   assert.equal(await drawing().isVisible(), true); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: path.join(output, 'mobile.png') });
+  // An unassigned original mark stays out of the three fields until its choice is saved.
+  const pending = models.get('b');
+  pending.review.diameter_role_candidates = [{ candidate_id: 'mark-111', value: 111, unit: 'mm',
+    evidence: 'Φ111 +2/0', tolerance_upper: 2, tolerance_lower: 0, reason: '尺寸线两端待核对。' }];
+  for (const field of ['inner_diameter', 'mean_diameter', 'outer_diameter']) {
+    pending.review.spring_parameters[field] = { value: null, need_human_review: true, unit: 'mm' };
+  }
+  pending.revision++;
+  await open('b');
+  await root.getByText('直径类型待核对 · 111 mm · 公差 2/0').waitFor();
+  assert.equal(await input('inner_diameter').inputValue(), '');
+  failSave = true;
+  await root.locator('[data-action="select-diameter-role"][data-field="inner_diameter"]:visible').click();
+  await root.getByText('模拟保存失败', { exact: true }).waitFor();
+  failSave = false;
+  await root.locator('[data-action="retry-diameter-role"]:visible').click();
+  await saved(); await values([175, 111, 143]);
+  assert.equal(await root.locator('[data-action="select-diameter-role"]').count(), 0);
+  await open('a');
   // A late PATCH receipt must not advance the revision of a different order.
   holdSave = true; await drawing().fill('LATE-A'); await drawing().press('Tab');
   while (!releaseSave) await new Promise((resolve) => setTimeout(resolve, 20));

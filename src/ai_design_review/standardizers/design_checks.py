@@ -12,7 +12,7 @@ from .stiffness import spring_rate_from_geometry
 from .coil_counts import apply_company_simple_active_coils
 from .coil_counts import derive_active_coils
 from .compression import calculate_compression_solid_height
-from .calculation_state import solid_height_kind, preserve_candidate
+from .calculation_state import solid_height_kind, preserve_candidate, unadopted_protocol_diameter
 from .support_coils import prepare_support, reconcile_support, asymmetric_support
 from ..coil_units import coil_unit_supported
 
@@ -68,6 +68,8 @@ def _fresh(parameters: dict[str, Any], field: str, path: tuple[str, ...] = ()) -
     item = parameters.get(field)
     if not isinstance(item, dict):
         return True
+    if unadopted_protocol_diameter(item, field):
+        return False
     if field == "active_coils" and "solidworks_protocol_default" in _sources(item) and item.get("need_human_review") is not False:
         return False
     if item.get("derived_value_stale") or item.get("formula_recommendation_stale") and not _human_override(item):

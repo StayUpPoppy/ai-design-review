@@ -10,7 +10,7 @@ from ..end_conditions import normalize_end_grinding
 from .coil_counts import COMPANY_ACTIVE_COIL_RULE, derive_active_coils
 from .diameters import apply_formula_compression_diameter_completion
 from .stiffness import apply_formula_compression_spring_rate
-from .calculation_state import LENGTH_UNITS, number, solid_height_kind, preserve_candidate, parameter_current
+from .calculation_state import LENGTH_UNITS, number, solid_height_kind, preserve_candidate, parameter_current, uses_unadopted_diameter_default
 from ..coil_units import coil_unit_supported
 
 
@@ -785,6 +785,8 @@ def _result(
 
 
 def _param_value(mapping: dict[str, Any], field: str) -> Any:
+    if uses_unadopted_diameter_default(mapping, field):
+        return None
     value = mapping.get(field)
     if isinstance(value, dict):
         return value.get("value")

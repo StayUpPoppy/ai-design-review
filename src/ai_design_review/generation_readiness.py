@@ -66,6 +66,10 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item, dict) and item.get("severity") == "blocked"
     ]
     blocking_reasonableness.extend(validate_generation_parameters(parameters))
+    from .diameter_evidence import REASON, has_pending_roles
+    unresolved_diameter = has_pending_roles(review)
+    if unresolved_diameter:
+        blocking_reasonableness.append(_field_issue("mean_diameter", REASON))
     missing: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
@@ -90,7 +94,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
 
     if blocking_reasonableness:
         status = "blocked"
-        summary = reasonableness.get("summary") or "存在无法直接采用的参数矛盾。"
+        summary = REASON if unresolved_diameter else reasonableness.get("summary") or "存在无法直接采用的参数矛盾。"
     elif missing:
         status = "needs_input"
         summary = f"还缺少 {len(missing)} 项生成必填信息。"

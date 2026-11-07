@@ -51,9 +51,10 @@ def limit(kind, grade, context, nominal=None):
 
 
 def context_from_parameters(parameters):
+    from .calculation_state import parameter_current
     def value(field):
         p = parameters.get(field) or {}
-        if not isinstance(p, dict) or p.get("derived_value_stale"):
+        if not isinstance(p, dict) or p.get("derived_value_stale") or not parameter_current(parameters, field):
             return None
         v = number(p.get("value"))
         unit = str(p.get("unit") or ("turns" if field == "active_coils" else "N/mm" if field == "spring_rate" else "mm")).lower()

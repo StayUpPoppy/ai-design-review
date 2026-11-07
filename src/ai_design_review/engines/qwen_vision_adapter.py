@@ -241,7 +241,8 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
    - 表面粗糙度符号、加工符号或小三角旁的数值（例如 Ra 12.5、▽ 12.5）绝不能填入 outer_diameter、inner_diameter、mean_diameter、free_length、body_length、wire_diameter 或 load_points。识别到明确 Ra 数值时，必须在 parameters.surface_roughness_ra 中输出数值，并在 evidence 中保留符号或文字；明确知道作用位置时增加 surface_location（例如“两端面”），不明确时不要猜。
    - 粗糙度 evidence 只填写可见原图的简短原文或符号，不写分析过程、推测、默认参考或内部JSON字段。禁止根据磨平、端部形式、加工习惯推测Ra值；“▲：加工基准面”是基准说明，不能作为粗糙度标注。缺少明确可见标注时surface_roughness_ra返回空值，不能补造Ra数值、符号或位置；notes中出现的讨论、举例或推荐值不代表原图标注。
    - 粗糙度每处标注分别写入该参数的 occurrences 数组：value、page（从1开始）、position（仅数字框，x/y/width/height为0至1归一化坐标，coordinate_type="normalized"，origin="top_left"）、evidence、surface_location。数字框或页码不能确定时返回null，绝不补造坐标；同值的两端标注也分别输出。
-   - 对圆柱压缩弹簧：outer_diameter 必须来自直径尺寸线、直径符号或紧邻的一侧公差；free_length 必须来自两端之间的轴向总长度尺寸线；H1/H2 只属于 load_points 的试验高度。没有足够定位依据时省略字段并标记 need_human_review=true。
+   - 对圆柱压缩弹簧：沿直径尺寸线两端及界线核对内缘、钢丝中心、外缘，分别区分 inner_diameter、mean_diameter、outer_diameter。Φ、竖排和公差只能用于定位，不能判定外径。直径角色不清时仍保留原标注、数字框、页码、上下偏差及原文，标记 need_human_review=true；不要把同一标注填入多个字段。free_length 必须来自两端之间的轴向总长度尺寸线；H1/H2 只属于 load_points 的试验高度。
+   - 简化圈线没有剖面圆时也要核对尺寸界线；落在钢丝中心虚线上的直径属于中径。直径参数仅填写原图直接标注，evidence保留可见文字；公式推导和分析放在notes，不把自行计算的三径填作原图尺寸，不把轴向长度填入直径。
 4. 提取动态工艺要求：surface、hardness、heat_treatment、salt_spray、environmental、lifetime、process、other。表面处理、硬度、热处理、盐雾等放进 technical_requirements；表面粗糙度只放进 parameters.surface_roughness_ra，不要重复输出为技术要求。
    - 按原图逐条、逐页阅读顺序完整提取，不概括、不按类型合并；同为 process 或 other 的不同条目必须分别输出。original_number 保存原图序号（可重复，无编号时为 null），source_order 保存阅读顺序，page 保存所在页。content 仅为正文，不加序号或“技术要求”标题；original_content 完整保留原文。
    - 只有材料、圈数、旋向、尺寸或载荷数值的条目放入 parameters/load_points，不重复作为技术要求；同时包含制造、检验或工艺说明的混合条目必须保留其说明，不得整条丢弃。

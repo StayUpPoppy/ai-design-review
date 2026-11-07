@@ -10,6 +10,20 @@
 
 ## 数据和兼容
 
+新上传或主动重新识别的圆柱压缩弹簧，优先按原图的内径、中径、外径文字或已核实规格列归类。只有直径符号或数字时，程序检查尺寸线两端和界线。钢丝剖面可用于区分三径，普通视图中相对的多圈外轮廓也可用于核实外径。局部 OCR 可恢复竖排数字和分别印出的上下偏差。缺失偏差留空，同一标注的公差证据冲突时保留待核对。
+
+同一原图标注的重复候选合并。已核实的粗糙度只排除指向同一标注的直径候选。证据不足时，在参数区的“直径类型待核对”卡片中选择对应类型，保存后由公式补齐缺少的直径，再核对并确认。公差留在原图标注所属字段，核实位置用于该字段的气泡。
+
+`diameter-role/v3`补充无剖面圆的简化画法：在同页、同视图和同规格内，核实两侧重复圆弧、钢丝中心引导线及尺寸线两端。钢丝中心、内缘和外缘分别对应中径、内径和外径；仅一根虚线或数值差不能单独证明角色。嵌套尺寸分别关联自身文字及最近的尺寸线。重复圆弧半径也用于排除圈线交叉形成的伪剖面圆，真实剖面与圆弧证据冲突时继续待核对。原图毫米值只取文字，不按像素比例换算。
+
+原图标注与模型推导解释分开保存。模型说明同时提及线径或“推算”时，不再整条删除原图直径；模型纯推导记录保存在`dimension_evidence`及可选的`diameter_role_evidence.model_derived_candidates`，不进入三径融合。可靠的轴向端面尺寸退出直径候选，保留长度依据。实际核验只接受本地OCR执行结果或PDF原文，不把模型自带的文字框当独立证据。
+
+缺失中径不再补协议默认23；尚未人工采用的默认直径及其派生值不参与三径建议、刚度、重量或精度计算。已确认或实际人工填写的值仍可使用。新规则只在新上传、主动重新识别时归类原图；普通打开不修改已有直径或人工位置。
+
+离线样例基准：2426AM-95为线径2、中径28、内径26、外径30；1624CA-38为线径6、中径48、内径42、外径54，70只作自由长度；3624CA-38为线径7、原图中径47及内径40、派生外径54。原图中径使用6号气泡，内径使用5号，派生尺寸不补造原图锚点。
+
+待核对记录使用可选的 `diameter_role_candidates`，选定后以 `diameter_role_selected` 记录审计。未归类的值不进入参数融合，存在未处理标注时暂停生图。历史订单继续按原方式人工编辑。
+
 - `drawing_summary.drawing_no` 仍为可选字符串；空值表示未填写。新参数包使用当前已保存图号生成 `source.drawing_no`，新SW请求将非空字符串写入 `titleBlockProperties.客户图号`。历史任务、冻结请求及原参数重试保持原图号。
 - 审图JSON可选 `diameter_linkage`：`version: compression-diameters/v1`、`driver_field`（三种直径之一）、`inputs`（主控直径/线径的实际值及单位）、`status: calculated/invalid`、`reason` 和首次联动前的 `original_parameters`。仅供内部状态恢复，不进入SW。
 - 关联项用 `diameter_linkage_managed` 和既有公式元数据记录依赖，避免旧补全逻辑覆盖新关系；错误原因使用 `diameter_linkage_error`。原图证据和修改前值保留在原记录、联动快照及审计中。
@@ -24,6 +38,9 @@
 node scripts/test_diameter_linkage_ui.mjs
 .venv/Scripts/python.exe scripts/test_diameter_drawing_no_api.py
 node scripts/test_diameter_drawing_no_browser.mjs
+.venv/Scripts/python.exe -m unittest scripts.test_simplified_diameter_evidence scripts.test_diameter_role_evidence
+# 仅对已复制到临时目录的本地响应、原图及OCR缓存执行，禁止指向真实订单目录：
+.venv/Scripts/python.exe scripts/replay_simplified_diameters.py tmp/simplified-diameter
 ```
 
 共享样例覆盖三个方向、主控切换、线径变化、来源保护的调整、确认撤销、同值依赖变化、非法几何、单位和精度反推。API测试使用临时SQLite和模拟SW，覆盖保存重开、修订冲突、图号字符串和冻结任务。浏览器使用模拟接口，验证即时联动、焦点、保存失败重试、整组冲突、跨订单晚到回执及桌面/窄面板。截图在忽略目录 `outputs/diameter-drawing-no-qa/`，不调用云端识别或真实生产生图。

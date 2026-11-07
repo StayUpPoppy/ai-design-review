@@ -172,11 +172,12 @@ def _assert_missing_values_receive_pending_defaults() -> None:
     readiness = assess_generation_readiness(review)
     assert readiness["status"] == "needs_input", readiness
     assert set(readiness["defaulted_fields"]) == {
-        "wire_diameter", "mean_diameter", "free_length", "total_coils",
+        "wire_diameter", "free_length", "total_coils",
         "end_grinding", "end_coils_closed",
     }
     assert review["spring_parameters"]["wire_diameter"]["value"] == 3
-    assert review["spring_parameters"]["mean_diameter"]["value"] == 23
+    assert "mean_diameter" not in review["spring_parameters"]
+    assert any(p["field"] == "mean_diameter" for p in readiness["missing_fields"])
     assert review["spring_parameters"]["free_length"]["value"] == 45
     assert review["spring_parameters"]["total_coils"]["value"] == 10
     assert "active_coils" not in review["spring_parameters"]
@@ -184,7 +185,7 @@ def _assert_missing_values_receive_pending_defaults() -> None:
     assert review["spring_parameters"]["end_grinding"]["value"] == "两端磨削"
     assert review["spring_parameters"]["end_type"]["value"] == "两端并紧"
     assert all(review["spring_parameters"][field]["need_human_review"] for field in (
-        "wire_diameter", "mean_diameter", "free_length", "total_coils", "end_grinding", "end_type"
+        "wire_diameter", "free_length", "total_coils", "end_grinding", "end_type"
     ))
     package = build_generation_parameter_package(review)
     assert set(package["generation_parameters"]["spring_parameters"]) == {"material", "handedness"}

@@ -64,6 +64,12 @@ window.DrawingAnnotations = (() => {
   function notify(item) {
     if (entry() === item) config.updateViewer();
   }
+  function acceptDocument(document, item = entry()) {
+    if (!item || !document || item.pending.size || item.saving || item.drag || item.relocalizing) return;
+    if (item.document && (item.document.source_document_id !== document.source_document_id
+        || Number(item.document.annotation_revision) > Number(document.annotation_revision))) return;
+    item.document = document;
+  }
   async function load(item = entry(), retry = false) {
     if (!item || item.loading || item.document || (item.loadAttempted && !retry)) return;
     item.loadAttempted = true;
@@ -72,7 +78,7 @@ window.DrawingAnnotations = (() => {
     try {
       const response = await config.fetch(`/api/reviews/${encodeURIComponent(item.id)}/annotations`);
       if (!response.ok) throw new Error("标注加载失败，可重试；参数操作不受影响。");
-      item.document = await response.json();
+      acceptDocument(await response.json(), item);
     } catch (error) {
       item.error = error.message;
     } finally {
@@ -442,7 +448,7 @@ window.DrawingAnnotations = (() => {
     void load(item);
     renderLayer();
   }
-  return { release, imageSize, configure: (options) => { config = options; }, toolsHtml, infoHtml, badgeHtml, bindFields, bindViewer, renderLayer,
+  return { release, acceptDocument, imageSize, configure: (options) => { config = options; }, toolsHtml, infoHtml, badgeHtml, bindFields, bindViewer, renderLayer,
     imageUrl: () => page()?.image_url ? config.assetUrl(page().image_url) : null,
     capturesPointer: (event) => Boolean(entry()?.placing || event.target.closest("[data-annotation-id]")),
     hasUnsaved: () => Array.from(cache.values()).some((item) => item.pending.size || item.saving),

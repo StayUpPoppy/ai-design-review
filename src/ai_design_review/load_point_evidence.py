@@ -428,7 +428,8 @@ def _merge_original_points(primary, supplementary):
     return result
 
 
-def raster_pages(job_dir, review, *, raw_payloads=None, allow_ocr=False, warnings=None):
+def raster_pages(job_dir, review, *, raw_payloads=None, allow_ocr=False, warnings=None, diameter_geometry=False,
+                 diameter_requests=()):
     """Reuse the annotation coordinate frame, full-page cache and local OCR budget."""
     from .drawing_annotations import annotation_source, ocr_blocks
     from .multi_spec import shared_ocr_dir
@@ -439,19 +440,26 @@ def raster_pages(job_dir, review, *, raw_payloads=None, allow_ocr=False, warning
         return []
     pages=document["pages"][:max(1,int(os.getenv("QWEN_MAX_PAGES","3")))]
     payload=raw_payloads if raw_payloads is not None else _read_json(job_dir/"candidates.json").get("raw_payloads",{})
-    blocks=ocr_blocks(payload,pages)
+    evidence_payload = payload
+    if diameter_geometry:
+        evidence_payload = {name: item for name, item in payload.items()
+                            if name not in {"candidate_json", "ocr_json", "sample_ocr_json", "qwen_vision", "vlm", "geometry", "werk24", "cached_werk24"}
+                            and isinstance(item, dict) and (item.get("provider") or item.get("engine")) == "rapidocr"}
+    blocks=ocr_blocks(evidence_payload,pages)
     pool=shared_ocr_dir(job_dir)
     cached=_read_json(pool/"annotation_ocr_v3.json")
     if cached.get("source_document_id")==document["source_document_id"]:
         blocks.extend(cached.get("blocks",[]))
     pitch=(review.get("spring_parameters") or {}).get("pitch") or {}
-    if allow_ocr and (not blocks or not pitch.get("value")):
+    if diameter_requests or allow_ocr and (not blocks or not pitch.get("value")):
         from .annotation_ocr import local_ocr_blocks
-        requests=[{"kind":"load_dimensions","field":f"load_dimensions_{p['page']}","page":p["page"],"evidence_pages":[p["page"]],"status":"unlocated","original_value":0} for p in pages]
-        requests += [{"kind":"pitch_dimension","field":f"pitch_evidence_{p['page']}","page":p["page"],"evidence_pages":[p["page"]],"status":"unlocated","original_value":0} for p in pages if not pitch.get("value") or pitch.get("formula_calculation_kind")=="pitch"]
+        requests = list(diameter_requests)
+        if allow_ocr:
+            requests += [{"kind":"load_dimensions","field":f"load_dimensions_{p['page']}","page":p["page"],"evidence_pages":[p["page"]],"status":"unlocated","original_value":0} for p in pages]
+            requests += [{"kind":"pitch_dimension","field":f"pitch_evidence_{p['page']}","page":p["page"],"evidence_pages":[p["page"]],"status":"unlocated","original_value":0} for p in pages if not pitch.get("value") or pitch.get("formula_calculation_kind")=="pitch"]
         extra,_,_=local_ocr_blocks(pool,pages,document["source_document_id"],review,[],blocks,verification_requests=requests)
         blocks.extend(extra)
-    if not blocks:
+    if not blocks and not diameter_geometry:
         return []
     import cv2
     import numpy as np
@@ -485,18 +493,48 @@ def raster_pages(job_dir, review, *, raw_payloads=None, allow_ocr=False, warning
                 if block.get("page")!=page["page"]:continue
                 b=block.get("position") or {}
                 if not all(k in b for k in ("x","y","width","height")):continue
-                texts.append({"text":block["text"],"bbox":[b["x"]*width,b["y"]*height,(b["x"]+b["width"])*width,(b["y"]+b["height"])*height]})
+                texts.append({"text":block["text"],"bbox":[b["x"]*width,b["y"]*height,(b["x"]+b["width"])*width,(b["y"]+b["height"])*height],
+                              **{key: block[key] for key in ("diameter_offset_origin", "diameter_offset_slot") if key in block}})
             scale=min(width,height)/595
+            wire_sections = []
             try:
                 circles=cv2.HoughCircles(cv2.GaussianBlur(np.asarray(image),(3,3),0),cv2.HOUGH_GRADIENT,1.2,max(8,min(width,height)*.025),param1=100,param2=18,minRadius=max(3,int(min(width,height)*.009)),maxRadius=max(8,int(min(width,height)*.03)))
                 coil_circles=[[float(x)/scale,float(y)/scale,float(r)/scale] for x,y,r in np.asarray(circles).reshape(-1,3)] if circles is not None else []
+                if diameter_geometry:
+                    wire_sections = _section_circles(mask, coil_circles, scale)
             except Exception as error:
                 _verification_warning(f"page {page['page']} pitch dimension",error,warnings)
                 coil_circles=[]
             lines=[[v/scale for v in line] for line in lines]
             texts=[{**t,"bbox":[v/scale for v in t["bbox"]]} for t in texts]
-            result.append({"page":page["page"],"width":width/scale,"height":height/scale,"lines":lines,"line_segments":[[v/scale for v in l] for l in segments],"texts":texts,"epsilon":1.5,"source":"local_ocr","coil_circles":coil_circles})
+            result.append({"page":page["page"],"width":width/scale,"height":height/scale,"lines":lines,"line_segments":[[v/scale for v in l] for l in segments],"texts":texts,"epsilon":1.5,"source":"local_ocr","coil_circles":coil_circles,"wire_sections":wire_sections})
+            if diameter_geometry:
+                result[-1]["diameter_raster"] = (mask, scale)
+                result[-1]["source_document_id"] = document["source_document_id"]
     return result
+
+
+def _section_circles(mask, circles, scale):
+    """Require a closed outline with section hatching, excluding open turns."""
+    import numpy as np
+
+    height, width = mask.shape
+    angles = np.linspace(0, 2 * np.pi, 48, endpoint=False)
+    ring = np.linspace(.78, 1.18, 9)[:, None]
+    sections = []
+    for section in circles:
+        x, y, radius = (v * scale for v in section)
+        if not (1.2 * radius < x < width - 1.2 * radius and 1.2 * radius < y < height - 1.2 * radius):
+            continue
+        xs = np.rint(x + ring * radius * np.cos(angles)).astype(int)
+        ys = np.rint(y + ring * radius * np.sin(angles)).astype(int)
+        if np.any(mask[ys, xs], axis=0).mean() < .85:
+            continue
+        rows, cols = np.mgrid[int(y-radius):int(y+radius)+1, int(x-radius):int(x+radius)+1]
+        disk = (rows-y)**2 + (cols-x)**2 <= (.63*radius)**2
+        if disk.any() and .14 <= np.mean(mask[rows[disk], cols[disk]] != 0) <= .65:
+            sections.append(section)
+    return sections
 
 
 def ground_job_candidates(job_dir,candidates,raw_payloads, *, warnings=None):
@@ -504,9 +542,30 @@ def ground_job_candidates(job_dir,candidates,raw_payloads, *, warnings=None):
     source=next((p for p in sources if p.suffix.lower() in {".pdf",".png",".jpg",".jpeg",".webp",".bmp",".tif",".tiff"}),None)
     if not source:return candidates
     try:
+        from .diameter_evidence import diameter_ocr_requests, resolve_diameter_roles, supported_candidates
+        verify_diameters = supported_candidates(candidates)
         pdf_points=original_points(source) if source.suffix.lower()==".pdf" else []
-        if pdf_points and all(p["height_relation"].get("verified") for p in pdf_points) and any(c.get("field")=="pitch" for c in candidates):return candidates
-        pages=raster_pages(Path(job_dir),{"drawing_summary":{"spring_type":"compression_spring"},"spring_parameters":{}},raw_payloads=raw_payloads,allow_ocr=True,warnings=warnings)
+        complete_pdf_loads = pdf_points and all(p["height_relation"].get("verified") for p in pdf_points)
+        need_load_ocr = not (complete_pdf_loads and any(c.get("field") == "pitch" for c in candidates))
+        if not (need_load_ocr or verify_diameters):
+            return candidates
+        diameter_requests = diameter_ocr_requests(candidates) if verify_diameters else []
+        pages=raster_pages(Path(job_dir),{"drawing_summary":{"spring_type":"compression_spring"},"spring_parameters":{}},raw_payloads=raw_payloads,allow_ocr=need_load_ocr,warnings=warnings,diameter_geometry=verify_diameters,diameter_requests=diameter_requests)
+        evidence_pages = list(pages)
+        if verify_diameters and source.suffix.lower() == ".pdf":
+            stat = source.stat()
+            limit = max(1, int(os.getenv("QWEN_MAX_PAGES", "3")))
+            for vector in _pdf_pages(str(source), stat.st_size, stat.st_mtime_ns, limit):
+                raster = next((p for p in pages if p["page"] == vector["page"]), None)
+                if raster and abs(vector["width"] / vector["height"] - raster["width"] / raster["height"]) < .02:
+                    ratio = vector["height"] / raster["height"]
+                    vector = {**vector, "wire_sections": [[v * ratio for v in section] for section in raster["wire_sections"]]}
+                    mask, scale = raster["diameter_raster"]
+                    vector["diameter_raster"] = (mask, scale / ratio)
+                    vector["source_document_id"] = raster["source_document_id"]
+                evidence_pages.append(vector)
+        if verify_diameters:
+            candidates = resolve_diameter_roles(candidates, evidence_pages)
         hints=[c["value"] for c in candidates if c.get("field")=="load_point" and isinstance(c.get("value"),dict)]
         recovered=_merge_original_points(pdf_points,original_points(source,pages=pages,hints=hints))
         from .pitch_evidence import pitch_from_pages

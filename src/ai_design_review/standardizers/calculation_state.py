@@ -28,12 +28,31 @@ def human_override(item: Any) -> bool:
     return isinstance(item, dict) and (bool(item.get("human_modified")) or any(s.startswith("human") and s != "human_confirmed" or s in {"manual", "manual_input", "standardization_chat", "ai_chat"} for s in sources(item)))
 
 
+def unadopted_protocol_diameter(item: Any, field: str) -> bool:
+    return (field in {"wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter"}
+            and isinstance(item, dict) and "solidworks_protocol_default" in sources(item)
+            and item.get("need_human_review") is not False and not human_override(item))
+
+
+def uses_unadopted_diameter_default(parameters: dict[str, Any], field: str, path=()) -> bool:
+    if field in path:
+        return False
+    item = parameters.get(field)
+    if unadopted_protocol_diameter(item, field):
+        return True
+    return (isinstance(item, dict) and not human_override(item)
+            and any(s in {"formula_calculation", "derived"} for s in sources(item))
+            and any(uses_unadopted_diameter_default(parameters, parent, (*path, field)) for parent in item.get("source_fields", [])))
+
+
 def parameter_current(parameters: dict[str, Any], field: str, path: tuple[str, ...] = ()) -> bool:
     if field in path:
         return False
     item = parameters.get(field)
     if not isinstance(item, dict):
         return True
+    if unadopted_protocol_diameter(item, field):
+        return False
     if field == "active_coils" and "solidworks_protocol_default" in sources(item) and item.get("need_human_review") is not False:
         return False
     if "coils" in field and not coil_unit_supported(field, item.get("unit")):

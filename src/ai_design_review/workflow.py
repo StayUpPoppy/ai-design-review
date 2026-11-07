@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .accuracy_inference import refresh_accuracy_inference
@@ -74,6 +75,7 @@ class DrawingReviewWorkflow:
         candidates: list[dict[str, Any]],
         *,
         run_standardization: bool = True,
+        verify_diameter_roles: bool = False,
     ) -> dict[str, Any]:
         from .engines.ocr_adapter import unsafe_vertical_dimension_candidate
         candidates = [c for c in candidates if not unsafe_vertical_dimension_candidate(c)]
@@ -81,13 +83,24 @@ class DrawingReviewWorkflow:
         candidates = [*_file_text_candidates(file_info), *candidates]
         dimension_evidence = _dimension_evidence(candidates)
         preliminary_type = classify_spring_type(candidates, file_info)["spring_type"]
+        from .diameter_evidence import CANDIDATE, PENDING, resolve_diameter_roles, supported_candidates
+        verify_diameter_roles = verify_diameter_roles and preliminary_type == "compression_spring" and supported_candidates(candidates)
         candidates = apply_spring_semantic_mapping(
             candidates, normalize_materials=preliminary_type != "compression_spring",
+            map_outer_diameter=not verify_diameter_roles,
         )
         from .load_point_evidence import ground_candidates
         if preliminary_type == "compression_spring": candidates = ground_candidates(candidates, file_path)
         candidates, load_point_diagnostics = partition_load_candidates(candidates)
-        candidates = apply_compression_dimension_role_ranking(candidates)
+        if verify_diameter_roles:
+            candidates = resolve_diameter_roles(candidates)
+            known_evidence = {json.dumps(item, sort_keys=True, ensure_ascii=False) for item in dimension_evidence}
+            dimension_evidence.extend(item for item in _dimension_evidence(candidates)
+                                      if json.dumps(item, sort_keys=True, ensure_ascii=False) not in known_evidence)
+        candidates = apply_compression_dimension_role_ranking(candidates, rank_outer=not verify_diameter_roles)
+        pending_diameters = [item for item in candidates if item.get("field") == CANDIDATE]
+        candidates = [item for item in candidates if item.get("field") != CANDIDATE and
+                      item.get("field") not in {"diameter_model_inference", "axial_dimension_evidence"}]
         fused = fuse_candidates(candidates)
         classification = classify_spring_type(candidates, file_info)
         spring_type = classification["spring_type"]
@@ -208,6 +221,9 @@ class DrawingReviewWorkflow:
         }
         if accuracy_context.get("accuracy_inference"):
             review["accuracy_inference"] = accuracy_context["accuracy_inference"]
+        if pending_diameters:
+            review[PENDING] = pending_diameters
+            review["human_review_required"] = True
         refresh_design_checks(review)
         _apply_reasonableness_state(review)
         return review
@@ -339,6 +355,10 @@ class DrawingReviewWorkflow:
                     result[key] = item[key]
         if field == "support_coils":
             result.update({key: item[key] for key in ("support_coils_origin", "support_coils_original") if key in item})
+        if "diameter_role_evidence" in item:
+            result["diameter_role_evidence"] = item["diameter_role_evidence"]
+        if item.get("diameter_role_conflict"):
+            result["diameter_role_conflict"] = True
         if field == "surface_roughness_ra":
             result.update(
                 {

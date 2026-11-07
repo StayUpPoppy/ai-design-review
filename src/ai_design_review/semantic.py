@@ -9,7 +9,7 @@ from .material_terms import normalize_material
 
 
 def apply_spring_semantic_mapping(
-    candidates: list[dict[str, Any]], *, normalize_materials: bool = True,
+    candidates: list[dict[str, Any]], *, normalize_materials: bool = True, map_outer_diameter: bool = True,
 ) -> list[dict[str, Any]]:
     """Add spring-specific candidates inferred from generic recognizer output."""
     enriched = [deepcopy(candidate) for candidate in candidates]
@@ -35,7 +35,7 @@ def apply_spring_semantic_mapping(
     elif material and _needs_material_normalization(enriched):
         enriched.append(material)
 
-    for candidate in _map_dimensions(dimensions):
+    for candidate in _map_dimensions(dimensions, map_outer_diameter):
         if candidate["field"] not in existing_fields:
             enriched.append(candidate)
             existing_fields.add(candidate["field"])
@@ -48,11 +48,14 @@ def apply_spring_semantic_mapping(
     return enriched
 
 
-def _map_dimensions(dimensions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _map_dimensions(dimensions: list[dict[str, Any]], map_outer_diameter: bool = True) -> list[dict[str, Any]]:
     mapped: list[dict[str, Any]] = []
     used_reference_ids: set[Any] = set()
 
-    outer = _outer_diameter_candidate(dimensions)
+    if not map_outer_diameter:
+        from .diameter_evidence import CANDIDATE, is_diameter_candidate
+        dimensions = [item for item in dimensions if item.get("field") != CANDIDATE and not is_diameter_candidate(item)]
+    outer = _outer_diameter_candidate(dimensions) if map_outer_diameter else None
     if outer:
         mapped.append(_semantic_candidate("outer_diameter", outer, confidence=0.88))
         used_reference_ids.add(outer.get("reference_id"))

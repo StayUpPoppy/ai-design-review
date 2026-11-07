@@ -57,8 +57,11 @@ def _item(item: dict, *, load: bool = False) -> dict:
 
 
 def capture(review: dict) -> dict:
+    from .standardizers.calculation_state import uses_unadopted_diameter_default
     params = review.get("spring_parameters") or {}
     result = {field: _item(params.get(field) or {}) for field in FIELDS}
+    for field in ("wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter"):
+        result[field]["invalid"] |= uses_unadopted_diameter_default(params, field)
     for index, point in enumerate(params.get("load_points") or []):
         key = str(point.get("load_point_id") or point.get("label") or index)
         result[f"load:{key}"] = _item(point, load=True)

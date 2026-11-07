@@ -84,7 +84,7 @@ def materialize(store, job_id, user, run_root):
         if not (target / "candidates.json").exists():
             candidate = next(v for v in source.review_snapshot["multi_spec"]["variants"] if v["variant_id"] == item.variant_id)
             from .multi_spec_evidence import resolve
-            evidence=resolve(source.review_snapshot,Path(source.artifact_dir))
+            evidence=resolve(source.review_snapshot,Path(source.artifact_dir),include_diameter_blocks=True)
             _, candidates = child_review(source.review_snapshot, candidate, source_id,evidence=evidence)
             link_assets(Path(source.artifact_dir), target, candidates)
 
@@ -100,7 +100,7 @@ def create_children(store, source_id, user, body, actor, run_root):
     from .multi_spec_evidence import resolve
     with store._session() as session:
         source=owned(session,source_id,user)
-        evidence=resolve(source.review_snapshot,Path(source.artifact_dir)) if source.artifact_dir else {}
+        evidence=resolve(source.review_snapshot,Path(source.artifact_dir),include_diameter_blocks=True) if source.artifact_dir else {}
     with lock(source_id), store._session() as session, session.begin():
         root = owned(session, source_id, user, write=True)
         if root.record_kind != "source": raise VariantStoreError(409, "此记录不是多规格来源。")
@@ -190,7 +190,7 @@ def complete_automatic(store, source_id, user, worker_id, actor, run_root, progr
         raise MultiSpecError("创建规格审图失败：规格数量必须为1至50。")
     from .multi_spec_evidence import resolve
     progress("creating_variant_reviews", 96)
-    evidence = resolve(snapshot, Path(directory)) if directory else {}
+    evidence = resolve(snapshot, Path(directory), include_diameter_blocks=True) if directory else {}
     prepared = {}
     for index, candidate in enumerate(variants):
         variant_id = candidate["variant_id"]

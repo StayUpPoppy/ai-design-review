@@ -19,6 +19,7 @@ assert.notEqual(handednessStart, -1, "handedness normalizer must exist");
 assert.notEqual(handednessEnd, -1, "handedness normalizer block must be complete");
 
 const context = {
+  reviewReadOnly: () => false,
   validateCurrentGenerationSettings: () => {}, syncGenerationSettingsControls: () => {},
   captureGenerationSettingsFocus: () => null,
   structuredClone,
@@ -60,6 +61,8 @@ vm.runInContext(fs.readFileSync(new URL("../frontend/compression-design-checks.j
 vm.runInContext(fs.readFileSync(new URL("../frontend/technical-requirement-equivalence.js", import.meta.url), "utf8"), context);
 vm.runInContext(fs.readFileSync(new URL("../frontend/solidworks-export.js", import.meta.url), "utf8"), context);
 translationTestHelpers(context);
+vm.runInContext(appSource.slice(appSource.indexOf("function pendingDiameterRoles("), appSource.indexOf("function diameterRoleGroupState(")), context);
+vm.runInContext(appSource.slice(appSource.indexOf("function drawingSummaryValidationError("), appSource.indexOf("function syncDrawingNoControls(")), context);
 const duplicateStart = appSource.indexOf("function technicalRequirementsAreDuplicates");
 vm.runInContext(appSource.slice(duplicateStart, appSource.indexOf("function isDuplicateTechnicalRequirement", duplicateStart)), context);
 vm.runInContext(appSource.slice(handednessStart, handednessEnd), context);
@@ -69,6 +72,12 @@ vm.runInContext(appSource.slice(packageStart, packageEnd), context);
 const review = readyReview();
 const readiness = context.assessGenerationReadiness(review);
 assert.equal(readiness.status, "ready");
+const missingDiameters = readyReview();
+["outer_diameter", "inner_diameter", "mean_diameter"].forEach(field => delete missingDiameters.spring_parameters[field]);
+const missingDiameterReadiness = context.assessGenerationReadiness(missingDiameters);
+assert.equal(missingDiameters.spring_parameters.mean_diameter, undefined);
+assert.equal(missingDiameterReadiness.defaulted_fields.includes("mean_diameter"), false);
+assert.equal(missingDiameterReadiness.missing_fields.some(item => item.field === "mean_diameter"), true);
 for (const source of ["human_edited", "human_confirmed", "manual", "manual_input"]) {
   const cleared = readyReview();
   const wire = cleared.spring_parameters.wire_diameter;

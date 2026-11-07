@@ -35,7 +35,7 @@ def _drawing_regions(image: Image.Image) -> list[tuple[float, float, float, floa
 
 
 def crop_regions(image: Image.Image, blocks: list[dict[str, Any]], missing: list[dict[str, Any]], page: int) -> list[tuple[float, float, float, float, int]]:
-    from .drawing_annotations import _identity
+    from .drawing_annotations import FIELDS, _identity
 
     content = _drawing_regions(image)
     proposals: list[tuple[float, float, float, float]] = []
@@ -52,7 +52,7 @@ def crop_regions(image: Image.Image, blocks: list[dict[str, Any]], missing: list
         if b["height"] > b["width"] * 1.05 and re.search(r"\d|[φΦϕøØ⌀]", block["text"]):
             if not content or any(c[0] <= b["x"] <= c[2] and c[1] <= b["y"] <= c[3] for c in content):
                 vertical.append((max(0, b["x"] - .035), max(0, b["y"] - .04), min(1, b["x"] + b["width"] + .035), min(1, b["y"] + b["height"] + .04)))
-        if any(_identity(a["field"], block["text"]) for a in missing):
+        if any(a["field"] in FIELDS and _identity(a["field"], block["text"]) for a in missing):
             labels.append((max(0, b["x"] - .01), max(0, b["y"] - .015), min(1, b["x"] + b["width"] + .23), min(1, b["y"] + b["height"] + .015)))
     # Prefer large vertical runs; single-glyph PDF fragments are handled by the
     # whole view, leaving budget for a genuinely unread vertical symbol.
@@ -102,7 +102,7 @@ def _local_ocr_blocks_locked(job_dir, pages, document_id, review, candidates, ex
         ordinary = [a for a in locate_fields(review, candidates, blocks)
                     if a["status"] == "unlocated" and a["original_value"] is not None and a["field"] not in protected]
         for request in verification_requests:
-            if request.get("kind") == "pitch_dimension":
+            if request.get("kind") in {"pitch_dimension", "diameter_dimension"}:
                 ordinary.append(request)
                 continue
             if request.get("kind") == "load_dimensions":
@@ -174,61 +174,37 @@ def _local_ocr_blocks_locked(job_dir, pages, document_id, review, candidates, ex
                 for b in hints:
                     if b.get("coordinate_type") == "normalized":
                         hinted.extend((max(0, b["x"] - .025), max(0, b["y"] - .025), min(1, b["x"] + b["width"] + .025), min(1, b["y"] + b["height"] + .025), angle) for angle in (0, 90, 270))
-                regions = list(dict.fromkeys([*hinted, *regions]))
+                diameter_requested = any(a.get("kind") == "diameter_dimension" for a in missing)
+                regions = list(dict.fromkeys([*regions[:3], *hinted, *regions[3:]] if diameter_requested else [*hinted, *regions]))
                 if policy:
                     allowed = [r for field in fields for group in location_regions(review, field) for r in group if r.get("page", 1) == number]
                     clipped = [(max(x0, r["x"]), max(y0, r["y"]), min(x1, r["x"]+r["width"]), min(y1, r["y"]+r["height"]), angle)
                                for x0, y0, x1, y1, angle in regions for r in allowed]
                     scoped = [(*bounds, angle) for r in allowed for bounds in [(r["x"], r["y"], r["x"]+r["width"], r["y"]+r["height"])] for angle in (0, 90, 270)]
                     regions = list(dict.fromkeys(scoped + [r for r in clipped if r[2] > r[0] and r[3] > r[1]]))
-                inputs, transforms, records = [], [], []
-                for x0, y0, x1, y1, angle in regions:
-                    if len(inputs) >= 12:
-                        break
-                    bounds = (int(x0 * width), int(y0 * height), min(width, math.ceil(x1 * width)), min(height, math.ceil(y1 * height)))
-                    signature = hashlib.sha256(json.dumps([number, bounds, angle]).encode()).hexdigest()[:16]
-                    record = cache["regions"].get(signature)
-                    if record and (not retry or record["status"] == "completed"):
-                        for field in fields:
-                            states[field] = "failed" if record["status"] == "failed" else "completed_unmatched"
-                        continue
-                    # The cap is per invocation/page, not a lifetime cache cap.
-                    originals = [p for p in (job_dir / 'inputs').glob('*.pdf')]
-                    if originals:
-                        from .page_images import render_region
-                        crop = render_region(originals[0], number, (x0,y0,x1,y1))
-                    else:
-                        crop = image.crop(bounds)
-                        crop = crop.resize((min(1800,crop.width*2),min(1800,crop.height*2)))
-                    crop = crop.rotate(angle, expand=True)
-                    target = folder / f"crop-{signature}.png"
-                    crop.save(target)
-                    inputs.append(target)
-                    transforms.append((bounds, angle, signature))
-                    records.append({"page": number, "bounds": list(bounds), "angle": angle, "fields": fields, "status": "failed"})
-                if inputs:
-                    # A real request is recorded; an empty proposal list never
-                    # becomes a completed page. Failures retain their signature.
-                    for (_, _, signature), record in zip(transforms, records):
-                        cache["regions"][signature] = record
+                run = lambda proposals, limit: _recognize_regions(
+                    image, job_dir, folder, number, fields, cache, retry, proposals, limit, RapidOcrProvider
+                )
+                first = [(r, {}) for r in regions]
+                count, failure = run(first, 8 if diameter_requested else 12)
+                if diameter_requested and count < 12:
+                    from .diameter_evidence import stacked_offset_crops
+                    offsets = stacked_offset_crops(image, _unique_blocks(existing + cache["blocks"]), missing, number)
+                    if policy:
+                        offsets = [(r, m) for r, m in offsets if any(
+                            zone["x"] <= r[0] < r[2] <= zone["x"] + zone["width"]
+                            and zone["y"] <= r[1] < r[3] <= zone["y"] + zone["height"] for zone in allowed)]
+                    used, offset_failure = run(offsets, 12 - count)
+                    count += used
+                    failure |= offset_failure
+                    if count < 12:
+                        used, remainder_failure = run(first, 12 - count)
+                        count += used
+                        failure |= remainder_failure
+                if count or failure:
                     cache["handled_fields"][str(number)] = sorted(set(cache["handled_fields"].get(str(number), []) + request_keys))
-                    raw_pages = RapidOcrProvider().recognize(inputs, {})
-                    for raw, (bounds, angle, signature) in zip(raw_pages, transforms):
-                        cache["regions"][signature]["status"] = "completed"
-                        for block in ocr_blocks({"local": {"raw_pages": [raw]}}, [{"page": raw["page"]}]):
-                            box = block["position"]
-                            points = []
-                            for u, v in ((box["x"], box["y"]), (box["x"] + box["width"], box["y"]), (box["x"], box["y"] + box["height"]), (box["x"] + box["width"], box["y"] + box["height"])):
-                                if angle == 90:
-                                    u, v = 1 - v, u
-                                elif angle == 270:
-                                    u, v = v, 1 - u
-                                points.append(((bounds[0] + u * (bounds[2] - bounds[0])) / width, (bounds[1] + v * (bounds[3] - bounds[1])) / height))
-                            xs, ys = zip(*points)
-                            position = {"x": min(xs), "y": min(ys), "width": max(xs) - min(xs), "height": max(ys) - min(ys)}
-                            cache["blocks"].append({"page": number, "text": block["text"], "position": position, "source": "local_ocr", "reading_angle": angle, "region_id": signature})
-                    for field in fields:
-                        states[field] = "failed" if any(cache["regions"][signature]["status"] == "failed" for _, _, signature in transforms) else "completed_unmatched"
+                for field in fields:
+                    states[field] = "failed" if failure else "completed_unmatched"
         except Exception as exc:
             cache["errors"][f"regions:{number}"] = f"{type(exc).__name__}: {exc}"
             for field in fields:
@@ -244,3 +220,64 @@ def _local_ocr_blocks_locked(job_dir, pages, document_id, review, candidates, ex
     cache["field_states"] = states
     atomic_annotation_write(path, cache)
     return cache["blocks"], warnings, states
+
+
+def _recognize_regions(image, job_dir, folder, number, fields, cache, retry, proposals, limit, provider):
+    from .drawing_annotations import ocr_blocks
+
+    width, height = image.size
+    originals = sorted((job_dir / "inputs").glob("*.pdf"))
+    inputs, transforms = [], []
+    failed = False
+    for (x0, y0, x1, y1, angle), metadata in proposals:
+        if len(inputs) >= limit:
+            break
+        bounds = (int(x0 * width), int(y0 * height), min(width, math.ceil(x1 * width)), min(height, math.ceil(y1 * height)))
+        signature_parts = [number, bounds, angle]
+        if metadata:
+            signature_parts.append(metadata)
+        signature = hashlib.sha256(json.dumps(signature_parts).encode()).hexdigest()[:16]
+        record = cache["regions"].get(signature)
+        if record and (not retry or record["status"] == "completed"):
+            failed |= record["status"] == "failed"
+            continue
+        if metadata:
+            crop = image.crop(bounds)
+            crop = crop.resize((crop.width * 4, crop.height * 4))
+        elif originals:
+            from .page_images import render_region
+            crop = render_region(originals[0], number, (x0,y0,x1,y1))
+        else:
+            crop = image.crop(bounds)
+            crop = crop.resize((min(1800,crop.width*2),min(1800,crop.height*2)))
+        crop = crop.rotate(angle, expand=True)
+        margin = 24 if metadata else 0
+        crop_width, crop_height = crop.size
+        target = folder / f"crop-{signature}.png"
+        ImageOps.expand(crop, border=margin, fill="white").save(target)
+        inputs.append(target)
+        transforms.append((bounds, angle, signature, metadata, crop_width, crop_height, margin))
+        cache["regions"][signature] = {"page": number, "bounds": list(bounds), "angle": angle, "fields": fields, "status": "failed"}
+    if inputs:
+        for raw, transform in zip(provider().recognize(inputs, {}), transforms):
+            bounds, angle, signature, metadata, crop_width, crop_height, margin = transform
+            cache["regions"][signature]["status"] = "completed"
+            for block in ocr_blocks({"local": {"raw_pages": [raw]}}, [{"page": raw["page"]}]):
+                box = block["position"]
+                points = []
+                for u, v in ((box["x"], box["y"]), (box["x"] + box["width"], box["y"]),
+                             (box["x"], box["y"] + box["height"]), (box["x"] + box["width"], box["y"] + box["height"])):
+                    u = (u * (crop_width + 2 * margin) - margin) / crop_width
+                    v = (v * (crop_height + 2 * margin) - margin) / crop_height
+                    if angle == 90:
+                        u, v = 1 - v, u
+                    elif angle == 180:
+                        u, v = 1 - u, 1 - v
+                    elif angle == 270:
+                        u, v = v, 1 - u
+                    points.append(((bounds[0] + u * (bounds[2] - bounds[0])) / width, (bounds[1] + v * (bounds[3] - bounds[1])) / height))
+                xs, ys = zip(*points)
+                position = {"x": min(xs), "y": min(ys), "width": max(xs) - min(xs), "height": max(ys) - min(ys)}
+                cache["blocks"].append({"page": number, "text": block["text"], "position": position,
+                                        "source": "local_ocr", "reading_angle": angle, "region_id": signature, **metadata})
+    return len(inputs), failed

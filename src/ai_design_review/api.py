@@ -1431,7 +1431,7 @@ async def run_recognition_execution(
     if classify_spring_type(candidates, uploaded_file_info)["spring_type"] == "compression_spring":
         candidates = await run_in_threadpool(ground_job_candidates, job_dir, candidates, raw_payloads, warnings=warnings)
     rules = read_json(project_path("config", "factory_rules.json"))
-    review = DrawingReviewWorkflow(rules).run(str(drawing_path), candidates, run_standardization=False)
+    review = DrawingReviewWorkflow(rules).run(str(drawing_path), candidates, run_standardization=False, verify_diameter_roles=True)
     apply_generation_defaults(review)
     llm_standardization_payload: dict[str, Any] | None = None
     translation_results = await run_in_threadpool(prepare_review_translations, review)
@@ -2044,6 +2044,7 @@ def save_existing_review(
         "review_revision": persistence.get("revision"),
         "persistence": _persistence_response(persistence),
         "events": persistence.get("events", []),
+        **({"diameter_role_update": persistence["diameter_role_update"]} if "diameter_role_update" in persistence else {}),
     }
 
 
@@ -2570,13 +2571,31 @@ def _save_review_persistence(
             review["generation_settings"] = normalize_generation_settings(review["generation_settings"], allow_blank=True)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail={"code": "generation_settings_invalid", "message": str(exc)}) from exc
-    previous, _ = _load_persisted_review(job_id, review_path, identity)
+    previous, current_revision = _load_persisted_review(job_id, review_path, identity)
     for key in ('loading_metadata', 'preview_pages'):
         review.pop(key, None)
     if 'local_verification' in previous: review['local_verification'] = deepcopy(previous['local_verification'])
     else: review.pop('local_verification', None)
     load_changes = prepare_load_height_save(review, previous)
     events = list(events or [])
+    from .diameter_evidence import PENDING as DIAMETER_ROLE_CANDIDATES, select_role
+    from .diameter_linkage import group_state
+    role_events = [event for event in events if event.get("event_type") == "diameter_role_selected"]
+    revision = _expected_review_revision(expected_revision)
+    if role_events and current_revision is not None and revision != current_revision:
+        raise HTTPException(status_code=409, detail={"message": "当前审查数据已更新，请刷新后重试。", "current_revision": current_revision})
+    if DIAMETER_ROLE_CANDIDATES in previous:
+        review[DIAMETER_ROLE_CANDIDATES] = deepcopy(previous[DIAMETER_ROLE_CANDIDATES])
+    else:
+        review.pop(DIAMETER_ROLE_CANDIDATES, None)
+    for event in role_events:
+        choice = event.get("metadata") or {}
+        before = group_state(review)
+        try:
+            select_role(review, choice.get("candidate_id"), choice.get("field"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        event.update(target_field="diameter_linkage", before_state=before, after_state=group_state(review))
     for change in load_changes:
         if not any(e.get("event_type")=="load_height_recalculated" and (e.get("metadata") or {}).get("load_point_id")==change["load_point_id"] for e in events):
             events.append({"event_type":"load_height_recalculated","target_field":"load_points","source":"load_height_formula",
@@ -2625,7 +2644,7 @@ def _save_review_persistence(
         events = [*(events or []), {"event_type": "surface_requirement_sources_linked", "source": "source_association", "metadata": {"changes": source_changes}}]
     from .diameter_linkage import apply_diameter_linkage, DIAMETERS
     direct = [e.get("target_field") for e in events or [] if e.get("event_type") == "parameter_value_updated" and e.get("target_field") in DIAMETERS]
-    linkage = apply_diameter_linkage(review, direct[-1] if direct else None)
+    linkage = apply_diameter_linkage(review, direct[-1] if direct and not role_events else None)
     if review.get("diameter_linkage") and not previous.get("diameter_linkage"):
         from .diameter_linkage import group_state
         review["diameter_linkage"]["original_parameters"] = group_state(previous)["parameters"]
@@ -2675,7 +2694,6 @@ def _save_review_persistence(
     apply_generation_defaults(review)
     ensure_load_point_ids(review)
     ensure_technical_requirement_ids(review)
-    revision = _expected_review_revision(expected_revision)
     refresh_design_checks(review)
     audit_events = []
     for raw_event in events or []:
@@ -2710,6 +2728,31 @@ def _save_review_persistence(
         adjustment.update(pending_save=False,audit_recorded=True)
     history_status = "saved" if REVIEW_PERSISTENCE.configured else "saved_local"
     fallback_events = _merge_audit_events_into_review_history(review, audit_events, status=history_status)
+
+    def prepare_review(saved, saved_revision):
+        _prepare_review_reasonableness(saved, saved_revision)
+        if not role_events:
+            return
+        from .drawing_annotations import AUTOMATIC_SOURCES, set_diameter_location
+        document = saved.get("drawing_annotations") or {}
+        annotations = document.get("annotations", [])
+        for event in role_events:
+            field = event["metadata"]["field"]
+            param = saved["spring_parameters"].get(field) or {}
+            observation = (param.get("diameter_role_evidence") or {}).get("observation")
+            if not observation:
+                continue
+            for annotation in annotations:
+                if annotation["field"] != field or any(
+                    location.get("source") not in AUTOMATIC_SOURCES for location in annotation.get("locations", [])
+                ):
+                    continue
+                before = deepcopy(annotation)
+                set_diameter_location(annotation, param, observation)
+                if annotation != before:
+                    document["annotation_revision"] = document.get("annotation_revision", 1) + 1
+                    document["diagnostics"] = [d for d in document.get("diagnostics", []) if d.get("field") != field]
+
     try:
         result = REVIEW_PERSISTENCE.save_review(
             job_id,
@@ -2719,7 +2762,7 @@ def _save_review_persistence(
             actor=identity.as_audit_actor(),
             artifact_dir=str(review_path.parent),
             owner=identity.as_owner_dict(),
-            prepare_review=_prepare_review_reasonableness,
+            prepare_review=prepare_review,
         )
     except RevisionConflictError as exc:
         raise HTTPException(
@@ -2735,6 +2778,16 @@ def _save_review_persistence(
         raise _persistence_http_error(exc) from exc
     if result.get("mode") == "json_fallback":
         result["events"] = fallback_events
+        if role_events and review.get("drawing_annotations"):
+            atomic_annotation_write(review_path.parent / "annotations.json", review["drawing_annotations"])
+    if role_events:
+        result["diameter_role_update"] = {
+            "candidates": review[DIAMETER_ROLE_CANDIDATES],
+            **group_state(review),
+            "accuracy_grade": (review.get("spring_parameters") or {}).get("accuracy_grade"),
+            "accuracy_inference": review.get("accuracy_inference"),
+            "annotations": review.get("drawing_annotations"),
+        }
     write_json(review_path, review)
     return result
 
@@ -2890,6 +2943,8 @@ def _persist_multi_spec_source(job_id, payload, file_info, identity, image_url, 
         return existing
     directory = _job_dir(job_id)
     review = source_review(payload["parsed"], payload["multi_spec"])
+    from .diameter_evidence import VERSION as DIAMETER_ROLE_VERSION
+    review["diameter_role_verification"] = DIAMETER_ROLE_VERSION
     recovery = payload.get("local_recovery")
     diagnostic = {"layout_normalization": payload["multi_spec"].get("layout_normalization") or normalize_layout(payload["multi_spec"].get("layout")),
                   "variant_count": len(payload["multi_spec"]["variants"])}

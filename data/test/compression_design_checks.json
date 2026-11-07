@@ -1222,6 +1222,21 @@
         "solid_stress": 212.23733290911716,
         "solid_height_used": 23
       }
+    },
+    {
+      "name": "unadopted-protocol-diameter-is-not-calculation-input",
+      "overrides": {
+        "mean_diameter": {"value": 23, "source": ["solidworks_protocol_default"], "need_human_review": true}
+      },
+      "expected": {"spring_index": null, "theoretical_spring_rate": null, "unit_mass": null}
+    },
+    {
+      "name": "derived-diameter-cannot-launder-protocol-default",
+      "overrides": {
+        "inner_diameter": {"value": 14, "unit": "mm", "source": ["solidworks_protocol_default"], "need_human_review": true},
+        "mean_diameter": {"value": 16, "source": ["formula_calculation"], "source_fields": ["inner_diameter", "wire_diameter"]}
+      },
+      "expected": {"spring_index": null, "theoretical_spring_rate": null, "unit_mass": null}
     }
   ]
 }

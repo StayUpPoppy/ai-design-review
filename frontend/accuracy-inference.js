@@ -33,6 +33,9 @@
   }
   function capture(review) {
     const p = review.spring_parameters || {}, result = Object.fromEntries(FIELDS.map((f) => [f, item(p[f])]));
+    ["wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter"].forEach(f => {
+      if (typeof CompressionDesignChecks !== "undefined") result[f].invalid ||= CompressionDesignChecks.usesUnadoptedDiameterDefault(p, f);
+    });
     (p.load_points || []).forEach((point, i) => { result[`load:${point.load_point_id || point.label || i}`] = item(point, true); });
     return result;
   }

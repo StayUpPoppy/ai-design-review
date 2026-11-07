@@ -9,6 +9,7 @@ from ..io_utils import project_path, read_json
 from ..material_terms import normalize_material_key
 from ..material_catalog import load_material_catalog, match_material_catalog
 from .coil_counts import derive_active_coils
+from .calculation_state import uses_unadopted_diameter_default
 
 
 MATERIAL_STIFFNESS_PATH = project_path("config", "material_stiffness_properties.json")
@@ -304,6 +305,8 @@ def _result(
 
 
 def _param_value(parameters: dict[str, Any], field: str) -> Any:
+    if uses_unadopted_diameter_default(parameters, field):
+        return None
     item = parameters.get(field)
     return item.get("value") if isinstance(item, dict) else item
 

@@ -27,7 +27,7 @@ CORE_DIMENSION_FIELDS = {
 }
 
 
-def apply_compression_dimension_role_ranking(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def apply_compression_dimension_role_ranking(candidates: list[dict[str, Any]], *, rank_outer: bool = True) -> list[dict[str, Any]]:
     """Add role-aware compression spring dimension candidates before fusion.
 
     OCR/VLM often sees the right numbers but assigns a drawing dimension to the
@@ -42,9 +42,14 @@ def apply_compression_dimension_role_ranking(candidates: list[dict[str, Any]]) -
     if not _looks_like_compression_spring(enriched):
         return enriched
 
-    text = _combined_text(enriched)
+    from .diameter_evidence import CANDIDATE, DIAMETERS
+    axial_candidates = enriched if rank_outer else [
+        c for c in enriched if c.get("field") not in (*DIAMETERS, CANDIDATE)
+        and not (c.get("feature_type") == "dimension" and re.search(r"[φΦϕøØ⌀]", _candidate_text(c)))
+    ]
+    text = _combined_text(axial_candidates)
     load_heights = _load_heights(enriched, text)
-    outer_choice = _select_outer_diameter(enriched, text, load_heights)
+    outer_choice = _select_outer_diameter(enriched, text, load_heights) if rank_outer else None
     if outer_choice and outer_choice["score"] >= 0.86:
         enriched.append(
             _role_candidate(
@@ -54,7 +59,7 @@ def apply_compression_dimension_role_ranking(candidates: list[dict[str, Any]]) -
             )
         )
 
-    free_choice = _select_free_length(enriched, text, load_heights, outer_choice)
+    free_choice = _select_free_length(axial_candidates, text, load_heights, outer_choice)
     if free_choice and free_choice["score"] >= 0.82:
         enriched.append(
             _role_candidate(

@@ -53,6 +53,8 @@ def _assert_geometry_resolution() -> None:
     assert "inner_diameter" in result["source_fields"]
 
     active_default = _parameters(material="SUS304", active=None, total=7, end_type="两端并紧")
+    # An end condition alone no longer supplies a universal one-turn support.
+    active_default["support_coils"] = {"value": 1, "unit": "turns", "source": ["qwen_vision"]}
     result = calculate_compression_spring_rate(active_default)
     assert result["inputs"]["active_coils"] == 5
     assert "total_coils" in result["source_fields"]
@@ -133,6 +135,7 @@ def _assert_deferred_workflow_populates_formula_rate() -> None:
             _candidate("outer_diameter", 10, unit="mm"),
             _candidate("free_length", 20, unit="mm"),
             _candidate("total_coils", 7, unit="turns"),
+            _candidate("support_coils", 1, unit="turns"),
             _candidate("end_type", "两端并紧"),
             _candidate("handedness", "右旋"),
         ],

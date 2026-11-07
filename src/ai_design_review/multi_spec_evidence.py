@@ -99,9 +99,11 @@ def _composite(block, expected):
     return all(v is not None and abs(v-e)<1e-8 for v,e in zip(values,expected))
 
 
-def resolve(source, source_dir, *, allow_ocr=True, retry=False):
+def resolve(source, source_dir, *, allow_ocr=True, retry=False, include_diameter_blocks=False):
     multi=source.get("multi_spec") or {}
-    if multi.get("layout") != "rows": return {}
+    from .diameter_evidence import VERSION as DIAMETER_ROLE_VERSION
+    verify_diameters = include_diameter_blocks and source.get("diameter_role_verification") == DIAMETER_ROLE_VERSION
+    if multi.get("layout") != "rows" and not verify_diameters: return {}
     from .drawing_annotations import annotation_source, annotation_file_lock, atomic_annotation_write
     source_dir=Path(source_dir)
     if not (source_dir/"pages").exists(): return {}
@@ -112,10 +114,11 @@ def resolve(source, source_dir, *, allow_ocr=True, retry=False):
     with annotation_file_lock(source_dir,"multi_spec_evidence.lock"):
         cache=_read(cache_path)
         stamp=ocr_path.stat().st_mtime_ns if ocr_path.exists() else None
-        if not retry and cache.get("input_hash")==input_hash and cache.get("ocr_stamp")==stamp: return cache
+        if not retry and cache.get("input_hash")==input_hash and cache.get("ocr_stamp")==stamp:
+            return {**cache, "diameter_blocks": _blocks(source_dir, document, False, False)} if verify_diameters else cache
         blocks=_blocks(source_dir,document,allow_ocr,retry)
         entries={}; variants=multi.get("variants") or []
-        for page in document["pages"]:
+        for page in document["pages"] if multi.get("layout") == "rows" else []:
             number=page["page"]; body=[b for b in blocks if b["page"]==number]
             anchors=[]
             for variant in variants:
@@ -199,7 +202,7 @@ def resolve(source, source_dir, *, allow_ocr=True, retry=False):
         result={"version":VERSION,"cache_revision":CACHE_REVISION,"input_hash":input_hash,"source_document_id":document["source_document_id"],
                 "ocr_stamp":ocr_path.stat().st_mtime_ns if ocr_path.exists() else None,"variants":entries,"common_regions":common_regions}
         atomic_annotation_write(cache_path,result)
-        return result
+        return {**result, "diameter_blocks": blocks} if verify_diameters else result
 
 
 def apply_parameters(parameters, entry):

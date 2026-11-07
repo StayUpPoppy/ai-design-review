@@ -32,7 +32,7 @@ PATTERNS = (
     r"粗糙|ra|[▽√]|surface", r"旋向|左旋|右旋|hand|left|right",
     r"端部|端圈|并紧|闭口|开口|end", r"磨平|磨削|研磨|环磨|不磨|grind|ground",
 )
-RECOGNIZED_SOURCES = ("qwen", "ocr", "werk24", "geometry", "dimension_role", "pdf_text")
+RECOGNIZED_SOURCES = ("qwen", "ocr", "werk24", "geometry", "dimension_role", "original_diameter_role", "pdf_text")
 ALGORITHM_VERSION = "original_annotation_locator/v3"
 AUTOMATIC_SOURCES = {"ocr", "pdf_text", "candidate", "local_ocr"}
 
@@ -446,7 +446,9 @@ def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], bloc
         evidence = str((original or {}).get("evidence") or "")
         evidence_pages = {c["page"] for c in originals if c.get("page") is not None}
         recovery_blocks = [b for b in blocks if not evidence_pages or b["page"] in evidence_pages]
-        recovered = _nominal_outer_evidence(recovery_blocks) if field == "outer_diameter" else None
+        from .diameter_evidence import DIAMETERS, PENDING
+        role_checked = field in DIAMETERS and (PENDING in review or any((params.get(f) or {}).get("diameter_role_evidence") for f in DIAMETERS))
+        recovered = _nominal_outer_evidence(recovery_blocks) if field == "outer_diameter" and not role_checked else None
         # A complete nominal dimension plus its separate tolerance can recover
         # a legacy concatenation. Do not move an unrelated, already valid value.
         suspect = not original or "vertical dimension candidate" in evidence or re.search(r"vertical dimension [\d.]*\.[\d.]*\.", evidence)
@@ -520,11 +522,30 @@ def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], bloc
         reason = "粗糙度存在不同候选，请先核对并人工定位" if roughness_conflict else "多个原图位置存在歧义，请核对后定位" if ambiguous else "OCR未读出对应标注或缺少可靠位置" if original else "此值没有原图直接标注，可人工定位"
         if region_conflict and original:
             reason = "规格区域与原图代号位置不一致，已暂停自动定位，可核对后人工定位。"
-        annotations.append({"annotation_id": field, "field": field, "number": index + 1, "label": LABELS[index],
+        annotation = {"annotation_id": field, "field": field, "number": index + 1, "label": LABELS[index],
                             "original_value": value, "evidence": evidence, "evidence_pages": sorted(pages or {(original or {}).get("page") or 1}), "locations": locations,
                             "status": "located" if locations else "empty" if empty else "unlocated",
-                            "reason": "" if locations else reason})
+                            "reason": "" if locations else reason}
+        observation = (param.get("diameter_role_evidence") or {}).get("observation")
+        if role_checked and observation and not scoped:
+            set_diameter_location(annotation, param, observation)
+        annotations.append(annotation)
     return annotations
+
+
+def set_diameter_location(annotation, param, observation):
+    """Anchor the role to the same original numeric box used for fusion."""
+    box = observation["position"]
+    page = observation["page"]
+    key = json.dumps([page, box, observation["text"]], sort_keys=True)
+    identifier = hashlib.sha256(key.encode()).hexdigest()[:12]
+    anchor = {"x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2}
+    annotation.update(original_value=observation.get("value", param["value"]), evidence=observation["text"], evidence_pages=[page],
+                      status="located", reason="", locations=[
+        {"location_id": f"{annotation['field']}-{identifier}", "page": page, "bbox": box,
+         "anchor": anchor, "bubble": {"x": min(.98, box["x"] + box["width"] + .025), "y": max(.02, box["y"] - .025)},
+         "source": observation.get("source") or "local_ocr", "evidence": observation["text"]}
+    ])
 
 
 def roughness_annotation(param, candidates, blocks):

@@ -214,6 +214,16 @@ def child_review(source, candidate, source_id, *, evidence=None):
     for value in candidates:
         value["structured_specification"] = True
         if value.get("field") in local or value.get("field") == "load_point": value["page"] = candidate["page"]
+    from .diameter_evidence import VERSION as DIAMETER_ROLE_VERSION, resolve_specification_diameters
+    if source.get("diameter_role_verification") == DIAMETER_ROLE_VERSION:
+        scoped_regions = [item["region"] for item in (evidence or {}).get("variants", {}).values() if item.get("region")]
+        if source["multi_spec"]["layout"] == "blocks":
+            scoped_regions = [{"page": v["page"], **v["region"]} for v in source["multi_spec"]["variants"] if v.get("region")]
+        origin = {"region": entry.get("region") if source["multi_spec"]["layout"] == "rows" else region,
+                  "code": candidate["code"], "layout": source["multi_spec"]["layout"],
+                  "location_evidence": entry, "specification_regions": scoped_regions,
+                  "common_regions": common_regions}
+        candidates = resolve_specification_diameters(candidates, origin, local, (evidence or {}).get("diameter_blocks", []))
     review = DrawingReviewWorkflow(read_json(project_path("config", "factory_rules.json"))).run(None, candidates, run_standardization=False)
     # Every recognised input remains pending, independent from the source or siblings.
     for item in review.get("spring_parameters", {}).values():

@@ -11,6 +11,7 @@ from .surface_roughness import ROUGHNESS_VERIFICATION_VERSION, merge_roughness_c
 
 
 SOURCE_PRIORITY = {
+    "original_diameter_role": 0.995,
     "local_load_evidence": 0.995,
     "human": 1.0,
     "manual": 0.98,
@@ -80,6 +81,8 @@ def fuse_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
         conflict = _detect_conflict(field, ordered) if field not in TECHNICAL_FIELD_TYPES and field != "surface_roughness_ra" else None
         if conflict:
             conflicts.append(conflict)
+            if ordered[0].get("source") == "original_diameter_role":
+                selected["diameter_role_conflict"] = True
 
     load_points = _merge_load_points(load_points, conflicts)
 
@@ -133,7 +136,7 @@ def _merge_field(field: str, ordered: list[dict[str, Any]]) -> dict[str, Any]:
         "suggested_region": best.get("suggested_region", ""),
         "need_human_review": _needs_human_review(best, ordered),
     }
-    for key in (*NORMALIZATION_KEYS, *TRANSLATION_KEYS, "surface_mapping", "raw_content", "standard_content"):
+    for key in (*NORMALIZATION_KEYS, *TRANSLATION_KEYS, "surface_mapping", "raw_content", "standard_content", "diameter_role_evidence"):
         if key in best:
             merged[key] = best[key]
     if field == "support_coils":
@@ -353,6 +356,8 @@ def _combined_confidence(items: list[dict[str, Any]]) -> float:
 
 
 def _needs_human_review(best: dict[str, Any], ordered: list[dict[str, Any]]) -> bool:
+    if best.get("source") == "original_diameter_role":
+        return True
     confidence = float(best.get("confidence", 0) or 0)
     if _candidate_source_weight(best) >= 0.98 and confidence >= 0.95:
         return False
@@ -366,6 +371,12 @@ def _detect_conflict(field: str, items: list[dict[str, Any]]) -> dict[str, Any] 
         return None
     values = [item.get("value") for item in items]
     first = values[0]
+    if items[0].get("source") == "original_diameter_role":
+        for item in items[1:]:
+            if any(items[0].get(key) is not None and item.get(key) is not None
+                   and not _values_close(items[0][key], item[key]) for key in ("tolerance_upper", "tolerance_lower")):
+                return {"field": field, "values": values, "sources": [item.get("source", "unknown") for item in items],
+                        "message": f"{field} 多条原图尺寸的公差不一致，需要人工确认。", "need_human_review": True}
     for value in values[1:]:
         if not _values_close(first, value):
             return {

@@ -178,6 +178,7 @@ class ReviewParameterValue(BaseModel):
     accuracy_value_source: Literal["human", "system"] | None = Field(default=None, description="精度反推的可选数值来源标记，独立于人工确认状态。")
     diameter_linkage_managed: bool | None = Field(default=None, description="人工启用三径联动后由统一规则管理，旧公式补全不得覆盖。")
     diameter_linkage_error: str | None = Field(default=None, description="三径联动输入或几何失效原因；保留最后有效的关联值，重新确认前需修正输入。")
+    diameter_role_evidence: dict[str, Any] | None = Field(default=None, description="直径原图归类依据。diameter-role/v3兼容简化圈线，observation.geometry可含repeated_coil_arcs方法、中心位置、圆弧及轴向范围；model_derived_candidates仅追溯模型推导，不参与参数计算。")
     evidence: str | None = Field(default=None, description="支持该参数值的图纸文字或计算依据。")
     confidence: float | None = Field(default=None, ge=0, le=1, description="识别置信度，范围为 0 至 1。")
     need_human_review: bool | None = Field(default=None, description="是否仍需人工核对。")
@@ -428,6 +429,7 @@ class ReviewDocument(BaseModel):
     parameter_reasonableness: ParameterReasonablenessAssessment | None = Field(default=None, description="最近一次参数合理性诊断和可选建议。")
     accuracy_inference: dict[str, Any] | None = Field(default=None, description="可选内部精度反推元数据：selection_mode(auto/manual/drawing/legacy)、rules_version、input_snapshot、observed_inputs、results、inferred_grade、complete及calculation_fingerprint。热卷附standard_rules_version/source_document/applicability，T优先于1/2/3；仅独立原图/人工公差参与反推，当前有效刚度用于载荷最低限值，人工模式不回写；不进入SW请求。")
     diameter_linkage: dict[str, Any] | None = Field(default=None, description="可选三径联动元数据：version、driver_field、inputs、status、reason及original_parameters。首次人工编辑直径后固定线径、以最后编辑项为主控，联动三径并撤销变化项确认；旧订单打开不自动启用。不进入SW请求。")
+    diameter_role_candidates: list[dict[str, Any]] | None = Field(default=None, description="待归类的原图直径标注及其后续人工选择。未处理项不进入参数融合或SW。")
     automatic_calculation_adjustments: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None, description="compression-design-v3自动圈数/节距/名义高度的变更前后、依赖和待保存审计状态；只通过现有CAS保存，不进入SW。")
     pitch_recovery: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None, description="pitch-evidence/v1本地原图节距恢复前值及待保存状态；人工值/清空受保护。")
     design_checks: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None, description="compression-design-v3逐项计算结果、实际依赖和公式；应力inputs.spring_rate_source区分input/theoretical，spring_rate_used为实际采用N/mm，重量缺密度保留原因。")
@@ -904,6 +906,7 @@ class SaveReviewResponse(BaseModel):
 
     job_id: str = Field(description="审图任务 ID。")
     review_revision: int | None = Field(default=None, description="保存后的审图修订号。")
+    diameter_role_update: dict[str, Any] | None = Field(default=None, description="保存直径归类后，返回候选状态、三径、确认状态及更新的原图标注。")
     persistence: dict[str, Any] = Field(description="持久化模式和修订信息。")
     events: list[dict[str, Any]] = Field(default_factory=list, description="已经保存的审计事件。")
 
