@@ -41,6 +41,7 @@ RAGFlow 位于其他服务器时，`RAGFLOW_BASE_URL` 必须是 API 容器可访
 ```bash
 docker compose up -d postgres
 docker compose run --rm api alembic upgrade head
+docker compose run --rm api python -m ai_design_review.material_catalog_seed
 docker compose up -d api worker web
 docker compose ps
 curl http://127.0.0.1:8088/api/health
@@ -82,6 +83,7 @@ docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > "ba
 ```bash
 docker compose build api worker
 docker compose run --rm api alembic upgrade head
+docker compose run --rm api python -m ai_design_review.material_catalog_seed
 docker compose up -d api worker web
 docker compose logs -f api
 ```

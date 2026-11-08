@@ -9052,6 +9052,9 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     let diameterBeforeState = null;
     const editorJobId = state.lastJob?.job_id, editorScope = historyRecognitionScope();
     const editorIsCurrent = () => state.review === review && state.lastJob?.job_id === editorJobId && historyRecognitionScope() === editorScope;
+    if (field === "material" && isCompressionSpringReview(review)) {
+      globalThis.MaterialPicker?.bind(valueInput, { items: state.materialCatalog.items, isCurrent: editorIsCurrent });
+    }
     const applyValueDraft = (event) => {
       if (!editorIsCurrent() || field === "accuracy_grade") return;
       activateReviewContext(messageId);
@@ -10695,6 +10698,7 @@ function openCompareOverlay(messageId = state.activeReviewMessageId) {
 }
 
 function closeCompareOverlay() {
+  globalThis.MaterialPicker?.close();
   state.compareOpen = false;
   resetCompareRotation();
   document.body.classList.remove("compare-open");
@@ -10804,7 +10808,7 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
     if (advanced) advanced.open = true;
     row.scrollIntoView({ behavior: "smooth", block: "center" });
     if (options.highlight) highlightReviewTarget(row);
-    const input = row.querySelector('[data-role="value"]');
+    const input = row.querySelector('[data-material-trigger]') || row.querySelector('[data-role="value"]');
     input?.focus({ preventScroll: true });
     if (typeof input?.select === "function") input.select();
   });
@@ -10821,6 +10825,7 @@ function createCompareOverlay() {
 }
 
 function renderCompareOverlay() {
+  globalThis.MaterialPicker?.close();
   if (!state.review) return;
   const scrollState = captureCompareOverlayScrollState();
   const keptViewport=compareOverlay.querySelector('#compareViewport');
@@ -11761,9 +11766,10 @@ async function ensureMaterialCatalog(options = {}) {
       const payload = await response.json();
       if (!response.ok) throw new Error(typeof payload?.detail === "string" ? payload.detail : "无法加载材料选项");
       const items = payload?.items;
-      if (!payload?.version || !Array.isArray(items) || items.length !== 15
+      if (!payload?.version || !Array.isArray(items) || !items.length
         || items.some((item) => !item?.id || !item?.display_name || !item?.standard_value
-          || !Number.isFinite(Number(item.shear_modulus_mpa)) || Number(item.shear_modulus_mpa) <= 0)
+          || !Array.isArray(item.aliases) || item.aliases.some(alias => typeof alias !== "string")
+          || [item.shear_modulus_mpa, item.density_g_cm3].some(value => typeof value !== "number" || !Number.isFinite(value) || value <= 0))
         || new Set(items.map((item) => String(item.id))).size !== items.length
         || new Set(items.map((item) => item.display_name)).size !== items.length) {
         throw new Error("材料目录格式不完整，请重试或联系管理员");
@@ -11872,6 +11878,7 @@ function bindMaterialCatalogRetry(row) {
 function refreshMaterialSelectionRow(row, param) {
   const select = row.querySelector("[data-material-selector]");
   if (select) select.title = materialDisplayValue(param?.value) || "请选择材料";
+  if (select) globalThis.MaterialPicker?.sync(select, state.materialCatalog.items);
   const notes = row.querySelector(".material-selection-notes");
   if (notes) {
     const body = materialSelectionNotesBodyHtml(param);
@@ -11902,9 +11909,15 @@ function refreshMaterialCatalogControls() {
 
 function parameterValueControlHtml(field, param, label) {
   if (field === "material" && isCompressionSpringReview(state.review)) {
-    return `<select data-role="value" data-material-selector aria-label="${escapeHtml(label)}" title="${escapeHtml(materialDisplayValue(param?.value) || "请选择材料")}"${state.materialCatalog.status === "ready" ? "" : " disabled"}>
+    const name = materialDisplayValue(param?.value) || "请选择材料";
+    const disabled = state.materialCatalog.status === "ready" ? "" : " disabled";
+    return `<div class="material-picker">
+    <select hidden tabindex="-1" aria-hidden="true" data-role="value" data-material-selector aria-label="${escapeHtml(label)}" title="${escapeHtml(name)}"${disabled}>
       ${materialOptionsHtml(param)}
-    </select>`;
+    </select>
+    <button type="button" class="material-picker-trigger" data-material-trigger aria-haspopup="dialog" aria-expanded="false" aria-label="${escapeHtml(label)}：${escapeHtml(name)}" title="${escapeHtml(name)}"${disabled}>
+      <span data-material-label>${escapeHtml(name)}</span><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button></div>`;
   }
   if (field === "accuracy_grade") {
     return `
@@ -12647,6 +12660,7 @@ function activateReviewContext(messageId = state.activeReviewMessageId, options 
 }
 
 function setReview(review, imageUrl, options = {}) {
+  if (state.review !== review) globalThis.MaterialPicker?.close();
   if (!options.readOnlySnapshot && reviewReadOnly()) {
     state.reviewNavigationSerial++; stopLocalVerificationWatch();
     reviewSync = {locked:false,error:"",token:reviewSync.token+1}; reviewLoadingStatus();

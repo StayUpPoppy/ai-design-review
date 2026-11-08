@@ -192,6 +192,8 @@ class RecognitionCancelled(RuntimeError):
 @app.on_event("startup")
 def refresh_runtime_startup_status() -> None:
     global RAGFLOW_STARTUP_STATUS, DATABASE_STARTUP_STATUS, GENERATION_TEMPLATE_STARTUP_STATUS
+    # A configured but uninitialized database must not use JSON for calculations.
+    load_material_catalog()
     RAGFLOW_STARTUP_STATUS = ragflow_runtime_status(check_health=True)
     DATABASE_STARTUP_STATUS = REVIEW_PERSISTENCE.health(check_connection=True)
     mock_enabled = _env_flag("MOCK_SOLIDWORKS_ENABLED", False)

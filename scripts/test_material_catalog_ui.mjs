@@ -23,10 +23,7 @@ const materials = [
   ["Inconel 718", "Inconel 718", 77200, ["INCONEL 718", "lnconel718镍基合金钢", "Inconel 718 镍基合金钢"]],
 ];
 
-export const catalogFixture = {
-  version: "company-materials/test-v1", source: "公司材料表固定参考值（模拟数据）",
-  items: materials.map(([display_name, standard_value, shear_modulus_mpa, aliases], index) => ({ id: String(index + 1), display_name, standard_value, shear_modulus_mpa, aliases })),
-};
+export const catalogFixture = JSON.parse(fs.readFileSync(new URL("../config/compression_material_catalog.json", import.meta.url), "utf8"));
 
 export const confirmedParam = (value, unit = null, extra = {}) => ({ value, unit, source: ["human_confirmed"], need_human_review: false, ...extra });
 
@@ -70,14 +67,22 @@ export async function runMaterialUiTests() {
     accuracyGradeStatusLabel: () => "", parameterUnitLabel: (field, name) => ({ name, unit: "", text: name }),
     parameterUnitLabelHtml: (label) => label.name, parameterValueControlHtml: () => "<input>",
     formatTolerance: () => "", confirmationButtonHtml: () => "<button>确认</button>",
+    getToleranceEditor: () => null, supportsToleranceEditor: () => false,
   };
   vm.createContext(context);
   const functions = materialFunctionBlocks(source);
   assert.match(functions, /function applyMaterialSelection\(/, "Material selection helper must exist");
   vm.runInContext(fs.readFileSync(new URL("../frontend/compression-design-checks.js", import.meta.url), "utf8"), context);
   vm.runInContext(functions, context);
+  assert.equal(catalogFixture.items.length, 103);
+  for (const [display, standard, modulus, aliases] of materials) {
+    const entry = catalogFixture.items.find(item => item.display_name === display);
+    assert.equal(entry.standard_value, standard);
+    assert.equal(entry.shear_modulus_mpa, modulus, "Original reference G must remain unchanged");
+    for (const alias of aliases) assert.equal(context.materialDisplayValue(alias), display);
+  }
   for (const entry of catalogFixture.items) {
-    assert.doesNotMatch(entry.display_name, /[\u3400-\u9fff]/);
+    if (Number(entry.id) <= 15) assert.doesNotMatch(entry.display_name, /[\u3400-\u9fff]/);
     for (const alias of [entry.display_name, entry.standard_value, ...entry.aliases]) {
       const parameter = { value: alias, need_human_review: false, raw_value: alias, source: ["human_confirmed"] };
       const before = JSON.stringify(parameter);
@@ -100,7 +105,7 @@ export async function runMaterialUiTests() {
   assert.equal(selected.raw_value, original.raw_value, "Choice must retain original drawing material");
   assert.equal(selected.material_selection_source, "manual");
   const beforeInvalid = JSON.stringify(selected);
-  assert.equal(context.applyMaterialSelection(selected, "SUS316L"), false, "UI helper must reject arbitrary new material strings");
+  assert.equal(context.applyMaterialSelection(selected, "SUS316LX"), false, "UI helper must reject arbitrary new material strings");
   assert.equal(JSON.stringify(selected), beforeInvalid);
   assert.equal(context.applyMaterialSelection(selected, ""), true);
   assert.ok(selected.value == null || selected.value === "");
@@ -116,7 +121,7 @@ export async function runMaterialUiTests() {
   assert.equal(JSON.stringify(legacy), frozen, "Compatibility value is not a new catalog option");
   const htmlBefore = JSON.stringify(context.state.review);
   const html = context.materialOptionsHtml(legacy);
-  assert.equal((html.match(/<option /g) || []).length, 17);
+  assert.equal((html.match(/<option /g) || []).length, 105);
   assert.match(html, /selected disabled>原有材料/);
   const noteHtml = context.materialSelectionNotesHtml({ ...legacy, raw_value: '<script>ХН70МВТЮБ</script>',
     material_selection_source: "drawing_substitute", material_substitution_evidence: { evidence: '允许换用 <script>INCONEL750</script>' } });

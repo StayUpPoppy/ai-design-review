@@ -1,7 +1,13 @@
 {
-  "version": "company-compression-materials-v3",
-  "source": "公司材料表固定参考值（材料标准.xlsx）",
+  "version": "company-materials/sha256:2d8751e2ea365d893e9430cb33abf46c42f8ca2c07dfaf1a905e5273eefae780",
+  "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
   "description": "公司压缩弹簧材料目录；材料属性为表内固定参考值，不作温度、线径或热处理修正。",
+  "source_workbook": {
+    "filename": "审图材料标准表.xlsx",
+    "sha256": "648e982e8ce15d399e2a0c22133518a8da93ec83cf7531a7fd19087a32ac49c9",
+    "worksheet": "sheet1.xml",
+    "data_rows": 103
+  },
   "items": [
     {
       "id": "1",
@@ -12,12 +18,17 @@
         "SWP-B",
         "SWP B"
       ],
-      "shear_modulus_mpa": 78000,
-      "tensile_strength_mpa": 2200,
-      "elastic_modulus_mpa": 206000,
+      "tensile_strength_mpa": 2200.0,
+      "shear_modulus_mpa": 78000.0,
+      "elastic_modulus_mpa": 206000.0,
       "density_g_cm3": 7.85,
-      "allowable_shear_stress_mpa": 990,
-      "allowable_stress_coefficient": 0.4
+      "allowable_shear_stress_mpa": 990.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SWPB",
+      "source_row": 2,
+      "sort_order": 0,
+      "enabled": true
     },
     {
       "id": "2",
@@ -30,12 +41,17 @@
         "SWPA琴钢丝",
         "SWPA 琴钢丝"
       ],
-      "shear_modulus_mpa": 78000,
-      "tensile_strength_mpa": 2100,
-      "elastic_modulus_mpa": 206000,
+      "tensile_strength_mpa": 2100.0,
+      "shear_modulus_mpa": 78000.0,
+      "elastic_modulus_mpa": 206000.0,
       "density_g_cm3": 7.85,
-      "allowable_shear_stress_mpa": 945,
-      "allowable_stress_coefficient": 0.4
+      "allowable_shear_stress_mpa": 945.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SWPA",
+      "source_row": 3,
+      "sort_order": 1,
+      "enabled": true
     },
     {
       "id": "3",
@@ -47,12 +63,17 @@
         "SWC硬钢线",
         "SWC 硬钢线"
       ],
-      "shear_modulus_mpa": 78000,
-      "tensile_strength_mpa": 1760,
-      "elastic_modulus_mpa": 206000,
+      "tensile_strength_mpa": 1760.0,
+      "shear_modulus_mpa": 78000.0,
+      "elastic_modulus_mpa": 206000.0,
       "density_g_cm3": 7.85,
-      "allowable_shear_stress_mpa": 792,
-      "allowable_stress_coefficient": 0.5
+      "allowable_shear_stress_mpa": 792.0,
+      "allowable_stress_coefficient": 0.5,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SWC",
+      "source_row": 4,
+      "sort_order": 2,
+      "enabled": true
     },
     {
       "id": "4",
@@ -65,12 +86,17 @@
         "SUS304不锈钢",
         "SUS304 不锈钢"
       ],
-      "shear_modulus_mpa": 71500,
-      "tensile_strength_mpa": 520,
-      "elastic_modulus_mpa": 193000,
+      "tensile_strength_mpa": 520.0,
+      "shear_modulus_mpa": 71500.0,
+      "elastic_modulus_mpa": 193000.0,
       "density_g_cm3": 7.93,
-      "allowable_shear_stress_mpa": 310,
-      "allowable_stress_coefficient": 0.4
+      "allowable_shear_stress_mpa": 310.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SUS304",
+      "source_row": 5,
+      "sort_order": 3,
+      "enabled": true
     },
     {
       "id": "5",
@@ -83,12 +109,17 @@
         "SUS316不锈钢",
         "SUS316 不锈钢"
       ],
-      "shear_modulus_mpa": 71500,
-      "tensile_strength_mpa": 520,
-      "elastic_modulus_mpa": 193000,
-      "density_g_cm3": 8,
-      "allowable_shear_stress_mpa": 310,
-      "allowable_stress_coefficient": 0.4
+      "tensile_strength_mpa": 520.0,
+      "shear_modulus_mpa": 71500.0,
+      "elastic_modulus_mpa": 193000.0,
+      "density_g_cm3": 8.0,
+      "allowable_shear_stress_mpa": 310.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SUS316",
+      "source_row": 6,
+      "sort_order": 4,
+      "enabled": true
     },
     {
       "id": "6",
@@ -101,12 +132,17 @@
         "SUS631不锈钢",
         "SUS631 不锈钢"
       ],
-      "shear_modulus_mpa": 73500,
-      "tensile_strength_mpa": 1030,
-      "elastic_modulus_mpa": 198000,
+      "tensile_strength_mpa": 1030.0,
+      "shear_modulus_mpa": 73500.0,
+      "elastic_modulus_mpa": 198000.0,
       "density_g_cm3": 7.93,
-      "allowable_shear_stress_mpa": 465,
-      "allowable_stress_coefficient": 0.4
+      "allowable_shear_stress_mpa": 465.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SUS631",
+      "source_row": 7,
+      "sort_order": 5,
+      "enabled": true
     },
     {
       "id": "7",
@@ -118,12 +154,17 @@
         "65Mn弹簧钢",
         "65Mn 弹簧钢"
       ],
-      "shear_modulus_mpa": 78000,
-      "tensile_strength_mpa": 1120,
-      "elastic_modulus_mpa": 206000,
+      "tensile_strength_mpa": 1120.0,
+      "shear_modulus_mpa": 78000.0,
+      "elastic_modulus_mpa": 206000.0,
       "density_g_cm3": 7.85,
-      "allowable_shear_stress_mpa": 672,
-      "allowable_stress_coefficient": 0.4
+      "allowable_shear_stress_mpa": 672.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "65Mn",
+      "source_row": 8,
+      "sort_order": 6,
+      "enabled": true
     },
     {
       "id": "8",
@@ -134,12 +175,17 @@
         "60Si2Mn硅锰钢",
         "60Si2Mn 硅锰钢"
       ],
-      "shear_modulus_mpa": 78000,
-      "tensile_strength_mpa": 1570,
-      "elastic_modulus_mpa": 206000,
+      "tensile_strength_mpa": 1570.0,
+      "shear_modulus_mpa": 78000.0,
+      "elastic_modulus_mpa": 206000.0,
       "density_g_cm3": 7.85,
-      "allowable_shear_stress_mpa": 745,
-      "allowable_stress_coefficient": 0.4
+      "allowable_shear_stress_mpa": 745.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "60Si2Mn",
+      "source_row": 9,
+      "sort_order": 7,
+      "enabled": true
     },
     {
       "id": "9",
@@ -150,12 +196,17 @@
         "50CrVA铬钒钢",
         "50CrVA 铬钒钢"
       ],
-      "shear_modulus_mpa": 78000,
-      "tensile_strength_mpa": 1270,
-      "elastic_modulus_mpa": 206000,
+      "tensile_strength_mpa": 1270.0,
+      "shear_modulus_mpa": 78000.0,
+      "elastic_modulus_mpa": 206000.0,
       "density_g_cm3": 7.85,
-      "allowable_shear_stress_mpa": 745,
-      "allowable_stress_coefficient": 0.4
+      "allowable_shear_stress_mpa": 745.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "50CrVA",
+      "source_row": 10,
+      "sort_order": 8,
+      "enabled": true
     },
     {
       "id": "10",
@@ -170,12 +221,17 @@
         "lnconelX750镍基合金钢",
         "Inconel X750 镍基合金钢"
       ],
-      "shear_modulus_mpa": 79000,
-      "tensile_strength_mpa": 1250,
-      "elastic_modulus_mpa": 210000,
+      "tensile_strength_mpa": 1250.0,
+      "shear_modulus_mpa": 79000.0,
+      "elastic_modulus_mpa": 210000.0,
       "density_g_cm3": 8.28,
-      "allowable_shear_stress_mpa": 500,
-      "allowable_stress_coefficient": 0.4
+      "allowable_shear_stress_mpa": 500.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "lnconelX750",
+      "source_row": 11,
+      "sort_order": 9,
+      "enabled": true
     },
     {
       "id": "11",
@@ -186,12 +242,17 @@
         "70碳素钢",
         "70 碳素钢"
       ],
-      "shear_modulus_mpa": 79000,
-      "tensile_strength_mpa": 1100,
-      "elastic_modulus_mpa": 206000,
+      "tensile_strength_mpa": 1100.0,
+      "shear_modulus_mpa": 79000.0,
+      "elastic_modulus_mpa": 206000.0,
       "density_g_cm3": 7.85,
-      "allowable_shear_stress_mpa": 440,
-      "allowable_stress_coefficient": 0.4
+      "allowable_shear_stress_mpa": 440.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "70",
+      "source_row": 12,
+      "sort_order": 10,
+      "enabled": true
     },
     {
       "id": "12",
@@ -201,12 +262,17 @@
         "55CrSi",
         "55CrSi合金钢"
       ],
-      "shear_modulus_mpa": 79000,
-      "tensile_strength_mpa": 1570,
-      "elastic_modulus_mpa": 206000,
+      "tensile_strength_mpa": 1570.0,
+      "shear_modulus_mpa": 79000.0,
+      "elastic_modulus_mpa": 206000.0,
       "density_g_cm3": 7.85,
-      "allowable_shear_stress_mpa": 628,
-      "allowable_stress_coefficient": 0.4
+      "allowable_shear_stress_mpa": 628.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "55CrSi",
+      "source_row": 13,
+      "sort_order": 11,
+      "enabled": true
     },
     {
       "id": "13",
@@ -217,12 +283,17 @@
         "17 4 PH",
         "17-4PH不锈钢"
       ],
-      "shear_modulus_mpa": 76000,
-      "tensile_strength_mpa": 1310,
-      "elastic_modulus_mpa": 196000,
+      "tensile_strength_mpa": 1310.0,
+      "shear_modulus_mpa": 76000.0,
+      "elastic_modulus_mpa": 196000.0,
       "density_g_cm3": 7.8,
-      "allowable_shear_stress_mpa": 524,
-      "allowable_stress_coefficient": 0.4
+      "allowable_shear_stress_mpa": 524.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "17-4PH",
+      "source_row": 14,
+      "sort_order": 12,
+      "enabled": true
     },
     {
       "id": "14",
@@ -233,12 +304,17 @@
         "17 7 PH",
         "17-7PH不锈钢"
       ],
-      "shear_modulus_mpa": 75500,
-      "tensile_strength_mpa": 1570,
-      "elastic_modulus_mpa": 203000,
+      "tensile_strength_mpa": 1570.0,
+      "shear_modulus_mpa": 75500.0,
+      "elastic_modulus_mpa": 203000.0,
       "density_g_cm3": 7.93,
-      "allowable_shear_stress_mpa": 628,
-      "allowable_stress_coefficient": 0.4
+      "allowable_shear_stress_mpa": 628.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "17-7PH",
+      "source_row": 15,
+      "sort_order": 13,
+      "enabled": true
     },
     {
       "id": "15",
@@ -250,12 +326,1689 @@
         "lnconel718镍基合金钢",
         "Inconel 718 镍基合金钢"
       ],
-      "shear_modulus_mpa": 77200,
-      "tensile_strength_mpa": 1520,
-      "elastic_modulus_mpa": 200000,
+      "tensile_strength_mpa": 1520.0,
+      "shear_modulus_mpa": 77200.0,
+      "elastic_modulus_mpa": 200000.0,
       "density_g_cm3": 8.24,
-      "allowable_shear_stress_mpa": 578,
-      "allowable_stress_coefficient": 0.4
+      "allowable_shear_stress_mpa": 578.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "lnconel718",
+      "source_row": 16,
+      "sort_order": 14,
+      "enabled": true
+    },
+    {
+      "id": "16",
+      "display_name": "55CrSiA",
+      "standard_value": "55CrSiA",
+      "aliases": [
+        "55CrSiA"
+      ],
+      "tensile_strength_mpa": 1450.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 580.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "55CrSiA",
+      "source_row": 17,
+      "sort_order": 15,
+      "enabled": true
+    },
+    {
+      "id": "19",
+      "display_name": "SUS316L",
+      "standard_value": "SUS316L",
+      "aliases": [
+        "SUS316L"
+      ],
+      "tensile_strength_mpa": 980.0,
+      "shear_modulus_mpa": 70000.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 8.0,
+      "allowable_shear_stress_mpa": 392.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SUS316L",
+      "source_row": 18,
+      "sort_order": 16,
+      "enabled": true
+    },
+    {
+      "id": "20",
+      "display_name": "SUS201",
+      "standard_value": "SUS201",
+      "aliases": [
+        "SUS201"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 75800.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 7.8,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SUS201",
+      "source_row": 19,
+      "sort_order": 17,
+      "enabled": true
+    },
+    {
+      "id": "21",
+      "display_name": "SUS301",
+      "standard_value": "SUS301",
+      "aliases": [
+        "SUS301"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 75800.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 7.9,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SUS301",
+      "source_row": 20,
+      "sort_order": 18,
+      "enabled": true
+    },
+    {
+      "id": "22",
+      "display_name": "Inconel 625",
+      "standard_value": "Inconel 625",
+      "aliases": [
+        "Inconel 625"
+      ],
+      "tensile_strength_mpa": 1380.0,
+      "shear_modulus_mpa": 81200.0,
+      "elastic_modulus_mpa": 208000.0,
+      "density_g_cm3": 8.44,
+      "allowable_shear_stress_mpa": 552.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "Inconel 625",
+      "source_row": 21,
+      "sort_order": 19,
+      "enabled": true
+    },
+    {
+      "id": "23",
+      "display_name": "TC4",
+      "standard_value": "TC4",
+      "aliases": [
+        "TC4"
+      ],
+      "tensile_strength_mpa": 895.0,
+      "shear_modulus_mpa": 44600.0,
+      "elastic_modulus_mpa": 109000.0,
+      "density_g_cm3": 4.44,
+      "allowable_shear_stress_mpa": 358.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "TC4",
+      "source_row": 22,
+      "sort_order": 20,
+      "enabled": true
+    },
+    {
+      "id": "24",
+      "display_name": "FDC",
+      "standard_value": "FDC",
+      "aliases": [
+        "FDC"
+      ],
+      "tensile_strength_mpa": 1250.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 500.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "FDC",
+      "source_row": 23,
+      "sort_order": 21,
+      "enabled": true
+    },
+    {
+      "id": "25",
+      "display_name": "TDC",
+      "standard_value": "TDC",
+      "aliases": [
+        "TDC"
+      ],
+      "tensile_strength_mpa": 1250.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 500.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "TDC",
+      "source_row": 24,
+      "sort_order": 22,
+      "enabled": true
+    },
+    {
+      "id": "26",
+      "display_name": "VDC",
+      "standard_value": "VDC",
+      "aliases": [
+        "VDC"
+      ],
+      "tensile_strength_mpa": 1340.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 536.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "VDC",
+      "source_row": 25,
+      "sort_order": 23,
+      "enabled": true
+    },
+    {
+      "id": "27",
+      "display_name": "FDCrSi",
+      "standard_value": "FDCrSi",
+      "aliases": [
+        "FDCrSi"
+      ],
+      "tensile_strength_mpa": 1580.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 632.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "FDCrSi",
+      "source_row": 26,
+      "sort_order": 24,
+      "enabled": true
+    },
+    {
+      "id": "28",
+      "display_name": "TDCrSi",
+      "standard_value": "TDCrSi",
+      "aliases": [
+        "TDCrSi"
+      ],
+      "tensile_strength_mpa": 1580.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 632.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "TDCrSi",
+      "source_row": 27,
+      "sort_order": 25,
+      "enabled": true
+    },
+    {
+      "id": "29",
+      "display_name": "VDCrSi",
+      "standard_value": "VDCrSi",
+      "aliases": [
+        "VDCrSi"
+      ],
+      "tensile_strength_mpa": 1620.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 648.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "VDCrSi",
+      "source_row": 28,
+      "sort_order": 26,
+      "enabled": true
+    },
+    {
+      "id": "30",
+      "display_name": "FDCrV-A",
+      "standard_value": "FDCrV-A",
+      "aliases": [
+        "FDCrV-A"
+      ],
+      "tensile_strength_mpa": 1270.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 508.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "FDCrV-A",
+      "source_row": 29,
+      "sort_order": 27,
+      "enabled": true
+    },
+    {
+      "id": "31",
+      "display_name": "FDCrV-B",
+      "standard_value": "FDCrV-B",
+      "aliases": [
+        "FDCrV-B"
+      ],
+      "tensile_strength_mpa": 1400.0,
+      "shear_modulus_mpa": 79500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 560.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "FDCrV-B",
+      "source_row": 30,
+      "sort_order": 28,
+      "enabled": true
+    },
+    {
+      "id": "32",
+      "display_name": "VDCrV-A",
+      "standard_value": "VDCrV-A",
+      "aliases": [
+        "VDCrV-A"
+      ],
+      "tensile_strength_mpa": 1370.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 548.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "VDCrV-A",
+      "source_row": 31,
+      "sort_order": 29,
+      "enabled": true
+    },
+    {
+      "id": "33",
+      "display_name": "VDCrV-B",
+      "standard_value": "VDCrV-B",
+      "aliases": [
+        "VDCrV-B"
+      ],
+      "tensile_strength_mpa": 1340.0,
+      "shear_modulus_mpa": 79500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 536.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "VDCrV-B",
+      "source_row": 32,
+      "sort_order": 30,
+      "enabled": true
+    },
+    {
+      "id": "35",
+      "display_name": "60Si2CrVA",
+      "standard_value": "60Si2CrVA",
+      "aliases": [
+        "60Si2CrVA"
+      ],
+      "tensile_strength_mpa": 1860.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 744.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "60Si2CrVA",
+      "source_row": 33,
+      "sort_order": 31,
+      "enabled": true
+    },
+    {
+      "id": "37",
+      "display_name": "51CrV4",
+      "standard_value": "51CrV4",
+      "aliases": [
+        "51CrV4"
+      ],
+      "tensile_strength_mpa": 1275.0,
+      "shear_modulus_mpa": 80000.0,
+      "elastic_modulus_mpa": 210000.0,
+      "density_g_cm3": 7.8,
+      "allowable_shear_stress_mpa": 510.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "51CrV4",
+      "source_row": 34,
+      "sort_order": 32,
+      "enabled": true
+    },
+    {
+      "id": "38",
+      "display_name": "20#",
+      "standard_value": "20#",
+      "aliases": [
+        "20#"
+      ],
+      "tensile_strength_mpa": 410.0,
+      "shear_modulus_mpa": 79600.0,
+      "elastic_modulus_mpa": 207000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 164.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "20#",
+      "source_row": 35,
+      "sort_order": 33,
+      "enabled": true
+    },
+    {
+      "id": "39",
+      "display_name": "35#",
+      "standard_value": "35#",
+      "aliases": [
+        "35#"
+      ],
+      "tensile_strength_mpa": 530.0,
+      "shear_modulus_mpa": 80900.0,
+      "elastic_modulus_mpa": 212000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 212.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "35#",
+      "source_row": 36,
+      "sort_order": 34,
+      "enabled": true
+    },
+    {
+      "id": "40",
+      "display_name": "45#",
+      "standard_value": "45#",
+      "aliases": [
+        "45#"
+      ],
+      "tensile_strength_mpa": 600.0,
+      "shear_modulus_mpa": 79200.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 240.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "45#",
+      "source_row": 37,
+      "sort_order": 35,
+      "enabled": true
+    },
+    {
+      "id": "41",
+      "display_name": "SUS302",
+      "standard_value": "SUS302",
+      "aliases": [
+        "SUS302"
+      ],
+      "tensile_strength_mpa": 980.0,
+      "shear_modulus_mpa": 68900.0,
+      "elastic_modulus_mpa": 193000.0,
+      "density_g_cm3": 8.03,
+      "allowable_shear_stress_mpa": 392.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SUS302",
+      "source_row": 38,
+      "sort_order": 36,
+      "enabled": true
+    },
+    {
+      "id": "42",
+      "display_name": "Hastelloy C276",
+      "standard_value": "Hastelloy C276",
+      "aliases": [
+        "Hastelloy C276"
+      ],
+      "tensile_strength_mpa": 1380.0,
+      "shear_modulus_mpa": 79000.0,
+      "elastic_modulus_mpa": 205000.0,
+      "density_g_cm3": 8.89,
+      "allowable_shear_stress_mpa": 552.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "Hastelloy C276",
+      "source_row": 39,
+      "sort_order": 37,
+      "enabled": true
+    },
+    {
+      "id": "43",
+      "display_name": "MP35N",
+      "standard_value": "MP35N",
+      "aliases": [
+        "MP35N"
+      ],
+      "tensile_strength_mpa": 1517.0,
+      "shear_modulus_mpa": 83400.0,
+      "elastic_modulus_mpa": 233000.0,
+      "density_g_cm3": 8.42,
+      "allowable_shear_stress_mpa": 607.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "MP35N",
+      "source_row": 40,
+      "sort_order": 38,
+      "enabled": true
+    },
+    {
+      "id": "44",
+      "display_name": "GH4090",
+      "standard_value": "GH4090",
+      "aliases": [
+        "GH4090"
+      ],
+      "tensile_strength_mpa": 1300.0,
+      "shear_modulus_mpa": 82500.0,
+      "elastic_modulus_mpa": null,
+      "density_g_cm3": 8.18,
+      "allowable_shear_stress_mpa": 520.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "GH4090",
+      "source_row": 41,
+      "sort_order": 39,
+      "enabled": true
+    },
+    {
+      "id": "45",
+      "display_name": "R30003",
+      "standard_value": "R30003",
+      "aliases": [
+        "R30003"
+      ],
+      "tensile_strength_mpa": 1515.0,
+      "shear_modulus_mpa": 77200.0,
+      "elastic_modulus_mpa": null,
+      "density_g_cm3": 8.3,
+      "allowable_shear_stress_mpa": 606.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "R30003",
+      "source_row": 42,
+      "sort_order": 40,
+      "enabled": true
+    },
+    {
+      "id": "46",
+      "display_name": "Gr.5",
+      "standard_value": "Gr.5",
+      "aliases": [
+        "Gr.5"
+      ],
+      "tensile_strength_mpa": 895.0,
+      "shear_modulus_mpa": 44000.0,
+      "elastic_modulus_mpa": null,
+      "density_g_cm3": 4.42,
+      "allowable_shear_stress_mpa": 358.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "Gr.5",
+      "source_row": 43,
+      "sort_order": 41,
+      "enabled": true
+    },
+    {
+      "id": "47",
+      "display_name": "QSi3-1",
+      "standard_value": "QSi3-1",
+      "aliases": [
+        "QSi3-1"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 40200.0,
+      "elastic_modulus_mpa": 93100.0,
+      "density_g_cm3": 8.6,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "QSi3-1",
+      "source_row": 44,
+      "sort_order": 42,
+      "enabled": true
+    },
+    {
+      "id": "48",
+      "display_name": "TA2",
+      "standard_value": "TA2",
+      "aliases": [
+        "TA2"
+      ],
+      "tensile_strength_mpa": 400.0,
+      "shear_modulus_mpa": 44000.0,
+      "elastic_modulus_mpa": 107900.0,
+      "density_g_cm3": 4.5,
+      "allowable_shear_stress_mpa": 160.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "TA2",
+      "source_row": 45,
+      "sort_order": 43,
+      "enabled": true
+    },
+    {
+      "id": "49",
+      "display_name": "C-2000",
+      "standard_value": "C-2000",
+      "aliases": [
+        "C-2000"
+      ],
+      "tensile_strength_mpa": 1380.0,
+      "shear_modulus_mpa": 79000.0,
+      "elastic_modulus_mpa": 207000.0,
+      "density_g_cm3": 8.5,
+      "allowable_shear_stress_mpa": 552.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "C-2000",
+      "source_row": 46,
+      "sort_order": 44,
+      "enabled": true
+    },
+    {
+      "id": "50",
+      "display_name": "GH4169",
+      "standard_value": "GH4169",
+      "aliases": [
+        "GH4169"
+      ],
+      "tensile_strength_mpa": 1310.0,
+      "shear_modulus_mpa": 77200.0,
+      "elastic_modulus_mpa": 204900.0,
+      "density_g_cm3": 8.19,
+      "allowable_shear_stress_mpa": 524.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "GH4169",
+      "source_row": 47,
+      "sort_order": 45,
+      "enabled": true
+    },
+    {
+      "id": "51",
+      "display_name": "SUS303",
+      "standard_value": "SUS303",
+      "aliases": [
+        "SUS303"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 75800.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 7.9,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SUS303",
+      "source_row": 48,
+      "sort_order": 46,
+      "enabled": true
+    },
+    {
+      "id": "53",
+      "display_name": "QBe2",
+      "standard_value": "QBe2",
+      "aliases": [
+        "QBe2"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 42100.0,
+      "elastic_modulus_mpa": 129400.0,
+      "density_g_cm3": 8.25,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "QBe2",
+      "source_row": 49,
+      "sort_order": 47,
+      "enabled": true
+    },
+    {
+      "id": "55",
+      "display_name": "Inconel 600",
+      "standard_value": "Inconel 600",
+      "aliases": [
+        "Inconel 600"
+      ],
+      "tensile_strength_mpa": 1103.0,
+      "shear_modulus_mpa": 80800.0,
+      "elastic_modulus_mpa": 214000.0,
+      "density_g_cm3": 8.47,
+      "allowable_shear_stress_mpa": 441.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "Inconel 600",
+      "source_row": 50,
+      "sort_order": 48,
+      "enabled": true
+    },
+    {
+      "id": "56",
+      "display_name": "GH2132",
+      "standard_value": "GH2132",
+      "aliases": [
+        "GH2132"
+      ],
+      "tensile_strength_mpa": 1100.0,
+      "shear_modulus_mpa": 77000.0,
+      "elastic_modulus_mpa": 199000.0,
+      "density_g_cm3": 7.94,
+      "allowable_shear_stress_mpa": 440.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "GH2132",
+      "source_row": 51,
+      "sort_order": 49,
+      "enabled": true
+    },
+    {
+      "id": "57",
+      "display_name": "SAE9254",
+      "standard_value": "SAE9254",
+      "aliases": [
+        "SAE9254"
+      ],
+      "tensile_strength_mpa": 1450.0,
+      "shear_modulus_mpa": 79500.0,
+      "elastic_modulus_mpa": 210000.0,
+      "density_g_cm3": 7.8,
+      "allowable_shear_stress_mpa": 580.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SAE9254",
+      "source_row": 52,
+      "sort_order": 50,
+      "enabled": true
+    },
+    {
+      "id": "58",
+      "display_name": "QSn4-3",
+      "standard_value": "QSn4-3",
+      "aliases": [
+        "QSn4-3"
+      ],
+      "tensile_strength_mpa": 780.0,
+      "shear_modulus_mpa": 39200.0,
+      "elastic_modulus_mpa": 93100.0,
+      "density_g_cm3": 8.8,
+      "allowable_shear_stress_mpa": 312.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "QSn4-3",
+      "source_row": 53,
+      "sort_order": 51,
+      "enabled": true
+    },
+    {
+      "id": "60",
+      "display_name": "60Si2CrV",
+      "standard_value": "60Si2CrV",
+      "aliases": [
+        "60Si2CrV"
+      ],
+      "tensile_strength_mpa": 1860.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 744.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "60Si2CrV",
+      "source_row": 54,
+      "sort_order": 52,
+      "enabled": true
+    },
+    {
+      "id": "61",
+      "display_name": "Monelk500",
+      "standard_value": "Monelk500",
+      "aliases": [
+        "Monelk500"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 66000.0,
+      "elastic_modulus_mpa": 179000.0,
+      "density_g_cm3": 8.44,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "Monelk500",
+      "source_row": 55,
+      "sort_order": 53,
+      "enabled": true
+    },
+    {
+      "id": "64",
+      "display_name": "Monel400",
+      "standard_value": "Monel400",
+      "aliases": [
+        "Monel400"
+      ],
+      "tensile_strength_mpa": 800.0,
+      "shear_modulus_mpa": 65300.0,
+      "elastic_modulus_mpa": 173000.0,
+      "density_g_cm3": 8.8,
+      "allowable_shear_stress_mpa": 320.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "Monel400",
+      "source_row": 56,
+      "sort_order": 54,
+      "enabled": true
+    },
+    {
+      "id": "66",
+      "display_name": "SUS321",
+      "standard_value": "SUS321",
+      "aliases": [
+        "SUS321"
+      ],
+      "tensile_strength_mpa": 980.0,
+      "shear_modulus_mpa": 78000.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 7.9,
+      "allowable_shear_stress_mpa": 392.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SUS321",
+      "source_row": 57,
+      "sort_order": 55,
+      "enabled": true
+    },
+    {
+      "id": "69",
+      "display_name": "SUS304H",
+      "standard_value": "SUS304H",
+      "aliases": [
+        "SUS304H"
+      ],
+      "tensile_strength_mpa": 980.0,
+      "shear_modulus_mpa": 75800.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 7.9,
+      "allowable_shear_stress_mpa": 392.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SUS304H",
+      "source_row": 58,
+      "sort_order": 56,
+      "enabled": true
+    },
+    {
+      "id": "76",
+      "display_name": "Nimonic90",
+      "standard_value": "Nimonic90",
+      "aliases": [
+        "Nimonic90"
+      ],
+      "tensile_strength_mpa": 1300.0,
+      "shear_modulus_mpa": 82500.0,
+      "elastic_modulus_mpa": null,
+      "density_g_cm3": 8.18,
+      "allowable_shear_stress_mpa": 520.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "Nimonic90",
+      "source_row": 59,
+      "sort_order": 57,
+      "enabled": true
+    },
+    {
+      "id": "78",
+      "display_name": "2Cr13",
+      "standard_value": "2Cr13",
+      "aliases": [
+        "2Cr13"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 80800.0,
+      "elastic_modulus_mpa": 216000.0,
+      "density_g_cm3": 7.7,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "2Cr13",
+      "source_row": 60,
+      "sort_order": 58,
+      "enabled": true
+    },
+    {
+      "id": "79",
+      "display_name": "TDSiMn",
+      "standard_value": "TDSiMn",
+      "aliases": [
+        "TDSiMn"
+      ],
+      "tensile_strength_mpa": 1540.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 616.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "TDSiMn",
+      "source_row": 61,
+      "sort_order": 59,
+      "enabled": true
+    },
+    {
+      "id": "80",
+      "display_name": "TDCrV-A",
+      "standard_value": "TDCrV-A",
+      "aliases": [
+        "TDCrV-A"
+      ],
+      "tensile_strength_mpa": 1270.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 508.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "TDCrV-A",
+      "source_row": 62,
+      "sort_order": 60,
+      "enabled": true
+    },
+    {
+      "id": "81",
+      "display_name": "TDCrV-B",
+      "standard_value": "TDCrV-B",
+      "aliases": [
+        "TDCrV-B"
+      ],
+      "tensile_strength_mpa": 1400.0,
+      "shear_modulus_mpa": 79500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 560.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "TDCrV-B",
+      "source_row": 63,
+      "sort_order": 61,
+      "enabled": true
+    },
+    {
+      "id": "82",
+      "display_name": "FDSiMn",
+      "standard_value": "FDSiMn",
+      "aliases": [
+        "FDSiMn"
+      ],
+      "tensile_strength_mpa": 1540.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 616.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "FDSiMn",
+      "source_row": 64,
+      "sort_order": 62,
+      "enabled": true
+    },
+    {
+      "id": "84",
+      "display_name": "C1720",
+      "standard_value": "C1720",
+      "aliases": [
+        "C1720"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 50300.0,
+      "elastic_modulus_mpa": 130000.0,
+      "density_g_cm3": 8.3,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "C1720",
+      "source_row": 65,
+      "sort_order": 63,
+      "enabled": true
+    },
+    {
+      "id": "85",
+      "display_name": "Hastelloy B-3",
+      "standard_value": "Hastelloy B-3",
+      "aliases": [
+        "Hastelloy B-3"
+      ],
+      "tensile_strength_mpa": 1379.0,
+      "shear_modulus_mpa": 84000.0,
+      "elastic_modulus_mpa": 216000.0,
+      "density_g_cm3": 9.22,
+      "allowable_shear_stress_mpa": 552.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "Hastelloy B-3",
+      "source_row": 66,
+      "sort_order": 64,
+      "enabled": true
+    },
+    {
+      "id": "86",
+      "display_name": "60Si2MnA",
+      "standard_value": "60Si2MnA",
+      "aliases": [
+        "60Si2MnA"
+      ],
+      "tensile_strength_mpa": 1570.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 628.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "60Si2MnA",
+      "source_row": 67,
+      "sort_order": 65,
+      "enabled": true
+    },
+    {
+      "id": "87",
+      "display_name": "SUS304-WPB",
+      "standard_value": "SUS304-WPB",
+      "aliases": [
+        "SUS304-WPB"
+      ],
+      "tensile_strength_mpa": 880.0,
+      "shear_modulus_mpa": 68500.0,
+      "elastic_modulus_mpa": 193000.0,
+      "density_g_cm3": 7.9,
+      "allowable_shear_stress_mpa": 352.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SUS304-WPB",
+      "source_row": 68,
+      "sort_order": 66,
+      "enabled": true
+    },
+    {
+      "id": "88",
+      "display_name": "SWOSC-V",
+      "standard_value": "SWOSC-V",
+      "aliases": [
+        "SWOSC-V"
+      ],
+      "tensile_strength_mpa": 1620.0,
+      "shear_modulus_mpa": 79500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 648.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SWOSC-V",
+      "source_row": 69,
+      "sort_order": 67,
+      "enabled": true
+    },
+    {
+      "id": "92",
+      "display_name": "GH4145",
+      "standard_value": "GH4145",
+      "aliases": [
+        "GH4145"
+      ],
+      "tensile_strength_mpa": 1100.0,
+      "shear_modulus_mpa": 75800.0,
+      "elastic_modulus_mpa": null,
+      "density_g_cm3": 8.28,
+      "allowable_shear_stress_mpa": 440.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "GH4145",
+      "source_row": 70,
+      "sort_order": 68,
+      "enabled": true
+    },
+    {
+      "id": "93",
+      "display_name": "Hastelloy C-4",
+      "standard_value": "Hastelloy C-4",
+      "aliases": [
+        "Hastelloy C-4"
+      ],
+      "tensile_strength_mpa": 690.0,
+      "shear_modulus_mpa": 78600.0,
+      "elastic_modulus_mpa": 211000.0,
+      "density_g_cm3": 8.64,
+      "allowable_shear_stress_mpa": 276.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "Hastelloy C-4",
+      "source_row": 71,
+      "sort_order": 69,
+      "enabled": true
+    },
+    {
+      "id": "94",
+      "display_name": "UNS S31600",
+      "standard_value": "UNS S31600",
+      "aliases": [
+        "UNS S31600"
+      ],
+      "tensile_strength_mpa": 980.0,
+      "shear_modulus_mpa": 70000.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 8.0,
+      "allowable_shear_stress_mpa": 392.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "UNS S31600",
+      "source_row": 72,
+      "sort_order": 70,
+      "enabled": true
+    },
+    {
+      "id": "95",
+      "display_name": "AISI 316",
+      "standard_value": "AISI 316",
+      "aliases": [
+        "AISI 316"
+      ],
+      "tensile_strength_mpa": 980.0,
+      "shear_modulus_mpa": 70000.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 8.0,
+      "allowable_shear_stress_mpa": 392.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "AISI 316",
+      "source_row": 73,
+      "sort_order": 71,
+      "enabled": true
+    },
+    {
+      "id": "96",
+      "display_name": "F53",
+      "standard_value": "F53",
+      "aliases": [
+        "F53"
+      ],
+      "tensile_strength_mpa": 800.0,
+      "shear_modulus_mpa": 77000.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 7.8,
+      "allowable_shear_stress_mpa": 320.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "F53",
+      "source_row": 74,
+      "sort_order": 72,
+      "enabled": true
+    },
+    {
+      "id": "97",
+      "display_name": "AISI C1020",
+      "standard_value": "AISI C1020",
+      "aliases": [
+        "AISI C1020"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 75800.0,
+      "elastic_modulus_mpa": 207000.0,
+      "density_g_cm3": 7.86,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "AISI C1020",
+      "source_row": 75,
+      "sort_order": 73,
+      "enabled": true
+    },
+    {
+      "id": "98",
+      "display_name": "50CrV4",
+      "standard_value": "50CrV4",
+      "aliases": [
+        "50CrV4"
+      ],
+      "tensile_strength_mpa": 1275.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 510.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "50CrV4",
+      "source_row": 76,
+      "sort_order": 74,
+      "enabled": true
+    },
+    {
+      "id": "99",
+      "display_name": "54SiCr6",
+      "standard_value": "54SiCr6",
+      "aliases": [
+        "54SiCr6"
+      ],
+      "tensile_strength_mpa": 1450.0,
+      "shear_modulus_mpa": 79500.0,
+      "elastic_modulus_mpa": 210000.0,
+      "density_g_cm3": 7.8,
+      "allowable_shear_stress_mpa": 580.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "54SiCr6",
+      "source_row": 77,
+      "sort_order": 75,
+      "enabled": true
+    },
+    {
+      "id": "100",
+      "display_name": "TDSiCr-C",
+      "standard_value": "TDSiCr-C",
+      "aliases": [
+        "TDSiCr-C"
+      ],
+      "tensile_strength_mpa": 1580.0,
+      "shear_modulus_mpa": 79500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 632.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "TDSiCr-C",
+      "source_row": 78,
+      "sort_order": 76,
+      "enabled": true
+    },
+    {
+      "id": "101",
+      "display_name": "ALLOY 20",
+      "standard_value": "ALLOY 20",
+      "aliases": [
+        "ALLOY 20"
+      ],
+      "tensile_strength_mpa": 1200.0,
+      "shear_modulus_mpa": 75800.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 8.08,
+      "allowable_shear_stress_mpa": 480.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "ALLOY 20",
+      "source_row": 79,
+      "sort_order": 77,
+      "enabled": true
+    },
+    {
+      "id": "102",
+      "display_name": "ASTM B197",
+      "standard_value": "ASTM B197",
+      "aliases": [
+        "ASTM B197"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 50300.0,
+      "elastic_modulus_mpa": 130000.0,
+      "density_g_cm3": 8.3,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "ASTM B197",
+      "source_row": 80,
+      "sort_order": 78,
+      "enabled": true
+    },
+    {
+      "id": "105",
+      "display_name": "12Cr18Ni9-B",
+      "standard_value": "12Cr18Ni9-B",
+      "aliases": [
+        "12Cr18Ni9-B"
+      ],
+      "tensile_strength_mpa": 1270.0,
+      "shear_modulus_mpa": 73000.0,
+      "elastic_modulus_mpa": 195000.0,
+      "density_g_cm3": 7.93,
+      "allowable_shear_stress_mpa": 508.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "12Cr18Ni9-B",
+      "source_row": 81,
+      "sort_order": 79,
+      "enabled": true
+    },
+    {
+      "id": "106",
+      "display_name": "1Cr18Ni9-B",
+      "standard_value": "1Cr18Ni9-B",
+      "aliases": [
+        "1Cr18Ni9-B"
+      ],
+      "tensile_strength_mpa": 1270.0,
+      "shear_modulus_mpa": 73000.0,
+      "elastic_modulus_mpa": 195000.0,
+      "density_g_cm3": 7.93,
+      "allowable_shear_stress_mpa": 508.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "1Cr18Ni9-B",
+      "source_row": 82,
+      "sort_order": 80,
+      "enabled": true
+    },
+    {
+      "id": "107",
+      "display_name": "06Cr19Ni10",
+      "standard_value": "06Cr19Ni10",
+      "aliases": [
+        "06Cr19Ni10"
+      ],
+      "tensile_strength_mpa": 980.0,
+      "shear_modulus_mpa": 75800.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 7.9,
+      "allowable_shear_stress_mpa": 392.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "06Cr19Ni10",
+      "source_row": 83,
+      "sort_order": 81,
+      "enabled": true
+    },
+    {
+      "id": "108",
+      "display_name": "2205（双相不锈钢）",
+      "standard_value": "2205（双相不锈钢）",
+      "aliases": [
+        "2205（双相不锈钢）"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 77000.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 7.8,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "2205（双相不锈钢）",
+      "source_row": 84,
+      "sort_order": 82,
+      "enabled": true
+    },
+    {
+      "id": "109",
+      "display_name": "R30035",
+      "standard_value": "R30035",
+      "aliases": [
+        "R30035"
+      ],
+      "tensile_strength_mpa": 1517.0,
+      "shear_modulus_mpa": 83400.0,
+      "elastic_modulus_mpa": 233000.0,
+      "density_g_cm3": 8.42,
+      "allowable_shear_stress_mpa": 607.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "R30035",
+      "source_row": 85,
+      "sort_order": 83,
+      "enabled": true
+    },
+    {
+      "id": "110",
+      "display_name": "AISI 631",
+      "standard_value": "AISI 631",
+      "aliases": [
+        "AISI 631"
+      ],
+      "tensile_strength_mpa": 1200.0,
+      "shear_modulus_mpa": 72000.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 7.81,
+      "allowable_shear_stress_mpa": 480.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "AISI 631",
+      "source_row": 86,
+      "sort_order": 84,
+      "enabled": true
+    },
+    {
+      "id": "111",
+      "display_name": "06Cr17Ni12Mo2",
+      "standard_value": "06Cr17Ni12Mo2",
+      "aliases": [
+        "06Cr17Ni12Mo2"
+      ],
+      "tensile_strength_mpa": 980.0,
+      "shear_modulus_mpa": 70000.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 8.0,
+      "allowable_shear_stress_mpa": 392.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "06Cr17Ni12Mo2",
+      "source_row": 87,
+      "sort_order": 85,
+      "enabled": true
+    },
+    {
+      "id": "112",
+      "display_name": "0Cr18Ni9",
+      "standard_value": "0Cr18Ni9",
+      "aliases": [
+        "0Cr18Ni9"
+      ],
+      "tensile_strength_mpa": 980.0,
+      "shear_modulus_mpa": 75800.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 7.9,
+      "allowable_shear_stress_mpa": 392.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "0Cr18Ni9",
+      "source_row": 88,
+      "sort_order": 86,
+      "enabled": true
+    },
+    {
+      "id": "114",
+      "display_name": "Elgiloy",
+      "standard_value": "Elgiloy",
+      "aliases": [
+        "Elgiloy"
+      ],
+      "tensile_strength_mpa": 1515.0,
+      "shear_modulus_mpa": 77200.0,
+      "elastic_modulus_mpa": null,
+      "density_g_cm3": 8.3,
+      "allowable_shear_stress_mpa": 606.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "Elgiloy",
+      "source_row": 89,
+      "sort_order": 87,
+      "enabled": true
+    },
+    {
+      "id": "115",
+      "display_name": "GH4033",
+      "standard_value": "GH4033",
+      "aliases": [
+        "GH4033"
+      ],
+      "tensile_strength_mpa": 885.0,
+      "shear_modulus_mpa": 71900.0,
+      "elastic_modulus_mpa": 184000.0,
+      "density_g_cm3": 8.2,
+      "allowable_shear_stress_mpa": 354.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "GH4033",
+      "source_row": 90,
+      "sort_order": 88,
+      "enabled": true
+    },
+    {
+      "id": "116",
+      "display_name": "SUS316Ti",
+      "standard_value": "SUS316Ti",
+      "aliases": [
+        "SUS316Ti"
+      ],
+      "tensile_strength_mpa": 980.0,
+      "shear_modulus_mpa": 77000.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 8.0,
+      "allowable_shear_stress_mpa": 392.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SUS316Ti",
+      "source_row": 91,
+      "sort_order": 89,
+      "enabled": true
+    },
+    {
+      "id": "117",
+      "display_name": "QBe1.7",
+      "standard_value": "QBe1.7",
+      "aliases": [
+        "QBe1.7"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 50300.0,
+      "elastic_modulus_mpa": 128000.0,
+      "density_g_cm3": 8.3,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "QBe1.7",
+      "source_row": 92,
+      "sort_order": 90,
+      "enabled": true
+    },
+    {
+      "id": "118",
+      "display_name": "SUS316/SUS316L",
+      "standard_value": "SUS316/SUS316L",
+      "aliases": [
+        "SUS316/SUS316L"
+      ],
+      "tensile_strength_mpa": 980.0,
+      "shear_modulus_mpa": 70000.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 8.0,
+      "allowable_shear_stress_mpa": 392.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SUS316/SUS316L",
+      "source_row": 93,
+      "sort_order": 91,
+      "enabled": true
+    },
+    {
+      "id": "119",
+      "display_name": "GCr15",
+      "standard_value": "GCr15",
+      "aliases": [
+        "GCr15"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 80000.0,
+      "elastic_modulus_mpa": 210000.0,
+      "density_g_cm3": 7.8,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "GCr15",
+      "source_row": 94,
+      "sort_order": 92,
+      "enabled": true
+    },
+    {
+      "id": "120",
+      "display_name": "G10950",
+      "standard_value": "G10950",
+      "aliases": [
+        "G10950"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 80000.0,
+      "elastic_modulus_mpa": 207000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "G10950",
+      "source_row": 95,
+      "sort_order": 93,
+      "enabled": true
+    },
+    {
+      "id": "121",
+      "display_name": "60Si2CrA",
+      "standard_value": "60Si2CrA",
+      "aliases": [
+        "60Si2CrA"
+      ],
+      "tensile_strength_mpa": 1765.0,
+      "shear_modulus_mpa": 78500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 706.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "60Si2CrA",
+      "source_row": 96,
+      "sort_order": 94,
+      "enabled": true
+    },
+    {
+      "id": "123",
+      "display_name": "GH5605",
+      "standard_value": "GH5605",
+      "aliases": [
+        "GH5605"
+      ],
+      "tensile_strength_mpa": 1400.0,
+      "shear_modulus_mpa": 98000.0,
+      "elastic_modulus_mpa": 225000.0,
+      "density_g_cm3": 9.13,
+      "allowable_shear_stress_mpa": 560.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "GH5605",
+      "source_row": 97,
+      "sort_order": 95,
+      "enabled": true
+    },
+    {
+      "id": "124",
+      "display_name": "0Cr17Ni7Al",
+      "standard_value": "0Cr17Ni7Al",
+      "aliases": [
+        "0Cr17Ni7Al"
+      ],
+      "tensile_strength_mpa": 1200.0,
+      "shear_modulus_mpa": 72000.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 7.81,
+      "allowable_shear_stress_mpa": 480.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "0Cr17Ni7Al",
+      "source_row": 98,
+      "sort_order": 96,
+      "enabled": true
+    },
+    {
+      "id": "126",
+      "display_name": "SWI-200",
+      "standard_value": "SWI-200",
+      "aliases": [
+        "SWI-200"
+      ],
+      "tensile_strength_mpa": 1950.0,
+      "shear_modulus_mpa": 79500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": 780.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "SWI-200",
+      "source_row": 99,
+      "sort_order": 97,
+      "enabled": true
+    },
+    {
+      "id": "127",
+      "display_name": "ASTM A228",
+      "standard_value": "ASTM A228",
+      "aliases": [
+        "ASTM A228"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 79300.0,
+      "elastic_modulus_mpa": 207000.0,
+      "density_g_cm3": 7.86,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "ASTM A228",
+      "source_row": 100,
+      "sort_order": 98,
+      "enabled": true
+    },
+    {
+      "id": "128",
+      "display_name": "N10276",
+      "standard_value": "N10276",
+      "aliases": [
+        "N10276"
+      ],
+      "tensile_strength_mpa": 1380.0,
+      "shear_modulus_mpa": 79000.0,
+      "elastic_modulus_mpa": 205000.0,
+      "density_g_cm3": 8.89,
+      "allowable_shear_stress_mpa": 552.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "N10276",
+      "source_row": 101,
+      "sort_order": 99,
+      "enabled": true
+    },
+    {
+      "id": "129",
+      "display_name": "N08825",
+      "standard_value": "N08825",
+      "aliases": [
+        "N08825"
+      ],
+      "tensile_strength_mpa": 800.0,
+      "shear_modulus_mpa": 76000.0,
+      "elastic_modulus_mpa": 196000.0,
+      "density_g_cm3": 8.14,
+      "allowable_shear_stress_mpa": 320.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "N08825",
+      "source_row": 102,
+      "sort_order": 100,
+      "enabled": true
+    },
+    {
+      "id": "130",
+      "display_name": "F55",
+      "standard_value": "F55",
+      "aliases": [
+        "F55"
+      ],
+      "tensile_strength_mpa": 750.0,
+      "shear_modulus_mpa": 76900.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 7.8,
+      "allowable_shear_stress_mpa": 300.0,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "F55",
+      "source_row": 103,
+      "sort_order": 101,
+      "enabled": true
+    },
+    {
+      "id": "131",
+      "display_name": "310S",
+      "standard_value": "310S",
+      "aliases": [
+        "310S"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 75800.0,
+      "elastic_modulus_mpa": 200000.0,
+      "density_g_cm3": 7.9,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": null,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "310S",
+      "source_row": 104,
+      "sort_order": 102,
+      "enabled": true
     }
   ]
 }

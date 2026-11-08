@@ -111,7 +111,9 @@ python -m pip install -r requirements.txt
 
 ```bash
 docker compose up -d postgres
+docker compose build api worker
 docker compose run --rm api alembic upgrade head
+docker compose run --rm api python -m ai_design_review.material_catalog_seed
 docker compose up -d api worker web
 ```
 
@@ -358,6 +360,8 @@ scripts\run_frontend.cmd
 http://111.170.173.2:18080/
 
 ## docker
+首次部署或升级材料库时，先按 [材料库部署说明](docs/material-catalog.md) 完成迁移和初始化，再启动 API、Worker。以下启动命令用于已初始化的环境。
+
 docker compose up -d
 docker compose down
 http://127.0.0.1:8088

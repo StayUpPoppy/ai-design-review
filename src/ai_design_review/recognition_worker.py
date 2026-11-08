@@ -14,6 +14,7 @@ from typing import Any
 
 from .api import API_RUN_ROOT, RecognitionCancelled, REVIEW_PERSISTENCE, run_recognition_job_record
 from .review_persistence import PersistenceError
+from .material_catalog import load_material_catalog
 
 
 LOGGER = logging.getLogger("ai_design_review.recognition_worker")
@@ -41,6 +42,7 @@ class RecognitionWorker:
         health = REVIEW_PERSISTENCE.health(check_connection=True)
         if health.get("status") != "available":
             raise RuntimeError(f"PostgreSQL is unavailable for the recognition worker: {health.get('reason') or 'unknown error'}")
+        load_material_catalog()
         LOGGER.info("Recognition worker %s started with concurrency=%s", self.worker_id, self.concurrency)
         futures: set[Future[None]] = set()
         with ThreadPoolExecutor(max_workers=self.concurrency, thread_name_prefix="recognition") as executor:

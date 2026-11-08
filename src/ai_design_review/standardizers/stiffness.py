@@ -262,6 +262,9 @@ def _material_profile(parameters: dict[str, Any]) -> dict[str, Any] | None:
     if entry:
         catalog = load_material_catalog()
         return {**entry, "config_version": catalog["version"], "property_source": catalog["source"]}
+    from ..review_persistence import database_url_from_env
+    if database_url_from_env():
+        return None
     keys = {normalize_material_key(value)}
     config = load_material_stiffness_properties()
     for profile in config.get("materials", []):

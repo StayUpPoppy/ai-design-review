@@ -60,7 +60,7 @@ def main() -> None:
         assert not {"material_id", "material_catalog_version", "raw_value", "standard_value", "material_selection_source"}.intersection(material), material
         command = build_solidworks_command(str(1_000_000_001 + index), package, review)
         model = command["models"][0]
-        assert model["extraProperties"]["技术要求"].startswith(f"1.材料：{grade}。")
+        assert model["titleBlockProperties"]["材料"] == grade
         assert model["materialCode"] is None, "Catalog ids are not SolidWorks materialCode"
         assert model["extraProperties"]["技术要求"].startswith("1.")
         assert not model["extraProperties"]["技术要求"].startswith("技术要求\n")
@@ -103,8 +103,8 @@ def main() -> None:
     snapshot = json.dumps(frozen, ensure_ascii=False, sort_keys=True)
     historical["spring_parameters"]["material"].update(value="Inconel X750 镍基合金钢", standard_value="Inconel X750", material_id="10")
     current = build_generation_parameter_package(historical)
-    assert build_solidworks_command("1000000021", frozen, historical)["models"][0]["extraProperties"]["技术要求"].startswith("1.材料：ХН70МВТЮБ ГОСТ 5632-72。")
-    assert build_solidworks_command("1000000022", current, historical)["models"][0]["extraProperties"]["技术要求"].startswith("1.材料：Inconel X750。")
+    assert build_solidworks_command("1000000021", frozen, historical)["models"][0]["titleBlockProperties"]["材料"] == "ХН70МВТЮБ ГОСТ 5632-72"
+    assert build_solidworks_command("1000000022", current, historical)["models"][0]["titleBlockProperties"]["材料"] == "Inconel X750"
     assert json.dumps(frozen, ensure_ascii=False, sort_keys=True) == snapshot
     frozen["solidworks_preview"]["extraProperties"]["技术要求"] = "1.材料：SUS304 不锈钢。"
     assert build_solidworks_command("1000000023", frozen, historical)["models"][0]["extraProperties"]["技术要求"] == "1.材料：SUS304 不锈钢。"

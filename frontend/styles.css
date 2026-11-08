@@ -2783,6 +2783,63 @@ button:disabled {
   max-width: 100%;
 }
 
+.material-picker { width: 100%; min-width: 0; }
+.material-picker [data-material-selector][hidden] { display: none; }
+.material-picker-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 7px;
+  border: 1px solid #d5e2f2;
+  border-radius: 6px;
+  color: #243954;
+  background: #fff;
+  font-size: 12px;
+  text-align: left;
+}
+.material-picker-trigger [data-material-label] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.material-picker-trigger svg { flex: none; }
+.material-picker-trigger:disabled { background: #f6f8fb; color: #6a778d; }
+.material-picker-trigger:focus-visible, .material-picker-search:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.material-picker-panel {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 5px 20px rgb(23 32 51 / 22%);
+  font-size: 13px;
+}
+.material-picker-search-header { flex: none; padding: 8px; border-bottom: 1px solid var(--line); }
+.material-picker-search {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid #b8c8df;
+  border-radius: 4px;
+  color: var(--ink);
+  background: #fff;
+  font-size: 13px;
+  caret-color: var(--primary);
+}
+.material-picker-search::placeholder { color: #526176; opacity: 1; }
+.material-picker-search::selection { background: var(--primary-soft); color: var(--ink); }
+.material-picker-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #9aabc2 #f6f8fb; }
+.material-picker-option { min-height: 34px; box-sizing: border-box; padding: 8px 12px; cursor: pointer; overflow-wrap: anywhere; }
+.material-picker-option[aria-selected="true"] { font-weight: 600; color: var(--primary); }
+.material-picker-option.is-active { background: var(--primary-soft); outline: 1px solid #b8c8df; outline-offset: -1px; }
+.material-picker-empty { padding: 16px 12px; color: #526176; }
+
 .parameter-badges {
   display: flex;
   flex-wrap: wrap;

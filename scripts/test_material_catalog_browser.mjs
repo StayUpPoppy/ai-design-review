@@ -23,6 +23,13 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 
 const materialRow = (page) => page.locator('.compare-tab-panel[data-compare-panel="parameters"] [data-kind="param"][data-field="material"]');
 const materialSelect = (page) => materialRow(page).locator('select[data-role="value"][data-material-selector]');
+const materialTrigger = (page) => materialRow(page).locator('[data-material-trigger]');
+const materialSearch = (page) => page.getByRole("combobox", { name: "搜索材料名称、牌号或别名", exact: true });
+async function pickMaterial(page, value) {
+  await materialTrigger(page).click();
+  if (value) await materialSearch(page).fill(value);
+  await page.locator(".material-picker-panel").getByRole("option", { name: value || "请选择材料", exact: true }).click();
+}
 const materialState = (page) => page.evaluate(() => structuredClone(state.review.spring_parameters.material));
 const flush = (page) => page.evaluate(async () => { await flushReviewPersistence(); });
 
@@ -35,12 +42,12 @@ async function assertWideParameterInputs(page) {
     secondary: row.querySelector(".data-secondary").getBoundingClientRect().toJSON(),
     action: row.querySelector('[data-role="confirm"]').getBoundingClientRect().toJSON(),
   }));
-  for (const field of ["material", "standard_no", "accuracy_grade"]) {
+  for (const field of ["material"]) {
     const row = panel.locator(`[data-kind="param"][data-field="${field}"]`);
     assert.equal(await row.locator('[data-role="tolerance"]').count(), 1, "Existing editor bindings retain their control");
     assert.equal(await row.locator('[data-role="tolerance"]').isVisible(), false);
     const layout = await row.evaluate((element) => ({
-      value: element.querySelector('[data-role="value"]').getBoundingClientRect().toJSON(),
+      value: (element.querySelector('[data-material-trigger]') || element.querySelector('[data-role="value"]')).getBoundingClientRect().toJSON(),
       action: element.querySelector('[data-role="confirm"]').getBoundingClientRect().toJSON(),
     }));
     assert.ok(Math.abs(layout.value.left - reference.primary.left) < 1, `${field}: value starts in the original value column`);
@@ -108,7 +115,7 @@ async function openReview(page) {
     renderCompareOverlay();
   });
   await page.waitForLoadState("networkidle");
-  await materialSelect(page).waitFor({ state: "visible" });
+  await materialTrigger(page).waitFor({ state: "visible" });
 }
 
 async function downloadFromTab(page, tab) {
@@ -141,8 +148,8 @@ try {
     const options = await materialSelect(page).locator("option").evaluateAll((items) => items.map((item) => ({ value: item.value, text: item.textContent, disabled: item.disabled })));
     assert.deepEqual(options.filter((item) => item.value).map((item) => item.value), catalogFixture.items.map((item) => item.display_name));
     assert.match(options.find((item) => item.value === "").text, /请选择材料/);
-    assert.equal(options.length, 16, "Exactly 15 company options and one placeholder");
-    options.filter((item) => item.value).forEach((item) => assert.doesNotMatch(item.text, /[\u3400-\u9fff]/));
+    assert.equal(options.length, 104, "All 103 company materials and one placeholder");
+    for (const entry of catalogFixture.items.filter(item => Number(item.id) <= 15)) assert.doesNotMatch(entry.display_name, /[\u3400-\u9fff]/);
     assert.equal(await materialRow(page).locator(".parameter-label-unit").count(), 0);
     const before = await page.evaluate(() => JSON.stringify(state.review));
     await page.evaluate(() => { renderCompareOverlay(); renderCompareOverlay(); refreshMaterialCatalogControls(); });
@@ -150,7 +157,50 @@ try {
     assert.equal(api.mutations.length, 0, "Loading the directory must not save a review");
     await assertCompactMaterialRow(page);
 
-    await materialSelect(page).selectOption("SUS316");
+    await materialTrigger(page).click();
+    assert.equal(await materialSearch(page).evaluate(element => element === document.activeElement), true);
+    assert.equal(await page.locator(".material-picker-panel").getByRole("option").count(), 104);
+    await materialSearch(page).fill("sUs-304");
+    assert.equal(await page.locator(".material-picker-panel").getByRole("option", { name: "SUS304", exact: true }).count(), 1);
+    await materialSearch(page).fill("琴钢丝");
+    assert.equal(await page.locator(".material-picker-panel").getByRole("option", { name: "SWPA", exact: true }).count(), 1, "Aliases are searchable");
+    await materialSearch(page).fill("no-such-material");
+    assert.equal(await page.getByText("未找到匹配材料", { exact: true }).isVisible(), true);
+    await materialSearch(page).press("Enter");
+    await materialSearch(page).fill("60si2mn");
+    assert.equal(await page.locator(".material-picker-panel").getByRole("option").count(), 2, "Distinct suffix grades remain distinct options");
+    if (captureScreenshots) await page.screenshot({ path: path.join(output, `material-search-${size}.png`) });
+    const panelBounds = await page.locator(".material-picker-panel").boundingBox();
+    assert.ok(panelBounds.x >= 0 && panelBounds.x + panelBounds.width <= width, `${size}: menu fits viewport`);
+    await materialSearch(page).dispatchEvent("compositionstart");
+    await materialSearch(page).dispatchEvent("keydown", { key: "Enter", isComposing: true });
+    await materialSearch(page).dispatchEvent("compositionend");
+    assert.equal(await materialSearch(page).isVisible(), true, "IME Enter must not select a material");
+    await materialSearch(page).press("Escape");
+    assert.equal(await materialTrigger(page).evaluate(element => document.activeElement === element), true);
+    assert.equal(await page.evaluate(() => state.compareOpen), true, "Escape only closes the picker");
+    await materialTrigger(page).click();
+    assert.equal(await materialSearch(page).inputValue(), "", "Reopening resets the filter");
+    const searchTop = (await materialSearch(page).boundingBox()).y;
+    await page.locator(".material-picker-list").evaluate(element => { element.scrollTop = element.scrollHeight; });
+    assert.equal((await materialSearch(page).boundingBox()).y, searchTop, "Search stays above the scrollable options");
+    await materialSearch(page).fill("SUS304");
+    await materialSearch(page).press("Enter");
+    assert.equal(await page.evaluate(() => JSON.stringify(state.review)), before, "Selecting the same material preserves confirmation and metadata");
+    await materialTrigger(page).click();
+    await materialSearch(page).fill("718");
+    await materialRow(page).locator(".data-label").click();
+    assert.equal(await page.locator(".material-picker-panel").count(), 0, "Outside click closes the menu");
+    assert.equal(await page.evaluate(() => JSON.stringify(state.review)), before, "Search alone does not edit review data");
+    assert.equal(api.mutations.length, 0, "Searching and closing must not save a review");
+    await materialTrigger(page).click();
+    await page.evaluate(() => renderCompareOverlay());
+    assert.equal(await page.locator(".material-picker-panel").count(), 0, "Rerender removes the old popup");
+    await materialTrigger(page).click();
+    await materialSearch(page).fill("SUS316");
+    await materialSearch(page).press("ArrowDown");
+    await materialSearch(page).press("ArrowUp");
+    await materialSearch(page).press("Enter");
     await page.waitForFunction(() => state.review.spring_parameters.material.need_human_review === true);
     let selected = await materialState(page);
     assert.equal(selected.standard_value, "SUS316");
@@ -162,6 +212,7 @@ try {
     assert.equal(await page.evaluate(() => makeGenerationParameterPackage().generation_parameters.spring_parameters.material), undefined, "Unconfirmed choice is not exported");
     await flush(page);
     assert.ok(api.mutations.length >= 1);
+    assert.equal(api.mutations.flatMap(mutation => mutation.events).filter(event => event.event_type === "parameter_value_updated" && event.target_field === "material").length, 1, "One selection produces one parameter edit");
     await materialRow(page).locator('[data-role="confirm"]').click();
     await flush(page);
     assert.equal((await materialState(page)).need_human_review, false);
@@ -181,9 +232,9 @@ try {
     await page.locator('#compareOverlay [data-compare-tab="parameters"]').click();
 
     await page.evaluate(() => focusMissingStandardizationField("material"));
-    await page.waitForFunction(() => document.activeElement?.matches('select[data-material-selector]'));
-    await materialSelect(page).press("Tab");
-    assert.ok(await page.evaluate(() => document.activeElement?.closest('[data-field="standard_no"]')), "Tab skips the hidden tolerance and disabled confirmation control into the next parameter row");
+    await page.waitForFunction(() => document.activeElement?.matches('[data-material-trigger]'));
+    await materialTrigger(page).press("Tab");
+    assert.ok(await page.evaluate(() => document.activeElement?.closest('[data-field="wire_diameter"]')), "Tab skips the hidden tolerance and disabled confirmation into the next parameter row");
     if (await materialRow(page).locator(".parameter-annotation-number").count()) {
       assert.equal(await materialRow(page).locator(".parameter-annotation-number").innerText(), "1");
       await materialRow(page).locator(".parameter-annotation-number").click();
@@ -197,7 +248,7 @@ try {
     });
     assert.equal(overflow, false, `${size}: select, inputs and buttons fit inside the material row`);
     if (captureScreenshots) await page.screenshot({ path: path.join(output, `${size}.png`) });
-    await materialSelect(page).selectOption("");
+    await pickMaterial(page, "");
     await flush(page);
     selected = await materialState(page);
     assert.ok(selected.value == null || selected.value === "");
@@ -220,7 +271,7 @@ try {
   } });
   await openReview(tolerancePage);
   assert.equal(toleranceApi.mutations.length, 0, "Opening historical tolerances does not save or clear them");
-  for (const field of ["material", "standard_no", "accuracy_grade"]) {
+  for (const field of ["material"]) {
     const row = tolerancePage.locator(`.compare-tab-panel[data-compare-panel="parameters"] [data-kind="param"][data-field="${field}"]`);
     const tolerance = row.locator('[data-role="tolerance"]');
     assert.equal(await tolerance.isVisible(), true, `${field}: historical tolerance remains accessible`);
@@ -238,39 +289,8 @@ try {
   await assertWideParameterInputs(tolerancePage);
   await tolerancePage.close();
 
-  for (const [size, width, height] of [["narrow", 1100, 900], ["mobile", 390, 900]]) {
-    const emptyPage = await browser.newPage({ viewport: { width, height } });
-    const emptyApi = await installApiMocks(emptyPage, { parameters: {
-      standard_no: { value: "", evidence: "", need_human_review: true, source: [] },
-    } });
-    await openReview(emptyPage);
-    const standardRow = emptyPage.locator('.compare-tab-panel[data-compare-panel="parameters"] [data-kind="param"][data-field="standard_no"]');
-    const badge = standardRow.locator('[data-annotation-field="standard_no"]');
-    assert.equal(await badge.innerText(), "2", "Empty standard number keeps its fixed badge");
-    const beforeFocus = await emptyPage.evaluate(() => JSON.stringify(state.review));
-    await badge.focus();
-    await badge.press("Enter");
-    await emptyPage.waitForFunction(() => DrawingAnnotations.entry()?.selected === "standard_no");
-    assert.equal(await emptyPage.evaluate(() => JSON.stringify(state.review)), beforeFocus, "Keyboard badge activation does not change parameters");
-    assert.match(await emptyPage.evaluate(() => DrawingAnnotations.infoHtml()), /未找到可靠原图位置/);
-    assert.equal(await emptyPage.evaluate(() => DrawingAnnotations.entry().document.annotations.find((item) => item.field === "standard_no").locations.length), 0, "Empty badges do not add drawing bubbles");
-    assert.equal(emptyApi.mutations.length, 0);
-    await openReview(emptyPage);
-    assert.equal(await badge.innerText(), "2", "Reopening preserves the fixed empty-field number");
-    const input = standardRow.locator('[data-role="value"]');
-    await input.fill("GB/T 1239.2-2009");
-    await input.press("Tab");
-    await flush(emptyPage);
-    await input.fill("");
-    await input.press("Tab");
-    await flush(emptyPage);
-    await openReview(emptyPage);
-    assert.equal(await input.inputValue(), "");
-    assert.equal(await badge.innerText(), "2", "Clearing and saving the standard number does not remove its badge");
-    await assertWideParameterInputs(emptyPage);
-    if (captureScreenshots) await standardRow.screenshot({ path: path.join(output, `fixed-empty-standard-${size}.png`) });
-    await emptyPage.close();
-  }
+  // Execution standard/accuracy controls now live in the standardization
+  // toolbar; their dedicated suites cover that independent interaction.
 
   const historicalPage = await browser.newPage({ viewport: { width: 1100, height: 900 } });
   const original = "ХН70МВТЮБ ГОСТ 5632-72";
@@ -338,7 +358,7 @@ try {
   const failedSaveApi = await installApiMocks(failedSavePage);
   await openReview(failedSavePage);
   failedSaveApi.failSave = true;
-  await materialSelect(failedSavePage).selectOption("SUS316");
+  await pickMaterial(failedSavePage, "SUS316");
   assert.equal(await failedSavePage.evaluate(async () => flushReviewPersistence()), false);
   assert.equal((await materialState(failedSavePage)).value, "SUS316", "Failed save retains the local final choice");
   assert.equal((await materialState(failedSavePage)).raw_value, "SUS304");
@@ -350,6 +370,50 @@ try {
   assert.equal(failedSaveApi.review.spring_parameters.material.value, "SUS316");
   assert.equal((await materialState(failedSavePage)).need_human_review, true, "Saving a selection never silently confirms it");
   await failedSavePage.close();
+
+  const newMaterialPage = await browser.newPage({ viewport: { width: 1100, height: 900 } });
+  const newMaterialApi = await installApiMocks(newMaterialPage);
+  await openReview(newMaterialPage);
+  await materialTrigger(newMaterialPage).click();
+  await materialSearch(newMaterialPage).fill("SUS316");
+  const beforeSwitch = await materialState(newMaterialPage);
+  await newMaterialPage.evaluate(() => {
+    const staleOption = document.querySelector('.material-picker-panel [role="option"]');
+    const staleSearch = document.querySelector('.material-picker-search');
+    renderCompareOverlay();
+    document.querySelector('.compare-tab-panel[data-compare-panel="parameters"] [data-material-trigger]').click();
+    staleOption.click();
+    staleSearch.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+  assert.equal(await newMaterialPage.locator(".material-picker-panel").count(), 1, "Events from a removed picker cannot operate the newly opened picker");
+  assert.deepEqual(await materialState(newMaterialPage), beforeSwitch);
+  await newMaterialPage.evaluate(() => {
+    const staleOption = document.querySelector('.material-picker-panel [role="option"]');
+    const previous = state.review;
+    setReview(structuredClone(previous), state.imageUrl, { readOnlySnapshot: true });
+    staleOption.click();
+    setReview(previous, state.imageUrl, { readOnlySnapshot: true });
+  });
+  assert.equal(await newMaterialPage.locator(".material-picker-panel").count(), 0);
+  assert.deepEqual(await materialState(newMaterialPage), beforeSwitch, "Stale options cannot modify another review");
+  assert.equal(newMaterialApi.mutations.length, 0);
+  await materialTrigger(newMaterialPage).click();
+  await materialSearch(newMaterialPage).fill("718");
+  await materialSearch(newMaterialPage).press("Tab");
+  assert.equal(await newMaterialPage.locator(".material-picker-panel").count(), 0, "Tab dismisses without committing a filter");
+  assert.deepEqual(await materialState(newMaterialPage), beforeSwitch);
+  await pickMaterial(newMaterialPage, "60Si2MnA");
+  await flush(newMaterialPage);
+  assert.equal((await materialState(newMaterialPage)).material_id, "86");
+  const checks = await newMaterialPage.evaluate(() => CompressionDesignChecks.calculate(state.review.spring_parameters, {}, state.materialCatalog));
+  assert.equal(checks.material_properties.shear_modulus_mpa, 78500);
+  assert.equal(checks.material_properties.density_g_cm3, 7.85);
+  await materialRow(newMaterialPage).locator('[data-role="confirm"]').click();
+  await flush(newMaterialPage);
+  await openReview(newMaterialPage);
+  assert.equal((await materialState(newMaterialPage)).value, "60Si2MnA");
+  assert.equal((await materialState(newMaterialPage)).need_human_review, false);
+  await newMaterialPage.close();
 
   console.log(`PASS: catalog select/edit/confirm, both downloads, pending omission, preserved legacy, directory/save failure retry, single/substitute batch audit, unknown-grade warning, focus/bubbles and desktop/narrow/mobile layout.${captureScreenshots ? ` Screenshots: ${output}` : " Screenshots disabled."}`);
 } finally {

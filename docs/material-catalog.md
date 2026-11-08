@@ -1,95 +1,89 @@
-# 压缩弹簧材料选择
+# 压缩弹簧材料库与搜索选择
 
-压缩弹簧的材料行使用公司材料表中的 15 种材料。目录存放于 `config/compression_material_catalog.json`，前端选项、识别匹配和材料属性读取同一份版本化配置；部署后不依赖原始 Excel 文件。其他弹簧类型继续沿用原有材料流程。
+配置 `DATABASE_URL` 时，压缩弹簧材料以 PostgreSQL 的 `spring_materials` 表为准；未配置时，本地模式读取 `config/compression_material_catalog.json`。下拉、识别匹配、材料修改校验、刚度、重量、设计校核和 SolidWorks 参数准备共用同一个目录入口。其他弹簧类型沿用现有流程。
 
-目录包含切变模量 G、弹性模量 E、密度（g/cm³）、抗拉强度、许用剪应力和许用应力系数。许用剪应力保留表内数值，不根据抗拉强度乘系数重算。设计校核值使用 G 计算理论刚度、使用密度估算单件重量，本次不增加应力合格判定。
+本阶段提供数据库表、一次性初始化命令和可搜索的材料下拉，不提供材料管理页面、材料写入 API 或后续 Excel 更新工具。
 
-## 识别和选择
+## 数据和参数
 
-- 原图主要材料唯一匹配目录时自动选中纯牌号，例如 `SUS304`，仍待人工确认。
-- 主要材料未匹配时，仅采用图纸明确允许且唯一匹配的替代材料；替代技术要求和原文依据保留。`INCONEL 750` 是本项目为 X750 配置的明确别名，不表示俄文原材料与 X750 等效。
-- 主要材料冲突、多个可用替代材料、泛称“类似材料”或没有材料信息时，不自动选择。
-- 未匹配材料的原文仍可核对，不因清空选择而删除。俄文字母不转成形似的拉丁字母，也不只凭数字匹配材料。
-- 新的人工或 AI 材料修改限定为目录选项。改选/清空撤销原确认；明确识别或允许替代的唯一匹配项可按原安全规则批量确认。
-- 历史人工修改和已确认的存储值不因改名而替换。能完整匹配目录别名的旧中文名称显示及导出为纯牌号，确认状态、原图证据和审计记录保留；表外旧值显示为“原有材料”。新选择保存纯牌号。
+初始化数据包含去重后的 103 条材料，来源为《审图材料标准表.xlsx》。JSON 随镜像发布，记录源文件 SHA-256；每条材料保留来源名称、Excel 行号和排序。服务器不需要原始 Excel 或桌面路径。
 
-## 数据及只读 API
+| 参数 | 单位 | 是否必填 |
+| --- | --- | --- |
+| 抗拉强度 `tensile_strength_mpa` | MPa | 否 |
+| 剪切模量 `shear_modulus_mpa` | MPa | 是 |
+| 弹性模量 `elastic_modulus_mpa` | MPa | 否 |
+| 密度 `density_g_cm3` | g/cm³ | 是 |
+| 许用剪应力 `allowable_shear_stress_mpa` | MPa | 否 |
+| 许用应力系数 `allowable_stress_coefficient` | 无量纲 | 否 |
 
-`GET /api/material-catalog` 沿用现有用户身份验证，返回：
+G、ρ 必须是有限正数。其余四项缺失时保存为 `null`；填写时也必须是有限正数。许用剪应力保留来源值，不按抗拉强度乘系数重算。本次只接通现有计算，不增加应力合格判定。
 
-```json
-{
-  "version": "company-compression-materials-v3",
-  "source": "公司材料标准.xlsx",
-  "items": [
-    {
-      "id": "4",
-      "display_name": "SUS304",
-      "standard_value": "SUS304",
-      "aliases": ["SUS304", "SUS 304"],
-      "shear_modulus_mpa": 71500
-    }
-  ]
-}
-```
+已有 15 种材料的代码、标准牌号、别名及六项数值保留。代码 10、11、15 保留规范名称 `Inconel X750`、`70#`、`Inconel 718`，表内原写法留存在 `source_display_name`。新材料名称沿用来源表。`60Si2Mn` 与 `60Si2MnA` 是独立材料，其 G 分别为 78000、78500 MPa。
 
-示例省略其余 14 项；`source` 以实际配置为准。目录加载失败时材料原值保留，选项暂不可改选，点击“重试加载材料”重新读取，不触发审图保存。
+数据库另外保存启用状态和更新时间。仅启用材料参与选择、匹配和计算。根据启用材料内容生成稳定 SHA-256 版本，时间戳不影响版本。
 
-审图 JSON 的 `spring_parameters.material`：
+## 搜索、识别和兼容
 
-- `value`：新选择使用纯牌号；历史记录可保留旧名称，显示及生图输出时按当前目录投影为纯牌号。
-- `standard_value`：当前选择的标准牌号，不是旧原图牌号。
-- `raw_value`：原图材料文字。
-- `material_id`、`material_catalog_version`：目录标识和版本。
-- `material_selection_source`：`drawing | drawing_substitute | manual | ai`。
-- `material_match_status`：`matched | empty | unmatched | conflict`。
-- `material_selection_reason`、`material_substitution_evidence`：匹配说明与替代依据。
+- 点击材料框展开下拉，搜索框位于顶部，下方列表独立滚动。按名称、牌号或别名本地筛选，忽略大小写、空格及常见连接符。清空搜索恢复全部材料；每次打开重置搜索并标记当前选择。
+- 支持方向键、回车、Esc、外部点击和 Tab；输入法选字期间回车不选材料。无结果显示“未找到匹配材料”。视口不足时向上展开，窄屏限制在视口内。
+- 搜索、打开和关闭都不修改参数、确认状态或保存审图。实际改选/清空才进入原有修改、重新确认和保存流程，同一材料重复选择不产生编辑。搜索词不能当作新材料保存。
+- 精确牌号优先；重叠文字采用较完整匹配。`SUS304-WPB` 不同时命中 `SUS304`，而 `SUS304-WPB 或 SUS304` 仍是两个候选，需要人工选择。
+- 只有图纸明确允许且唯一匹配的替代材料才能自动采用，并保留原文依据。不推断近似材料等效，不把俄文字母转成形似拉丁字母，不凭裸数字匹配牌号。
+- 加载失败保留原材料、禁用改选并显示重试入口。表外历史值作为原有材料显示，不成为新的目录选项。切换订单、关闭工作台或重建参数行时关闭面板，旧事件不能修改另一个订单。
 
-这些可选元数据仅存于审图 JSON 和审计事件，不进入冻结生图参数包，目录 ID 不写入 SW `materialCode`。目录读取不修改数据库；审图更改沿用串行保存、重试和修订号冲突处理。
+## API、计算和快照
 
-## 固定参考 G 与刚度
+`GET /api/material-catalog` 沿用身份验证，保持 `{version, source, items}` 结构。数量不再固定为 15。每条材料返回 `id`、`display_name`、`standard_value`、`aliases`、六项参数及来源信息。可选属性没有数据时为 `null`。版本形式为 `company-materials/sha256:内容摘要`。
 
-目录内材料使用公司表内的固定 G：SUS304/SUS316 为 71500 MPa，SUS631 为 73500 MPa，17-7PH 为 75500 MPa，Inconel X750 为 79000 MPa，Inconel 718 为 77200 MPa。SUS631 和 17-7PH 是两个独立选项，不合并。
+审图材料参数继续保存 `value`、`raw_value`、`standard_value`、`material_id`、`material_catalog_version`、选择来源及替代依据。目录代码不直接作为 SW `materialCode`；已确认材料通过现有标题栏属性输出。
 
-仍使用 `k = G × d⁴ / (8 × D³ × n)`。G 不按温度、线径或热处理修正；计算依据标明“公司材料表固定参考值”，不是对所有工况适用性的保证。本功能不新增应力或重量计算。
+刚度公式仍为 `k = G × d⁴ / (8 × D³ × n)`，现有重量估算使用 ρ。参数采用公司表内固定参考值，不按温度、线径或热处理修正。计算只读取当前材料，不回退到原图 `raw_value` 或旧 `standard_value`。数据库模式下，未启用或不存在的材料不能从旧属性 JSON 获取 G。
 
-材料行不重复显示当前材料、原图材料和 G 的说明；相关数据及审计记录仍保留。未匹配、冲突和加载失败提示照常显示，替代依据默认折叠；没有提示时说明区域隐藏，不占额外空间。
+历史人工值、确认状态和证据不因目录升级而改写。目录版本变化但 G 和结果未变时，不制造公式过期提示。新参数包保存所用材料属性和版本；已有冻结任务、SW 重试继续使用冻结值。
 
-计算只解析当前材料选择，不回退到原图旧 `raw_value` 或残留旧 `standard_value`。表外历史材料只能使用当前牌号已有的明确配置，无配置时提示不能计算。材料或配置变化不静默覆盖图纸值、人工刚度或已确认结果；沿用现有公式/建议重新核对流程。
+API、Worker 启动时加载材料快照。配置数据库但表缺失、数据为空、连接失败或数据不合法时明确失败，不回退到 JSON。修改材料表后需要重启 API 和 Worker，本阶段不提供动态刷新。
 
-历史公式明确记录旧 G，且按当前公司表计算的结果已不同，会显示“公式参考待更新”及旧/新 G 的提示，阻止误作安全公式批量确认；读取仅生成提示，不改写保存值或既有确认。单纯目录版本变化但 G 和结果相同，不制造过期提示。缺失的历史原图材料记录也不会用人工选择值补造。
+## 初始化和 Docker 更新
 
-## 导出、SW 与部署
+首次部署先执行 `docker compose up -d postgres`。已有数据库升级前先备份，然后依次执行，每一步成功再执行下一步：
 
-只有已确认材料进入参数包和 SW：
-
-```json
-"extraProperties": {
-  "材料": "SUS304 不锈钢"
-}
-```
-
-两个前端参数包导出入口和实际 SW 请求使用同一当前名称。材料缺失或待确认的原警告、八个必填建模参数、技术要求及回调协议不变，已冻结旧任务不改写。
-
-部署更新代码后执行：
-
-```sh
+```bash
+bash deploy/backup_postgres.sh
 docker compose build api worker
+docker compose run --rm api alembic upgrade head
+docker compose run --rm api python -m ai_design_review.material_catalog_seed
 docker compose up -d --no-deps --force-recreate api worker
+docker compose ps
 ```
 
-当前 web 挂载前端目录，更新前端文件及缓存版本后强制刷新即可，无需构建 web 镜像或进行数据库迁移。
+首次无业务数据时可以跳过备份，仍须先迁移、初始化，再启动 API 和 Worker。首次启动前端执行 `docker compose up -d web`。
 
-本地回归入口：
+初始化命令验证全部数据后，用单个事务写入：空表导入；完全相同的重复执行不写入也不改变更新时间；已有内容不同时列出新增、额外和内容不同的材料代码，以非零状态退出。它不是覆盖更新命令，不要为解决差异清空材料表。PostgreSQL 导入期间锁定材料表，防止并发初始化。
 
-```sh
+沿用 `postgres_data` 持久化卷。重建 API、Worker 不删除材料数据，不使用 `docker compose down -v` 更新。web 挂载前端目录，同步文件和缓存版本后刷新浏览器即可。
+
+检查容器日志；使用正常用户身份访问材料接口，确认 103 条启用材料；选择 `60Si2MnA`，核对 G=78500 MPa、ρ=7.85。应用回退使用旧镜像和对应前端，保留材料表和数据，不执行删除材料表的数据库降级。
+
+## 验证入口
+
+```bash
+python scripts/test_material_catalog_database.py
 python scripts/test_compression_material_catalog.py
 python scripts/test_material_recognition.py
 python scripts/test_material_catalog_generation.py
+python scripts/test_compression_stiffness.py
 node scripts/test_material_catalog_ui.mjs
 node scripts/test_material_catalog_browser.mjs
 ```
 
-测试不调用付费识别或翻译模型；浏览器脚本使用模拟订单和 API。
+数据库脚本使用临时 SQLite，验证新迁移、初始化命令、冲突、回滚、缺失数据、快照、API/Worker 启动、103 条匹配、计算及冻结生成。浏览器脚本使用模拟订单/API，验证搜索、键盘、输入法、确认、保存重试、切换订单和桌面/窄屏布局，不调用付费模型。`UNIT_TEST_BROWSER_CHANNEL=msedge` 可使用已安装 Edge；`MATERIAL_TEST_SCREENSHOTS=0` 关闭重复截图。
 
-材料目录 v3 只修改显示名称及补充完整旧名别名：SWPB、SWPA 保留现有拼写，70碳素钢显示为 70#；材料 ID、标准牌号及全部力学属性不变。原中文别名仍用于识别。名称和版本变化不单独使数值相同的计算失效；历史已冻结 SW 请求保持原样。
+### 本次验证记录（2026-11-08）
+
+- 材料数据库 11 项测试、材料匹配/识别、生成参数、压缩刚度、材料 UI 及刚度 UI 回归通过。
+- 在隔离 PostgreSQL 16 容器执行完整 Alembic 迁移至 `20261108_01`，导入 103 条；新 Docker 镜像内再次初始化返回内容一致。实际 API 返回数量、版本及 `60Si2MnA` 的 G、ρ 正确。
+- API、Worker 容器删除后重建，PostgreSQL 重启，材料数量和内容版本保持一致。测试使用独立数据库，没有部署业务服务器。
+- Edge 模拟 API 测试覆盖 1440、1100、390px 宽度。桌面和窄屏截图已检查，搜索框固定在选项列表上方，无横向越界。截图位于忽略目录 `outputs/material-catalog-qa/`。
+- 扩展检查发现两项既有失败：`test_api_documentation.py:282` 仍要求旧“每端磨270°”描述，当前原有描述为“磨面角≥270°”；`test_compression_design_checks_ui.mjs:153` 的直径联动场景预期旋绕比 9、实际为 10。本次未修改对应 SW 文档字段、直径计算脚本或这两个测试，不将它们计为通过。
+- 界面机械检查提示的 11 项 CSS 警告均位于本次未修改的边条和布局动画规则；新增搜索样式没有命中该检查。此次验证不代表全项目测试全部通过。

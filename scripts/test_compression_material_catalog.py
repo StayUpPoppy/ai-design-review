@@ -27,7 +27,7 @@ from ai_design_review.standardizers.stiffness import calculate_compression_sprin
 
 def main() -> None:
     catalog = load_material_catalog()
-    assert len(catalog["items"]) == 15
+    assert len(catalog["items"]) == 103
     for entry in catalog["items"]:
         for value in [entry["display_name"], entry["standard_value"], *entry["aliases"]]:
             assert match_material_catalog(value)["id"] == entry["id"], value
@@ -39,7 +39,7 @@ def main() -> None:
         material_rule = next(row for row in run_rule_checks(parameters, [], {}, {}) if row["rule_id"].startswith("MAT-"))
         assert material_rule["status"] == "pass", material_rule
     assert match_material_catalog("材料：sus 304，符合 ГОСТ 5632-72")["id"] == "4"
-    for value in ["SUS316L", "55CrSiA", "ХН70МВТЮБ ГОСТ 5632-72", "ХН70МВТЮБ", "70", "70 mm", "70.0", "XSUS304", "SUS304Б"]:
+    for value in ["SUS316LX", "55CrSiAX", "ХН70МВТЮБ ГОСТ 5632-72", "ХН70МВТЮБ", "70", "70 mm", "70.0", "XSUS304", "SUS304Б"]:
         assert match_material_catalog(value) is None, value
     assert normalize_material_key("ХН70МВТЮБ") == "ХН70МВТЮБ"
     assert normalize_material("ХН70МВТЮБ")["normalization_status"] == "unmatched"
@@ -79,7 +79,7 @@ def main() -> None:
     assert "material_substitution_evidence" not in manual
     legacy = {"value": "客户特殊材料", "need_human_review": False, "source": ["human_confirmed"]}
     assert normalize_compression_material_parameter(legacy) == legacy
-    for value in ["SUS316L", "70", "SUS304 ГОСТ 5632-72"]:
+    for value in ["SUS316LX", "70", "SUS304 ГОСТ 5632-72"]:
         try:
             select_compression_material(raw, value)
             raise AssertionError(f"invalid selector value accepted: {value}")
@@ -165,8 +165,7 @@ def _assert_api(catalog: dict) -> None:
                     assert client.get("/api/material-catalog").status_code == 401
                 loaded = client.get("/api/reviews/test-job").json()
                 assert loaded["spring_parameters"]["material"]["value"] == "SUS304"
-                assert loaded["review_results"][0]["status"] == "pass"
-                assert loaded["spring_parameters"]["spring_rate"]["formula_recommendation_stale"] is True
+                assert loaded["review_results"] == review["review_results"], "Fast GET preserves stored checks; recalculation uses the existing verification flow"
                 assert loaded["spring_parameters"]["spring_rate"]["value"] == review["spring_parameters"]["spring_rate"]["value"]
                 assert (job / "review.json").read_bytes() == original, "GET must not persist material normalization"
                 loaded["spring_parameters"]["material"] = select_compression_material(loaded["spring_parameters"]["material"], "17-7PH不锈钢")
@@ -177,7 +176,7 @@ def _assert_api(catalog: dict) -> None:
                 assert saved["spring_parameters"]["material"]["need_human_review"] is False
                 assert saved["spring_parameters"]["material"]["raw_value"] == "SUS304"
                 invalid = deepcopy(saved)
-                invalid["spring_parameters"]["material"]["value"] = "SUS316L"
+                invalid["spring_parameters"]["material"]["value"] = "SUS316LX"
                 assert client.patch("/api/reviews/test-job", json={"review": invalid}).status_code == 400
                 invalid = deepcopy(saved)
                 invalid["spring_parameters"]["material"]["value"] = "SUS304 不锈钢"

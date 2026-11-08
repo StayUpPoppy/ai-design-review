@@ -124,7 +124,8 @@ _readiness_lock = threading.RLock()
 def cached_readiness(job_id, revision, identity, review):
     from .generation_readiness import assess_generation_readiness
     from .io_utils import project_path
-    versions = tuple(project_path(name).stat().st_mtime_ns for name in ('config/factory_rules.json','config/compression_material_catalog.json'))
+    from .material_catalog import load_material_catalog
+    versions = (project_path('config/factory_rules.json').stat().st_mtime_ns, load_material_catalog()['version'])
     signature=hashlib.sha256(json.dumps([review.get(k) for k in ('spring_parameters','technical_requirements','technical_output_deletions','spring_features','generation_settings')],sort_keys=True,default=str).encode()).hexdigest()
     key=(job_id,revision,identity.user_id,versions,signature)
     if revision is not None:

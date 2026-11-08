@@ -396,7 +396,7 @@ def _resolve_proposal(
             except ValueError:
                 blocking.append({
                     "code": "material_not_in_catalog", "field": target,
-                    "message": "材料不在公司材料目录中，请从下拉列表的15种材料中选择。",
+                    "message": "材料不在公司材料目录中，请从材料下拉列表中选择。",
                 })
                 continue
             if target != "material":

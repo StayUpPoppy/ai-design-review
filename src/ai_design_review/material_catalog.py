@@ -1,7 +1,6 @@
 """Company compression-material selection; never infer alloy equivalence."""
 from __future__ import annotations
 
-import math
 import re
 import unicodedata
 from copy import deepcopy
@@ -11,6 +10,8 @@ from typing import Any
 
 from .io_utils import project_path, read_json
 from .material_terms import normalize_material_key
+from .material_catalog_store import catalog_snapshot, load_database_catalog, validate_catalog
+from .review_persistence import database_url_from_env
 
 
 MATERIAL_CATALOG_PATH = project_path("config", "compression_material_catalog.json")
@@ -33,27 +34,19 @@ _NEGATED_ALLOWANCE = re.compile(
 )
 
 
-@lru_cache(maxsize=1)
 def load_material_catalog(path: str | Path | None = None) -> dict[str, Any]:
-    catalog = read_json(Path(path) if path else MATERIAL_CATALOG_PATH)
-    ids: set[str] = set()
-    for item in catalog.get("items", []):
-        material_id = str(item.get("id") or "")
-        modulus = item.get("shear_modulus_mpa")
-        if (not material_id or material_id in ids or not item.get("display_name")
-                or not item.get("standard_value") or isinstance(modulus, bool)
-                or not isinstance(modulus, (int, float)) or not math.isfinite(modulus) or modulus <= 0):
-            raise ValueError("公司材料目录包含无效或重复条目。")
-        ids.add(material_id)
-        for key in ("elastic_modulus_mpa", "density_g_cm3", "tensile_strength_mpa", "allowable_shear_stress_mpa", "allowable_stress_coefficient"):
-            value = item.get(key)
-            if value is None and catalog.get("version") not in {"company-compression-materials-v2", "company-compression-materials-v3"}:
-                continue
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
-                raise ValueError(f"公司材料目录属性 {key} 必须为有限正数。")
-    if len(ids) != 15 or not catalog.get("version"):
-        raise ValueError("公司压缩弹簧材料目录必须包含 15 种材料及版本。")
-    return catalog
+    """One process snapshot per source; an explicit path is for offline tooling."""
+    return _catalog_snapshot(database_url_from_env() if path is None else None, str(path or MATERIAL_CATALOG_PATH))
+
+
+@lru_cache(maxsize=4)
+def _catalog_snapshot(database_url: str | None, path: str) -> dict[str, Any]:
+    if database_url:
+        return load_database_catalog(database_url)
+    return catalog_snapshot(validate_catalog(read_json(Path(path))))
+
+
+load_material_catalog.cache_clear = _catalog_snapshot.cache_clear
 
 
 def material_catalog_matches(value: Any) -> list[dict[str, Any]]:
@@ -66,14 +59,25 @@ def material_catalog_matches(value: Any) -> list[dict[str, Any]]:
     # explicitly configured grade "70#" or named material is accepted.
     if key.isdigit() and "#" not in text:
         return []
-    matches = []
-    for item in load_material_catalog()["items"]:
+    items = load_material_catalog()["items"]
+    exact = []
+    spans = []
+    for item in items:
         aliases = [item["display_name"], item["standard_value"], *item.get("aliases", [])]
-        if key in {normalize_material_key(alias) for alias in aliases} or any(
-            _contains_grade(text, str(alias)) for alias in aliases
-        ):
-            matches.append(deepcopy(item))
-    return matches
+        if key in {normalize_material_key(alias) for alias in aliases}:
+            exact.append(item)
+        for alias in aliases:
+            spans.extend((start, end, item["id"]) for start, end in _grade_spans(text, alias))
+    if exact:
+        return deepcopy(exact)
+    # Suppress only contained occurrences. A separate short grade elsewhere
+    # in the text must still surface as a genuinely ambiguous selection.
+    matched_ids = {material_id for start, end, material_id in spans if not any(
+        other_id != material_id and other_start <= start and end <= other_end
+        and (other_start < start or end < other_end)
+        for other_start, other_end, other_id in spans
+    )}
+    return [deepcopy(item) for item in items if item["id"] in matched_ids]
 
 
 def match_material_catalog(value: Any) -> dict[str, Any] | None:
@@ -99,16 +103,17 @@ def _engineering_character(character: str) -> bool:
     return character.isalnum() and not ("\u3400" <= character <= "\u9fff") or character == "_"
 
 
-def _contains_grade(text: str, alias: str) -> bool:
+def _grade_spans(text: str, alias: str) -> list[tuple[int, int]]:
     pattern = re.escape(unicodedata.normalize("NFKC", alias))
     pattern = pattern.replace(r"\ ", r"\s*")
     pattern = pattern.replace(r"\-", r"[\s-]*")
+    spans = []
     for found in re.finditer(pattern, text, flags=re.IGNORECASE):
         before = text[found.start() - 1] if found.start() else ""
         after = text[found.end()] if found.end() < len(text) else ""
         if not _engineering_character(before) and not _engineering_character(after):
-            return True
-    return False
+            spans.append((found.start(), found.end()))
+    return spans
 
 
 def _sources(parameter: dict[str, Any]) -> list[str]:
@@ -152,7 +157,7 @@ def select_compression_material(parameter: dict[str, Any], value: Any, *, select
         if not entry or normalize_material_key(text) not in {
             normalize_material_key(alias) for alias in [entry["display_name"], entry["standard_value"], *entry["aliases"]]
         }:
-            raise ValueError("材料必须从公司材料目录的 15 种材料中选择。")
+            raise ValueError("材料必须从公司材料目录中选择。")
         result = _apply_entry(result, entry, selection_source)
     else:
         result["value"] = ""

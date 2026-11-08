@@ -5,7 +5,7 @@ import os
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text, case, or_
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text, case, or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
@@ -35,6 +35,34 @@ class ReviewAccessError(PersistenceError):
 
 class Base(DeclarativeBase):
     pass
+
+
+class SpringMaterialRecord(Base):
+    __tablename__ = "spring_materials"
+    __table_args__ = (
+        UniqueConstraint("display_name", name="uq_spring_material_name"),
+        CheckConstraint("shear_modulus_mpa > 0", name="ck_spring_material_g"),
+        CheckConstraint("density_g_cm3 > 0", name="ck_spring_material_density"),
+        *(CheckConstraint(f"{field} IS NULL OR {field} > 0", name=f"ck_spring_material_{field}")
+          for field in ("tensile_strength_mpa", "elastic_modulus_mpa", "allowable_shear_stress_mpa", "allowable_stress_coefficient")),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    standard_value: Mapped[str] = mapped_column(String(256), nullable=False)
+    aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    shear_modulus_mpa: Mapped[float] = mapped_column(Float, nullable=False)
+    density_g_cm3: Mapped[float] = mapped_column(Float, nullable=False)
+    tensile_strength_mpa: Mapped[float | None] = mapped_column(Float, nullable=True)
+    elastic_modulus_mpa: Mapped[float | None] = mapped_column(Float, nullable=True)
+    allowable_shear_stress_mpa: Mapped[float | None] = mapped_column(Float, nullable=True)
+    allowable_stress_coefficient: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    source_display_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
 
 class ReviewRecord(Base):

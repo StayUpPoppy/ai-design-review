@@ -55,7 +55,7 @@ def assert_catalog_recognition() -> None:
         assert result["raw_value"] == entry["standard_value"]
         assert result["need_human_review"] is True
         assert result["material_selection_source"] == "drawing"
-    for unknown in ("ХН70МВТЮБ ГОСТ 5632-72", "SUS316L", "55CrSiA"):
+    for unknown in ("ХН70МВТЮБ ГОСТ 5632-72", "SUS316LX", "55CrSiAX"):
         result = recognized(unknown)["spring_parameters"]["material"]
         assert result["value"] == "", result
         assert result["raw_value"] == unknown
@@ -73,7 +73,7 @@ def assert_alternatives_and_conflicts() -> None:
                    "page": 1, "original_number": 14}
     review = recognized(original, alternatives=[alternative("INCONEL 750")], requirements=[requirement])
     material = review["spring_parameters"]["material"]
-    assert material["value"] == "Inconel X750 镍基合金钢", material
+    assert material["value"] == "Inconel X750", material
     assert material["raw_value"] == original
     assert material["need_human_review"] is True
     assert material["material_selection_source"] == "drawing_substitute"
@@ -83,7 +83,7 @@ def assert_alternatives_and_conflicts() -> None:
     assert recognized(original, requirements=[requirement])["spring_parameters"]["material"]["value"] == material["value"]
     assert recognized(original, notes="允许换用 INCONEL 750")["spring_parameters"]["material"]["value"] == material["value"]
     primary = recognized("SUS304", alternatives=[alternative("INCONEL 750")])["spring_parameters"]["material"]
-    assert primary["value"] == "SUS304 不锈钢"
+    assert primary["value"] == "SUS304"
     assert primary["material_selection_source"] == "drawing"
     multi = recognized(original, alternatives=[alternative("INCONEL 750"), alternative("SUS304")])["spring_parameters"]["material"]
     assert not multi["value"] and multi["material_match_status"] == "conflict", multi
@@ -122,10 +122,10 @@ def assert_proposal_material_selection() -> None:
     assert proposal["status"] in {"ready", "warning"}, proposal
     assert review["spring_parameters"] == before
     change = next(item for item in proposal["direct_changes"] if item["field"] == "material")
-    assert change["after"] == "Inconel 718 镍基合金钢"
+    assert change["after"] == "Inconel 718"
     applied, _ = apply_parameter_change_proposal(review, proposal["proposal_id"], version=proposal["version"])
     material = applied["spring_parameters"]["material"]
-    assert material["value"] == "Inconel 718 镍基合金钢"
+    assert material["value"] == "Inconel 718"
     assert material["standard_value"] == "Inconel 718"
     assert material["raw_value"] == "原图材质 SUS304"
     assert material["material_selection_source"] == "ai"
@@ -134,7 +134,7 @@ def assert_proposal_material_selection() -> None:
     assert applied["manual_confirmations"]["parameter_change_proposal_material"]["raw_value"] == material["raw_value"]
     apply_standardization_to_review(applied)
     assert applied["spring_parameters"]["material"]["standard_value"] == material["standard_value"]
-    for invalid in ("ХН70МВТЮБ", "SUS316L", "SUS304 or SUS316"):
+    for invalid in ("ХН70МВТЮБ", "SUS316LX", "SUS304 or SUS316"):
         baseline = proposal_review()
         proposal = build_parameter_change_proposal(baseline, [{
             "type": "propose_parameter_patch", "target_field": "material", "proposed_value": invalid,

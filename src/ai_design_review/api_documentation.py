@@ -74,7 +74,7 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/api/reviews/{source_id}/variants"): _operation("审图管理", "读取多规格核对清单", "返回来源修订、按原顺序排列的候选、区域证据、问题及已创建子记录；不调用模型，不修改参数。来源仅供核对，不能编辑或生图。"),
     ("POST", "/api/reviews/{source_id}/variants/create-reviews"): _operation("审图管理", "创建所选规格的独立审图记录", "variant_ids选择1至50种规格，expected_source_revision校验来源修订，idempotency_key保证重试不重复建单。同键不同选择返回409；事务内整批创建，已有规格返回原ID。已删除规格不因原键重试恢复。子记录独立确认、保存和生图，不重新调用模型。"),
     ("GET", "/api/surface-treatment-catalog"): _operation("审图管理", "获取公司表面处理目录", "按当前云平台身份返回无备注版公司目录的版本及49项稳定ID、名称；只读，不调用模型、不修改审图。每条要求关联一个公司类型，复合工艺取原顺序第一项、正文完整保留；关联原代号仅在识别来源展示，不再独立确认及输出。content为唯一成图正文，主动未指定保留正文；新任务冻结结果，历史请求不变。"),
-    ("GET", "/api/material-catalog"): _operation("审图管理", "获取公司压缩弹簧材料目录", "按当前云平台身份返回15种材料的稳定ID、完整名称、标准牌号、明确别名和公司表内固定剪切模量及目录版本。只读，不调用模型、不保存审图；新材料选择限定目录，历史人工原值兼容保留，确认后的完整名称用于参数包及SW材料字段。"),
+    ("GET", "/api/material-catalog"): _operation("审图管理", "获取公司压缩弹簧材料目录", "按当前云平台身份返回已启用材料的稳定ID、名称、标准牌号、明确别名、六项材料属性及内容版本。配置数据库时读取数据库材料库，未配置时兼容本地初始化数据。只读，不调用模型、不保存审图；新材料选择限定目录，历史人工原值兼容保留，确认后的名称用于参数包及SW材料字段。"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/recover-preview"): _operation("审图管理", "预览并核对遗漏技术要求", "按订单归属和当前修订读取原始识别列表，返回未保留的独立条目；不调用识别模型、不保存、不覆盖人工内容。客户端选择补回后使用既有保存接口，仍须逐条确认。"),
     ("POST", "/api/reviews/{job_id}/technical-requirements/translate"): _operation("审图管理", "翻译或恢复技术要求译文", "校验订单归属、稳定ID及已保存文本快照。有效非空译文直接填入正文，不检查外文残留、中文充分性或工程内容差异，不生成差异警告；保留网络、空结果、格式、ID及无法还原占位符异常。mode=translate调用现有Qwen；mode=revalidate仅恢复实际保存的候选，不调用模型。translation_output_snapshot防止成功结果重复送译。返回自动恢复或待用户选择的候选；不保存、不代替人工确认，客户端通过现有串行保存持久化。"),
     ("GET", "/api/reviews/{job_id}/annotations"): _operation("审图管理", "获取原图关键参数气泡标注", "返回原图页面清单、稳定参数编号、定位依据和独立标注版本。普通读取仅返回保存标注，历史订单需补建时登记去重的后台本地核验任务，不在读取链路执行OCR，不重新调用Qwen或RAG。"),
@@ -134,18 +134,25 @@ OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
 
 class MaterialCatalogItem(BaseModel):
     id: str = Field(description="公司目录的稳定内部标识，不发送为SW materialCode。", examples=["4"])
-    display_name: str = Field(description="前端选择及确认后SW输出的纯牌号名称，不含中文材料类别说明。", examples=["SUS304"])
+    display_name: str = Field(description="前端选择及确认后SW输出的目录名称；已有材料保留规范名称，新材料沿用来源表名称。", examples=["SUS304"])
     standard_value: str = Field(description="当前材料的标准牌号，用于匹配与计算。", examples=["SUS304"])
     aliases: list[str] = Field(description="明确配置的牌号格式或拼写别名，不代表近似材料等效。")
     shear_modulus_mpa: float = Field(gt=0, description="公司材料表固定参考剪切模量，单位MPa，不按温度、线径或热处理修正。", examples=[71500])
+    density_g_cm3: float = Field(gt=0, description="密度，单位g/cm³。")
+    tensile_strength_mpa: float | None = Field(default=None, gt=0, description="抗拉强度，单位MPa；缺失时为空。")
+    elastic_modulus_mpa: float | None = Field(default=None, gt=0, description="弹性模量，单位MPa；缺失时为空。")
+    allowable_shear_stress_mpa: float | None = Field(default=None, gt=0, description="表内许用剪应力，单位MPa；缺失时为空。")
+    allowable_stress_coefficient: float | None = Field(default=None, gt=0, description="表内许用应力系数；缺失时为空。")
+    source: str = Field(description="材料参数来源。")
+    source_display_name: str = Field(description="来源表中的原始材料名称。")
 
 
 class MaterialCatalogResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    version: str = Field(description="材料目录版本。", examples=["company-compression-materials-v3"])
+    version: str = Field(description="根据启用材料的内容生成的稳定SHA-256版本。")
     source: str = Field(description="公司材料目录和剪切模量的来源说明。")
-    items: list[MaterialCatalogItem] = Field(min_length=15, max_length=15, description="按公司材料表顺序提供的15种材料。")
+    items: list[MaterialCatalogItem] = Field(min_length=1, description="按公司材料表顺序提供的已启用材料。")
 
 
 class ReviewRoughnessCandidate(BaseModel):
