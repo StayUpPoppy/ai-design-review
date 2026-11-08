@@ -320,7 +320,7 @@ def apply_parameter_change_proposal(
             },
             "turn_created_at": stored.get("source_turn_created_at"),
             "restandardized": bool(parameter_change_count or load_point_change_count),
-            "restandardization_status": "completed" if parameter_change_count or load_point_change_count else "not_required",
+            "restandardization_status": "pending" if (parameter_change_count or load_point_change_count) and applied_review.get("standardization_results") else "not_required",
         }
     )
     return applied_review, {
@@ -1515,7 +1515,7 @@ def _refresh_review_after_apply(review: dict[str, Any], *, preview: bool = False
         apply_company_simple_active_coils(spring_type, parameters)
         apply_formula_compression_solid_height(parameters)
         apply_formula_compression_spring_rate(parameters, review.get("spring_features") or {})
-    if had_standardization:
+    if had_standardization and preview:
         apply_standardization_to_review(review)
     else:
         review["derived_parameters"] = (
@@ -1528,6 +1528,13 @@ def _refresh_review_after_apply(review: dict[str, Any], *, preview: bool = False
         review["derived_parameters_stale"] = False
     refresh_design_checks(review)
     if not preview:
+        from .accuracy_inference import refresh_accuracy_inference
+        from .execution_standards import invalidate_stale_results, resolve_selection
+        if spring_type == "compression_spring":
+            resolve_selection(review)
+            refresh_accuracy_inference(review)
+        invalidate_stale_results(review)
+        review["parameter_reasonableness"] = assess_parameter_reasonableness(review)
         review["standardization_apply_history"] = []
 
 

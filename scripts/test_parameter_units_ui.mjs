@@ -12,6 +12,11 @@ function block(start, end) {
 const context = {
   state: { review: { spring_parameters: {}, technical_requirements: [] }, loadPointUndo: null },
   FIELD_LABELS: {},
+  getToleranceEditor: () => null,
+  loadPointCreateDraft: () => null,
+  supportsToleranceEditor: () => false,
+  standardizationReport: () => ({ diagnostics: [] }),
+  loadStandardizationDiagnosticHtml: () => "",
   sourceValues: (value) => Array.isArray(value) ? value : [value].filter(Boolean),
   pendingDefaultCandidateNotice: () => "",
   formulaCandidateHtml: () => "",

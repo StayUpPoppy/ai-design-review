@@ -54,6 +54,7 @@ const state = {
   reviewDraftFields: new Set(),
   reviewEditSerial: 0,
   standardizationInFlight: false,
+  standardizationError: null,
   recentReviews: [],
   recentReviewsLoading: false,
   historySidebarCollapsed: readBrowserPreference("aiDesignReviewHistorySidebarCollapsed") === "true",
@@ -81,14 +82,123 @@ const state = {
   technicalRequirementUndo: null,
   loadPointUndo: null,
   loadPointLabelDrafts: new Map(),
+  loadPointCreateDrafts: new Map(),
 };
 let materialCatalogPromise = null;
 let surfaceCatalogPromise = null;
 let surfaceCatalogRequestSerial = 0;
 let materialCatalogRequestSerial = 0;
+let toleranceEditorController = null;
+
+function toleranceEditorOwner() {
+  return JSON.stringify([state.apiBaseUrl, state.identity?.user_id || state.identity?.username, state.lastJob?.job_id || state.activeReviewMessageId || "local"]);
+}
+
+function loadPointCreateDraft(review = state.review) {
+  return review === state.review ? state.loadPointCreateDrafts?.get(toleranceEditorOwner()) || null : null;
+}
+
+function openLoadPointCreateDraft(candidateId = "", values = {}) {
+  const owner = toleranceEditorOwner(), existing = loadPointCreateDraft();
+  if (existing) {
+    if (candidateId && existing.candidateId !== candidateId) existing.error = "请先添加或取消当前新增草稿，再核对另一候选。";
+    return existing;
+  }
+  const draft = { id: createAuditEventId(), candidateId, label: "", height: "", force: "", toleranceText: "", error: "", ...values };
+  (state.loadPointCreateDrafts ||= new Map()).set(owner, draft);
+  return draft;
+}
+
+function clearLoadPointCreateDraft() {
+  const draft = loadPointCreateDraft(), editor = getToleranceEditor();
+  if (draft && editor?.current()?.kind === "load-create" && editor.current().target === draft.id) editor.drafts.delete(toleranceEditorOwner());
+  state.loadPointCreateDrafts?.delete(toleranceEditorOwner());
+}
+
+function hasPendingLoadPointCreateDrafts() {
+  return [...(state.loadPointCreateDrafts?.values() || [])].some(draft => draft.candidateId || [draft.label, draft.height, draft.force, draft.toleranceText].some(value => String(value).trim()));
+}
+
+function focusLoadPointCreateDraft() {
+  const draft = loadPointCreateDraft();
+  if (!draft) return;
+  requestAnimationFrame(() => {
+    const scope = state.compareOpen ? compareOverlay.querySelector('[data-compare-panel="parameters"]') : document;
+    const form = [...(scope || document).querySelectorAll('[data-kind="load_point_create"]')].find(form => form.dataset.createDraftId === draft.id);
+    form?.scrollIntoView({ block: "nearest" });
+    form?.querySelector('[data-role="new-load-label"]')?.focus({ preventScroll: true });
+  });
+}
+
+function toleranceTarget(kind, target) {
+  const params = state.review?.spring_parameters || {};
+  if (kind === "load-create") {
+    const creation = loadPointCreateDraft();
+    if (!creation || creation.id !== target) return null;
+    const value = ToleranceValues.parse(creation.toleranceText, { load: true, unit: "N" });
+    const item = value.ok ? { load_tolerance_upper: value.upper, load_tolerance_lower: value.lower, load_tolerance_percent: value.percent }
+      : { tolerance_input_draft: creation.toleranceText };
+    return { item, creation, liveNominal: true, nominal: creation.force, unit: "N", label: `${creation.label || "新增载荷"} 力值` };
+  }
+  if (kind === "load") {
+    const item = params.load_points?.find(point => String(point.load_point_id || point.label) === target);
+    return item ? { item, nominal: item.force, unit: item.force_unit || "N", label: `${item.label} 力值` } : null;
+  }
+  const item = params[target];
+  return item ? { item, nominal: item.value, unit: item.unit || getFieldMeta(target, state.review).unit || "", label: getFieldMeta(target, state.review).label || FIELD_LABELS[target] || target } : null;
+}
+
+function getToleranceEditor() {
+  if (typeof ToleranceEditor === "undefined") return null;
+  toleranceEditorController ||= new ToleranceEditor.Controller({
+    owner: toleranceEditorOwner,
+    resolve: toleranceTarget,
+    busy: () => state.busy || state.standardizationInFlight || state.generationBusy || reviewReadOnly(),
+    notice: message => updateLatestReviewMessage(message),
+    reveal: () => { state.compareTab = "parameters"; if (!state.compareOpen) openCompareOverlay(); else renderCompareOverlay(); },
+    render: () => refreshReviewSurfaces(),
+    commit: commitToleranceEditor,
+    blocks: target => Boolean(target.closest('[data-role="confirm"], [data-role="apply-reasonableness-suggestion"], [data-role="delete-load-point"], [data-action="confirm-all-review-items"], [data-action="run-workbench-standardization"], [data-action="apply-reasonableness-batch"], [data-action="undo-reasonableness-application"], [data-action="create-generation-job"], [data-action="recreate-generation"], [data-action="undo-load-point-delete"]')),
+  });
+  return toleranceEditorController;
+}
+
+function toleranceEditingAllowed() { return getToleranceEditor()?.guard() ?? true; }
+
+function commitToleranceEditor(draft, resolved, value) {
+  if (draft.kind === "load-create") {
+    if (loadPointCreateDraft()?.id !== draft.target) return false;
+    resolved.creation.toleranceText = ToleranceValues.format(value);
+    resolved.creation.error = "";
+    return true;
+  }
+  const item = resolved.item, load = draft.kind === "load";
+  const field = load ? loadPointField(item, state.review.spring_parameters.load_points.indexOf(item)) : draft.target;
+  const before = load ? loadPointAuditState(item) : parameterAuditState(item);
+  rememberConfirmedSnapshot(item);
+  if (load) {
+    applyManualLoadTolerance(item, value);
+    syncAccuracyInferenceInput(state.review, `load_points.${item.label}.force`, { tolerance: true });
+    applyEditedConfirmationState(item, field, { confirmationField: loadPointConfirmationKey(item) });
+  } else {
+    item.tolerance_upper = value.upper; item.tolerance_lower = value.lower;
+    delete item.tolerance_input_draft;
+    applyEditedConfirmationState(item, field, { accuracyPart: "tolerance" });
+  }
+  queueReviewAuditEvent({ event_type: load ? "load_point_tolerance_updated" : "parameter_tolerance_updated", target_field: field,
+    before_state: before, after_state: load ? loadPointAuditState(item) : parameterAuditState(item), metadata: { ...(load ? { load_point_id: item.load_point_id } : {}), edit_method: "inline_tolerance_editor" } });
+  scheduleParameterReasonablenessRefresh();
+  return true;
+}
+
+function supportsToleranceEditor(field, param, meta) {
+  if (["material", "standard_no", "handedness", "end_type", "end_grinding", "end_coils_closed", "controlled_diameter_field"].includes(field) || field.endsWith("accuracy_grade")) return false;
+  return typeof param.value === "number" || globalThis.ToleranceValues?.number(param.value) != null || Boolean(param.unit || meta.unit);
+}
 
 window.addEventListener("beforeunload", (event) => {
   const hasUnsavedReviewWork = hasPendingEditedReviewItems(state.review)
+    || hasPendingLoadPointCreateDrafts()
     || state.pendingReviewAuditEvents.length > 0
     || state.reviewPersistenceSaving
     || (typeof DrawingAnnotations !== "undefined" && DrawingAnnotations.hasUnsaved());
@@ -986,6 +1096,12 @@ async function handleUploadAction(event) {
 
 async function runStandardization(messageId = state.activeReviewMessageId, options = {}) {
   if (!state.review || state.busy || state.standardizationInFlight || state.standardizationChatBusy) return false;
+  if (typeof toleranceEditingAllowed === "function" && !toleranceEditingAllowed()) return false;
+  if (isCompressionSpringReview(state.review) && (!state.review.standard_selection?.selected_standard
+      || !compressionAccuracyGradeOptions(state.review).includes(normalizeAccuracyGrade(state.review.spring_parameters?.accuracy_grade?.value)))) {
+    updateLatestReviewMessage("请选择执行标准及对应的精度等级后再标准化。");
+    return false;
+  }
   clearTimeout(state.automaticStandardizationTimer);
   state.automaticStandardizationTimer = null;
   const accuracyGradeUpdate = options.accuracy_grade_update;
@@ -997,22 +1113,33 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
     || normalizeAccuracyGrade(accuracyGradeUpdate?.grade)
     || normalizeAccuracyGrade(state.review?.spring_parameters?.accuracy_grade?.value);
   activateReviewContext(messageId);
+  const operationJobId = state.lastJob?.job_id;
+  const operationNavigation = state.reviewNavigationSerial;
+  const operationServer = state.apiBaseUrl;
+  const operationIsCurrent = () => state.lastJob?.job_id === operationJobId
+    && state.reviewNavigationSerial === operationNavigation && state.apiBaseUrl === operationServer;
+  state.standardizationInFlight = true;
+  state.standardizationError = null;
   if (feedbackOperation) {
     setAccuracyGradeUpdate("loading", feedbackGrade, feedbackOperation);
   }
   setBusy(true);
+  syncStandardizationControls();
   let savedBeforeStandardization = false;
   try {
-    savedBeforeStandardization = await flushReviewPersistence();
+    savedBeforeStandardization = await flushReviewPersistence({ standardizationPreparation: true });
   } catch {
     savedBeforeStandardization = false;
   }
-  if (!savedBeforeStandardization) {
+  if (!savedBeforeStandardization || !operationIsCurrent()) {
+    state.standardizationInFlight = false;
     setBusy(false);
-    if (feedbackOperation) {
-      setAccuracyGradeUpdate("error", feedbackGrade, feedbackOperation);
+    if (operationIsCurrent()) {
+      state.standardizationError = { kind: "save", message: "保存失败，请重试保存" };
+      if (feedbackOperation) setAccuracyGradeUpdate("error", feedbackGrade, feedbackOperation);
+      appendAssistantText("当前参数尚未成功保存；请点击标准化设置中的“重试保存”，再重新标准化。", true, { scroll: false });
     }
-    appendAssistantText("当前参数尚未成功保存；请先点击参数行的“重试保存”，再更新标准化建议。", true, { scroll: false });
+    syncStandardizationControls();
     return false;
   }
   const requestReview = normalizeReview(structuredClone(state.review));
@@ -1028,7 +1155,6 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
     ? prepareAccuracyGradeCommit(requestReview, requestedAccuracyGrade)
     : null;
   const scrollState = captureReviewScrollState();
-  state.standardizationInFlight = true;
   const endpoint = state.lastJob?.job_id
     ? `/api/reviews/${encodeURIComponent(state.lastJob.job_id)}/standardize`
     : "/api/reviews/standardize";
@@ -1109,28 +1235,33 @@ async function runStandardization(messageId = state.activeReviewMessageId, optio
     const llmSummary = payload.llm_standardization?.result_count
       ? `，其中 LLM/RAG ${payload.llm_standardization.result_count} 项`
       : "";
-    const completionPrefix = options.automatic ? "已按最新修改自动更新标准化方案" : "标准化完成";
+    const report = standardizationReport(state.review);
+    const completionPrefix = report.failed ? (report.generated ? "标准化部分完成" : "本次未能生成标准公差") : "标准化完成";
     if (feedbackOperation) {
       setAccuracyGradeUpdate("success", feedbackGrade, feedbackOperation);
     }
-    updateLatestReviewMessage(`${completionPrefix}：生成 ${state.review.standardization_results.length} 项建议${llmSummary}。${warnings}`);
+    updateLatestReviewMessage(`${completionPrefix}：${report.message}${llmSummary}。${warnings}`);
     return true;
   } catch (error) {
+    if (!operationIsCurrent()) return false;
+    state.standardizationError = { kind: "calculation", message: `标准化失败：${error.message || String(error)}；请重试。` };
     if (feedbackOperation) {
       setAccuracyGradeUpdate("error", feedbackGrade, feedbackOperation);
     }
     if (thinkingId) replaceMessage(thinkingId, error.message || String(error), true);
-    else appendAssistantText(`自动更新标准化方案失败：${error.message || String(error)}`, true, { scroll: false });
+    else appendAssistantText(`标准化失败：${error.message || String(error)}`, true, { scroll: false });
     return false;
   } finally {
     state.standardizationInFlight = false;
     setBusy(false);
+    syncStandardizationControls();
     if (state.pendingReviewAuditEvents.length) scheduleReviewPersistence();
-    restoreReviewScrollState(scrollState);
+    if (operationIsCurrent()) restoreReviewScrollState(scrollState);
   }
 }
 
 async function runStandardizationChat(message, messageId = state.activeReviewMessageId, useLlm = true, options = {}) {
+  if (typeof toleranceEditingAllowed === "function" && !toleranceEditingAllowed()) return;
   const text = String(message || "").trim();
   if (!state.review || !text || state.standardizationChatBusy || state.standardizationInFlight || state.busy) return;
   activateReviewContext(messageId);
@@ -1234,6 +1365,7 @@ async function runStandardizationChat(message, messageId = state.activeReviewMes
   } finally {
     state.standardizationInFlight = false;
     setBusy(false);
+    syncStandardizationControls();
     if (state.pendingReviewAuditEvents.length) scheduleReviewPersistence();
     if (!isTypingFinalReply) {
       state.standardizationChatBusy = false;
@@ -1455,6 +1587,7 @@ function queueReviewAuditEvent(event) {
 }
 
 function refreshParameterPersistenceControls(fields = null) {
+  if (typeof syncStandardizationControls === "function") syncStandardizationControls();
   syncDiameterRoleControls();
   if (!state.review) return;
   const targetFields = fields ? new Set(fields) : null;
@@ -1492,6 +1625,10 @@ function scheduleReviewPersistence() {
 }
 
 async function flushReviewPersistence(options = {}) {
+  if (typeof toleranceEditingAllowed === "function" && !toleranceEditingAllowed()) {
+    if (options.throwOnError) throw new Error("请先保存或取消当前公差编辑。");
+    return false;
+  }
   document.querySelectorAll('[data-role="drawing-no"], [data-role="drawing-name"], [data-role="material-code"]').forEach((input) => input.commitDrawingNo?.());
   const summaryError = drawingSummaryValidationError(state.review);
   if (summaryError) {
@@ -1500,7 +1637,7 @@ async function flushReviewPersistence(options = {}) {
   }
   if (Array.from(state.reviewDraftFields || []).some((field) => field.startsWith("generation_settings."))) commitGenerationSettings();
   clearTimeout(state.reviewPersistenceTimer);
-  if (state.standardizationInFlight) {
+  if (state.standardizationInFlight && !options.standardizationPreparation) {
     if (options.throwOnError) throw new Error("标准化计算尚未结束，当前修改仍在等待保存。");
     return false;
   }
@@ -1522,7 +1659,7 @@ async function flushReviewPersistence(options = {}) {
 
 async function persistReviewChanges(options = {}) {
   if (state.reviewPersistenceSaving && state.reviewPersistencePromise) return state.reviewPersistencePromise;
-  if (state.standardizationInFlight) return false;
+  if (state.standardizationInFlight && !options.standardizationPreparation) return false;
   if (!state.lastJob?.job_id || !state.pendingReviewAuditEvents.length || !state.review) return false;
   const summaryError = drawingSummaryValidationError(state.review);
   if (summaryError) {
@@ -1719,11 +1856,11 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
   const technicalId = (field) => field?.startsWith("technical_requirements.") ? field.slice("technical_requirements.".length) : null;
   const settingKey = (field) => ["generation_settings.drawing_model", "generation_settings.typeface", "generation_settings.username"].includes(field) ? field.split(".")[1] : null;
   const summaryKey = (field) => ["drawing_summary.drawing_no", "drawing_summary.drawing_name", "drawing_summary.material_code"].includes(field) ? field.split(".")[1] : null;
-  const fieldItem = (review, field) => field === "diameter_linkage" ? diameterRoleGroupState(review) : summaryKey(field) ? { value: review.drawing_summary?.[summaryKey(field)] ?? "" } : settingKey(field) ? { value: review.generation_settings?.[settingKey(field)] ?? null } : loadId(field)
+  const fieldItem = (review, field) => field === "standard_selection" ? review.standard_selection : field === "diameter_linkage" ? diameterRoleGroupState(review) : summaryKey(field) ? { value: review.drawing_summary?.[summaryKey(field)] ?? "" } : settingKey(field) ? { value: review.generation_settings?.[settingKey(field)] ?? null } : loadId(field)
     ? review.spring_parameters?.load_points?.find((item) => item.load_point_id === loadId(field))
     : technicalId(field) ? review.technical_requirements?.find((item) => item.requirement_id === technicalId(field))
       : field === "technical_output_deletions" ? { value: review.technical_output_deletions || [] } : review.spring_parameters?.[field];
-  if (!fields.length || fields.some((field) => !field || (field !== "diameter_linkage" && field !== "technical_output_deletions" && !summaryKey(field) && !settingKey(field) && !loadId(field) && !technicalId(field) && (field.includes(".") || !local?.spring_parameters?.[field])))) {
+  if (!fields.length || fields.some((field) => !field || (field !== "standard_selection" && field !== "diameter_linkage" && field !== "technical_output_deletions" && !summaryKey(field) && !settingKey(field) && !loadId(field) && !technicalId(field) && (field.includes(".") || !local?.spring_parameters?.[field])))) {
     return null;
   }
   const server = normalizeReview(payload);
@@ -1733,8 +1870,11 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
     const serverItem = fieldItem(server, field);
     const localItem = fieldItem(local, field);
     const beforeState = firstEvent?.before_state || localItem?.confirmation_snapshot;
-    if ((!beforeState || parameterConflictFingerprint(serverItem) !== parameterConflictFingerprint(beforeState))
-      && parameterConflictFingerprint(serverItem) !== parameterConflictFingerprint(localItem)) {
+    const fingerprint = field === "standard_selection"
+      ? item => JSON.stringify({ selected_standard: item?.selected_standard, manual: ["human_selected", "manual"].includes(item?.selection_source) })
+      : parameterConflictFingerprint;
+    if ((!beforeState || fingerprint(serverItem) !== fingerprint(beforeState))
+      && fingerprint(serverItem) !== fingerprint(localItem)) {
       const choice = await chooseParameterConflict(field, serverItem, localItem);
       if (!choice || state.lastJob?.job_id !== jobId || state.reviewEditSerial !== localEditSerial || requestScope !== currentScope()) return null;
       if (choice === "server") chosenServer.add(field);
@@ -1744,6 +1884,7 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
   const merged = normalizeReview(server);
   for (const field of fields) {
     if (chosenServer.has(field)) continue;
+    if (field === "standard_selection") { merged.standard_selection = structuredClone(local.standard_selection); continue; }
     if (field === "technical_output_deletions") {
       merged.technical_output_deletions = structuredClone(local.technical_output_deletions || []);
       continue;
@@ -2037,7 +2178,7 @@ function bindReasonablenessIssueFocus(root, messageId = state.activeReviewMessag
     if (button.dataset.boundReasonablenessFocus) return;
     button.dataset.boundReasonablenessFocus = "true";
     button.addEventListener("click", () => {
-      focusMissingStandardizationField(button.dataset.field || "", messageId);
+      focusMissingStandardizationField(button.dataset.field || "", messageId, { highlight: true });
     });
   });
 }
@@ -2235,6 +2376,7 @@ function refreshReasonablenessSuggestionControls(fields = null) {
 }
 
 function applyReasonablenessSuggestions(items, options = {}) {
+  if (typeof toleranceEditingAllowed === "function" && !toleranceEditingAllowed()) return { count: 0, applied_items: [], records: [] };
   const candidates = (Array.isArray(items) ? items : [items]).filter((item) => {
     if (options.prevalidated) return true;
     const control = reasonablenessSuggestionControlState(item, state.review);
@@ -2314,8 +2456,12 @@ function applyReasonablenessSuggestionValue(item) {
       point[loadTarget.field] = item.suggested_value;
     }
     if (["tolerance", "value_and_tolerance"].includes(mode)) {
+      rememberDrawingLoadTolerance(point);
       point.load_tolerance_upper = item.suggested_tolerance_upper ?? null;
       point.load_tolerance_lower = item.suggested_tolerance_lower ?? null;
+      point.force_tolerance_percent = null;
+      point.load_tolerance_percent = null;
+      delete point.tolerance_input_draft;
       point.tolerance_source = "human_suggestion_applied";
       point.tolerance_basis = item.basis || "";
     }
@@ -3687,9 +3833,9 @@ function renderStandardSelectionHtml(review) {
               <strong>${escapeHtml(confidence)}</strong>
               <small>${escapeHtml(selectionSourceLabel(selection.selection_source))}</small>
             </div>
-            <button type="button" data-action="confirm-standard-selection" ${selection.need_human_review ? "" : "disabled"}>
+            ${!isCompressionSpringReview(review) ? `<button type="button" data-action="confirm-standard-selection" ${selection.need_human_review ? "" : "disabled"}>
               ${selection.need_human_review ? "确认判断" : "已确认"}
-            </button>
+            </button>` : ""}
           </div>
           <div class="standard-features">${featureRows}</div>
           ${selection.reason ? `<p>${escapeHtml(selection.reason)}</p>` : ""}
@@ -3726,11 +3872,23 @@ function renderDrawingCanvasHtml(className, imageUrl = state.imageUrl) {
   `;
 }
 
+function currentReasonablenessIssues(review, report = standardizationReport(review)) {
+  return [...(review?.parameter_reasonableness?.issues || []).filter(item => item.category !== "standardization"), ...report.issues];
+}
+
+function standardizationDiagnosticKey(report) {
+  return AccuracyInference.fingerprint({ stale: report.stale, issues: report.issues });
+}
+
 function renderParameterReasonablenessHtml(review) {
   const assessment = review?.parameter_reasonableness || {};
-  const status = assessment.status || "not_applicable";
+  const report = standardizationReport(review);
+  const issues = currentReasonablenessIssues(review, report);
+  const status = issues.some(item => item.severity === "blocked") ? "blocked" : issues.some(item => item.severity === "needs_input") ? "needs_input"
+    : issues.some(item => item.severity === "warning") ? "warning" : report.stale ? "stale" : assessment.status === "not_applicable" ? "not_applicable" : "pass";
+  const mainIssue = issues.find(item => item.severity === status);
+  const summary = mainIssue?.message || (report.stale ? "参数已修改，标准化诊断待更新，请重新标准化。" : assessment.summary || "正在核对参数关系。");
   const bulkConfirmationReport = bulkConfirmationFollowupReport(review);
-  const issues = Array.isArray(assessment.issues) ? assessment.issues : [];
   const suggestions = reasonablenessSuggestions(review);
   const actionableSuggestions = suggestions.filter((item) => {
     const differsFromLiveTarget = !reasonablenessSuggestionMatchesCurrentTarget(item, review);
@@ -3752,15 +3910,17 @@ function renderParameterReasonablenessHtml(review) {
     blocked: "存在不可用参数",
     needs_input: "需要补充信息",
     not_applicable: "暂不适用",
+    stale: "待重新标准化",
   };
-  if (status === "not_applicable" && !bulkConfirmationReport && !actionableSuggestions.length && !canUndo) return '<div data-kind="parameter-reasonableness" hidden></div>';
+  const diagnosticKey = standardizationDiagnosticKey(report);
+  if (status === "not_applicable" && !bulkConfirmationReport && !actionableSuggestions.length && !canUndo) return `<div data-kind="parameter-reasonableness" data-standardization-diagnostic-key="${diagnosticKey}" hidden></div>`;
   return `
-    <section class="review-block parameter-reasonableness-block" data-kind="parameter-reasonableness">
+    <section class="review-block parameter-reasonableness-block" data-kind="parameter-reasonableness" data-standardization-diagnostic-key="${diagnosticKey}">
       <div class="block-head">
         <h2>参数合理性与建议</h2>
         <span class="parameter-reasonableness-status ${escapeHtml(status)}">${escapeHtml(labels[status] || "待核对")}</span>
       </div>
-      <p class="parameter-reasonableness-summary">${escapeHtml(assessment.summary || "正在核对参数关系。")}</p>
+      <p class="parameter-reasonableness-summary">${escapeHtml(summary)}</p>
       ${state.reasonablenessRefreshError ? `<div class="reasonableness-refresh-error" role="alert"><span>${escapeHtml(state.reasonablenessRefreshError)}</span><button type="button" class="secondary-action" data-action="retry-reasonableness-refresh">重试更新</button></div>` : ""}
       ${bulkConfirmationReport ? renderBulkConfirmationFollowupHtml(bulkConfirmationReport) : ""}
       ${issues.length ? `
@@ -3770,7 +3930,7 @@ function renderParameterReasonablenessHtml(review) {
             const fields = Array.isArray(item.fields) ? item.fields.filter(Boolean) : [];
             const target = fields[0] || "";
             return `
-              <article class="parameter-reasonableness-item ${escapeHtml(item.severity || "warning")}">
+              <article class="parameter-reasonableness-item ${escapeHtml(item.severity || "warning")}"${item.category === "standardization" ? ' data-standardization-issue' : ""}>
                 <div class="parameter-reasonableness-item-head">
                   <strong>${escapeHtml(reasonablenessSeverityLabel(item.severity))}</strong>
                   <small>${escapeHtml(item.rule_id || `RULE-${index + 1}`)}</small>
@@ -3779,8 +3939,8 @@ function renderParameterReasonablenessHtml(review) {
                 ${item.calculation ? `<small><b>计算：</b>${escapeHtml(item.calculation)}</small>` : ""}
                 ${item.basis ? `<small><b>依据：</b>${escapeHtml(item.basis)}</small>` : ""}
                 ${item.explanation ? `<small><b>说明：</b>${escapeHtml(item.explanation)}</small>` : ""}
-                ${item.customer_question ? `<small><b>建议向客户确认：</b>${escapeHtml(item.customer_question)}</small>` : ""}
-                ${target ? `<button type="button" class="secondary-action" data-role="focus-reasonableness-field" data-field="${escapeHtml(target)}">定位参数</button>` : ""}
+                ${item.customer_question ? `<small><b>${item.category === "standardization" ? "处理方式" : "建议向客户确认"}：</b>${escapeHtml(item.resolution || item.customer_question)}</small>` : ""}
+                ${item.category === "standardization" ? `<div class="reasonableness-diagnostic-actions">${fields.map(field => `<button type="button" class="secondary-action" data-role="focus-reasonableness-field" data-field="${escapeHtml(field)}">${escapeHtml(ExecutionStandards.navigationLabel(review, field))}</button>`).join("")}</div>` : target ? `<button type="button" class="secondary-action" data-role="focus-reasonableness-field" data-field="${escapeHtml(target)}">定位参数</button>` : ""}
               </article>
             `;
           }).join("")}
@@ -3794,7 +3954,7 @@ function renderParameterReasonablenessHtml(review) {
               <span>${batchPlan.items.length ? `${batchPlan.items.length} 项可一键应用` : (visibleActionableSuggestions.length ? "当前建议需逐项查看" : "暂无可直接应用的建议")}${batchPlan.conflicts.length ? `；${batchPlan.conflicts.length} 个字段存在多方案` : ""}</span>
             </div>
             <div>
-              <button type="button" data-action="apply-reasonableness-batch" ${batchPlan.items.length ? "" : "disabled"}>应用全部可用建议</button>
+              <button type="button" data-action="apply-reasonableness-batch" ${batchPlan.items.length ? "" : "disabled"}>应用全部可用建议${batchPlan.items.length ? ` · ${batchPlan.items.length} 项` : ""}</button>
               <button type="button" class="secondary-action" data-action="undo-reasonableness-application" ${canUndo ? "" : "disabled"}>撤销上次应用</button>
             </div>
           </div>
@@ -3929,6 +4089,7 @@ function renderReasonablenessSuggestionHtml(item, review = state.review) {
       <div class="reasonableness-suggestion-change">
         <span>${escapeHtml(current)}</span><b aria-hidden="true">→</b><strong>${escapeHtml(proposed)}</strong>
       </div>
+      ${standardizationGradeNoteHtml(item.metadata)}
       ${item.basis || (item.target_field === "standard_no" && control.label === "需单独核对")
     ? `<p>${escapeHtml(item.basis || "")}${item.target_field === "standard_no" && control.label === "需单独核对"
       ? `<br><strong>${escapeHtml(control.reason)}</strong>` : ""}</p>` : ""}
@@ -4466,6 +4627,8 @@ function standardNumberSuggestionEligible(item, review = state.review) {
 }
 
 function reasonablenessSuggestionIsFresh(item, review = state.review) {
+  if ((item?.source === "standardization" || item?.supporting_sources?.includes("standardization"))
+      && typeof ExecutionStandards !== "undefined" && !ExecutionStandards.fresh(review)) return false;
   if (!item || !item.dependency_token) return false;
   if (item.suggestion_kind === "formula_candidate" && (typeof FormulaCandidates === "undefined" || !FormulaCandidates.fresh(review, item))) return false;
   if (!["applied", "informational"].includes(item.status)) {
@@ -4703,7 +4866,7 @@ function renderParameterTableHtml(review) {
         </div>
       </div>
       ${renderDiameterRoleChoices(review)}
-      <div class="data-table">
+      <div class="data-table parameter-data-table">
         ${dataTableHeadHtml("参数", "数值", "公差")}
         ${parameterRows.join("")}
       </div>
@@ -4715,7 +4878,7 @@ function renderParameterTableHtml(review) {
             <span>高级参数</span>
             <small>${advancedRows.length} 项</small>
           </summary>
-          <div class="data-table advanced-data-table">
+          <div class="data-table parameter-data-table advanced-data-table">
             ${dataTableHeadHtml("参数", "数值", "公差")}
             ${advancedRows.join("")}
           </div>
@@ -5302,7 +5465,6 @@ function loadPointTableHeadHtml() {
       <span>&#39640;&#24230;</span>
       <span>&#21147;&#20540;</span>
       <span>力值公差</span>
-      <span>&#25805;&#20316;</span>
     </div>
   `;
 }
@@ -5318,7 +5480,10 @@ function getParameterFields(params, review) {
 
 function getEditorParameterFieldGroups(params, review) {
   const groups = getParameterFieldGroups(params, review);
-  return { core: groups.core.filter(field => field !== "standard_no"), advanced: groups.advanced.filter(field => field !== "standard_no") };
+  if (!isCompressionSpringReview(review)) return { core: groups.core.filter(field => field !== "standard_no"), advanced: groups.advanced.filter(field => field !== "standard_no") };
+  const settings = new Set(["standard_no", "accuracy_grade"]);
+  return { core: ["material", ...groups.core.filter(field => field !== "material" && !settings.has(field))],
+    advanced: groups.advanced.filter(field => !settings.has(field)) };
 }
 
 function getParameterFieldGroups(params, review) {
@@ -5429,8 +5594,6 @@ function parameterUnitLabelHtml(label) {
 }
 
 function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)) {
-  const evidence = param.evidence || param.suggested_region || "";
-  const compactEvidence = field === "surface_roughness_ra" && typeof SurfaceRoughnessReference !== "undefined" ? SurfaceRoughnessReference.summary(param) : evidence;
   const defaultCandidateNotice = pendingDefaultCandidateNotice(param);
   let label = meta.label || FIELD_LABELS[field] || field;
   const requiredMark = meta.required ? " *" : "";
@@ -5483,7 +5646,6 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
       <div class="data-label">
         ${typeof DrawingAnnotations !== "undefined" ? DrawingAnnotations.badgeHtml(field, param) : ""}
         <strong title="${escapeHtml(displayLabel.text)}">${parameterUnitLabelHtml(displayLabel)}${escapeHtml(requiredMark)}</strong>
-        ${compactEvidence ? `<small${field === "surface_roughness_ra" ? ' data-role="roughness-source-summary"' : ` title="${escapeHtml(compactEvidence)}"`}>${escapeHtml(compactEvidence)}</small>` : ""}
         ${field === "spring_rate" && param.formula_material_catalog_stale ? `<small class="parameter-formula-reference-note">${escapeHtml(param.formula_calculation_reason || "公司材料表剪切模量已更新，请核对最新刚度建议。")}</small>` : ""}
         ${param.recognition_role_notice ? `<small class="parameter-default-candidate-note">${escapeHtml(param.recognition_role_notice)}</small>` : ""}
         ${param.diameter_role_conflict && param.need_human_review ? '<small class="parameter-default-candidate-note">多条原图直径尺寸不一致，请核对后单独确认。</small>' : ""}
@@ -5491,18 +5653,20 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
         ${badges.length || accuracyGradeStatus ? `<div class="parameter-badges">${accuracyGradeStatus ? `<span class="accuracy-grade-source ${accuracyGradeStatusClass(param)}" data-accuracy-grade-source>${escapeHtml(accuracyGradeStatus)}</span>` : ""}${badges.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       </div>
       <label class="data-input-cell data-primary">
-        <span class="sr-only">${escapeHtml(displayLabel.text)}数值</span>
+        <span class="parameter-field-label" aria-hidden="true">数值</span>
         ${parameterValueControlHtml(field, param, displayLabel.text)}
       </label>
-      <label class="data-input-cell data-secondary">
-        <span class="sr-only">${escapeHtml(displayLabel.text)}公差</span>
-        <input data-role="tolerance" aria-label="${escapeHtml(displayLabel.text)}公差" value="${escapeHtml(formatTolerance(param))}">
-      </label>
+      <div class="data-input-cell data-secondary">
+        <span class="parameter-field-label" aria-hidden="true">公差</span>
+        <div class="tolerance-input-control"><input data-role="tolerance" aria-label="${escapeHtml(displayLabel.text)}公差" title="${escapeHtml(formatTolerance(param) || '可输入 ±0.1、+0.1/-0.2，或点击编辑公差')}" value="${escapeHtml(formatTolerance(param))}"${getToleranceEditor()?.matching("parameter", field) ? " readonly" : ""}>
+        ${supportsToleranceEditor(field, param, meta) ? getToleranceEditor()?.button("parameter", field, label) || "" : ""}</div>
+      </div>
       ${confirmationButtonHtml(param, { kind: "parameter", field, review: state.review })}
       ${roughnessCandidates}
       ${field === "surface_roughness_ra" && isCompressionSpringReview(state.review) ? `<div class="roughness-reference" data-role="roughness-reference" role="group" aria-label="粗糙度常规参考">${surfaceRoughnessReferenceHtml(param)}</div>` : ""}
       ${materialNotes}
       <div class="parameter-formula-candidate" data-role="formula-candidate">${["active_coils", "support_coils", "pitch", "solid_height"].includes(field) || param.diameter_linkage_managed ? formulaCandidateHtml(param) : ""}</div>
+      ${getToleranceEditor()?.html("parameter", field) || ""}
     </div>
   `;
 }
@@ -5618,9 +5782,9 @@ function surfaceRoughnessCandidatesHtml(param) {
 }
 
 function loadPointRowHtml(point, index, review = state.review) {
-  const evidence = point.evidence || "";
   const label = point.label || `F${index + 1}`;
   const tolerance = loadPointToleranceDisplay(point, label, review);
+  const diagnostic = standardizationReport(review).diagnostics.find(item => item.target_field === `load_points.${label}.force`);
   const reasonablenessSeverity = reasonablenessSeverityForField(review, `load_points.${label}`);
   const heightLabel = parameterUnitLabel("height", "高度", { unit: point.height_unit }, { unit: "mm" });
   const forceLabel = parameterUnitLabel("force", "力值", { unit: point.force_unit }, { unit: "N" });
@@ -5638,7 +5802,6 @@ function loadPointRowHtml(point, index, review = state.review) {
           </div>
           <span class="load-point-rename-status" data-role="rename-status" role="status" aria-live="polite"></span>
         </div>
-        ${point.height_relation || point.load_relation_candidate ? loadHeightRelationDetails(point) : evidence ? `<small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small>` : ""}
       </div>
       <label class="data-input-cell data-primary">
         <span class="load-point-field-label">${parameterUnitLabelHtml(heightLabel)}</span>
@@ -5649,21 +5812,24 @@ function loadPointRowHtml(point, index, review = state.review) {
         <span class="load-point-field-label">${parameterUnitLabelHtml(forceLabel)}</span>
         <input data-role="force" aria-label="${escapeHtml(`${label}${forceLabel.text}`)}" value="${escapeHtml(point.force ?? "")}">
       </label>
-      <label class="data-input-cell data-tertiary load-point-tolerance">
+      <div class="data-input-cell data-tertiary load-point-tolerance">
         <span class="load-point-field-label">力值公差</span>
-        <input data-role="load-tolerance" aria-label="${escapeHtml(toleranceLabel)}" value="${escapeHtml(tolerance.value)}" placeholder="${escapeHtml(tolerance.placeholder)}" title="${escapeHtml([tolerance.title, `绝对公差单位与力值一致（${forceLabel.unit}）；百分比公差使用 %。`].filter(Boolean).join("；"))}">
+        <div class="tolerance-input-control"><input data-role="load-tolerance" aria-label="${escapeHtml(toleranceLabel)}" value="${escapeHtml(point.tolerance_input_draft || tolerance.value)}" placeholder="${escapeHtml(tolerance.placeholder)}" title="${escapeHtml([tolerance.title, `绝对公差单位与力值一致（${forceLabel.unit}）；百分比公差使用 %。`].filter(Boolean).join("；"))}"${getToleranceEditor()?.matching("load", String(point.load_point_id || label)) ? " readonly" : ""}>${getToleranceEditor()?.button("load", String(point.load_point_id || label), `${label}力值`) || ""}</div>
         ${tolerance.note ? `<small>${escapeHtml(tolerance.note)}</small>` : ""}
-      </label>
+        <span data-load-standardization-status>${loadStandardizationDiagnosticHtml(diagnostic)}</span>
+      </div>
       <div class="load-point-actions">
         ${confirmationButtonHtml(point, { kind: "load_point", field: `load_points.${label}`, review })}
         <button type="button" class="secondary-action load-point-delete-button" data-role="delete-load-point">删除</button>
       </div>
+      ${getToleranceEditor()?.html("load", String(point.load_point_id || label)) || ""}
     </div>
   `;
 }
 
 function renderLoadPointSectionHtml(review, rows) {
   ensureLoadPointIds(review);
+  const creation = loadPointCreateDraft(review);
   const points = review.spring_parameters?.load_points || [];
   const confirmed = points.filter((point) => isValidLoadPoint(point) && point.need_human_review === false).length;
   const undo = state.loadPointUndo?.review === review ? state.loadPointUndo : null;
@@ -5682,14 +5848,15 @@ function renderLoadPointSectionHtml(review, rows) {
           <button type="button" class="secondary-action" data-action="undo-load-point-delete">撤销删除</button>
         </div>
       ` : ""}
-      <form class="load-point-create" data-kind="load_point_create" hidden>
-        <label>编号<input data-role="new-load-label" placeholder="例如：F1"></label>
-        <label>${parameterUnitLabelHtml(parameterUnitLabel("height", "高度", {}, { unit: "mm" }))}<input data-role="new-load-height" inputmode="decimal" placeholder="例如：25"></label>
-        <label>${parameterUnitLabelHtml(parameterUnitLabel("force", "力值", {}, { unit: "N" }))}<input data-role="new-load-force" inputmode="decimal" placeholder="可留空，仅估算应力"></label>
-        <label>力值公差（可选）<input data-role="new-load-tolerance" placeholder="例如：±6 或 +6/-6" aria-label="公差（可选，绝对值单位 N，百分比单位 %）"></label>
-        <small data-role="load-point-create-error" aria-live="polite"></small>
-        <small data-role="load-candidate-form-note" hidden>请核对原图并补齐参数；加入后仍需确认。</small>
-        <div><button type="submit">添加</button><button type="button" class="secondary-action" data-action="cancel-load-point-create">取消</button></div>
+      <form class="load-point-create" data-kind="load_point_create" data-create-draft-id="${escapeHtml(creation?.id || "")}"${creation?.candidateId ? ` data-candidate-id="${escapeHtml(creation.candidateId)}"` : ""}${creation ? "" : " hidden"}>
+        <label><span class="load-point-field-label">编号</span><input data-role="new-load-label" placeholder="例如：F1" value="${escapeHtml(creation?.label || "")}"></label>
+        <label><span class="load-point-field-label">${parameterUnitLabelHtml(parameterUnitLabel("height", "高度", {}, { unit: "mm" }))}</span><input data-role="new-load-height" inputmode="decimal" placeholder="例如：25" value="${escapeHtml(creation?.height ?? "")}"></label>
+        <label><span class="load-point-field-label">${parameterUnitLabelHtml(parameterUnitLabel("force", "力值", {}, { unit: "N" }))}</span><input data-role="new-load-force" inputmode="decimal" placeholder="可留空，仅估算应力" value="${escapeHtml(creation?.force ?? "")}"></label>
+        <div class="load-point-create-tolerance"><span class="load-point-field-label">力值公差（可选）</span><div class="tolerance-input-control"><input data-role="new-load-tolerance" placeholder="±6 或 +6/-6" aria-label="公差（可选，绝对值单位 N，百分比单位 %）" value="${escapeHtml(creation?.toleranceText || "")}"${creation && getToleranceEditor()?.matching("load-create", creation.id) ? " readonly" : ""}>${creation ? getToleranceEditor()?.button("load-create", creation.id, "新增载荷力值") || "" : ""}</div></div>
+        ${creation ? getToleranceEditor()?.html("load-create", creation.id) || "" : ""}
+        <small data-role="load-point-create-error" aria-live="polite">${escapeHtml(creation?.error || "")}</small>
+        <small data-role="load-candidate-form-note"${creation?.candidateId ? "" : " hidden"}>请核对原图并补齐参数；加入后仍需确认。</small>
+        <div class="load-point-create-actions"><button type="submit">添加</button><button type="button" class="secondary-action" data-action="cancel-load-point-create">取消</button></div>
       </form>
       <p class="load-point-unit-help">绝对公差单位与力值一致；百分比公差使用 %。</p>
       <div class="data-table load-point-table">
@@ -5725,58 +5892,19 @@ function renderLoadPointDiagnosticsHtml(review) {
 
 function loadPointToleranceDisplay(point, label, review) {
   const suggestion = findLoadPointToleranceSuggestion(review, label);
-  const suggested = suggestion ? formatLoadPointAbsoluteTolerance(
-    suggestion.suggested_tolerance_upper,
-    suggestion.suggested_tolerance_lower,
-  ) : "";
-  const absolute = formatLoadPointAbsoluteTolerance(
-    point.load_tolerance_upper,
-    point.load_tolerance_lower,
-  );
-  const drawingPercent = point.drawing_force_tolerance_percent ?? point.drawing_load_tolerance_percent;
-  const standardizedPercent = point.load_tolerance_percent ?? point.force_tolerance_percent;
-  if (point.tolerance_source === "standardization" && standardizedPercent != null && standardizedPercent !== "") {
-    const drawingNote = drawingPercent != null && drawingPercent !== ""
-      ? `\u56fe\u7eb8\u539f\u516c\u5dee \u00b1${formatCompactNumber(Math.abs(Number(drawingPercent)))}%`
-      : "";
-    return {
-      value: `\u00b1${formatCompactNumber(Math.abs(Number(standardizedPercent)))}%`,
-      placeholder: "",
-      title: point.tolerance_basis || suggestion?.basis || "",
-      note: [absolute ? `\u6807\u51c6\u5316\u503c ${absolute}` : "", drawingNote].filter(Boolean).join("\uff1b"),
-    };
-  }
-  if (absolute) {
-    return {
-      value: absolute,
-      placeholder: "",
-      title: suggestion?.basis || "",
-      note: suggested && suggested !== absolute ? `\u6807\u51c6\u5efa\u8bae ${suggested}` : "",
-    };
-  }
-
-  const rawDrawingPercent = point.force_tolerance_percent ?? point.load_tolerance_percent;
-  if (rawDrawingPercent != null && rawDrawingPercent !== "") {
-    return {
-      value: `\u00b1${formatCompactNumber(Math.abs(Number(rawDrawingPercent)))}%`,
-      placeholder: "",
-      title: suggestion?.basis || "",
-      note: suggested ? `\u6807\u51c6\u5efa\u8bae ${suggested}` : "\u56fe\u7eb8\u516c\u5dee",
-    };
-  }
-
-  if (!suggestion) {
-    return { value: "", placeholder: "", title: "", note: "" };
-  }
-  return {
-    value: "",
-    placeholder: suggested ? `\u5efa\u8bae ${suggested}` : "",
-    title: suggestion.basis || "",
-    note: suggested ? "\u6807\u51c6\u5efa\u8bae" : "",
-  };
+  const unit = point.force_unit || "N";
+  const suggested = suggestion ? formatLoadPointAbsoluteTolerance(suggestion.suggested_tolerance_upper, suggestion.suggested_tolerance_lower, unit) : "";
+  const current = ToleranceValues.read(point, true), absolute = current.upper != null || current.lower != null;
+  const value = absolute ? formatLoadPointAbsoluteTolerance(current.upper, current.lower, unit) : ToleranceValues.format(current);
+  const original = point.drawing_force_tolerance_percent ?? point.drawing_load_tolerance_percent;
+  const reference = original ?? (absolute ? point.load_tolerance_percent ?? point.force_tolerance_percent : null);
+  const notes = [suggested && suggested !== value ? `标准建议 ${suggested}` : "",
+    reference != null ? `${original != null ? "图纸原公差" : "百分比参考"} ±${reference}%` : ""];
+  return { value, placeholder: value ? "" : suggested ? `建议 ${suggested}` : "", title: point.tolerance_basis || suggestion?.basis || "", note: notes.filter(Boolean).join("；") };
 }
 
 function findLoadPointToleranceSuggestion(review, label) {
+  if (!ExecutionStandards.fresh(review)) return null;
   const target = `load_points.${label}.force`;
   return (review?.standardization_results || []).find((item) => {
     if (String(item.target_field || "") !== target) return false;
@@ -5784,30 +5912,22 @@ function findLoadPointToleranceSuggestion(review, label) {
   }) || null;
 }
 
-function formatLoadPointAbsoluteTolerance(upper, lower) {
+function formatLoadPointAbsoluteTolerance(upper, lower, unit = "N") {
   if (upper == null && lower == null) return "";
-  if (upper != null && lower != null && Number(upper) === Math.abs(Number(lower))) {
-    return `\u00b1${formatCompactNumber(Math.abs(Number(upper)))}N`;
+  if (upper != null && lower != null && Number(upper) >= 0 && Number(upper) === -Number(lower)) {
+    return `±${Number(upper)}${unit}`;
   }
-  return `${upper ?? ""}/${lower ?? ""}N`;
+  return `${upper != null && Number(upper) > 0 ? "+" : ""}${upper ?? ""}/${lower != null && Number(lower) > 0 ? "+" : ""}${lower ?? ""}${unit}`;
 }
 
 function applyStandardizedLoadTolerance(point, upper, lower, options = {}) {
   if (!point || typeof point !== "object") return;
-  if (point.drawing_force_tolerance_percent == null && point.force_tolerance_percent != null) {
-    point.drawing_force_tolerance_percent = point.force_tolerance_percent;
-  }
-  if (point.drawing_load_tolerance_percent == null && point.load_tolerance_percent != null) {
-    point.drawing_load_tolerance_percent = point.load_tolerance_percent;
-  }
+  rememberDrawingLoadTolerance(point);
   point.load_tolerance_upper = upper ?? null;
   point.load_tolerance_lower = lower ?? null;
-  const referenceTolerance = upper ?? (lower == null ? null : Math.abs(Number(lower)));
-  if (point.force && referenceTolerance != null && !Number.isNaN(Number(referenceTolerance))) {
-    const percent = Number(((Math.abs(Number(referenceTolerance)) / Math.abs(Number(point.force))) * 100).toFixed(3));
-    point.force_tolerance_percent = percent;
-    point.load_tolerance_percent = percent;
-  }
+  point.force_tolerance_percent = null;
+  point.load_tolerance_percent = null;
+  delete point.tolerance_input_draft;
   point.tolerance_source = "standardization";
   if (typeof AccuracyInference !== "undefined" && state.review?.spring_parameters?.load_points?.includes(point)) AccuracyInference.markInput(state.review, `load_points.${point.label}.force`, { generated: true, tolerance: true });
   point.tolerance_basis = options.basis || point.tolerance_basis || "";
@@ -5819,6 +5939,7 @@ function confirmationItemWasEdited(item) {
 
 function hasPendingEditedReviewItems(review) {
   if (!review) return false;
+  if (review === state.review && typeof getToleranceEditor === "function" && getToleranceEditor()?.dirty()) return true;
   if (review === state.review && Array.from(state.reviewDraftFields || []).some((field) => field.startsWith("generation_settings."))) return true;
   const parameters = review.spring_parameters || {};
   const parameterPending = Object.values(parameters).some((item) => {
@@ -6451,6 +6572,7 @@ function assessGenerationReadiness(review) {
   const warnings = [];
   let confirmed = 0;
   const contractIssues = [];
+  if (typeof SolidWorksExport !== "undefined") contractIssues.push(...(SolidWorksExport.toleranceIssues?.(review) || []));
   if (pendingDiameterRoles(review).length) contractIssues.push(generationIssue("mean_diameter", "直径类型待核对，请在参数区选择类型。"));
   if (review.diameter_linkage?.status === "invalid") contractIssues.push(generationIssue(review.diameter_linkage.driver_field, review.diameter_linkage.reason || "三径联动条件无效，请核对。"));
   COMPRESSION_GENERATION_CORE_FIELDS.forEach((field) => {
@@ -6488,7 +6610,7 @@ function assessGenerationReadiness(review) {
   const selection = review.standard_selection || {};
   if (!selection.selected_standard) {
     warnings.push(generationIssue("standard_no", "未执行或未完成标准化检查；本次可按当前人工确认参数直接生图。"));
-  } else if (!selection.human_confirmed) {
+  } else if (!selection.human_confirmed && !isCompressionSpringReview(review)) {
     warnings.push(generationIssue("standard_no", "适用技术标准尚未人工确认；本次可按当前人工确认参数直接生图。"));
   }
   if (review.derived_parameters_stale) {
@@ -6681,6 +6803,7 @@ function referenceDetailLabel(reference) {
 }
 
 function standardizationBatchPlan(review) {
+  if (typeof ExecutionStandards !== "undefined") ExecutionStandards.invalidate(review);
   const groups = new Map();
   (review?.standardization_results || []).forEach((item, index) => {
     if (!canConfirmStandardization(item)) return;
@@ -7142,6 +7265,7 @@ function renderAccuracyStandardizationResultHtml(result, batch = null, turnIndex
 }
 
 function standardizationBatchDisplayStatus(batch, currentRevision = state.lastJob?.review_revision) {
+  if (typeof ExecutionStandards !== "undefined" && state.review && !ExecutionStandards.fresh(state.review)) return "stale";
   const status = String(batch?.status || "");
   if (status === "applied" || status === "no_changes" || status === "stale") return status;
   const hasBatchRevision = batch?.review_revision !== null && batch?.review_revision !== undefined && batch?.review_revision !== "";
@@ -7669,7 +7793,7 @@ function renderStandardizationChatBatchHtml(turn, turnIndex) {
     <div class="standardization-chat-batch" data-kind="chat_action_batch" data-turn-index="${turnIndex}">
       <div>
         <strong>本轮建议</strong>
-        <small>${escapeHtml(validation.message || `可一次写回 ${validation.candidates.length} 条建议，写回后会重新标准化。`)}</small>
+        <small>${escapeHtml(validation.message || `可一次写回 ${validation.candidates.length} 条建议，写回后可重新标准化。`)}</small>
         ${renderStandardizationChatImpactPreviewHtml(impactPreview, turnIndex)}
         ${!impactPreview && proposalValidation && proposalValidation.status !== "not_applicable" ? `<small class="standardization-chat-batch-validation ${escapeHtml(proposalValidation.status || "warning")}">${escapeHtml(proposalValidation.summary || "")}</small>` : ""}
       </div>
@@ -7830,6 +7954,7 @@ function loadPointAuditState(point, extra = {}) {
     force_unit: point.force_unit || "N",
     load_tolerance_upper: point.load_tolerance_upper ?? null,
     load_tolerance_lower: point.load_tolerance_lower ?? null,
+    ...(Object.hasOwn(point, "tolerance_input_draft") ? { tolerance_input_draft: point.tolerance_input_draft } : {}),
     ...(point.height_relation ? { height_relation: LoadHeightRelations.snapshot(point) } : {}),
     ...Object.fromEntries(["force_tolerance_status", "load_relation_conflict", "load_height_conflict"].filter(k => Object.hasOwn(point,k)).map(k => [k,point[k]])),
     load_tolerance_percent: point.load_tolerance_percent ?? null,
@@ -8742,6 +8867,7 @@ function featureValueLabel(field, value) {
 }
 
 function canConfirmStandardization(item) {
+  if (item?.metadata?.value_kind === "reference_limit") return false;
   if (item?.status === "human_confirmed" || item?.status === "stale") return false;
   if (item?.metadata?.target_field_valid === false) return false;
   if (item?.metadata?.target_field_error) return false;
@@ -8793,12 +8919,86 @@ function formatCompactNumber(value) {
   return Number.isInteger(number) ? String(number) : String(Number(number.toFixed(4)));
 }
 
+function bindLoadPointCreateForm(root, review, messageId, editorIsCurrent) {
+  const form = root.querySelector('[data-kind="load_point_create"]');
+  if (!form) return null;
+  const fields = { label: "new-load-label", height: "new-load-height", force: "new-load-force", toleranceText: "new-load-tolerance" };
+  const current = () => editorIsCurrent() && !reviewReadOnly() && loadPointCreateDraft(review)?.id === form.dataset.createDraftId;
+  const error = message => {
+    const draft = loadPointCreateDraft(review);
+    if (draft) draft.error = message;
+    form.querySelector('[data-role="load-point-create-error"]').textContent = message;
+  };
+  root.querySelector('[data-action="show-load-point-create"]')?.addEventListener("click", () => {
+    if (!editorIsCurrent() || reviewReadOnly() || state.busy) return;
+    openLoadPointCreateDraft(); refreshReviewSurfaces();
+    focusLoadPointCreateDraft();
+  });
+  form.querySelector('[data-action="cancel-load-point-create"]')?.addEventListener("click", () => {
+    if (!current()) return;
+    clearLoadPointCreateDraft(); refreshReviewSurfaces();
+  });
+  for (const [field, role] of Object.entries(fields)) {
+    const input = form.querySelector(`[data-role="${role}"]`);
+    const update = () => {
+      if (!current()) return;
+      const draft = loadPointCreateDraft(); draft[field] = input.value;
+      const parsed = field === "toleranceText" ? ToleranceValues.parse(input.value, { load: true, unit: "N" }) : null;
+      error(parsed && !parsed.ok ? parsed.error : "");
+      getToleranceEditor()?.sync(root);
+    };
+    input.addEventListener("input", update); input.addEventListener("change", update);
+  }
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    if (!current() || state.busy || !toleranceEditingAllowed()) return;
+    const draft = loadPointCreateDraft();
+    for (const [field, role] of Object.entries(fields)) draft[field] = form.querySelector(`[data-role="${role}"]`).value;
+    const candidate = draft.candidateId ? (review.load_point_diagnostics || []).find(item => item.candidate_id === draft.candidateId) : null;
+    if (draft.candidateId && candidate?.status !== "pending") { error("该候选已处理，请取消当前新增草稿后重新核对。"); return; }
+    ensureLoadPointIds(review);
+    const label = normalizeLoadPointLabel(draft.label), height = Number(draft.height);
+    const force = draft.force.trim() ? Number(draft.force) : null;
+    const tolerance = ToleranceValues.parse(draft.toleranceText, { load: true, unit: "N" });
+    if (!label) { error("请填写唯一的测试点编号，例如 F1。"); return; }
+    if (isDuplicateLoadPointLabel(review, label)) { error(`测试点编号“${label}”已经存在。`); return; }
+    if (!Number.isFinite(height) || height <= 0 || force != null && (!Number.isFinite(force) || force < 0)) { error("高度必须大于 0，力值不能为负数。"); return; }
+    if (!tolerance.ok) { error(tolerance.error); return; }
+    const point = {
+      load_point_id: createLoadPointId(review), label, height, height_unit: "mm", force, force_unit: "N",
+      source: ["human_added"], evidence: "人工新增载荷测试点", confidence: 1, need_human_review: true,
+    };
+    if (candidate) {
+      point.evidence = candidate.evidence || "人工核对载荷候选";
+      point.source_context = structuredClone(candidate.source_context || {});
+      point.recognition_candidate_id = candidate.candidate_id;
+    }
+    applyManualLoadTolerance(point, tolerance);
+    review.spring_parameters.load_points.push(point);
+    clearLoadPointCreateDraft();
+    if (candidate) {
+      const before = structuredClone(candidate);
+      candidate.status = "promoted"; candidate.promoted_load_point_id = point.load_point_id;
+      queueReviewAuditEvent({ event_type: "load_candidate_promoted", target_field: "load_point_diagnostics", before_state: before, after_state: structuredClone(candidate), metadata: { candidate_id: candidate.candidate_id, load_point_id: point.load_point_id } });
+    }
+    state.loadPointUndo = null;
+    markParameterChangeProposalsStale("载荷测试点已新增");
+    queueReviewAuditEvent({ event_type: "load_point_added", target_field: loadPointField(point, review.spring_parameters.load_points.length - 1), before_state: null, after_state: loadPointAuditState(point), metadata: { load_point_id: point.load_point_id, index: review.spring_parameters.load_points.length - 1 } });
+    updateLatestReviewMessage("已新增载荷测试点，确认后才会写入生图参数包。");
+  });
+  return form;
+}
+
 function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   bindGenerationSettings(root, messageId);
   bindTechnicalTranslationControls(root, messageId);
   const context = getReviewContext(messageId) || activeReviewContext();
   const review = context?.review || state.review;
   if (!review) return;
+  const toleranceOwnerJob = state.lastJob?.job_id, toleranceOwnerScope = historyRecognitionScope();
+  const editorIsCurrent = () => state.review === review && state.lastJob?.job_id === toleranceOwnerJob && historyRecognitionScope() === toleranceOwnerScope;
+  getToleranceEditor()?.bind(root, { current: editorIsCurrent,
+    activate: () => activateReviewContext(messageId) });
   bindDiameterRoleChoices(root, review, messageId);
   root.querySelectorAll('[data-action="preview-confirmation-sheet"]').forEach(button => button.addEventListener("click", () => {
     activateReviewContext(messageId);
@@ -9044,73 +9244,19 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     });
   });
 
-  const createLoadPointForm = root.querySelector('[data-kind="load_point_create"]');
-  root.querySelector('[data-action="show-load-point-create"]')?.addEventListener("click", () => {
-    if (!createLoadPointForm) return;
-    delete createLoadPointForm.dataset.candidateId;
-    createLoadPointForm.querySelector('[data-role="load-candidate-form-note"]').hidden = true;
-    createLoadPointForm.hidden = false;
-    createLoadPointForm.querySelector('[data-role="new-load-label"]')?.focus();
-  });
-  createLoadPointForm?.querySelector('[data-action="cancel-load-point-create"]')?.addEventListener("click", () => {
-    createLoadPointForm.reset();
-    delete createLoadPointForm.dataset.candidateId;
-    createLoadPointForm.querySelector('[data-role="load-candidate-form-note"]').hidden = true;
-    createLoadPointForm.hidden = true;
-    const error = createLoadPointForm.querySelector('[data-role="load-point-create-error"]');
-    if (error) error.textContent = "";
-  });
-  createLoadPointForm?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    activateReviewContext(messageId);
-    ensureLoadPointIds(review);
-    const candidateId = createLoadPointForm.dataset.candidateId;
-    const candidate = candidateId ? (review.load_point_diagnostics || []).find((item) => item.candidate_id === candidateId) : null;
-    if (candidateId && candidate?.status !== "pending") return;
-    const label = normalizeLoadPointLabel(createLoadPointForm.querySelector('[data-role="new-load-label"]')?.value);
-    const height = Number(createLoadPointForm.querySelector('[data-role="new-load-height"]')?.value);
-    const forceText = createLoadPointForm.querySelector('[data-role="new-load-force"]')?.value.trim() || "";
-    const force = forceText ? Number(forceText) : null;
-    const toleranceInput = createLoadPointForm.querySelector('[data-role="new-load-tolerance"]')?.value || "";
-    const error = createLoadPointForm.querySelector('[data-role="load-point-create-error"]');
-    if (!label) {
-      if (error) error.textContent = "请填写唯一的测试点编号，例如 F1。";
-      return;
-    }
-    if (isDuplicateLoadPointLabel(review, label)) {
-      if (error) error.textContent = `测试点编号“${label}”已经存在。`;
-      return;
-    }
-    if (!Number.isFinite(height) || height <= 0 || force != null && (!Number.isFinite(force) || force < 0)) {
-      if (error) error.textContent = "高度必须大于 0，力值不能为负数。";
-      return;
-    }
-    const point = {
-      load_point_id: createLoadPointId(review), label, height, height_unit: "mm", force, force_unit: "N",
-      source: ["human_added"], evidence: "人工新增载荷测试点", confidence: 1, need_human_review: true,
-    };
-    if (candidate) {
-      point.evidence = candidate.evidence || "人工核对载荷候选";
-      point.source_context = structuredClone(candidate.source_context || {});
-      point.recognition_candidate_id = candidate.candidate_id;
-    }
-    applyLoadPointTolerance(point, toleranceInput);
-    review.spring_parameters.load_points.push(point);
-    if (candidate) {
-      const before = structuredClone(candidate);
-      candidate.status = "promoted";
-      candidate.promoted_load_point_id = point.load_point_id;
-      queueReviewAuditEvent({ event_type: "load_candidate_promoted", target_field: "load_point_diagnostics", before_state: before, after_state: structuredClone(candidate), metadata: { candidate_id: candidateId, load_point_id: point.load_point_id } });
-    }
-    state.loadPointUndo = null;
-    markParameterChangeProposalsStale("载荷测试点已新增");
-    queueReviewAuditEvent({
-      event_type: "load_point_added", target_field: loadPointField(point, review.spring_parameters.load_points.length - 1),
-      before_state: null, after_state: loadPointAuditState(point),
-      metadata: { load_point_id: point.load_point_id, index: review.spring_parameters.load_points.length - 1 },
+  root.querySelectorAll('[data-execution-standard-selector]').forEach((select) => {
+    select.addEventListener("change", (event) => {
+      activateReviewContext(messageId);
+      selectExecutionStandard(review, event.target.value);
     });
-    updateLatestReviewMessage("已新增载荷测试点，确认后才会写入生图参数包。");
   });
+  root.querySelectorAll('[data-action="retry-standardization-save"]').forEach(button => button.addEventListener("click", async () => {
+    activateReviewContext(messageId);
+    if (await flushReviewPersistence()) state.standardizationError = null;
+    syncStandardizationControls();
+  }));
+
+  const createLoadPointForm = bindLoadPointCreateForm(root, review, messageId, editorIsCurrent);
 
   root.querySelectorAll('.load-candidate[data-candidate-id]').forEach((row) => {
     const find = () => (review.load_point_diagnostics || []).find((item) => item.candidate_id === row.dataset.candidateId);
@@ -9124,8 +9270,16 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       updateLatestReviewMessage("已忽略疑似载荷，原始识别依据已保留。");
     });
     row.querySelector('[data-action="promote-load-candidate"]')?.addEventListener("click", () => {
+      if (!editorIsCurrent() || reviewReadOnly() || state.busy) return;
       const candidate = find();
       if (candidate?.status !== "pending" || !createLoadPointForm) return;
+      const existing = loadPointCreateDraft(review);
+      if (existing) {
+        openLoadPointCreateDraft(candidate.candidate_id);
+        refreshReviewSurfaces();
+        focusLoadPointCreateDraft();
+        return;
+      }
       const original = candidate.original_candidate || {}, point = original.value || {};
       const lengthUnits = { mm: 1, "毫米": 1, cm: 10, m: 1000, in: 25.4, inch: 25.4, "英寸": 25.4 };
       const forceUnits = { n: 1, "牛": 1, kn: 1000, kgf: 9.80665 };
@@ -9137,21 +9291,18 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       const units = original.reported_units || point;
       const height = convert(point.height, units.height_unit, lengthUnits);
       const force = convert(point.force, units.force_unit, forceUnits);
-      createLoadPointForm.dataset.candidateId = candidate.candidate_id;
-      createLoadPointForm.querySelector('[data-role="new-load-label"]').value = point.label || "";
-      createLoadPointForm.querySelector('[data-role="new-load-height"]').value = height;
-      createLoadPointForm.querySelector('[data-role="new-load-force"]').value = force;
       const forceFactor = forceUnits[String(units.force_unit || "").trim().toLowerCase()];
-      const tolerancePoint = { ...point };
+      const tolerancePoint = { ...point, force_unit: "N" };
       for (const key of ["load_tolerance_upper", "load_tolerance_lower"]) {
         tolerancePoint[key] = point[key] == null || forceFactor === undefined ? null : Number(point[key]) * forceFactor;
       }
-      createLoadPointForm.querySelector('[data-role="new-load-tolerance"]').value = loadPointToleranceDisplay(tolerancePoint, point.label || "", review).value;
-      createLoadPointForm.querySelector('[data-role="load-candidate-form-note"]').hidden = false;
-      createLoadPointForm.querySelector('[data-role="load-point-create-error"]').textContent = (point.height != null && height === "" || point.force != null && force === "") ? "候选单位缺失或不支持，请核对后按 mm/N 填写。" : "";
-      createLoadPointForm.hidden = false;
-      createLoadPointForm.scrollIntoView({ block: "nearest" });
-      createLoadPointForm.querySelector('[data-role="new-load-label"]').focus();
+      openLoadPointCreateDraft(candidate.candidate_id, {
+        label: String(point.label || ""), height: String(height), force: String(force),
+        toleranceText: loadPointToleranceDisplay(tolerancePoint, point.label || "", review).value,
+        error: (point.height != null && height === "" || point.force != null && force === "") ? "候选单位缺失或不支持，请核对后按 mm/N 填写。" : "",
+      });
+      refreshReviewSurfaces();
+      focusLoadPointCreateDraft();
     });
   });
 
@@ -9272,13 +9423,13 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     });
   });
 
-  root.querySelector('[data-action="run-workbench-standardization"]')?.addEventListener("click", () => {
+  root.querySelectorAll('[data-action="run-workbench-standardization"]').forEach(button => button.addEventListener("click", () => {
     activateReviewContext(messageId);
     runStandardization(messageId, {
       workbench_feedback: true,
       pending_accuracy_grade: pendingAccuracyGradeFor(state.review?.spring_parameters?.accuracy_grade),
     });
-  });
+  }));
 
   root.querySelector('[data-action="confirm-all-review-items"]')?.addEventListener("click", async () => {
     activateReviewContext(messageId);
@@ -9695,6 +9846,8 @@ function applyStandardizationResult(item) {
 }
 
 function applyStandardizationResults(items, options = {}) {
+  if (typeof toleranceEditingAllowed === "function" && !toleranceEditingAllowed()) return { count: 0, history_id: null };
+  if (typeof ExecutionStandards !== "undefined") ExecutionStandards.invalidate(state.review);
   const candidates = (Array.isArray(items) ? items : [items]).filter((item) => canConfirmStandardization(item));
   if (!candidates.length) return { count: 0, history_id: null };
   const before = {
@@ -9734,6 +9887,7 @@ function suggestionUndoChanges(before, review) {
 }
 
 function undoLastStandardizationApplication() {
+  if (typeof toleranceEditingAllowed === "function" && !toleranceEditingAllowed()) return false;
   const history = state.review?.standardization_apply_history || [];
   const last = history[history.length - 1];
   if (!last?.before) return null;
@@ -9846,7 +10000,7 @@ function validateStandardizationChatBatch(turn) {
   return {
     ok: true,
     candidates,
-    message: `可一次写回 ${candidates.length} 条建议，写回后会重新标准化。`,
+    message: `可一次写回 ${candidates.length} 条建议，写回后可重新标准化。`,
   };
 }
 
@@ -10563,6 +10717,18 @@ function focusMissingStandardizationField(field, messageId = state.activeReviewM
   const target = String(field || "").trim();
   if (!target || !state.review) return;
   if (messageId) activateReviewContext(messageId);
+  if (["standard_no", "standard_selection", "accuracy_grade"].includes(target) && isCompressionSpringReview(state.review)) {
+    state.compareTab = "parameters";
+    if (!state.compareOpen) openCompareOverlay(messageId);
+    else renderCompareOverlay();
+    afterCompareOverlayLayout(() => {
+      const settings = compareOverlay.querySelector('[data-kind="standardization-settings"]');
+      settings?.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (options.highlight) highlightReviewTarget(settings);
+      settings?.querySelector(target === "accuracy_grade" ? '[data-accuracy-grade-selector]' : '[data-execution-standard-selector]')?.focus({ preventScroll: true });
+    });
+    return;
+  }
   if (target === "standardization" || target === "standard_no") {
     state.compareTab = "standards";
     if (!state.compareOpen) openCompareOverlay(messageId);
@@ -10985,6 +11151,7 @@ function confirmSafeConfirmationItem(item) {
 }
 
 function confirmSafeRecognizedFields(plan = null) {
+  if (typeof toleranceEditingAllowed === "function" && !toleranceEditingAllowed()) return { count: 0, labels: [], fields: [], ordinary_fields: [], auto_formula_fields: [], group_counts: safeConfirmationGroupCounts([]), skipped: [] };
   if (!state.review) return { count: 0, labels: [], fields: [], ordinary_fields: [], auto_formula_fields: [], group_counts: safeConfirmationGroupCounts([]), skipped: [] };
   const confirmationPlan = plan || buildSafeConfirmationPlan(state.review);
   const parameters = state.review.spring_parameters || {};
@@ -11394,19 +11561,164 @@ function normalizeAccuracyGrade(value) {
   return match ? `${match[1].toUpperCase()}级` : "";
 }
 
+function executionStandardSourceLabel(review) {
+  const source = review.standard_selection?.selection_source;
+  return ["human_selected", "manual"].includes(source) ? "人工选择" : source === "drawing_standard_no" ? "图纸标注" : "系统推荐";
+}
+
+function executionStandardControlHtml(review) {
+  const selected = review.standard_selection?.selected_standard || "";
+  return `<select data-execution-standard-selector aria-label="执行标准"${state.standardizationInFlight ? " disabled" : ""}>
+    ${ExecutionStandards.OPTIONS.some(option => option.value === selected) ? "" : `<option value="" selected disabled>${escapeHtml(selected || "请选择执行标准")}</option>`}
+    ${ExecutionStandards.OPTIONS.map(option => `<option value="${option.value}"${selected === option.value ? " selected" : ""}>${option.label}</option>`).join("")}
+  </select>`;
+}
+
+function renderExecutionStandardSelectorHtml(review) {
+  return `<label class="workbench-execution-standard"><span>执行标准</span>${executionStandardControlHtml(review)}<small>${executionStandardSourceLabel(review)}</small></label>`;
+}
+
+function standardizationReport(review) {
+  let rate;
+  if ((review.standardization_results || []).some(item => item.metadata?.missing_fields?.includes("spring_rate") && !Array.isArray(item.metadata.root_missing_fields))
+      && typeof CompressionDesignChecks !== "undefined" && state.materialCatalog?.status === "ready") {
+    rate = CompressionDesignChecks.calculate(review.spring_parameters || {}, review.spring_features || {}, state.materialCatalog || {}).metrics.theoretical_spring_rate;
+  }
+  return ExecutionStandards.report(review, rate);
+}
+
+function renderStandardizationSelectorsHtml(review) {
+  return `<div class="execution-standard-toolbar" aria-label="标准化设置">
+    ${renderExecutionStandardSelectorHtml(review)}${renderWorkbenchAccuracyGradeSelectorHtml(review)}
+  </div>`;
+}
+
+function renderStandardizationStatusHtml(review) {
+  return `<div class="standardization-feedback" data-standardization-feedback>${renderStandardizationFeedbackContentHtml(review)}</div>`;
+}
+
+function renderStandardizationFeedbackContentHtml(review) {
+  const control = standardizationControlState(review);
+  const report = standardizationReport(review);
+  return `
+    <p class="standardization-control-status${report.failed ? " partial" : ""}" data-standardization-control-status role="status" aria-live="polite">${escapeHtml(control.message)}</p>
+    ${!state.standardizationInFlight && !report.stale && report.failed ? `<details class="standardization-diagnostics"><summary>查看 ${report.failed} 项未生成原因</summary><ul>${report.issues.map(item => `<li>${escapeHtml(item.message)}${escapeHtml(item.resolution)}</li>`).join("")}</ul></details>` : ""}`;
+}
+
+function loadStandardizationDiagnosticHtml(diagnostic) {
+  return diagnostic ? `<small class="load-standardization-diagnostic${diagnostic.stale ? " stale" : ""}" data-standardization-diagnostic>${escapeHtml(diagnostic.reason)}</small>` : "";
+}
+
+function renderParameterStandardizationSettingsHtml(review) {
+  if (!isCompressionSpringReview(review)) return "";
+  return `<section class="review-block standardization-settings" data-kind="standardization-settings">
+    <div class="block-head standardization-settings-heading"><h2>标准化设置</h2>${renderStandardizationActionHtml(review)}</div>
+    ${renderStandardizationSelectorsHtml(review)}${renderStandardizationStatusHtml(review)}
+  </section>`;
+}
+
+function standardizationControlState(review = state.review) {
+  const loading = state.standardizationInFlight;
+  const failed = ["standard_selection", "accuracy_grade"].some(field => parameterPersistenceState(field) === "failed") || state.standardizationError?.kind === "save";
+  const valid = Boolean(review?.standard_selection?.selected_standard)
+    && compressionAccuracyGradeOptions(review).includes(normalizeAccuracyGrade(review?.spring_parameters?.accuracy_grade?.value));
+  const hasResults = Boolean(review?.standardization_results?.length);
+  const report = standardizationReport(review);
+  return { failed, disabled: Boolean(loading || failed || !valid), label: loading ? "正在标准化…" : hasResults ? "重新标准化" : "生成标准化建议",
+    message: loading ? "正在保存当前选择并计算标准公差…" : failed ? "保存失败，请重试保存" : state.standardizationError?.message
+      || (!valid ? "请选择执行标准及对应的精度等级" : hasResults ? report.message : "尚未生成标准化建议") };
+}
+
+function standardizationButtonContent(control) {
+  return `${state.standardizationInFlight ? '<span class="standardization-spinner" aria-hidden="true"></span>' : ""}<span>${escapeHtml(control.label)}</span>`;
+}
+
+function renderStandardizationActionHtml(review, secondary = false) {
+  const control = standardizationControlState(review);
+  return `<div class="execution-standard-actions">
+    <button type="button"${secondary ? ' class="secondary-action"' : ""} data-action="run-workbench-standardization" aria-busy="${state.standardizationInFlight}"${control.disabled ? " disabled" : ""}>${standardizationButtonContent(control)}</button>
+    <button type="button" class="secondary-action" data-action="retry-standardization-save"${control.failed ? "" : " hidden"}${state.standardizationInFlight ? " disabled" : ""}>重试保存</button>
+  </div>`;
+}
+
+function syncStandardizationControls() {
+  if (!state.review || typeof ExecutionStandards === "undefined") return;
+  const control = standardizationControlState();
+  document.querySelectorAll("[data-execution-standard-selector], [data-accuracy-grade-selector]").forEach(select => { select.disabled = state.standardizationInFlight; });
+  document.querySelectorAll('[data-action="run-workbench-standardization"]').forEach(button => {
+    button.disabled = control.disabled;
+    button.innerHTML = standardizationButtonContent(control);
+    button.setAttribute("aria-busy", String(state.standardizationInFlight));
+  });
+  const feedbackHtml = renderStandardizationFeedbackContentHtml(state.review);
+  document.querySelectorAll('[data-standardization-feedback]').forEach(element => {
+    if (element.innerHTML === feedbackHtml) return;
+    const open = element.querySelector('details')?.open;
+    element.innerHTML = feedbackHtml;
+    if (open && element.querySelector('details')) element.querySelector('details').open = true;
+  });
+  const report = standardizationReport(state.review);
+  const diagnosticKey = standardizationDiagnosticKey(report);
+  document.querySelectorAll('[data-kind="parameter-reasonableness"]').forEach(node => {
+    if (node.dataset.standardizationDiagnosticKey === diagnosticKey) return;
+    const open = [...node.querySelectorAll('details')].map(details => details.open);
+    const holder = document.createElement('div'); holder.innerHTML = renderParameterReasonablenessHtml(state.review);
+    holder.firstElementChild.querySelectorAll('details').forEach((details, index) => { if (index < open.length) details.open = open[index]; });
+    node.replaceWith(holder.firstElementChild);
+  });
+  bindReasonablenessIssueFocus(document);
+  bindReasonablenessSuggestionControls(document);
+  bindBulkConfirmationFollowupControls(document);
+  document.querySelectorAll('.load-point[data-kind="load_point"]').forEach(row => {
+    const point = state.review.spring_parameters?.load_points?.[Number(row.dataset.index)];
+    const label = point?.label || `F${Number(row.dataset.index) + 1}`;
+    const slot = row.querySelector('[data-load-standardization-status]');
+    if (slot) slot.innerHTML = loadStandardizationDiagnosticHtml(report.diagnostics.find(item => item.target_field === `load_points.${label}.force`));
+  });
+  document.querySelectorAll('[data-action="retry-standardization-save"]').forEach(button => {
+    button.hidden = !control.failed;
+    button.disabled = state.standardizationInFlight;
+  });
+  document.querySelectorAll('.standardization-diagnostics').forEach(element => { element.hidden = state.standardizationInFlight; });
+}
+
+function selectExecutionStandard(review, selected) {
+  if (state.standardizationInFlight || review !== state.review) return;
+  const before = structuredClone(review.standard_selection || {});
+  const beforeGrade = parameterAuditState(review.spring_parameters?.accuracy_grade);
+  if (!ExecutionStandards.select(review, selected)) return;
+  state.standardizationError = null;
+  AccuracyInference.refresh(review);
+  ExecutionStandards.invalidate(review, true);
+  state.pendingAccuracyGrade = "";
+  review.parameter_reasonableness_stale = true;
+  queueReviewAuditEvent({ event_type: "execution_standard_selected", target_field: "standard_selection", before_state: before, after_state: structuredClone(review.standard_selection) });
+  const afterGrade = parameterAuditState(review.spring_parameters.accuracy_grade);
+  if (JSON.stringify(beforeGrade) !== JSON.stringify(afterGrade)) queueReviewAuditEvent({ event_type: "accuracy_grade_updated", target_field: "accuracy_grade", before_state: beforeGrade, after_state: afterGrade });
+  refreshReviewSurfaces();
+  scheduleParameterReasonablenessRefresh();
+}
+
 function compressionAccuracyGradeOptions(review = state.review) {
   const p = review?.spring_parameters || {};
   const standard = review?.standard_selection?.selected_standard || p.standard_no?.value || review?.accuracy_inference?.standard_no || (Number(p.wire_diameter?.value) >= 8 ? "GB/T 23934-2015" : "");
   return /23934/.test(standard) ? ["T级", ...COMPRESSION_ACCURACY_GRADE_OPTIONS] : COMPRESSION_ACCURACY_GRADE_OPTIONS;
 }
 
+function standardizationGradeNoteHtml(metadata = {}) {
+  const grade = metadata?.effective_grade;
+  const original = normalizeAccuracyGrade(metadata?.drawing_specific_grade);
+  return grade ? `<small class="standardization-grade-note">采用 ${escapeHtml(grade)}${original && original !== grade ? ` · 图纸专项 ${escapeHtml(original)}` : ""}</small>` : "";
+}
+
 function accuracyGradeStatusLabel(param) {
+  if (param?.requires_selection) return "请选择精度等级";
   const sources = sourceValues(param?.source);
-  if (param?.default_source === "company_default") return "公司默认 / 待确认";
-  if (sources.includes("human_selected")) return "人工选择 / 已确认";
+  if (param?.default_source === "company_default") return "公司默认 · 建议核对";
+  if (sources.includes("human_selected")) return "人工选择";
   if (sources.includes("human_confirmed")) return "人工确认";
-  if (sources.includes("tolerance_inference")) return param?.need_human_review ? "待确认" : "已确认";
-  return param?.need_human_review ? "图纸识别 / 待确认" : "图纸识别";
+  if (sources.includes("tolerance_inference")) return "公差反推";
+  return "图纸标注";
 }
 
 function accuracyGradeStatusClass(param) {
@@ -11418,13 +11730,9 @@ function accuracyGradeFeedbackIsVisible() {
 }
 
 function renderAccuracyGradeFeedbackHtml(param) {
-  const feedback = state.accuracyGradeUpdate;
-  const visible = accuracyGradeFeedbackIsVisible();
-  const message = accuracyGradeUpdateMessage(feedback.phase, feedback.grade, feedback.operation);
   return `
     <span class="workbench-accuracy-status">
-      <small class="${accuracyGradeStatusClass(param)}" data-accuracy-grade-source${visible ? " hidden" : ""}>${escapeHtml(accuracyGradeStatusLabel(param))}</small>
-      <small class="workbench-accuracy-update ${escapeHtml(feedback.phase)}" data-accuracy-grade-update-status role="status" aria-live="polite"${visible ? "" : " hidden"}>${escapeHtml(message)}</small>
+      <small class="${accuracyGradeStatusClass(param)}" data-accuracy-grade-source>${escapeHtml(accuracyGradeStatusLabel(param))}</small>
     </span>
   `;
 }
@@ -11667,7 +11975,7 @@ function renderWorkbenchAccuracyGradeSelectorHtml(review) {
   return `
     <label class="workbench-accuracy-grade">
       <span>通用精度等级</span>
-      <select data-action="select-workbench-accuracy-grade" data-accuracy-grade-selector aria-label="通用精度等级">
+      <select data-action="select-workbench-accuracy-grade" data-accuracy-grade-selector aria-label="通用精度等级"${state.standardizationInFlight ? " disabled" : ""}>
         ${accuracyGradeOptionsHtml(param, review)}
       </select>
       ${renderAccuracyGradeFeedbackHtml(param)}
@@ -11678,7 +11986,7 @@ function renderWorkbenchAccuracyGradeSelectorHtml(review) {
 function prepareAccuracyGradeCommit(review, grade) {
   const normalized = normalizeAccuracyGrade(grade);
   const param = review?.spring_parameters?.accuracy_grade;
-  if (!normalized || !param || !compressionAccuracyGradeOptions(review).includes(normalized) || normalized === normalizeAccuracyGrade(param.value)) return null;
+  if (!normalized || !param || !compressionAccuracyGradeOptions(review).includes(normalized) || normalized === normalizeAccuracyGrade(param.value) && sourceValues(param.source).includes("human_selected")) return null;
   const beforeState = parameterAuditState(param);
   revokeManualConfirmations("accuracy_grade", "accuracy_grade_selected", review);
   if (typeof AccuracyInference !== "undefined") AccuracyInference.manual(review);
@@ -11689,6 +11997,7 @@ function prepareAccuracyGradeCommit(review, grade) {
   param.evidence = `人工选择通用精度等级：${normalized}。`;
   delete param.default_source;
   delete param.default_reason;
+  delete param.requires_selection;
   review.manual_confirmations ||= {};
   review.manual_confirmations.accuracy_grade = {
     confirmed: true,
@@ -11723,7 +12032,7 @@ function updateAccuracyGradeFeedbackUi(root = document) {
   const visible = accuracyGradeFeedbackIsVisible();
   const message = accuracyGradeUpdateMessage(feedback.phase, feedback.grade, feedback.operation);
   scope.querySelectorAll(".workbench-accuracy-status [data-accuracy-grade-source]").forEach((element) => {
-    element.hidden = visible;
+    element.hidden = false;
   });
   scope.querySelectorAll(".workbench-accuracy-status [data-accuracy-grade-update-status]").forEach((element) => {
     element.hidden = !visible;
@@ -11735,32 +12044,32 @@ function updateAccuracyGradeFeedbackUi(root = document) {
     select.disabled = feedback.phase === "loading";
     select.setAttribute("aria-busy", feedback.phase === "loading" ? "true" : "false");
   });
-  scope.querySelectorAll('[data-action="run-workbench-standardization"]').forEach((button) => {
-    button.disabled = feedback.phase === "loading";
-    button.setAttribute("aria-busy", feedback.phase === "loading" ? "true" : "false");
-  });
+  syncStandardizationControls();
 }
 
 function selectAccuracyGrade(root, review, grade, messageId) {
+  if (state.standardizationInFlight) return false;
   const param = review?.spring_parameters?.accuracy_grade;
   if (!param) return false;
   const selected = normalizeAccuracyGrade(grade);
   if (!selected || !compressionAccuracyGradeOptions(review).includes(selected)) return false;
-  const committed = normalizeAccuracyGrade(param.value);
-  state.pendingAccuracyGrade = selected === committed ? "" : selected;
-  setAccuracyGradeUpdate(
-    state.pendingAccuracyGrade ? "ready" : "idle",
-    state.pendingAccuracyGrade,
-    state.pendingAccuracyGrade ? "accuracy" : "",
-  );
+  const commit = prepareAccuracyGradeCommit(review, selected);
+  if (!commit) return false;
+  state.standardizationError = null;
+  state.pendingAccuracyGrade = "";
+  ExecutionStandards.invalidate(review, true);
+  review.parameter_reasonableness_stale = true;
+  setAccuracyGradeUpdate("idle", selected, "");
+  queueReviewAuditEvent({ event_type: "accuracy_grade_selected", target_field: "accuracy_grade", before_state: commit.beforeState,
+    after_state: parameterAuditState(param), metadata: { selection_method: "accuracy_selector" } });
   syncAccuracyGradeControls(root, param);
   refreshReviewSurfaces();
+  scheduleParameterReasonablenessRefresh(messageId);
   return true;
 }
 
 function renderReviewWorkbenchHtml(review) {
-  const reasonableness = review.parameter_reasonableness || {};
-  const issues = Array.isArray(reasonableness.issues) ? reasonableness.issues : [];
+  const issues = currentReasonablenessIssues(review);
   const blockedIssues = issues.filter((item) => item?.severity === "blocked");
   const warningIssues = issues.filter((item) => item?.severity === "warning");
   const inputIssues = issues.filter((item) => item?.severity === "needs_input");
@@ -11772,12 +12081,6 @@ function renderReviewWorkbenchHtml(review) {
   const pendingAccuracyGrade = pendingAccuracyGradeFor(review.spring_parameters?.accuracy_grade);
   const hasPendingAccuracyGrade = Boolean(pendingAccuracyGrade);
   const needsStandardization = !standardizationResults.length || staleCount > 0;
-  const shouldGenerateStandardization = needsStandardization || hasPendingAccuracyGrade;
-  const standardizationLabel = hasPendingAccuracyGrade
-    ? "重新生成标准化方案"
-    : !standardizationResults.length
-    ? "生成标准化方案"
-    : "更新标准化方案";
   const handlingItems = [
     ...blockedIssues,
     ...inputIssues,
@@ -11816,18 +12119,17 @@ function renderReviewWorkbenchHtml(review) {
             <button type="button" class="secondary-action" data-action="show-workbench-tab" data-target-tab="parameters">${safeItems.length ? "去参数页批量确认" : "查看参数"}</button>
           </div>
         </article>
-        <article class="workbench-step ${needsStandardization || hasPendingAccuracyGrade ? "needs-attention" : ""}">
+        <article class="workbench-step workbench-standardization-step ${needsStandardization || hasPendingAccuracyGrade ? "needs-attention" : ""}">
           <div class="workbench-step-index">2</div>
-          <div>
-            <strong>生成并应用标准化方案</strong>
-            <small>${hasPendingAccuracyGrade ? `已选择 ${pendingAccuracyGrade}，点击重新生成标准化方案后才会写入` : (needsStandardization ? (!standardizationResults.length ? "尚未生成标准化建议" : `${staleCount} 项建议需要按最新参数更新`) : (suggestionPlan.items.length ? `${suggestionPlan.items.length} 项建议可处理` : "标准化建议已同步"))}</small>
-            ${renderWorkbenchAccuracyGradeSelectorHtml(review)}
-          </div>
-          <div class="workbench-step-actions">
-            ${shouldGenerateStandardization
-              ? `<button type="button" data-action="run-workbench-standardization">${escapeHtml(standardizationLabel)}</button>`
-              : `<button type="button" data-action="show-workbench-tab" data-target-tab="parameters">查看并处理建议</button>`}
-            <button type="button" class="secondary-action" data-action="show-workbench-tab" data-target-tab="standards">查看依据</button>
+          <div class="workbench-standardization-content">
+            <div class="standardization-settings-heading"><strong>生成并应用标准化方案</strong></div>
+            ${renderStandardizationSelectorsHtml(review)}
+            ${renderStandardizationStatusHtml(review)}
+            <div class="workbench-step-actions">
+              ${renderStandardizationActionHtml(review, true)}
+              <button type="button" class="secondary-action" data-action="show-workbench-tab" data-target-tab="parameters">查看并处理建议${suggestionPlan.items.length ? ` · ${suggestionPlan.items.length} 项` : ""}</button>
+              <button type="button" class="secondary-action" data-action="show-workbench-tab" data-target-tab="standards">查看依据</button>
+            </div>
           </div>
         </article>
         <article class="workbench-step">
@@ -11916,6 +12218,7 @@ function renderCompareDataPanelHtml(review, activeTab) {
     parameters: `
       ${renderTypeSelectorHtml(review)}
       ${renderSummaryHtml(review)}
+      ${renderParameterStandardizationSettingsHtml(review)}
       ${renderParameterReasonablenessHtml(review)}
       ${renderParameterTableHtml(review)}
       ${renderRequirementsHtml(review)}
@@ -12353,6 +12656,7 @@ function setReview(review, imageUrl, options = {}) {
   ensureTechnicalRequirementIds(review);
   applyGenerationDefaults(review);
   if (state.review !== review) {
+    state.standardizationError = null;
     state.reasonablenessRefreshError = "";
     const undo = state.technicalRequirementUndo;
     if (undo && undo.review !== review) {
@@ -12648,6 +12952,7 @@ async function reloadGenerationReadiness(reviewId = state.lastJob?.job_id) {
 }
 
 async function createGenerationJob(options = {}) {
+  if (typeof toleranceEditingAllowed === "function" && !toleranceEditingAllowed()) return;
   if(reviewReadOnly()) return;
   const reviewId = state.lastJob?.job_id;
   if (!reviewId || state.generationBusy) return;
@@ -13283,7 +13588,9 @@ function normalizeReview(review) {
   ensureLoadPointIds(cloned);
   applyGenerationDefaults(cloned);
   if (typeof DiameterLinkage !== "undefined") DiameterLinkage.apply(cloned);
+  if (typeof ExecutionStandards !== "undefined" && isCompressionSpringReview(cloned)) ExecutionStandards.resolve(cloned);
   if (typeof AccuracyInference !== "undefined") AccuracyInference.refresh(cloned);
+  if (typeof ExecutionStandards !== "undefined") ExecutionStandards.invalidate(cloned);
   if (typeof SolidWorksExport !== "undefined") SolidWorksExport.refreshDeletions?.(cloned);
   return cloned;
 }
@@ -13856,7 +14163,8 @@ function invalidateStandardizationResults(field) {
   if (!invalidated) return 0;
   state.review.standardization_apply_history = (state.review.standardization_apply_history || []).filter((entry) => entry.undo_changes);
   state.review.derived_parameters_stale = true;
-  if (["wire_diameter", "standard_no"].includes(field)) {
+  if (["wire_diameter", "standard_no"].includes(field)
+      && !(typeof ExecutionStandards !== "undefined" && ExecutionStandards.manual(state.review.standard_selection))) {
     state.review.standard_selection ||= {};
     state.review.standard_selection.need_human_review = true;
     state.review.standard_selection.human_confirmed = false;
@@ -14068,6 +14376,7 @@ function formatFieldInput(param) {
 
 function formatTolerance(param) {
   if (param.tolerance_input_draft) return String(param.tolerance_input_draft);
+  if (typeof ToleranceValues !== "undefined") return ToleranceValues.format(ToleranceValues.read(param));
   const upper = param.tolerance_upper;
   const lower = param.tolerance_lower;
   if (upper == null && lower == null) return "";
@@ -14076,6 +14385,17 @@ function formatTolerance(param) {
 }
 
 function applyTolerance(param, value) {
+  if (typeof ToleranceValues !== "undefined") {
+    const result = ToleranceValues.parse(value, { unit: param.unit || "" });
+    if (!result.ok) {
+      param.tolerance_input_draft = String(value ?? "");
+      param.tolerance_upper = null; param.tolerance_lower = null;
+      return false;
+    }
+    delete param.tolerance_input_draft;
+    param.tolerance_upper = result.upper; param.tolerance_lower = result.lower;
+    return true;
+  }
   const text = String(value || "").trim();
   if (!text) {
     delete param.tolerance_input_draft;
@@ -14111,40 +14431,30 @@ function applyTolerance(param, value) {
   return false;
 }
 
-function applyLoadPointTolerance(point, value) {
-  const text = value.trim().replace(/^\u5efa\u8bae\s*/, "").replace(/N$/i, "");
-  if (!text) {
-    point.load_tolerance_upper = null;
-    point.load_tolerance_lower = null;
-    point.load_tolerance_percent = null;
-    point.force_tolerance_percent = null;
-    point.tolerance_source = "human";
-    point.tolerance_basis = "";
-    return;
-  }
-  if (text.endsWith("%")) {
-    const percent = Number(text.replace(/^\u00b1/, "").slice(0, -1));
-    if (!Number.isNaN(percent)) {
-      point.force_tolerance_percent = Math.abs(percent);
-      point.load_tolerance_percent = Math.abs(percent);
-      point.load_tolerance_upper = null;
-      point.load_tolerance_lower = null;
-      point.tolerance_source = "human";
-      point.tolerance_basis = "";
-    }
-    return;
-  }
-  const parsed = { tolerance_upper: null, tolerance_lower: null };
-  applyTolerance(parsed, text.replace(/^\u00b1/, "\u00b1"));
-  point.load_tolerance_upper = parsed.tolerance_upper;
-  point.load_tolerance_lower = parsed.tolerance_lower;
-  if (point.force && parsed.tolerance_upper != null) {
-    point.load_tolerance_percent = Number(
-      ((Math.abs(Number(parsed.tolerance_upper)) / Math.abs(Number(point.force))) * 100).toFixed(3),
-    );
-  }
+function rememberDrawingLoadTolerance(point) {
+  if (point.drawing_force_tolerance_percent == null && point.force_tolerance_percent != null) point.drawing_force_tolerance_percent = point.force_tolerance_percent;
+  if (point.drawing_load_tolerance_percent == null && point.load_tolerance_percent != null) point.drawing_load_tolerance_percent = point.load_tolerance_percent;
+}
+
+function applyManualLoadTolerance(point, value) {
+  rememberDrawingLoadTolerance(point);
+  point.load_tolerance_upper = value.upper;
+  point.load_tolerance_lower = value.lower;
+  point.load_tolerance_percent = value.percent;
+  point.force_tolerance_percent = value.percent;
+  point.force_tolerance_status = value.upper != null || value.lower != null || value.percent != null ? "specified" : "not_specified";
+  delete point.load_relation_conflict;
+  delete point.tolerance_input_draft;
   point.tolerance_source = "human";
   point.tolerance_basis = "";
+}
+
+function applyLoadPointTolerance(point, value) {
+  const text = String(value ?? "").trim().replace(/^建议\s*/, "");
+  const parsed = ToleranceValues.parse(text, { load: true, unit: point.force_unit || "N" });
+  if (!parsed.ok) { point.tolerance_input_draft = text; return false; }
+  applyManualLoadTolerance(point, parsed);
+  return true;
 }
 
 function parseValue(text, previous) {

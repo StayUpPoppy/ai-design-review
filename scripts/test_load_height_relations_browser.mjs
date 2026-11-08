@@ -58,8 +58,9 @@ try{
   assert.equal(await row('point1').locator('[data-role="load-tolerance"]').inputValue(),'');
   assert.ok((await row('point2').locator('[data-role="load-tolerance"]').inputValue()).includes('221.96'));
   assert.equal(await row('point1').locator('[data-role="height-relation-note"]').innerText(),'由行程换算，待确认');
-  assert.ok((await row('point1').locator('.load-height-evidence').textContent()).includes('参考尺寸'));
-  assert.equal(await row('point1').locator('.load-height-evidence').evaluate(e=>e.open),false);
+  assert.equal(await row('point1').locator('.load-height-evidence').count(),0);
+  assert.equal(await page.evaluate(()=>state.review.spring_parameters.load_points[0].height_relation.reference_only),true, 'Reference-dimension evidence remains in the data');
+  assert.equal(await page.evaluate(()=>state.review.spring_parameters.load_points[0].height_relation.formula),'H = H0 - S');
   for(const id of ['point1','point2']){await row(id).locator('[data-role="confirm"]').click();await flush();}
   assert.ok(!(await row('point1').locator('[data-role="height-relation-note"]').innerText()).includes('待确认'));
   const exported=await page.evaluate(()=>makeGenerationParameterPackage());
@@ -103,7 +104,7 @@ try{
   assert.equal(await height('point1').inputValue(),'192.42');assert.equal(await height('point2').inputValue(),'162.09');
   assert.equal(frozen.generation_parameters.load_points[0].height.value,125.77,'Prior frozen export is unchanged');
   await flush();
-  await row('point1').locator('.load-height-evidence summary').click();
+  assert.equal(await row('point1').locator('.load-height-evidence').count(),0);
   fs.mkdirSync('outputs/load-height-qa',{recursive:true});
   if(!process.env.SKIP_UI_QA_SCREENSHOTS)for(const width of [1440,1100,390]){await page.setViewportSize({width,height:width<500?1200:1000});await row('point1').scrollIntoViewIfNeeded();assert.equal(await row('point1').evaluate(e=>e.scrollWidth>e.clientWidth+2),false);await page.screenshot({path:`outputs/load-height-qa/load-${width}.png`});}
   for (const [index,c] of graphCases.entries()) {
@@ -116,8 +117,8 @@ try{
     for(const point of points){
       const id=point.load_point_id;
       assert.equal(await height(id).inputValue(),String(c.expected[point.label]),c.name);
-      assert.equal(await row(id).locator('.load-height-evidence').evaluate(e=>e.open),false);
-      assert.ok((await row(id).locator('.load-height-evidence').textContent()).includes('共同基准'));
+      assert.equal(await row(id).locator('.load-height-evidence').count(),0);
+      assert.ok(point.height_relation.geometry_evidence, 'Geometry evidence remains in the data');
       assert.equal(point.height_relation.kind,'absolute_height');
       assert.equal(point.need_human_review,true, JSON.stringify({name:c.name,point}));
       await row(id).locator('[data-role="confirm"]').click();await flush();

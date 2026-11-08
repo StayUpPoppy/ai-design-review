@@ -524,8 +524,8 @@ def select_general_accuracy_grade(review: dict[str, Any], requested_grade: str) 
         raise ValueError("requested_grade must be T级, 1级, 2级, or 3级.")
     if grade == "T级":
         from .standardizers.hot_coiled import is_hot
-        from .standard_selector import select_standard
-        selection = select_standard("compression_spring", review.get("spring_parameters") or {}, review.get("spring_features"), include_references=False)
+        from .execution_standards import resolve_selection
+        selection = resolve_selection(review)
         if not is_hot(selection.get("selected_standard")):
             raise ValueError("T级仅适用于已接入的热卷标准。")
     parameters = review.setdefault("spring_parameters", {})
@@ -556,6 +556,7 @@ def select_general_accuracy_grade(review: dict[str, Any], requested_grade: str) 
     )
     item.pop("default_source", None)
     item.pop("default_reason", None)
+    item.pop("requires_selection", None)
     parameters["accuracy_grade"] = item
     from .accuracy_inference import select_manual_accuracy
     select_manual_accuracy(review)
@@ -914,7 +915,7 @@ def _handle_accuracy_standardization_request(
         retained = completed.get("specialized_grades_retained") or {}
         retained_text = ""
         if retained:
-            retained_text = " 已有专项精度保持不变，并继续优先用于对应公差计算。"
+            retained_text = " 原图专项精度已保留作来源，本次建议统一按人工选择的通用精度计算。"
         reply = (
             f"已按通用精度等级{grade}重新生成标准化方案，共生成{count}项建议。"
             f"{retained_text} 标准化建议尚未自动应用，请继续逐项核对或批量应用。"

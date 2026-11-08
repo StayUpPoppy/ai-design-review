@@ -19,6 +19,10 @@ const context = {
   getReviewContext: () => null,
 };
 vm.createContext(context);
+vm.runInContext(fs.readFileSync('frontend/tolerance-values.js', 'utf8'), context);
+context.ExecutionStandards = { fresh: () => false };
+const rememberStart = appSource.indexOf('function rememberDrawingLoadTolerance(');
+vm.runInContext(appSource.slice(rememberStart, appSource.indexOf('function applyManualLoadTolerance(', rememberStart)), context);
 const loadTargetStart = appSource.indexOf("function targetFieldLabel");
 const loadTargetEnd = appSource.indexOf("function formatStandardValue", loadTargetStart);
 assert.notEqual(loadTargetStart, -1, "load point target helper must exist");
@@ -130,11 +134,10 @@ const standardizedPoint = {
 };
 context.applyStandardizedLoadTolerance(standardizedPoint, 0.8, -0.8, { basis: "表3-15" });
 assert.equal(standardizedPoint.drawing_force_tolerance_percent, 10);
-assert.equal(standardizedPoint.force_tolerance_percent, 5);
-assert.equal(standardizedPoint.load_tolerance_percent, 5);
+assert.equal(standardizedPoint.force_tolerance_percent, null);
+assert.equal(standardizedPoint.load_tolerance_percent, null);
 const toleranceDisplay = context.loadPointToleranceDisplay(standardizedPoint, "F1", { standardization_results: [] });
-assert.equal(toleranceDisplay.value, "±5%");
-assert.match(toleranceDisplay.note, /±0.8N/);
+assert.equal(toleranceDisplay.value, "±0.8N");
 assert.match(toleranceDisplay.note, /±10%/);
 
 console.log("standardization chat UI rollback and batch supplement test passed");

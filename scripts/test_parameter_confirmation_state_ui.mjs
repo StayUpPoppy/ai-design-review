@@ -119,6 +119,7 @@ const lifecycleEnd = appSource.indexOf("function sourceValues", lifecycleStart);
 assert.notEqual(lifecycleStart, -1, "confirmation lifecycle helpers must exist");
 assert.notEqual(lifecycleEnd, -1, "confirmation lifecycle helper block must be complete");
 const lifecycle = {
+  syncBubbleValue() {},
   state: {
     review: { manual_confirmations: {}, spring_parameters: {}, standardization_results: [] },
     reviewEditSerial: 0,
@@ -189,8 +190,8 @@ lifecycle.state.review.spring_parameters.solid_height = solid;
 lifecycle.state.review.spring_parameters.wire_diameter = { value: 3.05, need_human_review: false };
 lifecycle.markDependentFormulaParametersPending("wire_diameter");
 assert.equal(solid.value, 32.025);
-assert.equal(solid.need_human_review, false);
-assert.equal(solid.formula_recommendation_stale, true);
+assert.equal(solid.need_human_review, true, 'Changing a formula dependency requires re-confirmation');
+assert.equal(solid.derived_value_stale, true, 'Missing formula inputs exclude the previous derived value');
 
 assert.match(appSource, /window\.addEventListener\("beforeunload"/);
 assert.match(appSource, /event_type: eventType/);

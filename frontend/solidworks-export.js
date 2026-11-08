@@ -38,16 +38,31 @@
     const value = strictNumber(item.value), factor = lengthUnits[String(item.unit || "mm").trim().toLowerCase()];
     return value == null || factor == null || value < 0 || !allowZero && value === 0 || !Number.isFinite(value * factor) ? null : { item, value: value * factor, factor };
   }
+  function toleranceIssues(review) {
+    const issues = [], parameters = review.spring_parameters || {};
+    for (const [label, field] of [["外径", "outer_diameter"], ["自由高度", "free_length"], ["中径", "mean_diameter"]]) {
+      if (review.diameter_linkage?.status === "invalid" && ["outer_diameter", "mean_diameter"].includes(field)) continue;
+      const confirmed = confirmedOptionalMm(parameters, field);
+      if (!confirmed) continue;
+      const upper = strictNumber(confirmed.item.tolerance_upper), lower = strictNumber(confirmed.item.tolerance_lower);
+      if (upper != null && lower != null && upper >= lower && (upper > 0 && lower > 0 || upper < 0 && lower < 0)) {
+        issues.push({ field, label, reason: `${label}公差的上下偏差同方向，SW 幅值数组无法表达；请核对公差或 SW 协议。` });
+      }
+    }
+    return issues;
+  }
   function modelParametersTolerance(review) {
+    const issues = toleranceIssues(review);
+    if (issues.length) throw new Error(issues[0].reason);
     const parameters = review.spring_parameters || {}, tolerances = {};
     for (const [label, field] of [["外径", "outer_diameter"], ["自由高度", "free_length"], ["中径", "mean_diameter"]]) {
       if (review.diameter_linkage?.status === "invalid" && ["outer_diameter", "mean_diameter"].includes(field)) continue;
       const confirmed = confirmedOptionalMm(parameters, field);
       if (!confirmed) continue;
       const upper = strictNumber(confirmed.item.tolerance_upper), lower = strictNumber(confirmed.item.tolerance_lower);
-      if (upper == null || lower == null || upper < 0 || upper !== -lower) continue;
-      const value = upper * confirmed.factor;
-      if (Number.isFinite(value)) tolerances[label] = value === 0 ? 0 : value;
+      if (upper == null || lower == null || upper < lower) continue;
+      const values = [upper, lower].map(value => Math.abs(value * confirmed.factor) || 0);
+      if (values.every(Number.isFinite)) tolerances[label] = upper === -lower ? values[0] : values;
     }
     return tolerances;
   }
@@ -110,10 +125,10 @@
     const force = point.force || {};
     const text = `${textNumber(force.value)} N`, percent = number(force.tolerance_percent);
     const upper = number(force.tolerance_upper), lower = number(force.tolerance_lower);
-    if (percent != null) return `${text}（允差 ±${textNumber(Math.abs(percent))}%）`;
+    if (percent != null && upper == null && lower == null) return `${text}（允差 ±${Math.abs(percent)}%）`;
     if (upper == null && lower == null) return text;
-    if (upper != null && lower != null && upper >= 0 && Math.abs(upper + lower) <= 1e-9) return `${text}（允差 ±${textNumber(upper)} N）`;
-    const signed = (v) => `${v > 0 ? "+" : ""}${textNumber(v)}`;
+    if (upper != null && lower != null && upper >= 0 && upper === -lower) return `${text}（允差 ±${upper} N）`;
+    const signed = (v) => `${v > 0 ? "+" : ""}${v}`;
     return `${text}（允差 ${[upper, lower].filter((v) => v != null).map(signed).join("/")} N）`;
   }
   function endConditionValue(field, value) {
@@ -379,11 +394,12 @@
   function exportLoadPoint(point) {
     const height = number(point.height), force = number(point.force), hFactor = lengthUnits[String(point.height_unit || "mm").trim().toLowerCase()], fFactor = forceUnits[String(point.force_unit || "N").trim().toLowerCase()];
     if (height == null || force == null || height <= 0 || force < 0 || hFactor == null || fFactor == null || !Number.isFinite(height * hFactor) || !Number.isFinite(force * fFactor)) return null;
-    const tolerance = (value) => number(value) == null ? null : rounded(Number(value) * fFactor, 3);
-    const percent = point.load_tolerance_percent ?? point.force_tolerance_percent;
+    const tolerance = (value) => number(value) == null || !Number.isFinite(Number(value) * fFactor) ? null : Number(value) * fFactor || 0;
+    const hasAbsolute = point.load_tolerance_upper != null || point.load_tolerance_lower != null;
+    const percent = hasAbsolute ? null : point.load_tolerance_percent ?? point.force_tolerance_percent;
     return { label: String(point.label || "").trim().replace(/\s+/g, " "), height: { value: rounded(height * hFactor, 3), unit: "mm" },
-      force: { value: rounded(force * fFactor, 3), unit: "N", tolerance_upper: tolerance(point.load_tolerance_upper), tolerance_lower: tolerance(point.load_tolerance_lower), ...(percent != null ? { tolerance_percent: number(percent) == null ? null : rounded(percent, 3) } : {}) }, confirmation_source: "human_confirmed" };
+      force: { value: rounded(force * fFactor, 3), unit: "N", tolerance_upper: tolerance(point.load_tolerance_upper), tolerance_lower: tolerance(point.load_tolerance_lower), ...(percent != null ? { tolerance_percent: number(percent) } : {}) }, confirmation_source: "human_confirmed" };
   }
   globalThis.SolidWorksExport = { buildPreview, technicalText, technicalProjection, automaticMatches, outputBasis, refreshDeletions, deletionFor,
-    exportLoadPoint, standaloneRoughness, confirmedRoughness, roughnessMatches, currentRoughness, canPromoteRoughness };
+    exportLoadPoint, toleranceIssues, standaloneRoughness, confirmedRoughness, roughnessMatches, currentRoughness, canPromoteRoughness };
 })();

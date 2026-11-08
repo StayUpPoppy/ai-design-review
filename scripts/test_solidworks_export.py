@@ -61,6 +61,17 @@ def cases():
         review["design_checks"] = {"metrics": {"solid_stress": {"value": 999999}, "unit_mass": {"value": 999999, "unit": "kg", "status": "estimated"}}}
         result.append({"name": name, "review": review, "end_note": end_note})
     add("book_baseline")
+    add("legacy_mixed_load", points=[{"label": "F8", "height": 12, "force": .02, "force_unit": "kN",
+        "height_unit": "mm", "load_tolerance_upper": .0001, "load_tolerance_lower": -.0002,
+        "load_tolerance_percent": 10, "need_human_review": False}])
+    add("tiny_asymmetric_load", points=[{"label": "F8", "height": 12, "force": 20, "force_unit": "N",
+        "height_unit": "mm", "load_tolerance_upper": .000012345, "load_tolerance_lower": -.000000023,
+        "need_human_review": False}])
+    add("micro_asymmetric_load", points=[{"label": "F8", "height": 12, "force": 20, "force_unit": "N",
+        "height_unit": "mm", "load_tolerance_upper": .000001, "load_tolerance_lower": -.000002,
+        "need_human_review": False}])
+    add("tiny_percent_load", points=[{"label": "F8", "height": 12, "force": 20, "load_tolerance_percent": .000001,
+        "need_human_review": False}])
     add("decimal_coils", {"total_coils": {"value": 10.5}, "active_coils": {"value": 8.25}}, summary={"drawing_name": "客户 弹簧001-A"})
     add("precise_decimal_coils", {"total_coils": {"value": 10.5123456789}, "active_coils": {"value": 8.25123456789}})
     for closed, ground, note in [
@@ -197,9 +208,13 @@ def cases():
         optional(field, {field: base}, {label: 1.5})
         optional(field + "_zero", {field: {**base, "tolerance_upper": 0, "tolerance_lower": 0}}, {label: 0})
         optional(field + "_tiny", {field: {**base, "tolerance_upper": 0.000012345, "tolerance_lower": -0.000012345}}, {label: 0.000012345})
+        optional(field + "_asymmetric", {field: {**base, "tolerance_lower": -0.5}}, {label: [1.5, 0.5]})
+        optional(field + "_one_sided_zero", {field: {**base, "tolerance_lower": 0}}, {label: [1.5, 0]})
+        optional(field + "_negative_side", {field: {**base, "tolerance_upper": 0, "tolerance_lower": -0.2}}, {label: [0, 0.2]})
+        optional(field + "_tiny_pair", {field: {**base, "tolerance_upper": 0.000012345, "tolerance_lower": -0.000000023}}, {label: [0.000012345, 0.000000023]})
         for suffix, patch in (
-            ("asymmetric", {"tolerance_lower": -0.5}), ("one_sided", {"tolerance_lower": None}),
-            ("one_sided_zero", {"tolerance_lower": 0}), ("missing", {"tolerance_upper": None, "tolerance_lower": None}),
+            ("one_sided", {"tolerance_lower": None}),
+            ("missing", {"tolerance_upper": None, "tolerance_lower": None}),
             ("reversed", {"tolerance_upper": -1.5, "tolerance_lower": 1.5}), ("pending", {"need_human_review": True}),
             ("unknown_confirmation", {"need_human_review": None}), ("stale", {"derived_value_stale": True}),
             ("formula_stale", {"formula_recommendation_stale": True, "source": ["manual"]}),
@@ -320,6 +335,14 @@ def run():
             assert isinstance(title["重量"], (int, float)) and title["重量"] == round(mass["value"], 8)
         assert list(extra)[0] == "技术要求" and set(extra) <= {"技术要求", "P'", "C", "τ_b"}
         notes = extra["技术要求"]
+        if case["name"] == "legacy_mixed_load":
+            assert "+0.1/-0.2 N" in notes and "F8 = 20 N（允差 ±10%）" not in notes
+        if case["name"] == "tiny_asymmetric_load":
+            assert "+0.000012345/-2.3e-8 N" in notes
+        if case["name"] == "micro_asymmetric_load":
+            assert "+0.000001/-0.000002 N" in notes
+        if case["name"] == "tiny_percent_load":
+            assert "±0.000001%" in notes
         assert notes.startswith("1.旋向：右。\n"), (case["name"], notes)
         if case["end_note"]:
             assert notes.splitlines()[2] == "3." + case["end_note"], (case["name"], notes)

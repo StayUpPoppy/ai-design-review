@@ -54,7 +54,9 @@ def main():
                 title_keys = list(preview["titleBlockProperties"])
                 assert title_keys[title_keys.index("客户图号") + 1] == "垂直度A"
                 GenerationParameterPackageV2.model_validate(package)
-                for invalid in ({"外径": -1}, {"外径": "1.5"}, {"外径": True}, {"内径": 1}, {"外径": float("inf")}):
+                for invalid in ({"外径": -1}, {"外径": "1.5"}, {"外径": True}, {"内径": 1}, {"外径": float("inf")},
+                    {"外径": []}, {"外径": [1]}, {"外径": [1, 2, 3]}, {"外径": [-1, 2]}, {"外径": [1, True]},
+                    {"外径": ["1", 2]}, {"外径": [1, float("nan")]}):
                     bad = deepcopy(package)
                     bad["solidworks_preview"]["modelParametersTolerance"] = invalid
                     try:
@@ -77,6 +79,8 @@ def main():
 
                 changed = optional_review()
                 changed["spring_parameters"]["outer_diameter"].update(tolerance_upper=.000012345, tolerance_lower=-.000012345)
+                changed["spring_parameters"]["free_length"].update(tolerance_upper=.1, tolerance_lower=-.2)
+                changed["spring_parameters"]["mean_diameter"].update(tolerance_upper=0, tolerance_lower=-.2)
                 changed["spring_parameters"]["perpendicularity"]["value"] = 0
                 changed["drawing_summary"]["drawing_no"] = ""
                 saved = client.patch(endpoint, json={"review": changed, "expected_revision": 1})
@@ -84,6 +88,8 @@ def main():
                 revision = saved.json()["review_revision"]
                 current = client.get(endpoint + "/generation-package").json()["parameter_package"]["solidworks_preview"]
                 assert current["modelParametersTolerance"]["外径"] == .000012345
+                assert current["modelParametersTolerance"]["自由高度"] == [.1, .2]
+                assert current["modelParametersTolerance"]["中径"] == [0, .2]
                 assert current["titleBlockProperties"]["垂直度A"] == 0 and "客户图号" not in current["titleBlockProperties"]
                 request = {**create_request("optional-new"), "expected_review_revision": revision}
                 second = client.post(endpoint + "/generation-jobs", json=request)
@@ -94,6 +100,20 @@ def main():
                 assert old["execution_options"]["solidworks_payload"] == frozen_command
                 assert len(submissions) == 2
                 assert client.post(endpoint + "/generation-jobs", json={**request, "idempotency_key": "optional-first"}).status_code == 409
+
+                for field, label in (("outer_diameter", "外径"), ("free_length", "自由高度"), ("mean_diameter", "中径")):
+                    for upper, lower in ((.2, .1), (-.1, -.2)):
+                        blocked = optional_review()
+                        blocked["spring_parameters"][field].update(tolerance_upper=upper, tolerance_lower=lower)
+                        job_id = f"same-side-{field.replace('_', '-')}-{'positive' if upper > 0 else 'negative'}"
+                        repository.create_review(job_id, blocked, owner=OWNER)
+                        response = client.get(f"/api/reviews/{job_id}/generation-readiness")
+                        assert response.status_code == 200, response.text
+                        readiness = response.json()["generation_readiness"]
+                        assert readiness["status"] == "blocked" and label in readiness["summary"]
+                        assert client.get(f"/api/reviews/{job_id}/generation-package").status_code == 409
+                        assert client.post(f"/api/reviews/{job_id}/generation-jobs", json=create_request(job_id)).status_code == 409
+                assert len(submissions) == 2, "Unsupported same-side tolerances must not reach SW"
 
                 # Both old packages without the new fields and new packages survive original-parameter retry.
                 original_url = os.environ.pop("SOLIDWORKS_GENERATION_URL")

@@ -100,10 +100,10 @@ def hot_fixtures(add):
             add(f"hot band {height} tolerance {tolerance}", r, expected)
     for field, value in [("wire_diameter", 7.9), ("mean_diameter", 80), ("active_coils", 2.9), ("pitch", 52), ("free_length", 420)]:
         r = hot_base(); r["spring_parameters"][field]["value"] = value
-        add(f"hot outside scope {field}", r, None, "outside_scope")
+        add(f"hot outside scope {field}", r, "T级", "matched")
     for field in ("pitch", "active_coils", "wire_diameter"):
         r = hot_base(); r["spring_parameters"].pop(field)
-        add(f"hot missing context {field}", r, None, "missing_context")
+        add(f"hot missing scope input {field}", r, "T级", "matched")
     r = hot_base(); r["spring_parameters"]["inner_diameter"].update(tolerance_upper=None, tolerance_lower=None)
     add("hot free height grade2", r, "2级")
     for upper, lower, expected in [(1, 0, "T级"), (0, -1, "T级"), (1.01, -1, "1级"), (3, -3, None), (1, None, None)]:

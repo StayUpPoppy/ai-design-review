@@ -1,0 +1,107 @@
+.tolerance-input-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.tolerance-input-control input { flex: 1 1 0; min-width: 0; }
+.parameter-data-table .data-secondary .tolerance-input-control { min-width: 140px; }
+.load-point-tolerance .tolerance-input-control { min-width: 150px; }
+@container parameter-table (width < 400px) {
+  .parameter-data-table .data-secondary .tolerance-input-control { min-width: 150px; }
+}
+.tolerance-input-control .tolerance-edit-button {
+  display: inline-flex;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0;
+  border: 1px solid #c7d6f5;
+  background: #fff;
+  color: #2853d9;
+}
+.tolerance-editor {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding: 14px;
+  border-top: 1px solid #d6e2f5;
+  background: #f4f8ff;
+  color: #263950;
+  font-size: 12px;
+}
+.tolerance-editor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.tolerance-editor-heading strong { font-size: 14px; }
+.tolerance-editor-heading span,
+.tolerance-editor-help,
+.tolerance-editor-preview small { color: #52637a; }
+.tolerance-editor-modes {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin-bottom: 12px;
+}
+.tolerance-editor-modes button {
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 1px solid #b8cbee;
+  border-radius: 0;
+  background: #fff;
+  color: #405774;
+  font-size: 12px;
+}
+.tolerance-editor-modes button:first-child { border-radius: 6px 0 0 6px; }
+.tolerance-editor-modes button:last-child { border-radius: 0 6px 6px 0; }
+.tolerance-editor-modes button[aria-pressed="true"] { background: #2853d9; border-color: #2853d9; color: #fff; }
+.tolerance-editor-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.tolerance-editor-fields label { display: grid; gap: 6px; min-width: 0; }
+.tolerance-editor-fields input {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid #b9cbee;
+  border-radius: 6px;
+  background: #fff;
+  color: #1d2c42;
+  font: inherit;
+}
+.tolerance-magnitude { display: flex; align-items: center; gap: 7px; }
+.tolerance-magnitude input { flex: 1; }
+.tolerance-editor-help { display: block; line-height: 1.6; }
+.tolerance-editor-error { margin: 8px 0; color: #a32922; line-height: 1.5; }
+.tolerance-editor-error:empty { display: none; }
+.tolerance-editor-footer {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #d6e2f5;
+}
+.tolerance-editor-preview { display: grid; gap: 4px; min-width: 0; }
+.tolerance-editor-preview strong { font-size: 18px; color: #1d46b9; overflow-wrap: anywhere; }
+.tolerance-editor-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.tolerance-editor-actions button { min-height: 32px; padding: 4px 10px; font-size: 12px; }
+.tolerance-editor-actions [data-tolerance-action="save"] { background: #2853d9; color: #fff; border-color: #2853d9; }
+.tolerance-editor-actions button:disabled { opacity: .55; cursor: not-allowed; }
+@media (max-width: 640px) {
+  .tolerance-editor { padding: 12px; }
+  .tolerance-editor-fields { grid-template-columns: minmax(0, 1fr); }
+  .tolerance-editor-footer { align-items: stretch; flex-direction: column; }
+  .tolerance-editor-actions button { flex: 1 1 auto; }
+}

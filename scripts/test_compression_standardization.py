@@ -26,6 +26,7 @@ def _base_parameters() -> dict:
         "outer_diameter": {"value": 20, "unit": "mm"},
         "free_length": {"value": 30, "unit": "mm"},
         "total_coils": {"value": 12, "unit": "turns"},
+        "support_coils": {"value": 1, "unit": "turns"},
         "active_coils": {"value": 8, "unit": "turns"},
         "end_type": {"value": "两端并紧"},
         "accuracy_grade": {"value": "2级"},
@@ -57,7 +58,7 @@ def _assert_derived_parameters() -> None:
 def _assert_gbt_1239_2_suggestions() -> None:
     payload = standardize_compression_spring(_base_parameters())
     results = {item["rule_id"]: item for item in payload["standardization_results"]}
-    assert results["GBT1239.2-DIA"]["suggested_tolerance_upper"] == 0.3
+    assert results["GBT1239.2-DIA"]["suggested_tolerance_upper"] == 0.27
     assert results["GBT1239.2-FREE"]["suggested_tolerance_upper"] == 0.9
     assert results["GBT1239.2-COILS"]["suggested_tolerance_upper"] == 0.5
     assert results["GBT1239.2-PERP"]["suggested_value"] == 1.5
@@ -164,7 +165,8 @@ def _assert_workflow_can_defer_standardization() -> None:
         ],
         run_standardization=False,
     )
-    assert result["standard_selection"]["status"] == "not_started"
+    assert result["standard_selection"]["selected_standard"] == "GB/T 1239.2-2009"
+    assert result["standard_selection"]["selection_source"] == "wire_diameter_threshold"
     assert result["standardization_results"] == []
     assert result["derived_parameters"] == {}
     assert result["spring_parameters"]["active_coils"]["value"] is None

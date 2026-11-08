@@ -11,6 +11,7 @@ assert.notEqual(helperEnd, -1, "bulk confirmation helper block must be complete"
 
 const context = {
   structuredClone,
+  isCompressionSpringReview: () => false,
   COMPRESSION_GENERATION_CORE_FIELDS: [
     "wire_diameter", "mean_diameter", "free_length", "total_coils", "active_coils",
     "handedness", "end_grinding", "end_coils_closed",

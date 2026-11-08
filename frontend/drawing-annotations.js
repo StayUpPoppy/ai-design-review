@@ -1,7 +1,7 @@
 /* Original drawing UI. Parameter updates from relocalization belong to app.js. */
 window.DrawingAnnotations = (() => {
   // Display order only. Persisted annotation IDs/numbers and locations stay unchanged.
-  const fields = Object.freeze(["material", "accuracy_grade", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"]);
+  const fields = Object.freeze(["material", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"]);
   const displayNumbers = new Map(fields.map((field, index) => [field, index + 1]));
   const numberForField = field => displayNumbers.get(field) ?? null;
   const visibleAnnotations = item => (item?.document?.annotations || []).filter(a => numberForField(a.field) != null);

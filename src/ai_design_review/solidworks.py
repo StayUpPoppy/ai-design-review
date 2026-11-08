@@ -143,7 +143,24 @@ def _confirmed_optional_mm(parameters: dict[str, Any], field: str, *, allow_zero
     return item, value * factor
 
 
-def _model_parameters_tolerance(review: dict[str, Any]) -> dict[str, float]:
+def solidworks_tolerance_issues(review: dict[str, Any]) -> list[dict[str, str]]:
+    issues = []
+    for label, field in (("外径", "outer_diameter"), ("自由高度", "free_length"), ("中径", "mean_diameter")):
+        if (review.get("diameter_linkage") or {}).get("status") == "invalid" and field in {"outer_diameter", "mean_diameter"}:
+            continue
+        confirmed = _confirmed_optional_mm(review.get("spring_parameters") or {}, field)
+        if confirmed is None:
+            continue
+        upper, lower = (_optional_number(confirmed[0].get(key)) for key in ("tolerance_upper", "tolerance_lower"))
+        if upper is not None and lower is not None and upper >= lower and (upper > 0 and lower > 0 or upper < 0 and lower < 0):
+            issues.append({"field": field, "label": label, "reason": f"{label}公差的上下偏差同方向，SW 幅值数组无法表达；请核对公差或 SW 协议。"})
+    return issues
+
+
+def _model_parameters_tolerance(review: dict[str, Any]) -> dict[str, float | list[float]]:
+    issues = solidworks_tolerance_issues(review)
+    if issues:
+        raise ValueError(issues[0]["reason"])
     parameters = review.get("spring_parameters") or {}
     invalid_linkage = (review.get("diameter_linkage") or {}).get("status") == "invalid"
     result = {}
@@ -155,12 +172,13 @@ def _model_parameters_tolerance(review: dict[str, Any]) -> dict[str, float]:
             continue
         item, _ = confirmed
         upper, lower = _optional_number(item.get("tolerance_upper")), _optional_number(item.get("tolerance_lower"))
-        # Do not turn asymmetric or one-sided engineering requirements into ± values.
-        if upper is None or lower is None or upper < 0 or upper != -lower:
+        if upper is None or lower is None or upper < lower:
             continue
-        value = upper * LENGTH_UNITS[str(item.get("unit") or "mm").strip().lower()]
-        if math.isfinite(value):
-            result[label] = 0 if value == 0 else value
+        factor = LENGTH_UNITS[str(item.get("unit") or "mm").strip().lower()]
+        values = [abs(upper * factor), abs(lower * factor)]
+        if all(math.isfinite(value) for value in values):
+            values = [0 if value == 0 else value for value in values]
+            result[label] = values[0] if upper == -lower else values
     return result
 
 
@@ -447,14 +465,14 @@ def _force_text(point: dict[str, Any]) -> str:
     text = f"{_text_number(force['value'])} N"
     percent = _number(force.get("tolerance_percent"))
     upper, lower = (_number(force.get(key)) for key in ("tolerance_upper", "tolerance_lower"))
-    if percent is not None:
-        return text + f"（允差 ±{_text_number(abs(percent))}%）"
+    if percent is not None and upper is None and lower is None:
+        return text + f"（允差 ±{_tolerance_number(abs(percent))}%）"
     if upper is None and lower is None:
         return text
-    if upper is not None and lower is not None and upper >= 0 and math.isclose(upper, -lower, rel_tol=0, abs_tol=1e-9):
-        return text + f"（允差 ±{_text_number(upper)} N）"
+    if upper is not None and lower is not None and upper >= 0 and upper == -lower:
+        return text + f"（允差 ±{_tolerance_number(upper)} N）"
     def signed(number: float) -> str:
-        return ("+" if number > 0 else "") + _text_number(number)
+        return ("+" if number > 0 else "") + _tolerance_number(number)
     tolerance = "/".join(signed(number) for number in (upper, lower) if number is not None)
     return text + f"（允差 {tolerance} N）"
 
@@ -506,3 +524,12 @@ def _rounded(number: float, digits: int) -> int | float:
 
 def _text_number(value: Any) -> str:
     return str(_rounded(float(value), 4))
+
+
+def _tolerance_number(value: float) -> str:
+    if value == 0:
+        return "0"
+    if 1e-6 <= abs(value) < 1e21:
+        fixed = format(Decimal(str(value)), "f")
+        return fixed.rstrip("0").rstrip(".") if "." in fixed else fixed
+    return re.sub(r"e([+-])0+(\d)", r"e\1\2", str(value))

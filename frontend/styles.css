@@ -1077,7 +1077,7 @@ button:disabled {
 .technical-requirement-create > div,
 .load-point-section-head > div,
 .load-point-undo,
-.load-point-create > div,
+.load-point-create-actions,
 .requirement-actions {
   display: flex;
   align-items: center;
@@ -1114,10 +1114,15 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
+.load-point-section-head > span { flex-shrink: 0; white-space: nowrap; }
+
 .load-point-section-head > div {
+  flex: 1 1 280px;
+  min-width: 0;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -1170,7 +1175,7 @@ button:disabled {
 
 .load-point-create {
   display: grid;
-  grid-template-columns: repeat(4, minmax(110px, 1fr));
+  grid-template-columns: repeat(3, minmax(90px, 1fr)) minmax(170px, 1.3fr);
   gap: 9px;
   margin: 0 0 10px;
   border: 1px solid #cbdaf0;
@@ -1180,6 +1185,17 @@ button:disabled {
 }
 
 .load-point-create[hidden] { display: none; }
+.load-point-section { container: load-point-section / inline-size; }
+.load-point-create > label,
+.load-point-create-tolerance { min-width: 0; }
+.load-point-create-tolerance .tolerance-input-control { min-width: 150px; }
+.load-point-create .tolerance-editor { display: block; }
+@container load-point-section (width < 640px) {
+  .load-point-create { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container load-point-section (width < 360px) {
+  .load-point-create { grid-template-columns: minmax(0, 1fr); }
+}
 
 .load-candidate-section { margin-top: 10px; padding: 10px 12px; border: 1px solid #dce7f5; border-radius: 6px; background: #f8fbff; color: #52637a; font-size: 11px; }
 .load-candidate-section summary { color: #253149; font-size: 12.5px; font-weight: 600; cursor: pointer; }
@@ -1194,7 +1210,8 @@ button:disabled {
 .load-candidate-history { background: #fff; }
 
 .load-point-create > small,
-.load-point-create > div {
+.load-point-create > .tolerance-editor,
+.load-point-create > .load-point-create-actions {
   grid-column: 1 / -1;
 }
 
@@ -1203,7 +1220,7 @@ button:disabled {
   color: #b42318;
 }
 
-.load-point-create > div { justify-content: flex-end; }
+.load-point-create-actions { justify-content: flex-end; }
 
 .load-point-actions {
   display: flex;
@@ -2311,8 +2328,14 @@ button:disabled {
   background: #fff;
 }
 
+.parameter-data-table {
+  container: parameter-table / inline-size;
+  --data-columns: minmax(100px, 120px) minmax(56px, 1fr) minmax(140px, 1.6fr) 64px;
+}
+
 .load-point-table {
-  --data-columns: minmax(68px, 1fr) 68px 68px 84px 128px;
+  container: load-table / inline-size;
+  --data-columns: 88px minmax(92px, 1fr) minmax(92px, 1fr) minmax(160px, 1.6fr);
 }
 
 .load-point-tolerance {
@@ -2366,6 +2389,137 @@ button:disabled {
 
 .data-row.parameter-wide-input .data-secondary {
   display: none;
+}
+
+.parameter-data-table > .data-row {
+  grid-template-areas: "label primary secondary action";
+  padding-block: 8px;
+}
+
+.parameter-data-table > .data-table-head,
+.parameter-data-table > .data-row {
+  column-gap: 6px;
+  padding-inline: 8px;
+}
+
+.parameter-data-table > .parameter-wide-input {
+  grid-template-areas: "label primary primary action";
+}
+
+.parameter-data-table > .data-row > .data-label,
+.load-point-table > .data-row > .data-label { grid-area: label; }
+.parameter-data-table > .data-row > .data-primary,
+.load-point-table > .data-row > .data-primary { grid-area: primary; }
+.parameter-data-table > .data-row > .data-secondary,
+.load-point-table > .data-row > .data-secondary { grid-area: secondary; }
+.parameter-data-table > .data-row > .confirm-button {
+  grid-area: action;
+  width: 64px;
+  max-width: 100%;
+  padding-inline: 5px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.parameter-field-label { display: none; }
+
+.load-point-table > .data-row {
+  grid-template-areas:
+    "label primary secondary tertiary"
+    "action action action action";
+  align-items: start;
+  padding-block: 10px;
+}
+.load-point-table > .data-row > .data-tertiary { grid-area: tertiary; }
+.load-point-table > .data-row > .load-point-actions {
+  grid-area: action;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+/* The same tables appear in the narrow desktop side panel and on mobile. */
+@container parameter-table (width >= 400px) {
+  .parameter-data-table > .data-row > .data-label {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: 2px 4px;
+    align-items: center;
+  }
+  .parameter-data-table .data-label > strong { grid-column: 2; }
+  .parameter-data-table .data-label:not(:has(.parameter-annotation-number)) > strong,
+  .parameter-data-table .data-label > :not(strong):not(.parameter-annotation-number) { grid-column: 1 / -1; }
+  .parameter-data-table .data-label > .parameter-annotation-number {
+    grid-column: 1;
+    float: none;
+    width: 24px;
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0;
+    margin: 0;
+  }
+}
+
+@container parameter-table (width < 400px) {
+  .parameter-data-table > .data-table-head { display: none; }
+  .parameter-data-table > .data-row {
+    grid-template-columns: minmax(76px, 1fr) minmax(150px, 1.6fr) 88px;
+    grid-template-areas:
+      "label label label"
+      "primary secondary action";
+    align-items: end;
+    gap: 6px 8px;
+    padding: 8px;
+  }
+  .parameter-data-table > .parameter-wide-input {
+    grid-template-areas:
+      "label label label"
+      "primary primary action";
+  }
+  .parameter-data-table > .parameter-wide-input > .data-primary { grid-column: 1 / 3; }
+  .parameter-data-table > .data-row > .confirm-button {
+    width: 88px;
+    padding-inline: 7px;
+  }
+  .parameter-field-label {
+    display: block;
+    margin-bottom: 4px;
+    color: #52637a;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+}
+
+@container parameter-table (width < 360px) {
+  .parameter-data-table > .data-row {
+    grid-template-columns: minmax(76px, 1fr) minmax(150px, 1.6fr);
+    grid-template-areas:
+      "label label"
+      "primary secondary"
+      "action action";
+  }
+  .parameter-data-table > .parameter-wide-input {
+    grid-template-areas:
+      "label label"
+      "primary primary"
+      "action action";
+  }
+  .parameter-data-table > .parameter-wide-input > .data-primary { grid-column: 1 / -1; }
+  .parameter-data-table > .data-row > .confirm-button { justify-self: end; }
+}
+
+@container load-table (width < 640px) {
+  .load-point-table > .data-table-head { display: none; }
+  .load-point-table > .data-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "label label"
+      "primary secondary"
+      "tertiary tertiary"
+      "action action";
+    gap: 8px;
+    padding: 10px 8px;
+  }
 }
 
 .compression-design-check {
@@ -2862,6 +3016,7 @@ button:disabled {
 }
 
 .advanced-parameters {
+  container: advanced-parameters / inline-size;
   margin-top: 14px;
   border: 1px solid #e8eef6;
   border-radius: 10px;
@@ -2888,6 +3043,10 @@ button:disabled {
 
 .advanced-data-table {
   margin: 0 10px 10px;
+}
+
+@container advanced-parameters (width >= 400px) {
+  .advanced-data-table { margin-inline: 0; }
 }
 
 .review-change-history {
@@ -3772,6 +3931,180 @@ textarea {
   align-items: center;
   gap: 6px 8px;
   margin-top: 6px;
+}
+
+.execution-standard-toolbar {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  padding-block: 10px 8px;
+}
+
+.workbench-standardization-step {
+  align-items: start;
+}
+
+.workbench-standardization-content {
+  grid-column: 2 / -1;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.workbench-standardization-content > .workbench-step-actions {
+  grid-column: 1 / -1;
+}
+
+.workbench-step-actions .execution-standard-actions {
+  padding: 0;
+  gap: 6px;
+}
+
+.reasonableness-diagnostic-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.standardization-settings-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.standardization-settings-heading h2 {
+  margin: 0;
+}
+
+.standardization-settings-heading .execution-standard-actions {
+  padding: 0;
+}
+
+.standardization-feedback {
+  margin-block: 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.standardization-control-status {
+  margin: 0;
+  color: #52637a;
+}
+
+.standardization-control-status.partial,
+.standardization-diagnostics,
+.load-standardization-diagnostic {
+  color: #855415;
+}
+
+.standardization-diagnostics {
+  margin-top: 6px;
+}
+
+.standardization-diagnostics summary {
+  cursor: pointer;
+}
+
+.standardization-diagnostics ul {
+  margin-block: 6px;
+  padding-inline-start: 20px;
+}
+
+.standardization-diagnostics li + li {
+  margin-top: 6px;
+}
+
+.load-standardization-diagnostic {
+  display: block;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.load-standardization-diagnostic.stale {
+  color: #52637a;
+}
+
+[data-action="run-workbench-standardization"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.standardization-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border: 2px solid currentColor;
+  border-inline-end-color: transparent;
+  border-radius: 50%;
+  animation: standardization-spin 0.8s linear infinite;
+}
+
+@keyframes standardization-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .standardization-spinner { animation: none; }
+}
+
+.workbench-execution-standard {
+  display: grid;
+  gap: 6px;
+  flex: 1 1 230px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.workbench-execution-standard select {
+  min-height: 34px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid #c7d6f5;
+  border-radius: 6px;
+  background: #fff;
+  color: #243954;
+  font: inherit;
+}
+
+.execution-standard-toolbar .workbench-accuracy-grade {
+  flex: 0 1 150px;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 0;
+}
+
+.execution-standard-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding-block: 8px;
+}
+
+.execution-standard-actions small,
+.standardization-grade-note {
+  color: #52637a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.execution-standard-row .data-primary {
+  grid-column: 2 / -1;
+  min-width: 0;
+}
+
+.execution-standard-row select {
+  width: 100%;
+  min-width: 0;
+}
+
+.execution-standard-actions button,
+.execution-standard-toolbar select {
+  min-height: 34px;
 }
 
 .workbench-accuracy-grade > span:first-child {
@@ -5630,10 +5963,6 @@ textarea {
   margin-top: 0;
 }
 
-.compare-data-panel .data-table {
-  --data-columns: minmax(90px, 1fr) 92px 92px 66px;
-}
-
 .compare-data-panel .requirement-list {
   gap: 6px;
 }
@@ -6097,6 +6426,31 @@ textarea {
     position: static;
   }
 
+  .compare-layout:has(.execution-standard-toolbar) {
+    grid-template-rows: minmax(160px, 28vh) minmax(360px, 1fr);
+  }
+
+  .compare-layout:has(.execution-standard-toolbar) .compare-drawing-panel {
+    min-height: 0;
+  }
+
+  .compare-layout:has(.execution-standard-toolbar):has(.with-annotations) {
+    grid-template-rows: minmax(320px, 36vh) minmax(300px, 1fr);
+  }
+
+  .compare-layout:has(.execution-standard-toolbar) .annotation-info {
+    max-height: 72px;
+  }
+
+  .compare-layout:has(.execution-standard-toolbar) .compare-data-panel,
+  .compare-layout:has(.execution-standard-toolbar) .compare-tab-panels {
+    overflow: hidden;
+  }
+
+  .execution-standard-toolbar .workbench-accuracy-grade {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .compare-tab-panel[data-compare-panel="assistant"].active {
     min-height: 62vh;
   }
@@ -6252,69 +6606,6 @@ textarea {
   .chat-standardization-batch-head button { width: 100%; }
   .chat-standardization-batch-skipped li span { text-align: left; }
 
-  .data-table-head {
-    display: none;
-  }
-
-  .data-row {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 60px;
-    grid-template-areas:
-      "label label label"
-      "primary secondary action";
-    gap: 5px 7px;
-    min-height: 78px;
-    padding: 7px 8px;
-  }
-
-  .data-label {
-    grid-area: label;
-  }
-
-  .data-primary {
-    grid-area: primary;
-  }
-
-  .data-secondary {
-    grid-area: secondary;
-  }
-
-  .data-row.parameter-wide-input {
-    grid-template-areas:
-      "label label label"
-      "primary primary action";
-  }
-
-  .data-row.parameter-wide-input .data-primary {
-    grid-column: 1 / 3;
-  }
-
-  .load-point-table .data-row {
-    grid-template-areas:
-      "label label label"
-      "primary secondary action"
-      "tertiary tertiary tertiary";
-    min-height: 112px;
-  }
-
-  .load-point-actions {
-    grid-area: action;
-    flex-direction: column;
-    align-items: stretch;
-    min-width: 0;
-  }
-
-  .load-point-actions button {
-    padding-inline: 4px;
-    white-space: nowrap;
-  }
-
-  .data-tertiary {
-    grid-area: tertiary;
-  }
-
-  .confirm-button {
-    grid-area: action;
-  }
 }
 
 

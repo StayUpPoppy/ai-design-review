@@ -30,6 +30,8 @@ def build_parameter_suggestions(
     spring_type = str((review.get("drawing_summary") or {}).get("spring_type") or "")
     if spring_type != "compression_spring":
         return []
+    from .execution_standards import invalidate_stale_results
+    invalidate_stale_results(review)
     parameters = review.get("spring_parameters") or {}
     revision = based_on_revision if based_on_revision is not None else _integer(review.get("review_revision"))
     suggestions = [

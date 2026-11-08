@@ -53,6 +53,15 @@ const context = {
   },
   parameterPersistenceState: () => null,
   bulkConfirmationFollowupReport: () => null,
+  standardizationReport: () => ({ issues: [], stale: false }),
+  standardizationDiagnosticKey: () => "formula-suggestions-test",
+  standardizationGradeNoteHtml: () => "",
+  rememberDrawingLoadTolerance: (point) => {
+    point.drawing_load_tolerance_percent ??= point.load_tolerance_percent ?? point.force_tolerance_percent ?? null;
+  },
+  rememberDrawingLoadTolerance: (point) => {
+    point.drawing_load_tolerance_percent ??= point.load_tolerance_percent ?? point.force_tolerance_percent ?? null;
+  },
   getFieldMeta: () => ({ unit: "mm" }),
   blankParam: (unit) => ({ value: null, unit, source: [], need_human_review: true }),
   sourceValues: (value) => Array.isArray(value) ? value : value ? [value] : [],
@@ -86,6 +95,7 @@ const context = {
   refreshReasonablenessSuggestionControls() {},
 };
 vm.createContext(context);
+vm.runInContext(extract("function currentReasonablenessIssues", "function standardizationDiagnosticKey"), context);
 vm.runInContext(extract("function renderParameterReasonablenessHtml", "function reasonablenessSeverityLabel"), context);
 vm.runInContext(extract("function findReasonablenessSuggestion", "function animateStandardizationChatReply"), context);
 vm.runInContext(extract("function undoLastStandardizationApplication", "function standardizationChatConstraints"), context);

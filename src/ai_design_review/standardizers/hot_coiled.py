@@ -33,7 +33,7 @@ def scope(context):
 
 def limit(kind, grade, context, nominal=None):
     r = rules()
-    if grade not in r["accuracy_grades"] or scope(context)["status"] != "applicable":
+    if grade not in r["accuracy_grades"] or missing_inputs(kind, context, nominal):
         return None
     if kind == "diameter":
         band = next(b for b in r["diameter_tolerance"] if b["height_max"] is None or context["free_length"] <= b["height_max"])
@@ -48,6 +48,14 @@ def limit(kind, grade, context, nominal=None):
     else:
         return None
     return round(value, 4)
+
+
+def missing_inputs(kind, context, nominal=None):
+    fields = {"diameter": ("mean_diameter", "free_length"), "free_length": ("free_length",), "load": ("spring_rate",)}.get(kind, ())
+    missing = [field for field in fields if context.get(field) is None or context[field] <= 0]
+    if kind == "load" and (nominal is None or nominal <= 0):
+        missing.append("force")
+    return missing
 
 
 def context_from_parameters(parameters):
@@ -69,7 +77,7 @@ def context_from_parameters(parameters):
 
 def standardize(parameters):
     from .compression import derive_compression_parameters, _symmetric_result, _result
-    from ..accuracy_inference import grade
+    from ..execution_standards import effective_grade
     context = context_from_parameters(parameters)
     applicability = scope(context)
     selected = str((parameters.get("controlled_diameter_field") or {}).get("value") or "")
@@ -80,16 +88,12 @@ def standardize(parameters):
     targets += [(f"load_points.{p['label']}.force", "load", p, "load_accuracy_grade") for p in parameters.get("load_points") or [] if p.get("label")]
     results = []
     for target, kind, item, specific in targets:
-        g = grade((parameters.get(specific) or {}).get("value")) or grade((parameters.get("accuracy_grade") or {}).get("value"))
+        g = effective_grade(parameters, specific)
         nominal = number(item.get("force" if kind == "load" else "value"))
         unit = str(item.get("force_unit" if kind == "load" else "unit") or ("N" if kind == "load" else "mm")).lower()
         factor = {"n": 1, "kn": 1000, "kgf": 9.80665}.get(unit) if kind == "load" else LENGTH_UNITS.get(unit)
         nominal = nominal*factor if nominal is not None and factor is not None else None
         tolerance = limit(kind, g[:-1] if g else None, context, nominal)
-        height = number(item.get("height"))
-        height_factor = LENGTH_UNITS.get(str(item.get("height_unit") or "mm").lower())
-        if kind == "load" and (height is None or height_factor is None or not 0 < height*height_factor <= (context.get("free_length") or 0)):
-            tolerance = None
         rule_id = "GBT23934-" + {"diameter": "DIA", "free_length": "FREE", "load": "LOAD"}[kind]
         deps = ["wire_diameter", "mean_diameter", "inner_diameter", "outer_diameter", "free_length", "pitch", "active_coils", "accuracy_grade", specific]
         if kind == "load": deps += ["spring_rate", "load_points"]
@@ -98,10 +102,15 @@ def standardize(parameters):
         if tolerance is not None and nominal is not None and nominal > 0:
             result = _symmetric_result(target_field=target, rule_id=rule_id, standard_no=STANDARD, value=nominal, tolerance=tolerance, basis=f"{basis}，{g}，按版本规则计算。")
             result["unit"] = "N" if kind == "load" else "mm"
+            for key in ("suggested_value", "suggested_tolerance_upper", "suggested_tolerance_lower"):
+                result[key] = round(result[key] / factor, 4)
+            result["unit"] = item.get("force_unit" if kind == "load" else "unit") or result["unit"]
         else:
-            reason = "；".join(applicability["violations"]) or "缺少有效计算依据或热卷精度等级"
-            result = _result(target_field=target, rule_id=rule_id, standard_no=STANDARD, status="not_applicable" if applicability["status"] == "outside_scope" else "need_context", basis=reason, need_human_review=True)
-            metadata["missing_fields"] = applicability["missing_fields"] + (["accuracy_grade"] if not g else []) + (["spring_rate"] if kind == "load" and context.get("spring_rate") is None else [])
+            missing = missing_inputs(kind, context, nominal) + (["accuracy_grade"] if not g else [])
+            if nominal is None or nominal <= 0:
+                missing.append(target)
+            result = _result(target_field=target, rule_id=rule_id, standard_no=STANDARD, status="need_context", basis="缺少有效计算依据，请补充参数或手填公差。", need_human_review=True)
+            metadata["missing_fields"] = list(dict.fromkeys(missing))
         result.setdefault("metadata", {}).update(metadata)
         results.append(result)
     return {"derived_parameters": derive_compression_parameters(parameters), "standardization_results": results}

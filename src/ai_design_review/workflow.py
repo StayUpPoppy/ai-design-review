@@ -159,7 +159,7 @@ class DrawingReviewWorkflow:
         else:
             derived_parameters = {}
             standardization_results = []
-            standard_selection = pending_standard_selection()
+            standard_selection = accuracy_context["standard_selection"]
             llm_standardization = {"standardization_results": [], "diagnostics": []}
         review_results = run_rule_checks(
             spring_parameters,
@@ -225,6 +225,9 @@ class DrawingReviewWorkflow:
             review[PENDING] = pending_diameters
             review["human_review_required"] = True
         refresh_design_checks(review)
+        if run_standardization:
+            from .execution_standards import stamp_results
+            stamp_results(review)
         _apply_reasonableness_state(review)
         return review
 
@@ -564,6 +567,8 @@ def apply_standardization_to_review(
         review.setdefault("drawing_summary", {})
         review["drawing_summary"]["summary"] = "已生成标准化建议，需要人工确认后再导出。"
     refresh_design_checks(review)
+    from .execution_standards import stamp_results
+    stamp_results(review)
     _apply_reasonableness_state(review)
     return standardization
 
@@ -583,6 +588,8 @@ def _apply_reasonableness_state(review: dict[str, Any]) -> None:
 
 def _apply_company_default_accuracy(parameters: dict[str, Any], spring_type: str) -> None:
     if spring_type != "compression_spring":
+        return
+    if (parameters.get("accuracy_grade") or {}).get("requires_selection"):
         return
     if any(parameters.get(field, {}).get("value") not in (None, "") for field in ACCURACY_GRADE_FIELDS):
         return

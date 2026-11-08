@@ -12,7 +12,7 @@ import re
 import struct
 from typing import Any
 
-VERSION = "compression-accuracy/v2"
+VERSION = "compression-accuracy/v3"
 FIELDS = ("wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "active_coils", "total_coils", "support_coils", "end_type", "end_grinding", "spring_rate", "controlled_diameter_field", "diameter_accuracy_grade", "free_length_accuracy_grade", "load_accuracy_grade", "stiffness_accuracy_grade", "pitch")
 SPECIFIC = {"diameter": "diameter_accuracy_grade", "free_length": "free_length_accuracy_grade", "load": "load_accuracy_grade", "stiffness": "stiffness_accuracy_grade"}
 LENGTH = {"mm": 1, "cm": 10, "m": 1000, "in": 25.4, "inch": 25.4, "毫米": 1}
@@ -153,8 +153,6 @@ def analyze(snapshot: dict, standard: str | None, geometry_driver: str | None = 
             result["status"] = "not_applicable"
         elif hot and kind == "stiffness":
             result["status"] = "not_graded"
-        elif hot and applicability["status"] != "applicable":
-            result.update(status=applicability["status"], applicability=applicability)
         elif explicit == "T级" and not hot:
             result["status"] = "not_applicable"
         elif explicit:
@@ -163,8 +161,6 @@ def analyze(snapshot: dict, standard: str | None, geometry_driver: str | None = 
             result["status"] = "generated_tolerance"
         elif upper is None and lower is None and percent is None:
             result["status"] = "missing_tolerance"
-        elif hot and kind == "load" and (load_height is None or load_height > context["free_length"]):
-            result["status"] = "missing_context"
         elif nominal is not None:
             if kind == "load" and upper is None and lower is None and percent is not None and percent >= 0:
                 upper, lower = nominal * percent / 100, -nominal * percent / 100
@@ -177,7 +173,7 @@ def analyze(snapshot: dict, standard: str | None, geometry_driver: str | None = 
                         limit = hot_coiled.limit(kind, g, context, nominal)
                     elif kind in {"diameter", "free_length"}:
                         band = calculator._band_rule(f"{kind}_tolerance", spring_index) if spring_index is not None else None
-                        limit = calculator._factor_tolerance(band, g, nominal) if band else None
+                        limit = calculator._factor_tolerance(band, g, mean if kind == "diameter" else nominal) if band else None
                     else:
                         ratio = calculator._active_coil_ratio("load_tolerance" if kind == "load" else "stiffness_tolerance", active, g) if active is not None else None
                         limit = round(nominal * ratio, 4) if ratio is not None else None
@@ -208,6 +204,8 @@ def refresh_accuracy_inference(review: dict, *, initialize: bool = False, standa
     accuracy = params.setdefault("accuracy_grade", {"value": None, "need_human_review": True})
     meta = review.get("accuracy_inference")
     old_meta = (previous or {}).get("accuracy_inference")
+    if isinstance(meta, dict) and meta.get("rules_version") and meta["rules_version"] != VERSION:
+        meta["rules_upgrade_pending"] = True
     if not isinstance(meta, dict):
         if isinstance(old_meta, dict):
             meta = review["accuracy_inference"] = deepcopy(old_meta)
@@ -242,6 +240,9 @@ def refresh_accuracy_inference(review: dict, *, initialize: bool = False, standa
                 saved[key] = item[key]
     meta["observed_inputs"] = deepcopy(current)
     selection = review.get("standard_selection") or {}
+    if grade(accuracy.get("value")) == "T级" and selection.get("selected_standard") != "GB/T 23934-2015":
+        accuracy.update(value=None, source=["human_selected"], requires_selection=True, need_human_review=True)
+        meta["selection_mode"] = "manual"
     if selection.get("selected_standard"):
         meta["standard_selection_source"] = selection.get("selection_source") or "selected"
     if standard is _UNSET:
@@ -260,7 +261,7 @@ def refresh_accuracy_inference(review: dict, *, initialize: bool = False, standa
     if geometry_driver:
         fingerprint_input["geometry_driver"] = geometry_driver
     meta.update(analysis, rules_version=VERSION, calculation_fingerprint=_fingerprint(fingerprint_input))
-    if meta.get("selection_mode") != "auto":
+    if meta.get("selection_mode") != "auto" or meta.get("rules_upgrade_pending"):
         return False
     selected = analysis["inferred_grade"] or "2级"
     changed = grade(accuracy.get("value")) != selected or bool(previous_inferred and not analysis["inferred_grade"])

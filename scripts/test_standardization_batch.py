@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai_design_review.standardization_batch import build_standardization_batch  # noqa: E402
+from ai_design_review.execution_standards import stamp_results  # noqa: E402
 
 
 def main() -> None:
@@ -47,6 +48,7 @@ def main() -> None:
         ],
     }
 
+    stamp_results(review)
     batch = build_standardization_batch(review, review_revision=12)
     assert batch["status"] == "ready"
     assert batch["review_revision"] == 12
@@ -66,6 +68,7 @@ def main() -> None:
         "spring_parameters": {"free_length": _param(45, "mm", upper=0.6, lower=-0.6)},
         "standardization_results": [_result("free_length", "FREE", 45, 0.6, -0.6, "mm")],
     }
+    stamp_results(unchanged)
     no_changes = build_standardization_batch(unchanged)
     assert no_changes["status"] == "no_changes"
     assert no_changes["items"] == []

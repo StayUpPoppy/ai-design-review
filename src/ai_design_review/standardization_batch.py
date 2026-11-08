@@ -16,6 +16,8 @@ def build_standardization_batch(
     review_revision: int | None = None,
 ) -> dict[str, Any]:
     """Build an immutable, UI-oriented snapshot of applicable standardization results."""
+    from .execution_standards import invalidate_stale_results
+    invalidate_stale_results(review)
     results = [item for item in review.get("standardization_results", []) or [] if isinstance(item, dict)]
     applicable_groups: dict[str, list[int]] = {}
     for index, item in enumerate(results):
@@ -113,6 +115,8 @@ def _skip_reason(item: dict[str, Any], target: str, conflict_targets: set[str]) 
     metadata = item.get("metadata") or {}
     if not target:
         return "缺少目标字段，无法写入参数栏位。"
+    if metadata.get("value_kind") == "reference_limit":
+        return "参考结果，请在参数页核对。"
     if metadata.get("target_field_valid") is False or metadata.get("target_field_error"):
         return "目标字段不受支持，无法安全写入。"
     if target in conflict_targets:

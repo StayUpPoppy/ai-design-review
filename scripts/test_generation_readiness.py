@@ -499,9 +499,10 @@ def _assert_optional_standardization_is_warning() -> None:
     pending_standard = _ready_review()
     pending_standard["standard_selection"]["need_human_review"] = True
     pending_standard["standard_selection"]["human_confirmed"] = False
+    pending_standard["spring_parameters"]["accuracy_grade"] = {"value": "2级", "need_human_review": True, "source": ["tolerance_inference"]}
     readiness = assess_generation_readiness(pending_standard)
-    assert readiness["status"] == "ready_with_warnings"
-    assert any(item["field"] == "standard_no" for item in readiness["warnings"])
+    assert readiness["status"] == "ready"
+    assert not any(item["field"] in {"standard_no", "accuracy_grade"} for item in readiness["warnings"] + readiness["pending_fields"])
 
     stale = _ready_review()
     stale["derived_parameters_stale"] = True

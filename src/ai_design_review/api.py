@@ -1818,13 +1818,13 @@ async def standardization_chat_existing_review(
     accuracy_request = parse_accuracy_standardization_request(message)
     is_accuracy_execution = bool(accuracy_request and accuracy_request.get("status") == "ready")
     if is_accuracy_execution:
-        if body.get("expected_revision") in (None, ""):
+        if current_revision is not None and body.get("expected_revision") in (None, ""):
             raise HTTPException(
                 status_code=400,
                 detail={"code": "expected_revision_required", "message": "精度标准化指令必须提供 expected_revision。"},
             )
         expected_revision = _expected_review_revision(body.get("expected_revision"))
-        if expected_revision is not None and expected_revision != current_revision:
+        if current_revision is not None and expected_revision is not None and expected_revision != current_revision:
             raise HTTPException(
                 status_code=409,
                 detail={"message": "当前审查数据已被其他操作更新，请刷新后重试。", "current_revision": current_revision},
@@ -2543,8 +2543,13 @@ def _prepare_review_reasonableness(review: dict[str, Any], revision: int | None)
     from .diameter_linkage import apply_diameter_linkage
     refresh_load_heights(review)
     apply_diameter_linkage(review)
+    if (review.get("drawing_summary") or {}).get("spring_type") == "compression_spring":
+        from .execution_standards import resolve_selection
+        resolve_selection(review)
     refresh_accuracy_inference(review)
     refresh_design_checks(review)
+    from .execution_standards import invalidate_stale_results
+    invalidate_stale_results(review)
     refresh_technical_output_deletions(review)
     refresh_compression_material_check(review, read_json(project_path("config", "factory_rules.json")))
     if (review.get("drawing_summary") or {}).get("spring_type") == "compression_spring":
@@ -2572,6 +2577,23 @@ def _save_review_persistence(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail={"code": "generation_settings_invalid", "message": str(exc)}) from exc
     previous, current_revision = _load_persisted_review(job_id, review_path, identity)
+    from .execution_standards import fingerprint, invalidate_stale_results, resolve_selection
+    applying_standardization = any(
+        e.get("event_type") == "standardization_suggestions_applied"
+        or e.get("event_type") == "reasonableness_suggestion_applied" and (e.get("source") == "standardization" or "standardization" in (e.get("metadata") or {}).get("supporting_sources", []))
+        for e in events or []
+    )
+    if applying_standardization and (invalidate_stale_results(previous)
+            or fingerprint(review) != (previous.get("standardization_context") or {}).get("input_fingerprint")):
+        raise HTTPException(status_code=409, detail={"code": "standardization_stale", "message": "标准化建议已过期，请重新标准化。"})
+    if (review.get("drawing_summary") or {}).get("spring_type") == "compression_spring":
+        original = (previous.get("standard_selection") or {}).get("metadata", {}).get("drawing_standard")
+        if original is not None:
+            review.setdefault("standard_selection", {}).setdefault("metadata", {})["drawing_standard"] = deepcopy(original)
+        try:
+            resolve_selection(review)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     for key in ('loading_metadata', 'preview_pages'):
         review.pop(key, None)
     if 'local_verification' in previous: review['local_verification'] = deepcopy(previous['local_verification'])
@@ -3091,6 +3113,18 @@ async def _run_standardization_stage(
     use_llm_standardization: bool = False,
     job_dir: Path | None = None,
 ) -> dict[str, Any] | None:
+    from .execution_standards import resolve_selection, stamp_results
+    from .accuracy_inference import grade
+    if (review.get("drawing_summary") or {}).get("spring_type") == "compression_spring":
+        try:
+            selection = resolve_selection(review)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        refresh_accuracy_inference(review)
+        accuracy = review.get("spring_parameters", {}).get("accuracy_grade") or {}
+        selected_grade = grade(accuracy.get("value"))
+        if selection.get("selected_standard") and not selected_grade and (accuracy.get("requires_selection") or accuracy.get("value") not in (None, "")):
+            raise HTTPException(status_code=422, detail="请选择当前执行标准支持的精度等级。")
     apply_standardization_to_review(review)
     llm_standardization_payload: dict[str, Any] | None = None
     if not use_llm_standardization:
@@ -3104,6 +3138,7 @@ async def _run_standardization_stage(
             )
             if llm_standardization_payload.get("standardization_results"):
                 _merge_llm_standardization(review, llm_standardization_payload)
+                stamp_results(review)
                 if job_dir is not None:
                     write_json(job_dir / "llm_standardization_raw.json", llm_standardization_payload)
             else:
@@ -3123,6 +3158,7 @@ async def _run_standardization_stage(
 
 
 async def _prepare_standardization_chat_context(review: dict[str, Any], message: str) -> dict[str, Any]:
+    ensure_surface_roughness_parameter(review)
     context = standardization_chat_context_needs_refresh(review, message)
     if not context["required"]:
         return {**context, "status": "current", "warnings": []}

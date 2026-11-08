@@ -17,7 +17,7 @@ from .generation_contract import (
 from .spring_templates import FIELD_LABELS
 from .spring_feasibility import assess_parameter_reasonableness
 from .surface_roughness import confirmed_surface_roughness_requirement, ensure_surface_roughness_parameter
-from .solidworks import build_solidworks_preview
+from .solidworks import build_solidworks_preview, solidworks_tolerance_issues
 from .technical_output_deletions import refresh_technical_output_deletions
 from .generation_settings import resolve_generation_settings
 from .standardizers.design_checks import FORCE_UNITS, LENGTH_UNITS
@@ -66,6 +66,8 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item, dict) and item.get("severity") == "blocked"
     ]
     blocking_reasonableness.extend(validate_generation_parameters(parameters))
+    tolerance_issues = solidworks_tolerance_issues(review)
+    blocking_reasonableness.extend(tolerance_issues)
     from .diameter_evidence import REASON, has_pending_roles
     unresolved_diameter = has_pending_roles(review)
     if unresolved_diameter:
@@ -94,7 +96,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
 
     if blocking_reasonableness:
         status = "blocked"
-        summary = REASON if unresolved_diameter else reasonableness.get("summary") or "存在无法直接采用的参数矛盾。"
+        summary = REASON if unresolved_diameter else tolerance_issues[0]["reason"] if tolerance_issues else reasonableness.get("summary") or "存在无法直接采用的参数矛盾。"
     elif missing:
         status = "needs_input"
         summary = f"还缺少 {len(missing)} 项生成必填信息。"
@@ -214,7 +216,7 @@ def _append_standardization_warnings(
     selection = review.get("standard_selection") or {}
     if not selection.get("selected_standard"):
         warnings.append(_field_issue("standard_no", "未执行或未完成标准化检查；本次可按当前人工确认参数直接生图。"))
-    elif not selection.get("human_confirmed"):
+    elif not selection.get("human_confirmed") and (review.get("drawing_summary") or {}).get("spring_type") != "compression_spring":
         warnings.append(_field_issue("standard_no", "适用技术标准尚未人工确认；本次可按当前人工确认参数直接生图。"))
 
     if review.get("derived_parameters_stale"):
@@ -427,7 +429,7 @@ def _generation_requirement(item: dict[str, Any], source_ids: list[str] | None =
 
 
 def _generation_load_point_is_valid(item: Any) -> bool:
-    if not load_point_is_complete(item) or isinstance(item.get("height"), bool) or isinstance(item.get("force"), bool):
+    if not load_point_is_complete(item) or item.get("tolerance_input_draft") or isinstance(item.get("height"), bool) or isinstance(item.get("force"), bool):
         return False
     height_factor = LENGTH_UNITS.get(str(item.get("height_unit") or "mm").strip().lower())
     force_factor = FORCE_UNITS.get(str(item.get("force_unit") or "N").strip().lower())
@@ -439,6 +441,8 @@ def _generation_load_point(item: dict[str, Any]) -> dict[str, Any]:
     percent = item.get("load_tolerance_percent")
     if percent is None:
         percent = item.get("force_tolerance_percent")
+    if item.get("load_tolerance_upper") is not None or item.get("load_tolerance_lower") is not None:
+        percent = None
     def number(value: Any) -> float:
         rounded = round(float(value), 3)
         return int(rounded) if rounded.is_integer() else rounded
@@ -448,14 +452,15 @@ def _generation_load_point(item: dict[str, Any]) -> dict[str, Any]:
             candidate = float(value)
         except (TypeError, ValueError):
             return None
-        return number(candidate) if isfinite(candidate) else None
+        return (int(candidate) if candidate.is_integer() else candidate) if isfinite(candidate) else None
 
     def force_tolerance(value: Any) -> float | int | None:
         try:
             candidate = float(value)
         except (TypeError, ValueError, OverflowError):
             return None
-        return optional_number(candidate * force_factor)
+        scaled = candidate * force_factor
+        return (int(scaled) if scaled.is_integer() else scaled) if isfinite(scaled) else None
 
     return {
         "label": normalize_load_point_label(item.get("label")),

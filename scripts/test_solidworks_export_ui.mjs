@@ -79,6 +79,14 @@ for (const value of [NaN, Infinity, -Infinity, -1, 0]) {
   assert.equal(context.SolidWorksExport.buildPreview(structuredClone(base.package), base.review, catalog).titleBlockProperties["重量"], undefined);
 }
 context.CompressionDesignChecks.calculate = originalCalculate;
+for (const field of ['outer_diameter', 'free_length', 'mean_diameter']) {
+  for (const [upper, lower] of [[.2, .1], [-.1, -.2]]) {
+    const changed = structuredClone(base.review);
+    changed.spring_parameters[field] = { value: field === 'free_length' ? 19 : 28.8, unit: 'mm', need_human_review: false, tolerance_upper: upper, tolerance_lower: lower };
+    assert.equal(context.SolidWorksExport.toleranceIssues(changed)[0].field, field);
+    assert.throws(() => context.SolidWorksExport.buildPreview(structuredClone(base.package), changed, catalog), /同方向/);
+  }
+}
 // Rebuilding a preview against newer inputs must not reuse a stale end template.
 for (const [field, updates] of [
   ["end_type", { value: "两端不并紧" }], ["end_grinding", { value: "invalid" }],

@@ -31,7 +31,7 @@ if (multi) {
     annotations: { schema_version: "original_annotations/v1", algorithm_version: "original_annotation_locator/v2", source_document_id: "demo", annotation_revision: 1, pages: [{ page: 1, width: 1200, height: 850, image_url: "/fixture/demo" }], warnings: [], text_obstacles: [],
       annotations: fields.map((field, i) => ({ field, annotation_id: field, label: field, number: i + 1, original_value: cases[0].review.spring_parameters[field]?.value, status: "located", reason: "", locations: [{ location_id: `${field}-demo`, source: "ocr", page: 1, anchor: { x: .18 + i % 4 * .18, y: .18 + Math.floor(i / 4) * .18 }, bubble: { x: .2 + i % 4 * .18, y: .16 + Math.floor(i / 4) * .18 } }] })) } }];
 }
-const displayFields = ["material", "accuracy_grade", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"];
+const displayFields = ["material", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"];
 if (!real) {
   const doc=fixtures[0].annotations;
   doc.pages.push({page:2,width:1200,height:850,image_url:"/fixture/demo/2"});
@@ -125,7 +125,9 @@ try {
     const verifyNumbers=async()=>{
       const pairs=await page.locator('.parameter-annotation-number').evaluateAll(es=>es.map(e=>[e.dataset.annotationField,e.textContent.trim()]));
       for(const [field,text] of pairs)assert.equal(text,String(displayFields.indexOf(field)+1));
-      assert.ok(pairs.some(([f,n])=>f==="accuracy_grade" && n==="2"));
+      assert.ok(pairs.some(([f,n])=>f==="wire_diameter" && n==="2"));
+      assert.equal(pairs.some(([f])=>f==="accuracy_grade"),false);
+      assert.equal(await page.locator('.annotation-bubble[data-annotation-id="accuracy_grade"]').count(),0);
       assert.equal(await page.locator('.annotation-bubble[data-annotation-id="standard_no"]').count(),0);
       assert.equal(await page.locator('.annotation-bubble[data-annotation-id="solid_height"]').count(),0);
       for(const [field,number] of displayFields.map((f,i)=>[f,String(i+1)])) {
@@ -158,7 +160,7 @@ try {
       await page.waitForFunction(()=>DrawingAnnotations.entry().page===2 && document.querySelector('#compareImage')?.complete);
       assert.equal(await page.locator('.annotation-bubble').count(),2);
       await verifyNumbers();
-      assert.deepEqual(await page.locator('.annotation-bubble text').allTextContents(),['7','10'],"A sparse page keeps parameter numbers instead of renumbering its bubbles");
+      assert.deepEqual(await page.locator('.annotation-bubble text').allTextContents(),['6','9'],"A sparse page keeps parameter numbers instead of renumbering its bubbles");
       await page.locator('[data-annotation-page]').selectOption('1');
       await page.waitForFunction(()=>DrawingAnnotations.entry().page===1 && document.querySelector('#compareImage')?.complete);
       assert.deepEqual(await page.evaluate(()=>DrawingAnnotations.entry().document),originalAnnotations);
@@ -233,8 +235,9 @@ try {
       if (!process.env.SKIP_UI_QA_SCREENSHOTS) await page.screenshot({ path: path.join(qa, `${fixture.id}-${width}-selected.png`) });
       for (const point of [{ x: 0, y: 0 }, { x: 0, y: -9 }, { x: 14, y: 0 }]) {
         await resetSelection();
-        const box = await bubble.boundingBox();
-        await page.mouse.click(box.x + box.width / 2 + point.x, box.y + box.height / 2 + point.y);
+        await bubble.waitFor({ state: 'visible' });
+        const center = await bubble.evaluate(element => ({ x: element.getBBox().width / 2, y: element.getBBox().height / 2 }));
+        await bubble.click({ position: { x: center.x + point.x, y: center.y + point.y } });
         await page.waitForFunction(() => DrawingAnnotations.entry().selected === 'free_length');
         await page.waitForFunction(() => document.activeElement?.closest('[data-field="free_length"]'));
       }
@@ -339,7 +342,7 @@ try {
     assert.deepEqual(errors, []);
     await page.close();
   }
-  console.log(`drawing annotation browser tests passed (${fixtures.length} ${real ? "local drawings" : "synthetic fixture"}): 13 display numbers, hidden Hb and standard, advanced Hb focus/save, legacy cache, sparse pages, rotation/keyboard, backfill/retry and manual positions`);
+  console.log(`drawing annotation browser tests passed (${fixtures.length} ${real ? "local drawings" : "synthetic fixture"}): 12 display numbers, hidden grade/Hb/standard, advanced Hb focus/save, legacy cache, sparse pages, rotation/keyboard, backfill/retry and manual positions`);
 } finally {
   await browser?.close();
   await new Promise((resolve) => server.close(resolve));

@@ -35,8 +35,17 @@ def select_standard(
     technical_requirements: list[dict[str, Any]] | None = None,
     *,
     include_references: bool = True,
+    manual_standard: str | None = None,
 ) -> dict[str, Any]:
-    selection = _select_standard(spring_type, spring_parameters, spring_features, llm_inference, technical_requirements)
+    if manual_standard is not None and spring_type == "compression_spring":
+        if manual_standard not in SUPPORTED_STANDARDS:
+            raise ValueError("请选择已接入的冷卷或热卷执行标准。")
+        selection = _selection(selected_standard=manual_standard, status="applicable", confidence=1,
+                               selection_source="human_selected", reason="按用户选择的执行标准计算。",
+                               evidence=[], need_human_review=False, candidate_standards=_candidate_standards())
+        selection["human_confirmed"] = True
+    else:
+        selection = _select_standard(spring_type, spring_parameters, spring_features, llm_inference, technical_requirements)
     if include_references:
         selection["references"] = _references(selection.get("selected_standard"))
     return selection

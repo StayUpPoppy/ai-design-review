@@ -36,7 +36,7 @@ def load_point_is_complete(item: Any) -> bool:
 
 
 def load_point_is_confirmed(item: Any) -> bool:
-    return load_point_is_complete(item) and isinstance(item, dict) and item.get("need_human_review") is False and not item.get("load_relation_conflict") and not item.get("load_height_conflict") and item.get("force_tolerance_status") != "uncertain"
+    return load_point_is_complete(item) and isinstance(item, dict) and item.get("need_human_review") is False and not item.get("load_relation_conflict") and not item.get("load_height_conflict") and not item.get("tolerance_input_draft") and item.get("force_tolerance_status") != "uncertain"
 
 
 def load_point_snapshot(item: dict[str, Any]) -> dict[str, Any]:

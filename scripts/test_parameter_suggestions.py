@@ -12,6 +12,7 @@ from ai_design_review.parameter_suggestions import (  # noqa: E402
     dependency_token,
 )
 from ai_design_review.spring_feasibility import assess_parameter_reasonableness  # noqa: E402
+from ai_design_review.execution_standards import stamp_results  # noqa: E402
 
 
 def main() -> None:
@@ -20,10 +21,10 @@ def main() -> None:
     _assert_applied_formula_reappears_after_manual_change()
     _assert_recognized_matching_values_are_verifications()
     _assert_standardization_conflicts_and_stale_status()
-    _assert_applied_standardization_reappears_after_manual_change()
+    _assert_applied_standardization_becomes_stale_after_input_change()
     _assert_identical_formula_and_standardization_suggestions_share_application()
     _assert_non_actionable_standardization_result_is_diagnostic_only()
-    _assert_unique_system_standard_can_be_applied_with_other_suggestions()
+    _assert_selected_standard_is_reference_only()
     _assert_dependency_token_changes_with_formula_input()
     print("parameter suggestion tests passed")
 
@@ -171,6 +172,7 @@ def _assert_standardization_conflicts_and_stale_status() -> None:
             "status": "stale",
         },
     ]
+    stamp_results(review)
     suggestions = build_parameter_suggestions(review)
     free = [item for item in suggestions if item["target_field"] == "free_length" and item["source"] == "standardization"]
     assert len(free) == 2
@@ -180,7 +182,7 @@ def _assert_standardization_conflicts_and_stale_status() -> None:
     assert coils["application_mode"] == "tolerance"
 
 
-def _assert_applied_standardization_reappears_after_manual_change() -> None:
+def _assert_applied_standardization_becomes_stale_after_input_change() -> None:
     review = _review()
     review["standardization_results"] = [{
         "target_field": "free_length",
@@ -194,6 +196,7 @@ def _assert_applied_standardization_reappears_after_manual_change() -> None:
         "value": 48,
         "last_applied_suggestion_id": "historical-application",
     })
+    stamp_results(review)
     matching = _by_rule(build_parameter_suggestions(review), "FREE-STANDARD")
     assert matching["status"] == "informational"
 
@@ -201,7 +204,7 @@ def _assert_applied_standardization_reappears_after_manual_change() -> None:
     changed = _by_rule(build_parameter_suggestions(review), "FREE-STANDARD")
     assert changed["current_value"] == 50
     assert changed["suggested_value"] == 48
-    assert changed["status"] == "available"
+    assert changed["status"] == "stale"
 
 
 def _assert_dependency_token_changes_with_formula_input() -> None:
@@ -225,6 +228,7 @@ def _assert_non_actionable_standardization_result_is_diagnostic_only() -> None:
         "status": "need_context",
         "metadata": {"missing_fields": ["accuracy_grade"]},
     }]
+    stamp_results(review)
     assessment = assess_parameter_reasonableness(review)
     assert not any(item.get("rule_id") == "PERP-CONTEXT" for item in assessment["suggestions"])
     diagnostic = next(item for item in assessment["issues"] if item.get("rule_id") == "PERP-CONTEXT")
@@ -232,7 +236,7 @@ def _assert_non_actionable_standardization_result_is_diagnostic_only() -> None:
     assert diagnostic["fields"] == ["accuracy_grade"]
 
 
-def _assert_unique_system_standard_can_be_applied_with_other_suggestions() -> None:
+def _assert_selected_standard_is_reference_only() -> None:
     review = _review()
     review["spring_parameters"]["standard_no"] = {"value": None, "need_human_review": True, "source": []}
     review["standard_selection"] = {
@@ -247,8 +251,10 @@ def _assert_unique_system_standard_can_be_applied_with_other_suggestions() -> No
         "status": "need_context",
         "metadata": {"source_fields": ["standard_no", "wire_diameter"]},
     }]
+    stamp_results(review)
     suggestion = _by_rule(build_parameter_suggestions(review), "GBT1239.2-CTX")
-    assert suggestion["status"] == "available"
+    assert suggestion["status"] == "informational"
+    assert suggestion["application_mode"] == "none"
     assert suggestion["based_on_revision"] == 7
     assert suggestion["current_value"] is None
     assert suggestion["suggested_value"] == "GB/T 1239.2-2009"
@@ -277,6 +283,7 @@ def _assert_identical_formula_and_standardization_suggestions_share_application(
         "basis": "标准公式与确定性公式一致。",
         "status": "suggested",
     }]
+    stamp_results(review)
     suggestion = _by_rule(build_parameter_suggestions(review), "FORMULA-SOLID-HEIGHT")
     assert suggestion["supporting_sources"] == ["formula", "standardization"]
     assert suggestion["standardization_result_indexes"] == [0]

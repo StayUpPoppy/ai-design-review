@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from copy import deepcopy
 import math
 from pathlib import Path
 from typing import Any
@@ -185,8 +186,35 @@ def standardize_compression_spring(
     apply_formula_compression_solid_height(spring_parameters)
     apply_formula_compression_spring_rate(spring_parameters, spring_features)
     rules = load_compression_rules()
-    derived = derive_compression_parameters(spring_parameters)
-    results = CompressionSpringStandardizer(rules).standardize(spring_parameters, derived)
+    normalized = deepcopy(spring_parameters)
+    for field, item in normalized.items():
+        if not isinstance(item, dict):
+            continue
+        factor = LENGTH_UNITS.get(str(item.get("unit") or "mm").lower())
+        if field == "spring_rate":
+            factor = {"n/mm": 1, "n/cm": .1, "kn/m": 1, "n/m": .001}.get(str(item.get("unit") or "N/mm").lower())
+        if factor is None or field not in {"wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "spring_rate"}:
+            continue
+        for key in ("value", "tolerance_upper", "tolerance_lower"):
+            value = number(item.get(key))
+            if value is not None:
+                item[key] = value * factor
+        item["unit"] = "N/mm" if field == "spring_rate" else "mm"
+    derived = derive_compression_parameters(normalized)
+    results = CompressionSpringStandardizer(rules).standardize(normalized, derived)
+    for result in results:
+        target = result["target_field"]
+        original = spring_parameters.get(target) or {}
+        if not isinstance(original, dict) or not original.get("unit") or result.get("unit") not in {"mm", "N/mm"}:
+            continue
+        unit = str(original["unit"]).lower()
+        factor = {"n/mm": 1, "n/cm": .1, "kn/m": 1, "n/m": .001}.get(unit) if target == "spring_rate" else LENGTH_UNITS.get(unit)
+        if factor is None:
+            continue
+        for key in ("suggested_value", "suggested_tolerance_upper", "suggested_tolerance_lower"):
+            if result.get(key) is not None:
+                result[key] = _round(result[key] / factor)
+        result["unit"] = original["unit"]
     return {
         "derived_parameters": derived,
         "standardization_results": results,
@@ -335,8 +363,9 @@ class CompressionSpringStandardizer:
             )
         item = self._band_rule("diameter_tolerance", spring_index)
         if not item:
-            return self._not_applicable(target_field, "GBT1239.2-DIA", f"旋绕比 C={spring_index:g} 超出 GB/T 1239.2 表 3-11 的 3~22 范围。", value)
-        tol = self._factor_tolerance(item, grade, value)
+            return self._not_applicable(target_field, "GBT1239.2-DIA", f"旋绕比 C={spring_index:g} 超出 GB/T 1239.2 表 3-11 的 3~22 范围，请手动输入公差。", value)
+        mean = _number(_param_value(derived, "mean_diameter"))
+        tol = self._factor_tolerance(item, grade, mean)
         if tol is None:
             return self._need_context(
                 target_field,
@@ -377,7 +406,7 @@ class CompressionSpringStandardizer:
             )
         item = self._band_rule("free_length_tolerance", spring_index)
         if not item:
-            return self._not_applicable("free_length", "GBT1239.2-FREE", f"旋绕比 C={spring_index:g} 超出 GB/T 1239.2 表 3-12 的 3~22 范围。", value)
+            return self._not_applicable("free_length", "GBT1239.2-FREE", f"旋绕比 C={spring_index:g} 超出 GB/T 1239.2 表 3-12 的 3~22 范围，请手动输入公差。", value)
         tol = self._factor_tolerance(item, grade, value)
         if tol is None:
             return self._need_context(
@@ -418,7 +447,7 @@ class CompressionSpringStandardizer:
                     tolerance=tolerance,
                     basis=f"表3-13：总圈数 n1={value:g}，极限偏差 ±{tolerance:g} 圈；有特性要求时总圈数作为参考。",
                 )
-        return self._not_applicable("total_coils", "GBT1239.2-COILS", f"总圈数 n1={value:g} 超出规则表范围。", value)
+        return self._not_applicable("total_coils", "GBT1239.2-COILS", f"总圈数 n1={value:g} 超出规则表范围，请手动输入公差。", value)
 
     def _perpendicularity_result(self, spring_parameters: dict[str, Any], derived: dict[str, Any]) -> dict[str, Any]:
         free_length = _number(_param_value(spring_parameters, "free_length"))
@@ -515,23 +544,12 @@ class CompressionSpringStandardizer:
         load_points = spring_parameters.get("load_points", []) or []
         if not load_points:
             return []
-        if not grade or active is None:
-            missing_fields = []
-            if active is None:
-                missing_fields.append("active_coils")
-            if not grade:
-                missing_fields.append("accuracy_grade")
-            return [
-                self._need_context(
-                    "load_points",
-                    "GBT1239.2-LOAD",
-                    "缺少载荷精度等级或有效圈数，无法计算指定高度负荷极限偏差。",
-                    missing_fields=missing_fields,
-                )
-            ]
-        ratio = self._active_coil_ratio("load_tolerance", active, grade)
-        if ratio is None:
-            return [self._not_applicable("load_points", "GBT1239.2-LOAD", f"有效圈数 n={active:g} 不满足载荷公差规则。")]
+        missing_fields = []
+        if active is None:
+            missing_fields.append("active_coils")
+        if not grade:
+            missing_fields.append("accuracy_grade")
+        ratio = self._active_coil_ratio("load_tolerance", active, grade) if not missing_fields else None
         results = []
         deflections = {
             str(item.get("label")): item.get("deflection")
@@ -540,12 +558,24 @@ class CompressionSpringStandardizer:
         for index, point in enumerate(load_points, start=1):
             force = _number(point.get("force"))
             label = str(point.get("label") or f"F{index}")
-            if force is None:
+            target = f"load_points.{label}.force"
+            point_missing = missing_fields + ([target] if force is None or force < 0 else [])
+            if point_missing:
+                results.append(self._need_context(
+                    target, "GBT1239.2-LOAD",
+                    "缺少有效载荷、精度等级或有效圈数，无法计算指定高度负荷极限偏差；请补充参数或手填公差。",
+                    missing_fields=point_missing,
+                ))
+                continue
+            if ratio is None:
+                results.append(self._not_applicable(
+                    target, "GBT1239.2-LOAD", f"有效圈数 n={active:g} 超出载荷公差查表范围，请手填公差。",
+                ))
                 continue
             tolerance = _round(force * ratio)
             results.append(
                 _result(
-                    target_field=f"load_points.{label}.force",
+                    target_field=target,
                     rule_id="GBT1239.2-LOAD",
                     standard_no=self.standard_no,
                     basis=f"表3-15：有效圈数 n={active:g}，{grade}级，指定高度负荷极限偏差 ±{ratio:g}F。{active_note}",
@@ -831,14 +861,9 @@ def _number(value: Any) -> float | None:
 
 
 def _grade(spring_parameters: dict[str, Any], specific_field: str) -> str | None:
-    for field in (specific_field, "accuracy_grade"):
-        value = str(_param_value(spring_parameters, field) or "").strip()
-        if not value:
-            continue
-        for candidate in ("1", "2", "3"):
-            if candidate in value:
-                return candidate
-    return None
+    from ..execution_standards import effective_grade
+    value = effective_grade(spring_parameters, specific_field)
+    return value[0] if value in {"1级", "2级", "3级"} else None
 
 
 def solid_height_mode(value: Any) -> str | None:

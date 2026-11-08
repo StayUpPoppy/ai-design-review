@@ -8,6 +8,8 @@ const declarations = [...source.matchAll(/^function ([A-Za-z_$][\w$]*)\([^]*?^\}
 const context = {
   state: { review: { drawing_summary: { spring_type: "compression_spring" } } },
   FIELD_LABELS: {},
+  getToleranceEditor: () => null,
+  supportsToleranceEditor: () => false,
   isCompressionSpringReview: (review) => review?.drawing_summary?.spring_type === "compression_spring",
   pendingDefaultCandidateNotice: () => "", sourceValues: () => [],
   reasonablenessSeverityForField: () => "", accuracyGradeStatusLabel: () => "",
@@ -52,5 +54,5 @@ for (const field of ["material", "standard_no", "accuracy_grade"]) {
 assert.match(styles, /\.data-row\.parameter-wide-input \.data-primary\s*\{\s*grid-column: 2 \/ 4;/);
 assert.match(styles, /\.data-row\.parameter-wide-input \.data-secondary\s*\{\s*display: none;/);
 assert.match(styles, /"primary primary action"/);
-assert.match(styles, /\.data-row\.parameter-wide-input \.data-primary\s*\{\s*grid-column: 1 \/ 3;/);
+assert.match(styles, /\.parameter-data-table > \.parameter-wide-input > \.data-primary\s*\{\s*grid-column: 1 \/ 3;/);
 console.log("PASS: three compression inputs widen without changing data; legacy tolerances/drafts and other fields/types keep their layout");

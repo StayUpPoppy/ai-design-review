@@ -224,6 +224,10 @@ class GenerationSettings(BaseModel):
     typeface: Literal["宋体", "黑体"] | None = Field(default=None, exclude_if=lambda value: value is None, description="图纸字体；新建参数包缺省宋体，旧冻结设置缺少时不补写。")
 
 
+SolidWorksToleranceNumber = Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]
+SolidWorksToleranceValue = SolidWorksToleranceNumber | Annotated[list[SolidWorksToleranceNumber], Field(min_length=2, max_length=2)]
+
+
 class SolidWorksPreviewV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
     materialCode: str | None = Field(default=None, max_length=256, description="冻结的人工物料编码；缺值为null，与材料牌号无关。")
@@ -235,9 +239,9 @@ class SolidWorksPreviewV2(BaseModel):
     modelParameters: dict[str, int | float | str | None] = Field(
         description="SolidWorks 建模字段：线径、中径、自由高度、圈数、是否磨平、是否并紧；是否并紧为0时省略有效圈数n，否则保留该键。内部有效圈数及确认规则不变；不含 TaskId。"
     )
-    modelParametersTolerance: dict[Literal["外径", "自由高度", "中径"], Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]] | None = Field(
+    modelParametersTolerance: dict[Literal["外径", "自由高度", "中径"], SolidWorksToleranceValue] | None = Field(
         default=None, exclude_if=lambda value: value is None,
-        description="可选已确认有效对称公差，按外径、自由高度、中径顺序输出mm数字幅值，例如±1.5传1.5。各项只读自身公差；非对称、单边、待确认、非法及失效值省略。三项全缺时省略整个对象，0是有效数值；保留小数，不按名义尺寸三位截断。旧冻结请求及重试不补写。",
+        description="可选已确认有效公差，按外径、自由高度、中径顺序输出mm幅值。对称公差为非负数字，不对称或单边为[上偏差绝对值,下偏差绝对值]两个有限非负数字；同方向偏差阻止新建SW任务。缺值、待确认、非法及失效值省略，0有效，小公差不截断。历史冻结请求及重试保持原样。",
         examples=[{"外径": 1.5, "自由高度": 0.5, "中径": 0.2}],
     )
     customProperties: dict[str, str | None] = Field(default_factory=dict, description="旋向等模型属性，旋向仍传左旋/右旋；技术要求首项另写左/右。旧预览可省略。")

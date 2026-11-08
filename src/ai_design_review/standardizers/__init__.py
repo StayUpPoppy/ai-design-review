@@ -31,16 +31,18 @@ def standardize_spring(
         apply_formula_compression_diameter_completion(spring_parameters)
         apply_formula_compression_solid_height(spring_parameters)
         apply_formula_compression_spring_rate(spring_parameters, spring_features)
-    standard_selection = select_standard(
-        spring_type,
-        spring_parameters,
-        spring_features=spring_features,
-        llm_inference=standard_selection_inference,
-        technical_requirements=technical_requirements,
-    )
     if accuracy_review is not None:
-        from ..accuracy_inference import refresh_accuracy_inference
+        from ..execution_standards import resolve_selection
+        standard_selection = resolve_selection(accuracy_review, include_references=True)
+        from ..accuracy_inference import VERSION, refresh_accuracy_inference
+        inference = accuracy_review.get("accuracy_inference")
+        if isinstance(inference, dict):
+            inference.pop("rules_upgrade_pending", None)
+            inference["rules_version"] = VERSION
         refresh_accuracy_inference(accuracy_review, standard=standard_selection.get("selected_standard"))
+    else:
+        standard_selection = select_standard(spring_type, spring_parameters, spring_features,
+                                            standard_selection_inference, technical_requirements)
     if spring_type == "compression_spring":
         if standard_selection.get("selected_standard") == HOT_COILED_STANDARD:
             from .hot_coiled import standardize
