@@ -1713,25 +1713,45 @@ async function persistReviewChanges(options = {}) {
         });
         if (payload.diameter_role_update) {
           const update = payload.diameter_role_update;
+          const focusManualDiameter = update.candidates_only && document.activeElement?.closest('[data-diameter-candidate-id]');
           state.review.diameter_role_candidates = update.candidates;
-          if (update.linkage) state.review.diameter_linkage = update.linkage;
-          else delete state.review.diameter_linkage;
-          Object.assign(state.review.spring_parameters, update.parameters);
-          if (update.accuracy_grade && !state.pendingReviewAuditEvents.some((e) => e.target_field === "accuracy_grade")
-              && !state.reviewDraftFields.has("accuracy_grade")) {
-            state.review.spring_parameters.accuracy_grade = update.accuracy_grade;
-            if (update.accuracy_inference) state.review.accuracy_inference = update.accuracy_inference;
+          if (!update.candidates_only) {
+            if (update.linkage) state.review.diameter_linkage = update.linkage;
+            else delete state.review.diameter_linkage;
+            Object.assign(state.review.spring_parameters, update.parameters);
+            if (update.accuracy_grade && !state.pendingReviewAuditEvents.some((e) => e.target_field === "accuracy_grade")
+                && !state.reviewDraftFields.has("accuracy_grade")) {
+              state.review.spring_parameters.accuracy_grade = update.accuracy_grade;
+              if (update.accuracy_inference) state.review.accuracy_inference = update.accuracy_inference;
+            }
+            for (const [key, item] of Object.entries(state.review.manual_confirmations || {})) {
+              if (DiameterLinkage.GROUP.some((field) => confirmationMatchesField(key, item, field))) delete state.review.manual_confirmations[key];
+            }
+            Object.assign(state.review.manual_confirmations ||= {}, update.manual_confirmations);
+            if (update.annotations) {
+              state.review.drawing_annotations = update.annotations;
+              DrawingAnnotations.acceptDocument(update.annotations);
+            }
           }
-          for (const [key, item] of Object.entries(state.review.manual_confirmations || {})) {
-            if (DiameterLinkage.GROUP.some((field) => confirmationMatchesField(key, item, field))) delete state.review.manual_confirmations[key];
+          state.generationReadiness = null;
+          if (update.candidates_only && document.activeElement?.matches('input, textarea, select, [contenteditable="true"]')) {
+            // Keep an active manual editor and its unfinished draft mounted.
+            const pendingIds = new Set(pendingDiameterRoles(state.review).map(item => item.candidate_id));
+            const message = conversation.querySelector(`[data-message-id="${state.activeReviewMessageId}"]`);
+            for (const surface of [message, state.compareOpen ? compareOverlay : null]) {
+              surface?.querySelectorAll('[data-diameter-candidate-id]').forEach(card => {
+                if (!pendingIds.has(card.dataset.diameterCandidateId)) card.remove();
+              });
+            }
+            syncGenerationSettingsControls();
+          } else {
+            refreshReviewSurfaces();
           }
-          Object.assign(state.review.manual_confirmations ||= {}, update.manual_confirmations);
-          if (update.annotations) {
-            state.review.drawing_annotations = update.annotations;
-            DrawingAnnotations.acceptDocument(update.annotations);
+          if (focusManualDiameter) {
+            [...document.querySelectorAll('[data-kind="param"][data-field="outer_diameter"] [data-role="value"]')]
+              .find(input => input.getClientRects().length)?.focus({ preventScroll: true });
           }
-          refreshReviewSurfaces();
-          scheduleParameterReasonablenessRefresh();
+          if (!update.candidates_only) scheduleParameterReasonablenessRefresh();
         }
         refreshReviewChangeHistory();
         if (state.generationJobs.length) void loadGenerationState(jobId, { silent: true });
@@ -1856,11 +1876,13 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
   const technicalId = (field) => field?.startsWith("technical_requirements.") ? field.slice("technical_requirements.".length) : null;
   const settingKey = (field) => ["generation_settings.drawing_model", "generation_settings.typeface", "generation_settings.username"].includes(field) ? field.split(".")[1] : null;
   const summaryKey = (field) => ["drawing_summary.drawing_no", "drawing_summary.drawing_name", "drawing_summary.material_code"].includes(field) ? field.split(".")[1] : null;
+  const diameterCandidateId = field => field?.startsWith("diameter_role_candidates.") ? field.slice("diameter_role_candidates.".length) : null;
   const fieldItem = (review, field) => field === "standard_selection" ? review.standard_selection : field === "diameter_linkage" ? diameterRoleGroupState(review) : summaryKey(field) ? { value: review.drawing_summary?.[summaryKey(field)] ?? "" } : settingKey(field) ? { value: review.generation_settings?.[settingKey(field)] ?? null } : loadId(field)
     ? review.spring_parameters?.load_points?.find((item) => item.load_point_id === loadId(field))
     : technicalId(field) ? review.technical_requirements?.find((item) => item.requirement_id === technicalId(field))
+      : diameterCandidateId(field) ? review.diameter_role_candidates?.find(item => item.candidate_id === diameterCandidateId(field))
       : field === "technical_output_deletions" ? { value: review.technical_output_deletions || [] } : review.spring_parameters?.[field];
-  if (!fields.length || fields.some((field) => !field || (field !== "standard_selection" && field !== "diameter_linkage" && field !== "technical_output_deletions" && !summaryKey(field) && !settingKey(field) && !loadId(field) && !technicalId(field) && (field.includes(".") || !local?.spring_parameters?.[field])))) {
+  if (!fields.length || fields.some((field) => !field || (field !== "standard_selection" && field !== "diameter_linkage" && field !== "technical_output_deletions" && !diameterCandidateId(field) && !summaryKey(field) && !settingKey(field) && !loadId(field) && !technicalId(field) && (field.includes(".") || !local?.spring_parameters?.[field])))) {
     return null;
   }
   const server = normalizeReview(payload);
@@ -1869,6 +1891,11 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
     const firstEvent = allEvents.find((event) => event.target_field === field) || allEvents.find((event) => eventField(event) === field);
     const serverItem = fieldItem(server, field);
     const localItem = fieldItem(local, field);
+    if (diameterCandidateId(field)) {
+      // A concurrent choice or ignore wins; never replace an adopted size.
+      if (!serverItem || serverItem.selected_field || serverItem.ignored || DiameterRoleCandidates.modelDerived(serverItem)) chosenServer.add(field);
+      continue;
+    }
     const beforeState = firstEvent?.before_state || localItem?.confirmation_snapshot;
     const fingerprint = field === "standard_selection"
       ? item => JSON.stringify({ selected_standard: item?.selected_standard, manual: ["human_selected", "manual"].includes(item?.selection_source) })
@@ -1884,6 +1911,7 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
   const merged = normalizeReview(server);
   for (const field of fields) {
     if (chosenServer.has(field)) continue;
+    if (diameterCandidateId(field)) continue; // The event applies to the latest saved candidate on the server.
     if (field === "standard_selection") { merged.standard_selection = structuredClone(local.standard_selection); continue; }
     if (field === "technical_output_deletions") {
       merged.technical_output_deletions = structuredClone(local.technical_output_deletions || []);
@@ -1956,7 +1984,7 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
     ...(local.change_history || []).filter((entry) => unsavedIds.has(entry.client_event_id) && !serverHistoryIds.has(entry.client_event_id)),
     ...(merged.change_history || []),
   ];
-  if (unsaved.some((event) => !settingKey(event.target_field) && event.target_field !== "technical_output_deletions")) {
+  if (unsaved.some((event) => !settingKey(event.target_field) && !diameterCandidateId(event.target_field) && event.target_field !== "technical_output_deletions")) {
     merged.parameter_reasonableness_stale = true;
     merged.derived_parameters_stale = true;
     (merged.standardization_results || []).forEach((item) => {
@@ -4890,7 +4918,7 @@ function renderParameterTableHtml(review) {
 }
 
 function pendingDiameterRoles(review) {
-  return (review?.diameter_role_candidates || []).filter((item) => !item.selected_field);
+  return DiameterRoleCandidates.pending(review);
 }
 
 function diameterRoleGroupState(review) {
@@ -4904,24 +4932,47 @@ function diameterRoleGroupState(review) {
 function renderDiameterRoleChoices(review) {
   return pendingDiameterRoles(review).map((item) => {
     const entry = [...state.pendingReviewAuditEvents, ...(state.reviewPersistenceInFlightEvents || [])]
-      .find((event) => event.event_type === "diameter_role_selected" && event.metadata?.candidate_id === item.candidate_id);
-    const failure = entry && state.reviewPersistenceFailedFields.diameter_linkage;
+      .find((event) => ["diameter_role_selected", "diameter_role_ignored"].includes(event.event_type) && event.metadata?.candidate_id === item.candidate_id);
+    const failure = entry && state.reviewPersistenceFailedFields[entry.target_field];
     const tolerance = [item.tolerance_upper, item.tolerance_lower].some((v) => v != null)
       ? ` · 公差 ${item.tolerance_upper ?? "—"}/${item.tolerance_lower ?? "—"}` : "";
-    return `<div class="reasonableness-suggestion-section">
+    return `<div class="reasonableness-suggestion-section diameter-role-candidate" data-diameter-candidate-id="${escapeHtml(item.candidate_id)}">
+      <div class="diameter-role-candidate-head">
       <strong>直径类型待核对 · ${escapeHtml(item.value)} ${escapeHtml(item.unit || "mm")}${escapeHtml(tolerance)}</strong>
+      <button type="button" class="diameter-role-dismiss" data-action="ignore-diameter-role" data-candidate-id="${escapeHtml(item.candidate_id)}"
+        title="忽略此候选，改为手动填写" aria-label="忽略此候选，改为手动填写" ${entry ? "disabled" : ""}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+      </div>
       <p>${escapeHtml(item.reason)} ${escapeHtml(item.diameter_role_evidence?.observation?.text || item.evidence || "")}</p>
       <div class="parameter-bulk-actions">
         ${["inner_diameter", "mean_diameter", "outer_diameter"].map((field) => `<button type="button" data-action="select-diameter-role"
           data-candidate-id="${escapeHtml(item.candidate_id)}" data-field="${field}" ${entry ? "disabled" : ""}>${FIELD_LABELS[field]}</button>`).join("")}
         <button type="button" data-action="retry-diameter-role" hidden>重试保存</button>
       </div>
-      <small role="status" data-role="diameter-role-status">${escapeHtml(failure || (entry ? "正在保存选择…" : ""))}</small>
+      <small role="status" data-role="diameter-role-status">${escapeHtml(failure || (entry ? entry.event_type === "diameter_role_ignored" ? "正在关闭…" : "正在保存选择…" : ""))}</small>
     </div>`;
   }).join("");
 }
 
 function bindDiameterRoleChoices(root, review, messageId) {
+  root.querySelectorAll('[data-action="ignore-diameter-role"]').forEach(button => button.addEventListener("click", () => {
+    activateReviewContext(messageId);
+    if (state.review !== review || !state.lastJob?.job_id || state.reviewPersistenceSaving || state.standardizationInFlight || reviewReadOnly()) return;
+    const candidate = pendingDiameterRoles(review).find(item => item.candidate_id === button.dataset.candidateId);
+    if (!candidate) return;
+    const previous = state.pendingReviewAuditEvents.find(event => ["diameter_role_selected", "diameter_role_ignored"].includes(event.event_type)
+      && event.metadata?.candidate_id === candidate.candidate_id);
+    if (previous?.event_type === "diameter_role_ignored") { void flushReviewPersistence(); return; }
+    if (previous) {
+      state.pendingReviewAuditEvents = state.pendingReviewAuditEvents.filter(event => event !== previous);
+      review.change_history = (review.change_history || []).filter(event => event.client_event_id !== previous.client_event_id);
+      delete state.reviewPersistenceFailedFields[previous.target_field];
+    }
+    queueReviewAuditEvent({ event_type: "diameter_role_ignored", target_field: `diameter_role_candidates.${candidate.candidate_id}`,
+      before_state: structuredClone(candidate), reason: "忽略此识别候选，改为手动填写", metadata: { candidate_id: candidate.candidate_id } });
+    void flushReviewPersistence();
+  }));
   root.querySelectorAll('[data-action="select-diameter-role"]').forEach((button) => button.addEventListener("click", () => {
     activateReviewContext(messageId);
     if (state.review !== review || !state.lastJob?.job_id || state.reviewPersistenceSaving || reviewReadOnly()) return;
@@ -4937,11 +4988,12 @@ function bindDiameterRoleChoices(root, review, messageId) {
         "该字段已有不同的原图或人工尺寸，请先核对该尺寸。";
       return;
     }
-    const failedChoice = state.pendingReviewAuditEvents.find((event) => event.event_type === "diameter_role_selected"
+    const failedChoice = state.pendingReviewAuditEvents.find((event) => ["diameter_role_selected", "diameter_role_ignored"].includes(event.event_type)
       && event.metadata?.candidate_id === candidate.candidate_id);
-    if (failedChoice && state.reviewPersistenceFailedFields.diameter_linkage) {
+    if (failedChoice && state.reviewPersistenceFailedFields[failedChoice.target_field]) {
       state.pendingReviewAuditEvents = state.pendingReviewAuditEvents.filter((event) => event !== failedChoice);
       review.change_history = (review.change_history || []).filter((event) => event.client_event_id !== failedChoice.client_event_id);
+      delete state.reviewPersistenceFailedFields[failedChoice.target_field];
     }
     queueReviewAuditEvent({ event_type: "diameter_role_selected", target_field: "diameter_linkage",
       before_state: diameterRoleGroupState(review), metadata: { candidate_id: candidate.candidate_id, field } });
@@ -4955,17 +5007,20 @@ function bindDiameterRoleChoices(root, review, messageId) {
 
 function syncDiameterRoleControls() {
   const events = [...state.pendingReviewAuditEvents, ...(state.reviewPersistenceInFlightEvents || [])]
-    .filter((event) => event.event_type === "diameter_role_selected");
-  const failure = state.reviewPersistenceFailedFields.diameter_linkage;
-  const locked = events.length > 0 && !failure;
+    .filter((event) => ["diameter_role_selected", "diameter_role_ignored"].includes(event.event_type));
+  const locked = events.some(event => event.event_type === "diameter_role_selected" && !state.reviewPersistenceFailedFields[event.target_field]);
   for (const row of document.querySelectorAll('[data-kind="param"][data-field]')) {
     if (["wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter"].includes(row.dataset.field)) row.inert = locked;
   }
-  document.querySelectorAll('[data-action="select-diameter-role"]').forEach((button) => {
-    const entry = events.find((event) => event.metadata?.candidate_id === button.dataset.candidateId);
-    button.disabled = Boolean(state.reviewPersistenceSaving || events.length && !(entry && failure));
-    const card = button.closest(".reasonableness-suggestion-section");
-    card.querySelector('[data-role="diameter-role-status"]').textContent = entry ? failure || "正在保存选择…" : "";
+  document.querySelectorAll('[data-diameter-candidate-id]').forEach(card => {
+    const entry = events.find(event => event.metadata?.candidate_id === card.dataset.diameterCandidateId);
+    const failure = entry && state.reviewPersistenceFailedFields[entry.target_field];
+    const closing = entry?.event_type === "diameter_role_ignored";
+    card.querySelectorAll('[data-action="select-diameter-role"], [data-action="ignore-diameter-role"]').forEach(button => {
+      button.disabled = Boolean(reviewReadOnly() || state.standardizationInFlight || state.reviewPersistenceSaving || locked || entry && !failure);
+    });
+    card.setAttribute("aria-busy", String(Boolean(entry && !failure)));
+    card.querySelector('[data-role="diameter-role-status"]').textContent = entry ? failure || (closing ? "正在关闭…" : "正在保存选择…") : "";
     card.querySelector('[data-action="retry-diameter-role"]').hidden = !(entry && failure);
   });
 }
@@ -4997,6 +5052,7 @@ function renderReviewChangeHistoryHtml(review, forceOpen = false) {
 
 function auditTargetLabel(target) {
   const value = String(target || "");
+  if (value.startsWith("diameter_role_candidates.")) return "原图直径候选";
   if (value.startsWith("load_points.")) return `载荷测试点 ${value.slice("load_points.".length)}`;
   if (value.startsWith("technical_requirements.")) {
     const token = value.slice("technical_requirements.".length);
@@ -5035,6 +5091,8 @@ function auditEventLabel(eventType) {
     standardization_application_reverted: "撤销标准化建议",
     standard_selection_confirmed: "确认适用标准",
     safe_fields_confirmed: "批量确认无风险项",
+    diameter_role_selected: "选择直径类型",
+    diameter_role_ignored: "忽略直径候选",
     all_fields_confirmed: "全部确认",
     technical_requirement_added: "新增技术要求",
     technical_requirement_updated: "修改技术要求",
@@ -5060,6 +5118,7 @@ function auditStateText(snapshot, targetField = "") {
   if (snapshot.type) parts.push(TECH_LABELS[snapshot.type] || String(snapshot.type));
   if (snapshot.content != null && snapshot.content !== "") parts.push(String(snapshot.content));
   if (snapshot.deleted === true) parts.push("已删除");
+  if (snapshot.ignored === true) parts.push("已忽略");
   const upper = snapshot.tolerance_upper ?? snapshot.load_tolerance_upper;
   const lower = snapshot.tolerance_lower ?? snapshot.load_tolerance_lower;
   const percent = snapshot.load_tolerance_percent;

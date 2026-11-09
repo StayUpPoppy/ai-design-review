@@ -2564,6 +2564,64 @@ def _prepare_review_reasonableness(review: dict[str, Any], revision: int | None)
     review["parameter_reasonableness_stale"] = False
 
 
+def _apply_diameter_ignores(review: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from .diameter_evidence import PENDING, ignore_role
+
+    changed = []
+    for event in events:
+        if event.get("event_type") != "diameter_role_ignored":
+            continue
+        candidate_id = (event.get("metadata") or {}).get("candidate_id")
+        candidate = next((item for item in review.get(PENDING, []) if item.get("candidate_id") == candidate_id), None)
+        before = deepcopy(candidate)
+        try:
+            ignore_role(review, candidate_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if before.get("ignored"):
+            continue
+        event = {**event, "target_field": f"diameter_role_candidates.{candidate_id}",
+                 "before_state": before, "after_state": deepcopy(candidate)}
+        changed.append(event)
+    return changed
+
+
+def _save_diameter_ignores(job_id, previous, current_revision, *, review_path, expected_revision, events, identity):
+    """Candidate-only saves must not recalculate or revoke engineering values."""
+    from .diameter_evidence import PENDING
+
+    revision = _expected_review_revision(expected_revision)
+    if current_revision is not None and revision != current_revision:
+        raise HTTPException(status_code=409, detail={"message": "当前审查数据已更新，请刷新后重试。", "current_revision": current_revision})
+    review = deepcopy(previous)
+    changed = _apply_diameter_ignores(review, events)
+    if not changed:
+        return {"mode": "postgresql" if REVIEW_PERSISTENCE.configured else "json_fallback", "revision": current_revision,
+                "events": [], "diameter_role_update": {"candidates": review.get(PENDING, []), "candidates_only": True}}
+    for event in changed:
+        event["actor"] = identity.as_audit_actor()
+    fallback = _merge_audit_events_into_review_history(review, changed, status="saved" if REVIEW_PERSISTENCE.configured else "saved_local")
+
+    def prepare(saved, saved_revision):
+        if saved_revision is not None:
+            saved["review_revision"] = saved_revision
+
+    try:
+        result = REVIEW_PERSISTENCE.save_review(job_id, review, expected_revision=revision, events=changed,
+            actor=identity.as_audit_actor(), owner=identity.as_owner_dict(), artifact_dir=str(review_path.parent), prepare_review=prepare)
+    except RevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail={"message": "当前审查数据已更新，请刷新后重试。", "current_revision": exc.current_revision}) from exc
+    except ReviewAccessError as exc:
+        raise HTTPException(status_code=404, detail="Review not found.") from exc
+    except PersistenceError as exc:
+        raise _persistence_http_error(exc) from exc
+    if result.get("mode") == "json_fallback":
+        result["events"] = fallback
+    result["diameter_role_update"] = {"candidates": review[PENDING], "candidates_only": True}
+    write_json(review_path, review)
+    return result
+
+
 def _save_review_persistence(
     job_id: str,
     review: dict[str, Any],
@@ -2573,12 +2631,15 @@ def _save_review_persistence(
     events: list[dict[str, Any]] | None = None,
     identity: IdentityContext,
 ) -> dict[str, Any]:
+    previous, current_revision = _load_persisted_review(job_id, review_path, identity)
+    if events and all(event.get("event_type") == "diameter_role_ignored" for event in events):
+        return _save_diameter_ignores(job_id, previous, current_revision, review_path=review_path,
+            expected_revision=expected_revision, events=events, identity=identity)
     if "generation_settings" in review:
         try:
             review["generation_settings"] = normalize_generation_settings(review["generation_settings"], allow_blank=True)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail={"code": "generation_settings_invalid", "message": str(exc)}) from exc
-    previous, current_revision = _load_persisted_review(job_id, review_path, identity)
     from .execution_standards import fingerprint, invalidate_stale_results, resolve_selection
     applying_standardization = any(
         e.get("event_type") == "standardization_suggestions_applied"
@@ -2605,13 +2666,16 @@ def _save_review_persistence(
     from .diameter_evidence import PENDING as DIAMETER_ROLE_CANDIDATES, select_role
     from .diameter_linkage import group_state
     role_events = [event for event in events if event.get("event_type") == "diameter_role_selected"]
+    ignore_events = [event for event in events if event.get("event_type") == "diameter_role_ignored"]
     revision = _expected_review_revision(expected_revision)
-    if role_events and current_revision is not None and revision != current_revision:
+    if (role_events or ignore_events) and current_revision is not None and revision != current_revision:
         raise HTTPException(status_code=409, detail={"message": "当前审查数据已更新，请刷新后重试。", "current_revision": current_revision})
     if DIAMETER_ROLE_CANDIDATES in previous:
         review[DIAMETER_ROLE_CANDIDATES] = deepcopy(previous[DIAMETER_ROLE_CANDIDATES])
     else:
         review.pop(DIAMETER_ROLE_CANDIDATES, None)
+    changed_ignores = _apply_diameter_ignores(review, ignore_events)
+    events = [event for event in events if event.get("event_type") != "diameter_role_ignored"] + changed_ignores
     for event in role_events:
         choice = event.get("metadata") or {}
         before = group_state(review)
@@ -2812,6 +2876,8 @@ def _save_review_persistence(
             "accuracy_inference": review.get("accuracy_inference"),
             "annotations": review.get("drawing_annotations"),
         }
+    elif ignore_events:
+        result["diameter_role_update"] = {"candidates": review.get(DIAMETER_ROLE_CANDIDATES, []), "candidates_only": True}
     write_json(review_path, review)
     return result
 

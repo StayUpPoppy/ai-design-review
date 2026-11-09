@@ -437,7 +437,7 @@ class ReviewDocument(BaseModel):
     parameter_reasonableness: ParameterReasonablenessAssessment | None = Field(default=None, description="最近一次参数合理性诊断和可选建议。")
     accuracy_inference: dict[str, Any] | None = Field(default=None, description="可选内部精度反推元数据：selection_mode(auto/manual/drawing/legacy)、rules_version、input_snapshot、observed_inputs、results、inferred_grade、complete及calculation_fingerprint。热卷附standard_rules_version/source_document/applicability，T优先于1/2/3；仅独立原图/人工公差参与反推，当前有效刚度用于载荷最低限值，人工模式不回写；不进入SW请求。")
     diameter_linkage: dict[str, Any] | None = Field(default=None, description="可选三径联动元数据：version、driver_field、inputs、status、reason及original_parameters。首次人工编辑直径后固定线径、以最后编辑项为主控，联动三径并撤销变化项确认；旧订单打开不自动启用。不进入SW请求。")
-    diameter_role_candidates: list[dict[str, Any]] | None = Field(default=None, description="待归类的原图直径标注及其后续人工选择。未处理项不进入参数融合或SW。")
+    diameter_role_candidates: list[dict[str, Any]] | None = Field(default=None, description="待归类的原图直径标注及其后续人工选择。selected_field记录类型，ignored=true记录忽略；缺少ignored时视为未忽略。未选择、未忽略且非模型推导的候选阻止生图。PATCH事件diameter_role_ignored携带metadata.candidate_id；忽略仅修改候选，不修改参数和确认状态。候选不进入SW。")
     automatic_calculation_adjustments: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None, description="compression-design-v3自动圈数/节距/名义高度的变更前后、依赖和待保存审计状态；只通过现有CAS保存，不进入SW。")
     pitch_recovery: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None, description="pitch-evidence/v1本地原图节距恢复前值及待保存状态；人工值/清空受保护。")
     design_checks: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None, description="compression-design-v3逐项计算结果、实际依赖和公式；应力inputs.spring_rate_source区分input/theoretical，spring_rate_used为实际采用N/mm，重量缺密度保留原因。")

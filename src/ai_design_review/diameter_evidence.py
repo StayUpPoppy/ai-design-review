@@ -16,6 +16,7 @@ CANDIDATE = "diameter_role_candidate"
 PENDING = "diameter_role_candidates"
 INFERENCE = "diameter_model_inference"
 VERSION = "diameter-role/v3"
+ROLE_STATE_VERSION = "diameter-candidates/v1"
 REASON = "直径类型待核对。请选择内径、中径或外径。"
 LABELS = {
     "inner_diameter": r"内径|內徑|内直径|inner\s+diameter|inside\s+diameter|\bI\.?D\.?",
@@ -24,6 +25,9 @@ LABELS = {
 }
 MARK = r"[φΦϕøØ⌀]"
 NUMBER = r"\d+(?:\.\d+)?"
+DERIVATION = re.compile(r"推算|推导|计算|换算|\b(?:derived|calculated|inferred|computed)\b"
+                        r"|(?:外径|内径|中径|线径).{0,24}(?:减去|减|加上|乘以|除以)"
+                        r"|(?:外径|内径|中径|线径|\bD[oim]?\b|\bd\b)\s*[-+−×*÷/]\s*(?:外径|内径|中径|线径|\bD[oim]?\b|\bd\b)", re.I)
 EXCLUDED = re.compile(r"粗糙|\b(?:ra|rz)(?:\b|(?=\d))|[▽√⊥∥⌖]|形位公差|几何公差|线径|簧丝直径|wire\s+diameter", re.I)
 NON_SPRING_DIAMETER = re.compile(r"[⊥∥⌖]|形位公差|几何公差|线径|簧丝直径|wire\s+diameter", re.I)
 # Closed-loop OCR substitutions for Φ. These only seed a search; both
@@ -665,6 +669,9 @@ def resolve_diameter_roles(candidates, pages=(), *, region=None):
     output, measurements, inferences = [], [], []
     roughness = [c for c in candidates if c.get("field") == "surface_roughness_ra"]
     for candidate in candidates:
+        if candidate.get("field") == CANDIDATE and not candidate.get("selected_field") and not candidate.get("ignored") and model_derived_diameter(candidate):
+            inferences.append(deepcopy(candidate))
+            continue
         if candidate.get("field") in {CANDIDATE, INFERENCE} or candidate.get("source") == SOURCE or not is_diameter_candidate(candidate):
             output.append(candidate)
             continue
@@ -689,7 +696,7 @@ def resolve_diameter_roles(candidates, pages=(), *, region=None):
         ambiguous_mark = (rough_marks and not _diameter_number(text, value) and not _trusted_text_roles(candidate)
                           and not any(_matching_position(_box(candidate, page), o["position"])
                                       for o in observations for _, page in rough_marks))
-        if not observations and not printed_claim and re.search(r"推算|推导|计算[：:得]|\b(?:derived|calculated|inferred)\b", text, re.I):
+        if not observations and model_derived_diameter(candidate):
             inferences.append(deepcopy(candidate))
             continue
         observation = observations[0] if len(observations) == 1 else None
@@ -771,12 +778,45 @@ def _direct_claim(text, value):
     for clause in re.split(r"[，,;；。\n]", text):
         if re.search(r"未(?:直接)?标|没有标|无.*标注|not\s+(?:shown|marked)", clause, re.I):
             continue
+        # A formula mentioning drawing operands does not make its result a
+        # printed dimension. Keep a separate original claim for this value.
+        if _formula_result(clause, value):
+            continue
+        derived = DERIVATION.search(clause)
+        if derived:
+            clause = clause[:derived.start()]
+            if not re.search(r"图中|图纸|原图|标注|marked|drawing", clause, re.I):
+                continue
         if _diameter_number(clause, value):
             return True
         if re.search(r"图中|图纸|原图|标注|marked|drawing", clause, re.I) and any(
                 _value(m[0]) == value for m in re.finditer(NUMBER, clause)):
             return True
     return False
+
+
+def _formula_result(text, value):
+    for match in re.finditer(rf"[=＝≈]\s*(?:约\s*)?{MARK}?\s*({NUMBER})(?![\d.])", text):
+        if _value(match[1]) == value and re.search(r"[+\-−×*÷/]", text[:match.start()]):
+            return True
+    return False
+
+
+def model_derived_diameter(candidate):
+    """Classify a value, not the whole model explanation; never run OCR here."""
+    evidence = candidate.get("diameter_role_evidence") or {}
+    observation = evidence.get("observation") or {}
+    if observation.get("source") in {"local_ocr", "pdf_text"} and _value(observation.get("value")) == _value(candidate.get("value")):
+        return False
+    value = _value(candidate.get("value"))
+    if value is None:
+        return False
+    text = _text(candidate.get("evidence") or evidence.get("original_evidence"))
+    source = candidate.get("source") or []
+    source = [source] if isinstance(source, str) else source
+    if "formula_calculation" in source or candidate.get("formula_calculation_kind") == "diameter_completion":
+        return True
+    return bool((DERIVATION.search(text) or _formula_result(text, value)) and not _direct_claim(text, value))
 
 
 def _inconsistent_simple_dimensions(observation, role, wire, verified, unit):
@@ -832,7 +872,22 @@ def _axial_dimension(observation, verified):
 
 
 def has_pending_roles(review):
-    return any(isinstance(item, dict) and not item.get("selected_field") for item in review.get(PENDING) or [])
+    return bool(pending_roles(review))
+
+
+def pending_roles(review):
+    return [item for item in review.get(PENDING) or [] if isinstance(item, dict)
+            and not item.get("selected_field") and not item.get("ignored") and not model_derived_diameter(item)]
+
+
+def ignore_role(review, candidate_id):
+    if not isinstance(candidate_id, str) or not candidate_id:
+        raise ValueError("缺少直径候选标识，请刷新后核对。")
+    candidate = next((item for item in review.get(PENDING, []) if item.get("candidate_id") == candidate_id), None)
+    if candidate is None or candidate.get("selected_field"):
+        raise ValueError("这条直径标注已处理或不存在，请刷新后核对。")
+    candidate["ignored"] = True
+    return candidate
 
 
 def resolve_specification_diameters(candidates, origin, local, blocks):
@@ -878,7 +933,7 @@ def select_role(review, candidate_id, field):
     candidate = next((item for item in review.get(PENDING, []) if item["candidate_id"] == candidate_id), None)
     if candidate is not None and candidate.get("selected_field") == field:
         return candidate
-    if candidate is None or candidate.get("selected_field"):
+    if candidate is None or candidate.get("selected_field") or candidate.get("ignored") or model_derived_diameter(candidate):
         raise ValueError("这条直径标注已处理，请刷新后核对。")
     from .standardizers.diameters import apply_formula_compression_diameter_completion
     from .diameter_linkage import supported

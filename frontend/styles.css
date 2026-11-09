@@ -4715,6 +4715,33 @@ textarea {
   padding-top: 12px;
 }
 
+.diameter-role-candidate-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.diameter-role-candidate-head strong { min-width: 0; overflow-wrap: anywhere; }
+.diameter-role-candidate p { margin: 0; overflow-wrap: anywhere; }
+.diameter-role-candidate [data-role="diameter-role-status"]:empty { display: none; }
+.diameter-role-candidate .parameter-bulk-actions { flex-wrap: wrap; }
+.diameter-role-candidate-head .diameter-role-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: #52627a;
+}
+.diameter-role-candidate-head .diameter-role-dismiss:hover:not(:disabled) { background: #e8edf5; color: #203653; }
+.diameter-role-dismiss:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.diameter-role-dismiss:disabled { opacity: .5; cursor: wait; }
+
 .reasonableness-standardization-stale {
   display: grid;
   gap: 10px;

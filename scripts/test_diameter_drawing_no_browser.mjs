@@ -40,7 +40,18 @@ await page.route('**/api/**', async (route) => {
         if (conflict) { conflict(model); conflict = null; model.revision++; return route.fulfill({ status: 409, json: { detail: '模拟冲突' } }); }
         const input = request.postDataJSON();
         if (input.expected_revision !== model.revision) return route.fulfill({ status: 409, json: { detail: '修订冲突' } });
-        model.review = input.review; model.revision++;
+        const ignores = input.events.filter(event => event.event_type === 'diameter_role_ignored');
+        const candidatesBefore = structuredClone(model.review.diameter_role_candidates || []);
+        if (!ignores.length || ignores.length !== input.events.length) model.review = input.review;
+        if (ignores.length) {
+          model.review.diameter_role_candidates = candidatesBefore;
+          for (const event of ignores) {
+            const mark = candidatesBefore.find(item => item.candidate_id === event.metadata.candidate_id);
+            if (!mark || mark.selected_field) return route.fulfill({ status: 422, json: { detail: '候选已处理' } });
+            mark.ignored = true;
+          }
+        }
+        model.revision++;
         const choice = input.events.find(event => event.event_type === 'diameter_role_selected');
         if (choice) {
           const candidates = model.review.diameter_role_candidates;
@@ -54,6 +65,8 @@ await page.route('**/api/**', async (route) => {
           return route.fulfill({ json: { review_revision: model.revision, events: input.events,
             diameter_role_update: { candidates, parameters, linkage: null, manual_confirmations: {} } } });
         }
+        if (ignores.length) return route.fulfill({ json: { review_revision: model.revision, events: input.events,
+          diameter_role_update: { candidates: model.review.diameter_role_candidates, candidates_only: true } } });
         return route.fulfill({ json: { review_revision: model.revision, events: input.events } });
       }
       return route.fulfill({ json: { ...model.review, job_id: id, review_revision: model.revision } });
@@ -155,6 +168,80 @@ try {
   await root.locator('[data-action="retry-diameter-role"]:visible').click();
   await saved(); await values([175, 111, 143]);
   assert.equal(await root.locator('[data-action="select-diameter-role"]').count(), 0);
+  // Historical model results never become cards; ignored marks stay hidden.
+  pending.review = review('b');
+  pending.review.diameter_role_candidates = [
+    { candidate_id: 'original-12', value: 12, unit: 'mm', source: 'qwen_vision', evidence: '图形标注 Ø12（尺寸界线指向弹簧外缘）', reason: '原图文字尚未与直径候选对应。' },
+    { candidate_id: 'calculated-10.4', value: 10.4, unit: 'mm', source: 'qwen_vision', evidence: '计算值：外径12 - 线径1.6 = 10.4' },
+    { candidate_id: 'original-16', value: 16, unit: 'mm', source: 'qwen_vision', evidence: '原图Φ16，尺寸界线类型尚未唯一对应弹簧边界。', reason: '请核对原图。' },
+    { candidate_id: 'ignored-14', value: 14, unit: 'mm', evidence: 'Φ14', ignored: true },
+  ];
+  pending.revision++;
+  await page.setViewportSize({ width: 1440, height: 1000 }); await open('b');
+  const cards = () => root.locator('[data-diameter-candidate-id]:visible');
+  const card = id => root.locator(`[data-diameter-candidate-id="${id}"]:visible`);
+  const close = id => card(id).getByRole('button', { name: '忽略此候选，改为手动填写' });
+  assert.equal(await cards().count(), 2);
+  assert.equal(await root.getByText('直径类型待核对 · 10.4 mm').count(), 0);
+  await cards().first().scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(output, 'candidate-close-desktop.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await cards().first().scrollIntoViewIfNeeded(); await close('original-12').focus();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  assert.equal(await close('original-12').evaluate(el => el.getBoundingClientRect().width >= 32 && el.getBoundingClientRect().height >= 32), true);
+  await page.screenshot({ path: path.join(output, 'candidate-close-mobile.png') });
+  const businessBefore = JSON.stringify({ parameters: pending.review.spring_parameters, confirmations: pending.review.manual_confirmations, linkage: pending.review.diameter_linkage });
+  // The card stays visible on failure; retry does not require a dialog or undo.
+  failSave = true; await close('original-12').press('Enter');
+  await card('original-12').getByText('模拟保存失败', { exact: true }).waitFor();
+  assert.equal(await cards().count(), 2); assert.equal(await page.getByRole('dialog').count(), 0);
+  failSave = false; await card('original-12').locator('[data-action="retry-diameter-role"]').click(); await saved();
+  assert.equal(await cards().count(), 1);
+  assert.equal(JSON.stringify({ parameters: pending.review.spring_parameters, confirmations: pending.review.manual_confirmations, linkage: pending.review.diameter_linkage }), businessBefore);
+  await open('a'); await open('b'); assert.equal(await cards().count(), 1);
+  await page.reload();
+  await page.waitForFunction(() => state.identityReady && state.recentReviews.length === 2);
+  await open('b'); assert.equal(await cards().count(), 1);
+  assert.equal(await input('outer_diameter').inputValue(), '20');
+  // A candidate-only receipt must preserve edits typed while it was saving.
+  holdSave = true; releaseSave = null; await close('original-16').click();
+  while (!releaseSave) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(await close('original-16').isDisabled(), true);
+  await card('original-16').getByText('正在关闭…', { exact: true }).waitFor();
+  assert.equal(await input('outer_diameter').isEnabled(), true);
+  await input('outer_diameter').fill('24');
+  const activeManualEditor = await input('outer_diameter').elementHandle();
+  releaseSave(); await card('original-16').waitFor({ state: 'hidden' });
+  assert.equal(await activeManualEditor.evaluate(el => el.isConnected && el === document.activeElement && el.value === '24'), true);
+  await input('outer_diameter').press('Tab'); await saved(); await values([24, 20, 22]);
+  assert.equal(pending.review.spring_parameters.outer_diameter.value, 24);
+  assert.equal(await cards().count(), 0);
+  // Unrelated server changes rebase an ignore without a conflict dialog.
+  pending.review.diameter_role_candidates.push({ candidate_id: 'concurrent', value: 18, unit: 'mm', evidence: 'Φ18' }); pending.revision++;
+  await open('a'); await open('b');
+  conflict = m => { m.review.drawing_summary.drawing_name = '服务器保留的名称'; };
+  await close('concurrent').click(); await saved();
+  assert.equal(pending.review.drawing_summary.drawing_name, '服务器保留的名称');
+  assert.equal(await cards().count(), 0); assert.equal(await page.getByRole('dialog').count(), 0);
+  // A concurrent adoption wins over an attempted ignore.
+  pending.review.diameter_role_candidates.push({ candidate_id: 'adopted', value: 30, unit: 'mm', evidence: 'Φ30' }); pending.revision++;
+  await open('a'); await open('b');
+  conflict = m => { m.review.diameter_role_candidates.find(item => item.candidate_id === 'adopted').selected_field = 'outer_diameter'; m.review.spring_parameters.outer_diameter.value = 30; };
+  await close('adopted').click(); await saved();
+  assert.equal(pending.review.diameter_role_candidates.find(item => item.candidate_id === 'adopted').ignored, undefined);
+  assert.equal(await input('outer_diameter').inputValue(), '30');
+  assert.equal(await page.getByRole('dialog').count(), 0);
+  await open('a');
+  // A late ignore receipt must not close or overwrite a different order.
+  models.get('a').review.diameter_role_candidates = [{ candidate_id: 'late-ignore', value: 27, unit: 'mm', evidence: 'Φ27' }];
+  models.get('a').revision++;
+  await open('b'); await open('a');
+  holdSave = true; releaseSave = null; await close('late-ignore').click();
+  while (!releaseSave) await new Promise(resolve => setTimeout(resolve, 20));
+  await page.evaluate(r => { state.lastJob = { job_id: 'b', review_revision: 99 }; state.review = normalizeReview(r); }, models.get('b').review);
+  releaseSave(); await page.waitForFunction(() => !state.reviewPersistenceSaving);
+  assert.equal(await page.evaluate(() => state.lastJob.review_revision), 99);
+  assert.equal(await page.evaluate(() => state.review.diameter_role_candidates.some(item => item.candidate_id === 'late-ignore')), false);
   await open('a');
   // A late PATCH receipt must not advance the revision of a different order.
   holdSave = true; await drawing().fill('LATE-A'); await drawing().press('Tab');
@@ -164,5 +251,5 @@ try {
   assert.equal(await page.evaluate(() => state.lastJob.review_revision), 99);
   assert.equal(await page.evaluate(() => state.review.drawing_summary.drawing_no), 'OLD-b');
   assert.deepEqual(errors, []);
-  console.log('Diameter/drawing number browser: live linkage, wire anchor, invalid recovery, focus, save/reopen/retry, atomic conflict, SW preview and responsive layout passed');
+  console.log('Diameter browser: linkage, provenance, close/retry/reopen, concurrent manual edits/adoption, late receipts, SW preview and desktop/mobile layout passed');
 } finally { await browser.close(); await new Promise((resolve) => server.close(resolve)); }
