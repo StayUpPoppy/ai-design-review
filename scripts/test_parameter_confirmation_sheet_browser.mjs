@@ -12,6 +12,7 @@ const base = structuredClone(cases[0].review);
 base.drawing_summary.drawing_name = '客户确认测试图纸'; base.drawing_summary.drawing_no = '00123-A';
 base.spring_parameters.total_coils = { value: 10.5, unit: 'turns', source: ['human_edited'], need_human_review: false };
 base.spring_parameters.active_coils = { value: 8.25, unit: 'turns', source: ['human_edited'], need_human_review: true };
+base.spring_parameters.support_coils = { value: 1.125, unit: 'turns', source: ['human_edited'], need_human_review: false };
 base.spring_parameters.surface_roughness_ra = { value: null, unit: 'μm', source: [], need_human_review: true };
 base.spring_parameters.outer_diameter = { value: 9, unit: 'mm', tolerance_upper: .1, tolerance_lower: 0, need_human_review: true };
 base.spring_parameters.load_points = [{ load_point_id: 'zero', label: 'F1', height: 20, force: 0, height_unit: 'mm', force_unit: 'N', load_tolerance_percent: 10, need_human_review: true }];
@@ -120,6 +121,83 @@ try {
   await openReview('a');
   await page.waitForTimeout(550); await saved();
   const before = await snapshot(), count = writes;
+  // Exercise the production projection with detached reviews, including legacy
+  // defaults and conflicts. These builds never modify the open order.
+  const healthy = await page.evaluate(async () => {
+    const review=structuredClone(state.review), values={material:'SUS304',wire_diameter:2,outer_diameter:20,inner_diameter:16,mean_diameter:18,free_length:36,total_coils:12,active_coils:10,handedness:'右旋',end_type:'两端并紧',end_grinding:'两端磨削',support_coils:1};
+    review.spring_parameters=Object.fromEntries(Object.entries(values).map(([field,value])=>[field,{value,source:['qwen_vision'],need_human_review:true,unit:field.includes('diameter')||field==='free_length'?'mm':field.includes('coils')?'turns':''}]));
+    Object.assign(review.spring_parameters.mean_diameter,{source:['formula_calculation'],source_fields:['outer_diameter','wire_diameter'],default_source:'legacy-default'});
+    review.spring_parameters.load_points=[{load_point_id:'production-f1',label:'F1',height:32,force:0,height_unit:'mm',force_unit:'N',source:['qwen_vision'],need_human_review:true}];
+    review.technical_requirements=[{requirement_id:'original-tech',type:'other',content:'两端并紧并磨平，Ra12.5，不制扁。',need_human_review:true}];
+    review.conflicts=[];review.parameter_reasonableness={issues:[]};review.parameter_reasonableness_stale=false;
+    window.detachedSheetReview=review;
+    return buildConfirmationSheetSnapshot({review,identity:state.identity,revision:1,jobId:'a'});
+  });
+  assert.equal(healthy.sections.find(section=>section.id==='parameters').rows.length,9);
+  assert.equal(healthy.sections.find(section=>section.id==='issues').rows.length,0,'valid pending values and real derived values need no internal confirmation for this report');
+  assert.match(healthy.sections.find(section=>section.id==='requirements').rows[0].content,/Ra12.5，不制扁/);
+  const coilCheck=await page.evaluate(async()=>{
+    const review=structuredClone(window.detachedSheetReview);
+    review.spring_parameters.total_coils.value=6.5;
+    review.spring_parameters.active_coils.value=8;
+    const before=JSON.stringify(review),model=await buildConfirmationSheetSnapshot({review,identity:state.identity,revision:1,jobId:'a'});
+    return {model,unchanged:JSON.stringify(review)===before};
+  });
+  const coilIssue=coilCheck.model.sections.find(section=>section.id==='issues').rows.find(group=>group.items.some(row=>row.field==='total_coils'));
+  assert.ok(coilIssue.reasons.includes('有效圈数不能大于总圈数。'),'the production projection retains the reason instead of replacing it with the question');
+  assert.ok(coilIssue.questions.includes('请确认总圈数与有效圈数的正确数值。'));
+  assert.doesNotMatch(coilIssue.questions.join('；'),/补充端部形式/);
+  assert.equal(coilCheck.unchanged,true);
+  failAssessment=true;
+  const legacyIssues=await page.evaluate(async()=>{
+    const results=[];
+    for(const content of [{message:'外径标注存在两个不同数值。'},{customer_question:'请明确外径采用的数值。'}]){
+      const review=structuredClone(window.detachedSheetReview);
+      review.parameter_reasonableness={issues:[{severity:'warning',category:'geometry',fields:['outer_diameter'],...content}]};
+      results.push(await buildConfirmationSheetSnapshot({review,identity:state.identity,revision:1,jobId:'a'}));
+    }
+    return results.map(model=>model.sections.find(section=>section.id==='issues').rows[0]);
+  });
+  assert.deepEqual(legacyIssues[0].reasons,['外径标注存在两个不同数值。']);
+  assert.deepEqual(legacyIssues[0].questions,['请确认外径的正确内容。']);
+  assert.deepEqual(legacyIssues[1].reasons,[],'a question-only record never invents a reason');
+  assert.deepEqual(legacyIssues[1].questions,['请明确外径采用的数值。']);
+  const problematic = await page.evaluate(async () => {
+    const review=structuredClone(window.detachedSheetReview),params=review.spring_parameters;
+    params.wire_diameter.value=0;params.free_length.value=null;params.inner_diameter.value=null;
+    params.mean_diameter={value:23,source:['solidworks_protocol_default'],default_source:'protocol',need_human_review:true};
+    for(const field of ['surface_roughness_ra','end_type','end_grinding','flattening'])params[field]={value:'invalid',value_conflict:true,customer_question:'隐藏字段专属问题'};
+    review.conflicts=[{field:'load_points.F1.force',values:[0,20],need_human_review:true}];
+    review.parameter_reasonableness={issues:[{severity:'blocked',category:'geometry',fields:['end_type'],message:'隐藏字段诊断'},
+      {severity:'needs_input',category:'missing_context',fields:['active_coils'],message:'缺少计算条件'},
+      {severity:'warning',rule_id:'FORMULA-CHECK',fields:['total_coils'],message:'未采用公式建议'}]};
+    const before=JSON.stringify(review),model=await buildConfirmationSheetSnapshot({review,identity:state.identity,revision:1,jobId:'a'});
+    return {model,unchanged:JSON.stringify(review)===before};
+  });
+  const issueSources=problematic.model.sections.find(section=>section.id==='issues').rows.flatMap(group=>group.items);
+  assert.deepEqual(issueSources.map(row=>row.field),['wire_diameter','free_length','load_points.F1']);
+  assert.ok(issueSources.find(row=>row.field==='load_points.F1').messages.some(message=>message.includes('载荷标注不一致')));
+  assert.ok(!problematic.model.sections.find(section=>section.id==='parameters').rows.some(row=>['inner_diameter','mean_diameter'].includes(row.field)),'blank optional and unadopted defaults do not become customer facts');
+  assert.equal(problematic.unchanged,true);
+  assert.match(problematic.model.notice,/本次未能更新合理性检查/);
+  const defaultRisk = await page.evaluate(async () => {
+    const review=structuredClone(window.detachedSheetReview);
+    review.spring_parameters.wire_diameter={value:100,source:['system_default'],need_human_review:true};
+    review.parameter_reasonableness={issues:[{severity:'blocked',category:'geometry',fields:['wire_diameter','outer_diameter'],message:'默认值造成的几何矛盾'}]};
+    return buildConfirmationSheetSnapshot({review,identity:state.identity,revision:1,jobId:'a'});
+  });
+  assert.equal(defaultRisk.sections.find(section=>section.id==='issues').rows.length,1);
+  assert.equal(defaultRisk.sections.find(section=>section.id==='issues').rows[0].items[0].field,'wire_diameter');
+  assert.ok(defaultRisk.sections.find(section=>section.id==='parameters').rows.some(row=>row.field==='outer_diameter'));
+  const invalidUnits = await page.evaluate(async () => {
+    const review=structuredClone(window.detachedSheetReview);
+    review.spring_parameters.mean_diameter.unit='pixels';
+    review.spring_parameters.load_points[0].force_unit='unknown-force';
+    return buildConfirmationSheetSnapshot({review,identity:state.identity,revision:1,jobId:'a'});
+  });
+  assert.deepEqual(invalidUnits.sections.find(section=>section.id==='issues').rows.flatMap(group=>group.items).map(row=>row.field),['mean_diameter','load_points.F1'],'invalid units remain customer issues even if diagnostics are unavailable');
+  failAssessment=false;
+  assert.equal(await snapshot(),before); assert.equal(writes,count);
   const advancedPanel = page.locator('.compare-overlay .advanced-parameters');
   assert.equal(await advancedPanel.evaluate(el => el.open), false);
   await advancedPanel.locator('summary').click();
@@ -150,67 +228,46 @@ try {
   assert.equal(brand.centered, true, 'title stays centered on the sheet');
   await frame().getByText('弹簧参数确认单', { exact: true }).waitFor();
   const content = await frame().locator('body').innerText();
-  assert.match(content, /00123-A/); assert.match(content, /测试工程师/); assert.match(content, /10\.5/); assert.match(content, /8\.25/);
-  assert.match(content, /0 N/); assert.match(content, /±10%/); assert.match(content, /\+0.1 \/ 0/);
-  assert.match(content, /待补充/); assert.match(content, /Ra 12.5 μm/); assert.match(content, /Ra 6.3 μm/);
-  assert.doesNotMatch(content, /审图修订|本单不代表全部参数/);
-  assert.equal(await frame().getByRole('columnheader', { name: '状态', exact: true }).count(), 0);
-  assert.equal(await frame().locator('input,table,.paper-check').count(), 0, 'no tables or customer check boxes');
-  assert.match(content, /【确认】/);assert.match(content,/【RFI-\d+】/);
-  assert.match(await dialog.locator('[data-sheet-pages]').innerText(),/预计\d+页/);
-  assert.equal(await frame().getByRole('heading', { name: '输入参数', exact: true }).count(), 1);
-  assert.doesNotMatch(content, /基础参数|高级参数/);
-  assert.equal(await dialog.locator('legend').filter({ hasText: /^输入参数$/ }).count(), 1);
-  assert.equal(await dialog.locator('legend').filter({ hasText: /^(基础参数|高级参数)$/ }).count(), 0);
-  assert.doesNotMatch(content, /直径精度等级|自由高度精度等级|载荷精度等级|刚度精度等级/);
-  for (const field of optionalAdvanced) assert.equal(await dialog.locator(`input[data-sheet-id="param:${field}"]`).count(), 0);
-  assert.match(content, /理论刚度/); assert.match(content, /单件重量/);
-  assert.doesNotMatch(content, /名义压并高度|压并高度上限参考|应力采用高度/);
-  assert.equal(await frame().locator('[data-report-row="calculation:nominal_solid_height"]').count(), 1);
-  assert.doesNotMatch(await frame().locator('[data-report-row="calculation:nominal_solid_height"]').innerText(), /（(?:估算|计算)）/);
-  assert.equal(await frame().locator('.method').count(), 0);
-  for (const key of ['reference_solid_height_limit', 'solid_height_used']) assert.equal(await dialog.locator(`input[data-sheet-id="calculation:${key}"]`).count(), 0);
-  assert.match(content, /工作应力（F1）/);
-  const advanced = await page.evaluate(() => getParameterFieldGroups(state.review.spring_parameters, state.review).advanced);
-  for (const field of advanced) assert.equal(await dialog.locator(`input[data-sheet-id="param:${field}"]`).isChecked(), true, `visible advanced ${field} selected`);
-  const inputChoices = dialog.getByRole('group', { name: '输入参数', exact: true });
-  const expectedRows = await page.evaluate(() => getParameterFields(state.review.spring_parameters, state.review).filter(field => COMPRESSION_CORE_PARAMETER_FIELDS.has(field)).map(field => `param:${field}`));
-  // Hb keeps its previous report position even though its editor row moved.
-  const rowIds = [...expectedRows, ...advanced.filter(field => field !== 'solid_height').map(field => `param:${field}`)];
-  assert.deepEqual(await inputChoices.locator('input').evaluateAll(inputs => inputs.map(input => input.dataset.sheetId)), rowIds);
-  assert.equal(new Set(rowIds).size, rowIds.length, 'merged input parameters have no duplicate rows');
-  const inputRows = await frame().getByRole('heading', { name: '输入参数', exact: true }).locator('..').locator('.fields > .report-item').count();
-  assert.equal(inputRows, rowIds.length, 'one text section contains both original groups');
-  assert.equal(await frame().locator('[data-report-row="param:perpendicularity"]').count(), 1);
-  const calculationChecks = await dialog.locator('input[data-sheet-id^="calculation:"]').count();
-  assert.equal(calculationChecks, 10, 'nine customer-facing metrics and one work stress');
-  await dialog.locator('input[data-sheet-id="calculation:theoretical_spring_rate"]').uncheck();
-  await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
-  assert.equal(await frame().locator('[data-report-row="calculation:theoretical_spring_rate"]').count(), 0);
-  await dialog.locator('input[data-sheet-id="calculation:theoretical_spring_rate"]').check();
-  await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
-  assert.equal(await frame().locator('script').count(), 0);
-  assert.equal(await frame().locator('img').count(), 1, 'only the fixed branding image is permitted');
-  assert.equal(await frame().locator('img').getAttribute('alt'), 'IncoSpring');
-  assert.equal(await snapshot(), before, 'preview does not mutate review, confirmation or audit');
-  assert.equal(writes, count, 'clean preview does not save');
-  const choice = dialog.locator('input[data-sheet-id="param:total_coils"]');
-  await choice.uncheck(); await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
-  assert.equal(await frame().locator('[data-report-row="param:total_coils"]').count(), 0);
-  const advancedChoice = dialog.locator('input[data-sheet-id="param:perpendicularity"]');
-  await advancedChoice.uncheck();
-  await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
+  assert.match(content,/00123-A/); assert.match(content,/测试工程师/); assert.match(content,/10\.5/); assert.match(content,/8\.25/);
+  assert.match(content,/0 N/); assert.match(content,/±10%/); assert.match(content,/\+0.1 \/ 0/);
+  assert.doesNotMatch(content,/审图修订|【确认】|【RFI|RFI-\d|设计校核结果|理论刚度|单件重量|表面粗糙度|名义压并高度/);
+  assert.equal(await frame().locator('input,.paper-check,script').count(),0);
+  assert.ok(await frame().locator('.parameter-report-table').count()===1);
+  assert.equal(await frame().getByRole('columnheader',{name:'状态',exact:true}).count(),0);
+  assert.equal(await frame().getByRole('heading',{name:'最终参数',exact:false}).count(),1);
+  assert.equal(await frame().locator('.brand-header h1').evaluate(el=>getComputedStyle(el).fontSize),'18.6667px');
+  for(const field of [...optionalAdvanced,...specializedAdvanced,...fixedAdvanced,'surface_roughness_ra','end_type','end_grinding','flattening','standard_no','accuracy_grade'])
+    assert.equal(await dialog.locator(`input[data-sheet-id="param:${field}"]`).count(),0,`${field} cannot leak through report choices`);
+  assert.equal(await dialog.locator('input[data-sheet-id^="calculation:"]').count(),0);
+  assert.equal(await frame().locator('.parameter-report-table [data-report-row="param:active_coils"]').count(),1,`valid pending values are customer parameters, not automatic exceptions: ${content}`);
+  assert.equal(await frame().locator('[data-report-row="technical:note"]').count(),1,'abnormal original requirement appears once');
+  assert.equal(await frame().locator('.issue-reply').count()>0,true);
+  const repliesFit=()=>frame().locator('.issue-reply').evaluateAll(rows=>rows.every(row=>{
+    const line=row.querySelector('.issue-reply-line');
+    return row.textContent==='客户回复：' && row.querySelectorAll('.issue-reply-line').length===1 && line.offsetWidth>100 && getComputedStyle(line).borderBottomStyle==='solid' && row.offsetHeight<=parseFloat(getComputedStyle(row).lineHeight)+2;
+  }));
+  assert.equal(await repliesFit(),true,'desktop: all issue types use one continuous reply line');
+  assert.match(content,/F1 的试验高度不能大于自由长度/,'the customer sees the actual load error as well as the clarification request');
+  assert.equal(await frame().locator('img').count(),1);
+  assert.equal(await frame().locator('img').getAttribute('alt'),'IncoSpring');
+  assert.equal(await snapshot(),before,'preview preserves the active review, confirmations and audit');
+  assert.equal(writes,count,'clean preview never saves');
+  const choice=dialog.locator('input[data-sheet-id="param:total_coils"]');
+  await choice.uncheck(); await page.waitForFunction(()=>!document.querySelector('[data-sheet-action="print"]').disabled);
+  assert.equal(await frame().locator('[data-report-row="param:total_coils"]').count(),0);
+  await page.evaluate(()=>{state.review.spring_parameters.total_coils.value_conflict=true;state.reviewEditSerial++;});
   await dialog.locator('[data-sheet-action="refresh"]').click();
-  await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
-  assert.equal(await choice.isChecked(), false, 'refresh preserves a deselected original basic row');
-  assert.equal(await advancedChoice.isChecked(), false, 'refresh preserves a deselected original advanced row');
-  assert.equal(await frame().locator('[data-report-row="param:perpendicularity"]').count(), 0);
-  await advancedChoice.check(); await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
-  await choice.check(); await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
-  await choice.uncheck(); await choice.check();
-  await advancedChoice.uncheck(); await advancedChoice.check();
-  await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
-  assert.equal(await frame().locator('[data-report-row="param:perpendicularity"]').count(), 1, 'rapid rerenders retain the latest selection');
+  await page.waitForFunction(()=>!document.querySelector('[data-sheet-action="print"]').disabled);
+  assert.equal(await choice.isChecked(),false,'normal -> abnormal keeps the deselected source ID');
+  assert.equal(await choice.locator('xpath=ancestor::fieldset').locator('legend').innerText(),'待客户澄清事项');
+  assert.equal(await frame().locator('[data-report-row="param:total_coils"]').count(),0);
+  await page.evaluate(()=>{delete state.review.spring_parameters.total_coils.value_conflict;state.reviewEditSerial++;});
+  await dialog.locator('[data-sheet-action="refresh"]').click();
+  await page.waitForFunction(()=>!document.querySelector('[data-sheet-action="print"]').disabled);
+  assert.equal(await choice.isChecked(),false,'abnormal -> normal never silently reselects');
+  await choice.check(); await choice.uncheck(); await choice.check();
+  await page.waitForFunction(()=>!document.querySelector('[data-sheet-action="print"]').disabled);
+  assert.equal(await frame().locator('[data-report-row="param:total_coils"]').count(),1);
   // Print and cancel are deliberately indistinguishable: both leave the preview reusable.
   await page.evaluate(() => { const win = document.querySelector('.confirmation-sheet-preview iframe').contentWindow; window.printCalls = 0; win.print = () => { window.printCalls++; win.dispatchEvent(new Event('afterprint')); }; });
   await dialog.locator('[data-sheet-action="print"]').click(); await dialog.locator('[data-sheet-action="print"]').click();
@@ -223,6 +280,7 @@ try {
   await dialog.locator('summary').click();
   await page.screenshot({ path: path.join(out, 'mobile.png') });
   assert.equal(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth + 1), true);
+  assert.equal(await repliesFit(),true,'narrow screen: reply lines stay on one line');
   await dialog.locator('[data-sheet-action="back"]').click();
   assert.equal(await page.locator('.compare-overlay [data-action="preview-confirmation-sheet"]').evaluate(el => document.activeElement === el), true);
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -270,7 +328,7 @@ try {
   await page.locator('[data-compare-tab="parameters"]').click(); await openSheet();
   assert.match(await frame().locator('body').innerText(), /本地数据/);
   assert.match(await frame().locator('body').innerText(), /FTA-28\/103-274/);
-  assert.equal(await frame().getByRole('heading', { name: '输入参数', exact: true }).count(), 1);
+  assert.equal(await frame().getByRole('heading', { name: /最终参数/ }).count(), 1);
   assert.doesNotMatch(await frame().locator('body').innerText(), /基础参数|高级参数/);
   const html = await page.locator('.confirmation-sheet-preview iframe').evaluate(el=>el.contentDocument.documentElement.outerHTML);
   fs.writeFileSync(path.join(out, 'print.html'), html);
@@ -284,7 +342,8 @@ try {
   const localSnapshot = await snapshot(), localWrites = writes;
   failAssessment = true; await dialog.locator('[data-sheet-action="refresh"]').click();
   await page.waitForFunction(() => !document.querySelector('[data-sheet-action="print"]').disabled);
-  assert.match(await frame().locator('body').innerText(), /本次未能更新合理性检查/);
+  assert.match(await dialog.locator('.confirmation-sheet-message').innerText(), /本次未能更新合理性检查/);
+  assert.doesNotMatch(await frame().locator('body').innerText(), /本次未能更新合理性检查/);
   assert.equal(await snapshot(), localSnapshot); assert.equal(writes, localWrites);
   await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'detached' });
   // Child records share visibility; moving to the tolerance box must not remove
@@ -306,8 +365,8 @@ try {
   for (const field of [...optionalAdvanced, 'legacy_value']) assert.equal(await advancedPanel.locator(`[data-field="${field}"]`).count(), 1);
   assert.equal(await advancedPanel.locator('[data-field="legacy_empty"]').count(), 0);
   await openSheet();
-  for (const field of optionalAdvanced) assert.equal(await dialog.locator(`input[data-sheet-id="param:${field}"]`).count(), 1);
-  assert.match(await frame().locator('body').innerText(), /内径/);
+  for (const field of optionalAdvanced) assert.equal(await dialog.locator(`input[data-sheet-id="param:${field}"]`).count(), 0);
+  assert.doesNotMatch(await frame().locator('body').innerText(), /受控直径/);
   await dialog.locator('[data-sheet-action="back"]').click();
   const bodyRow = advancedPanel.locator('[data-field="body_length"]');
   await bodyRow.locator('[data-role="value"]').fill('');

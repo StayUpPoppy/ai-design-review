@@ -188,7 +188,7 @@ def _assert_missing_values_receive_pending_defaults() -> None:
         "wire_diameter", "free_length", "total_coils", "end_grinding", "end_type"
     ))
     package = build_generation_parameter_package(review)
-    assert set(package["generation_parameters"]["spring_parameters"]) == {"material", "handedness"}
+    assert set(package["generation_parameters"]["spring_parameters"]) == {"material", "flattening", "handedness"}
 
 
 def _assert_cleared_human_dimensions_do_not_receive_defaults() -> None:
@@ -246,6 +246,7 @@ def _assert_optional_material_export_and_warning() -> None:
     legacy["schema_version"] = "spring_generation_parameters/v1"
     legacy["export_policy"]["parameter_filter"] = "frozen_compression_inputs_v1_human_confirmed_only"
     legacy["generation_parameters"]["spring_parameters"].pop("material")
+    legacy["generation_parameters"]["spring_parameters"].pop("flattening")
     legacy.pop("solidworks_preview")
     GenerationParameterPackageV1.model_validate(legacy)
 
@@ -600,6 +601,7 @@ def _ready_review() -> dict:
             "handedness": _param("右旋"),
             "end_type": _param("两端并紧"),
             "end_grinding": _param("两端磨平"),
+            "flattening": _param(0),
             "solid_height": _param(24, "mm"),
             "spring_rate": _param(1.5, "N/mm"),
             "load_points": [{"label": "F1", "height": 25, "force": 100, "need_human_review": False}],

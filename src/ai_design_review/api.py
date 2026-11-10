@@ -2498,6 +2498,8 @@ def _load_persisted_review(
         if stored.get("record_kind") == "source":
             if not allow_source: raise HTTPException(status_code=409, detail="来源记录只读，请从规格核对表创建并打开子审图记录。")
             return review, stored["revision"]
+        from .flattening import ensure as ensure_flattening
+        ensure_flattening(review)
         if not recover:
             return review, stored["revision"]
         if stored.get("record_kind") == "variant" and not review.get("page_origin"):
@@ -2517,6 +2519,8 @@ def _load_persisted_review(
     if not _local_job_owned(review_path.parent, identity.user_id) or not review_path.exists():
         raise HTTPException(status_code=404, detail="Review not found.")
     review = read_json(review_path)
+    from .flattening import ensure as ensure_flattening
+    ensure_flattening(review)
     if not recover: return review, None
     ensure_compression_material(review)
     ensure_surface_roughness_parameter(review)
@@ -2635,6 +2639,11 @@ def _save_review_persistence(
     if events and all(event.get("event_type") == "diameter_role_ignored" for event in events):
         return _save_diameter_ignores(job_id, previous, current_revision, review_path=review_path,
             expected_revision=expected_revision, events=events, identity=identity)
+    from .flattening import prepare_save as prepare_flattening_save
+    try:
+        prepare_flattening_save(review, events, previous=previous)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if "generation_settings" in review:
         try:
             review["generation_settings"] = normalize_generation_settings(review["generation_settings"], allow_blank=True)

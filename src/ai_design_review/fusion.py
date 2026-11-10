@@ -5,6 +5,7 @@ from math import isfinite
 from typing import Any
 
 from .technical_translation import TRANSLATION_KEYS
+from . import flattening
 from .standardizers.support_coils import classify_support_candidate
 from .technical_requirement_recognition import TECHNICAL_FIELD_TYPES, collect_technical_requirements
 from .surface_roughness import ROUGHNESS_VERIFICATION_VERSION, merge_roughness_candidates, verified_roughness_candidate, roughness_selection, selected_roughness_location
@@ -59,6 +60,7 @@ def source_weight(source: str) -> float:
 
 
 def fuse_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    candidates = flattening.prepare_candidates(candidates)
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     load_points: list[dict[str, Any]] = []
     conflicts: list[dict[str, Any]] = []
@@ -145,6 +147,10 @@ def _merge_field(field: str, ordered: list[dict[str, Any]]) -> dict[str, Any]:
                 merged[key] = best[key]
         # Keep the selected evidence separate from other engines' arithmetic.
         merged["evidence"] = best.get("evidence") or ""
+    if field == "flattening":
+        flattening.merge_candidates(merged, ordered)
+        if not flattening.human(best):
+            merged["need_human_review"] = True
     if field == "surface_roughness_ra":
         candidates = _surface_roughness_candidates(ordered)
         merged["roughness_candidates"] = candidates

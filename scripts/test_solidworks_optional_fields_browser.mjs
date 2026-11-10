@@ -203,6 +203,12 @@ try {
       inlineFieldLabelsHidden: [...row.querySelectorAll('.parameter-field-label')].every(node => getComputedStyle(node).display === 'none'),
       wire: ['.data-label strong', '.parameter-annotation-number', '.data-primary', '.data-secondary'].map(s => box(wire.querySelector(s))),
       controls: [box(row.querySelector('.tolerance-input-control')), box(load.querySelector('.tolerance-input-control'))],
+      choiceRows: ['handedness', 'end_type', 'end_grinding', 'flattening'].map(field => {
+        const choice = panel.querySelector(`[data-field="${field}"]`), value = choice.querySelector('[data-role="value"]');
+        return { field, value: box(value), primary: box(choice.querySelector('.data-primary')), button: box(choice.querySelector('.confirm-button')),
+          hiddenControls: choice.querySelectorAll('[data-role="tolerance"], .data-secondary, .tolerance-editor, .tolerance-edit-button').length,
+          labels: [...choice.querySelectorAll('.parameter-field-label')].map(label => label.textContent) };
+      }),
       headerAligned: [...load.closest('.data-table').querySelectorAll('.data-table-head span')].every((cell, index) => Math.abs(box(cell).x - box(load.children[index]).x) < 1),
       clipped: [...panel.querySelectorAll('.parameter-data-table > .data-row, .load-point-table > .data-row')].some(node => node.getClientRects().length && node.scrollWidth > node.clientWidth + 2),
     };
@@ -217,6 +223,12 @@ try {
       style.textContent = pane ? `#compareOverlay .compare-layout { grid-template-columns: minmax(0, 1fr) ${pane}px; }` : '';
     }, scenario.pane || 0);
     const metrics = await layoutMetrics();
+    for (const choice of metrics.choiceRows) {
+      assert.equal(choice.hiddenControls, 0, `${scenario.name}: ${choice.field} has no tolerance controls`);
+      assert.equal(choice.labels.includes('公差'), false);
+      assert.ok(choice.value.width > metrics.param[1].width + 30 * metrics.scale, `${scenario.name}: ${choice.field} uses both value columns`);
+      assert.ok(choice.value.right <= choice.button.x + 1 || choice.value.bottom <= choice.button.y + 1, `${scenario.name}: ${choice.field} leaves confirmation visible`);
+    }
     assert.deepEqual(metrics.fits, [true, true], `${scenario.name}: normal tolerances fit at actual input width`);
     assert.ok(metrics.controls[0].width >= (metrics.paramWidth < 400 ? 150 : 140) * metrics.scale - 1, `${scenario.name}: parameter tolerance has priority`);
     assert.ok(metrics.controls[1].width >= 150 * metrics.scale - 1, `${scenario.name}: load tolerance width is unchanged`);

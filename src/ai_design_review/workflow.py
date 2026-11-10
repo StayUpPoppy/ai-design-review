@@ -224,6 +224,8 @@ class DrawingReviewWorkflow:
         if pending_diameters:
             review[PENDING] = pending_diameters
             review["human_review_required"] = True
+        from .flattening import ensure as ensure_flattening
+        ensure_flattening(review)
         refresh_design_checks(review)
         if run_standardization:
             from .execution_standards import stamp_results
@@ -358,6 +360,8 @@ class DrawingReviewWorkflow:
                     result[key] = item[key]
         if field == "support_coils":
             result.update({key: item[key] for key in ("support_coils_origin", "support_coils_original") if key in item})
+        if field == "flattening":
+            result.update({key: item[key] for key in ("raw_value", "flattening_conflict", "flattening_unverified") if key in item})
         if "diameter_role_evidence" in item:
             result["diameter_role_evidence"] = item["diameter_role_evidence"]
         if item.get("diameter_role_conflict"):

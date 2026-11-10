@@ -89,6 +89,9 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
             confirmed_count += 1
 
     _append_material_warning(parameters, warnings)
+    from .flattening import warning as flattening_warning
+    if message := flattening_warning(parameters.get("flattening")):
+        warnings.append(_field_issue("flattening", message))
 
     _append_standardization_warnings(review, warnings)
     _append_technical_requirement_state(review, pending, warnings)

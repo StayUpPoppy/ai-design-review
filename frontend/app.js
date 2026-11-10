@@ -192,7 +192,7 @@ function commitToleranceEditor(draft, resolved, value) {
 }
 
 function supportsToleranceEditor(field, param, meta) {
-  if (["material", "standard_no", "handedness", "end_type", "end_grinding", "end_coils_closed", "controlled_diameter_field"].includes(field) || field.endsWith("accuracy_grade")) return false;
+  if (["material", "standard_no", "handedness", "end_type", "end_grinding", "flattening", "end_coils_closed", "controlled_diameter_field"].includes(field) || field.endsWith("accuracy_grade")) return false;
   return typeof param.value === "number" || globalThis.ToleranceValues?.number(param.value) != null || Boolean(param.unit || meta.unit);
 }
 
@@ -256,6 +256,7 @@ const FIELD_LABELS = {
   pitch: "节距",
   end_type: "端部形式",
   end_grinding: "端面磨削",
+  flattening: "是否制扁",
   end_coils_closed: "端圈压并",
   spring_rate: "刚度",
   perpendicularity: "垂直度",
@@ -349,6 +350,48 @@ const SPRING_TYPE_LABELS = {
 
 const PARAMETER_COLLECTION_FIELDS = new Set(["load_points", "torque_points"]);
 
+// Optional process parameter. Keep eligibility aligned with flattening.py.
+const Flattening = (() => {
+  const normalize = value => {
+    if (typeof value === "boolean") return Number(value);
+    if (typeof value === "number") return [0, 1].includes(value) ? value : null;
+    const values = { "0": 0, "1": 1, "否": 0, "是": 1, no: 0, yes: 1, false: 0, true: 1,
+      "不制扁": 0, "无需制扁": 0, "制扁": 1, not_flattened: 0, flattened: 1 };
+    const text = String(value ?? "").normalize("NFKC").trim().toLowerCase();
+    return Object.hasOwn(values, text) ? values[text] : null;
+  };
+  const ensure = review => {
+    if (review?.drawing_summary?.spring_type !== "compression_spring") return false;
+    const params = review.spring_parameters ||= {};
+    let item = params.flattening;
+    const sources = Array.isArray(item?.source) ? item.source : [item?.source];
+    const human = sources.some(source => String(source || "").startsWith("human") || ["manual", "manual_input", "parameter_change_proposal"].includes(source));
+    if ((review.conflicts || []).some(entry => entry.field === "flattening") && (!item || !human && item.need_human_review !== false)) {
+      item = params.flattening ||= { value: null, need_human_review: true };
+      item.flattening_conflict = true;
+    }
+    if (item) {
+      if (item.value != null && item.value !== "") return false;
+      if (human || item.need_human_review === false || Object.hasOwn(item, "raw_value") || ["evidence", "raw_value", "flattening_conflict", "flattening_unverified", "conflict", "value_conflict"].some(key => item[key])) return false;
+    }
+    params.flattening = { ...item, value: 0, unit: null, tolerance_upper: null, tolerance_lower: null,
+      source: ["solidworks_protocol_default"], default_source: "flattening-default/v1",
+      evidence: "系统默认：不制扁，需人工确认。", confidence: 0, need_human_review: true };
+    return true;
+  };
+  const invalidReason = item => {
+    if (!item || normalize(item.value) == null) return "请选择制扁或不制扁";
+    if (["flattening_conflict", "flattening_unverified", "conflict", "value_conflict", "derived_value_stale"].some(key => item[key])) return "制扁要求存在冲突或缺少明确依据，请先选择后再确认";
+    if (item.need_human_review === false && item.confirmation_snapshot != null && (typeof item.confirmation_snapshot !== "object" || Array.isArray(item.confirmation_snapshot) || item.confirmation_snapshot.value !== item.value)) return "制扁选项已修改，请重新确认";
+    return "";
+  };
+  const confirmed = item => !!item && item.need_human_review === false && !invalidReason(item);
+  const warning = item => confirmed(item) ? null : item && normalize(item.value) != null && !invalidReason(item)
+    ? "是否制扁未确认，未写入SW参数。" : "是否制扁缺失或存在冲突，未写入SW参数。";
+  return { normalize, ensure, invalidReason, confirmed, warning,
+    label: value => ({ 0: "不制扁", 1: "制扁" })[normalize(value)] ?? String(value ?? "") };
+})();
+
 const COMPRESSION_CORE_PARAMETER_FIELDS = new Set([
   "material",
   "standard_no",
@@ -365,6 +408,7 @@ const COMPRESSION_CORE_PARAMETER_FIELDS = new Set([
   "handedness",
   "end_type",
   "end_grinding",
+  "flattening",
 ]);
 
 const COMPRESSION_GENERATION_CORE_FIELDS = [
@@ -377,7 +421,7 @@ const COMPRESSION_GENERATION_CORE_FIELDS = [
   "end_grinding",
   "end_coils_closed",
 ];
-const COMPRESSION_GENERATION_OPTIONAL_EXPORT_FIELDS = ["material"];
+const COMPRESSION_GENERATION_OPTIONAL_EXPORT_FIELDS = ["material", "flattening"];
 const COMPRESSION_GENERATION_EXPORT_FIELDS = [
   ...COMPRESSION_GENERATION_OPTIONAL_EXPORT_FIELDS,
   ...COMPRESSION_GENERATION_CORE_FIELDS,
@@ -395,6 +439,7 @@ const COMPRESSION_GENERATION_DEFAULTS = {
 
 const COMPRESSION_GENERATION_UNITS = {
   material: null,
+  flattening: null,
   wire_diameter: "mm",
   mean_diameter: "mm",
   free_length: "mm",
@@ -407,6 +452,7 @@ const COMPRESSION_GENERATION_UNITS = {
 
 const COMPRESSION_GENERATION_LABELS = {
   material: "材料",
+  flattening: "是否制扁",
   wire_diameter: "线径",
   mean_diameter: "中径",
   free_length: "自由长度",
@@ -472,6 +518,7 @@ const LOCAL_SPRING_TEMPLATES = {
       { key: "pitch", label: "节距", unit: "mm" },
       { key: "end_type", label: "端部形式" },
       { key: "end_grinding", label: "端面磨削" },
+      { key: "flattening", label: "是否制扁" },
       { key: "spring_rate", label: "刚度", unit: "N/mm" },
       { key: "perpendicularity", label: "垂直度", unit: "mm" },
       { key: "straightness", label: "直线度", unit: "mm" },
@@ -3228,7 +3275,7 @@ function reviewLoadingStatus(text = "", error = false) {
   if (text) { const label=document.createElement("span");label.textContent=text;notice.append(label); }
   if (error) { const retry=document.createElement("button");retry.type="button";retry.textContent="重试加载";retry.onclick=()=>void openPersistedReview(reviewSync.target);notice.append(retry); }
   for (const node of document.querySelectorAll("[data-review-message-id], .compare-data-panel")) node.inert = reviewSync.locked;
-  for (const button of [exportButton, ...compareOverlay.querySelectorAll('[data-action="export"], [data-annotation-action="edit"], [data-annotation-action="relocalize"]')]) {
+  for (const button of [exportButton, ...compareOverlay.querySelectorAll('[data-annotation-action="edit"], [data-annotation-action="relocalize"]')]) {
     if(reviewSync.locked){if(!button.dataset.syncDisabled)button.dataset.syncDisabled=String(button.disabled);button.disabled=true;}
     else if(button.dataset.syncDisabled){button.disabled=button.dataset.syncDisabled==='true';delete button.dataset.syncDisabled;}
   }
@@ -3655,17 +3702,12 @@ function renderReviewBody(body, title, context = activeReviewContext(), messageI
     ${renderPreviewHtml(imageUrl)}
     <div class="review-actions">
       <button type="button" data-action="fullscreen">进入审图工作台</button>
-      <button type="button" data-action="export" ${review ? "" : "disabled"}>导出确认版</button>
     </div>
     ${renderStandardizationChatHtml(review)}
   `;
   body.querySelector('[data-action="fullscreen"]').addEventListener("click", () => {
     activateReviewContext(messageId);
     openCompareOverlay();
-  });
-  body.querySelector('[data-action="export"]').addEventListener("click", () => {
-    activateReviewContext(messageId);
-    downloadJson(makeExportReview(), "spring_review_confirmed.json");
   });
   bindReviewEditors(body, messageId);
 }
@@ -4766,106 +4808,117 @@ function confirmationSheetService() {
 }
 
 async function buildConfirmationSheetSnapshot(context) {
-  const review = context.review, params = review.spring_parameters || {};
-  let notice = "";
-  // This existing endpoint is deterministic and read-only. Its response belongs
-  // solely to the report copy, never to state.review or the persistence queue.
+  const review = structuredClone(context.review), params = review.spring_parameters || {};
+  const knownIssues = review.parameter_reasonableness_stale ? [] : confirmationSheetIssues(review);
+  const notices = [];
+  let issues = knownIssues;
   if (state.identityReady) {
     try {
       review.parameter_reasonableness = await fetchReasonablenessAssessmentForReview(review, context.revision);
-      review.parameter_reasonableness_stale = false;
-    } catch { notice = "本次未能更新合理性检查，相关问题及建议需重新核对。"; review.parameter_reasonableness_stale = true; }
-  } else { notice = "本次未完成合理性检查，请核对相关数据。"; review.parameter_reasonableness_stale = true; }
-  // Share the editor's advanced-field policy, without its transient editing state.
-  const allFields = getParameterFields(params, review);
-  const fields = allFields.filter(field => COMPRESSION_CORE_PARAMETER_FIELDS.has(field)
-    || shouldShowAdvancedParameter(field, params[field], review));
-  const valueText = (value, unit = "") => value == null || String(value).trim() === "" ? "待补充" : `${value}${unit ? ` ${unit}` : ""}`;
-  const status = (item, field, kind = "parameter") => {
-    const missing = kind === "parameter" ? item?.value == null || String(item.value).trim() === "" : kind === "technical" ? !String(item?.content || "").trim() : false;
-    const stale = item?.derived_value_stale || item?.formula_recommendation_stale || item?.diameter_linkage_error;
-    const invalid = kind === "parameter" ? parameterConfirmationInvalidReason(field, item)
-      : kind === "load_point" && (!isValidLoadPoint(item) || isDuplicateLoadPointLabel(review, item.label, item.load_point_id)) ? "请核对载荷点编号、高度、力值及单位。" : "";
-    const control = confirmationControlState(item, { kind, field, review });
-    return { state: missing ? "待补充" : stale ? "已失效" : invalid || control.state === "invalid" || reasonablenessSeverityForField(review, field) ? "需核对" : control.state === "confirmed" && item?.need_human_review === false ? "已确认" : "待确认",
-      reason: stale ? item?.diameter_linkage_error || "计算依据已变化，请核对当前值。" : invalid || (control.state === "invalid" ? control.reason : "") };
+      issues = confirmationSheetIssues(review);
+    } catch { notices.push('本次未能更新合理性检查；保留已知问题，请在内部审图中复核。'); }
+  } else notices.push('本次未更新合理性检查，请在内部审图中复核。');
+  const valueText = (value, unit = '') => value == null || String(value).trim() === '' ? '未注明' : `${value}${unit ? ` ${unit}` : ''}`;
+  const human = confirmationSheetHumanValue;
+  const conflicts = field => (review.conflicts || []).filter(item => item.field === field || String(item.field).startsWith(`${field}.`));
+  const explicitProblems = item => {
+    const result = [];
+    if (item?.diameter_role_conflict || item?.value_conflict || item?.conflict || item?.material_conflict || item?.content_conflict) result.push('当前记录存在未解决的数值或要求冲突，请核对并提供明确内容。');
+    if (item?.customer_question) result.push(String(item.customer_question));
+    return result;
   };
-  const parameters = fields.map(field => {
+  const parameters = ParameterConfirmationSheet.parameterFields.map(field => {
     const item = params[field] || {}, meta = getFieldMeta(field, review);
-    const display = field === "handedness" && item.value ? handednessDisplayLabel(item.value)
-      : field === "controlled_diameter_field" && item.value ? getFieldMeta(item.value, review).label : item.value;
-    const heightKind = field === "solid_height" && typeof CompressionDesignChecks !== "undefined" ? CompressionDesignChecks.solidHeightKind(item) : "";
-    const label = field === "spring_rate" ? "当前刚度（参数值）" : field === "solid_height"
-      ? ({ input_height: "压并高度（图纸／人工值）", nominal_estimate: "压并高度（名义估算值）", reference_limit: "压并高度（上限参考值）" }[heightKind] || "压并高度（参数值）") : meta.label;
-    return { id: `param:${field}`, field, label, value: display == null || String(display).trim() === "" ? null : display,
-      current: valueText(display, parameterDisplayUnit(item.unit || meta.unit)), unit: parameterDisplayUnit(item.unit || meta.unit),
-      tolerance: ParameterConfirmationSheet.tolerance(item), ...status(item, field) };
+    const value = field === 'handedness' && item.value ? handednessDisplayLabel(item.value) : item.value;
+    const unit = parameterUnitLabel(field, meta.label, item, meta).unit;
+    const problems = explicitProblems(item);
+    const conflict = !human(item) && item.need_human_review !== false ? conflicts(field) : [];
+    if (conflict.length) problems.push('原图或识别来源的参数不一致，请确认采用值及公差。');
+    const provisional = confirmationSheetProvisionalDefault(params, field);
+    const stale = confirmationSheetStaleValue(item) && !problems.length && !conflict.length;
+    if (stale) notices.push(`${meta.label}的派生值已过期，未列入确认单，请先在内部审图中处理。`);
+    if (!provisional && !stale && item.value != null && String(item.value).trim() !== '') {
+      const invalid = parameterConfirmationInvalidReason(field, item);
+      if (invalid) problems.push(invalid);
+      if (field === 'material') {
+        if (typeof item.value !== 'string') problems.push('材料牌号格式无效，请明确材料。');
+      } else if (field !== 'handedness' && (ToleranceValues.number(item.value) == null || Number(item.value) <= 0)) {
+        problems.push('参数必须为有限正数，请核对原图数值及单位。');
+      }
+      if (!['material','handedness'].includes(field) && !confirmationSheetUnitValid(unit, field.includes('coils') ? 'coils' : 'length')) problems.push('参数单位无法识别，请明确单位。');
+      const checkedTolerance = ToleranceValues.validate(item.tolerance_upper, item.tolerance_lower);
+      if (!checkedTolerance.ok) problems.push(checkedTolerance.error);
+    }
+    const tolerance = ParameterConfirmationSheet.tolerance(item);
+    let current = `${valueText(value, unit)}${tolerance !== '—' ? `，公差 ${tolerance}` : ''}`;
+    if (conflict.length) {
+      const values = [...new Set(conflict.flatMap(item => item.values || []))];
+      if (values.length) current = `候选值：${values.map(value => valueText(value, unit)).join(' / ')}`;
+    }
+    return { id: `param:${field}`, field, label: meta.label, required: !!meta.required, value, unit,
+      tolerance, current, provisional_default: provisional,
+      internal_only: !!stale, customer_issues: [...new Set(problems)] };
   });
   const loads = (params.load_points || []).map((point, index) => {
-    const field = loadPointField(point, index), height = valueText(point.height, point.height_unit || "mm"), force = valueText(point.force, point.force_unit || "N");
-    return { id: `load:${point.load_point_id || index}`, field, label: point.label || `载荷点${index + 1}`,
-      current: `高度 ${height}；力值 ${force}`, height, force, tolerance: ParameterConfirmationSheet.tolerance(point, true), ...status(point, field, "load_point") };
+    const field = loadPointField(point, index), height = valueText(point.height, point.height_unit || 'mm'), force = valueText(point.force, point.force_unit || 'N');
+    const problems = explicitProblems(point);
+    if (!human(point) && point.need_human_review !== false && conflicts(field).length) problems.push('原图或识别来源的载荷标注不一致，请确认高度、力值及公差。');
+    if (!isValidLoadPoint(point) || ToleranceValues.number(point.height) == null || ToleranceValues.number(point.force) == null || !confirmationSheetUnitValid(point.height_unit || 'mm','length') || !confirmationSheetUnitValid(point.force_unit || 'N','force') || isDuplicateLoadPointLabel(review, point.label, point.load_point_id)) problems.push('请明确唯一的载荷点编号、有效测试高度、力值及单位。');
+    if (point.tolerance_input_draft) problems.push('载荷公差格式无效，请明确公差。');
+    const rawTolerance = ToleranceValues.read(point, true);
+    const checkedTolerance = ToleranceValues.validate(rawTolerance.upper, rawTolerance.lower, rawTolerance.percent);
+    if (!checkedTolerance.ok) problems.push(checkedTolerance.error);
+    const tolerance = ParameterConfirmationSheet.tolerance(point, true);
+    return { id: `load:${point.load_point_id || index}`, field, label: point.label || `载荷点${index + 1}`, number: index + 1,
+      current: `高度 ${height}；力值 ${force}${tolerance !== '—' ? `；公差 ${tolerance}` : ''}`, height, force, tolerance,
+      customer_issues: [...new Set(problems)] };
   });
   const requirements = technicalRequirementGroups(review).map(group => {
-    const { item, index } = group.representative, control = technicalGroupControl(group.members, review);
-    const content = TechnicalRequirementEquivalence.format(item);
+    const { item, index } = group.representative;
+    const content = TechnicalRequirementEquivalence.format(item), problems = explicitProblems(item);
+    if (/(?:待客户(?:明确|确认|提供)|(?:具体工艺|处理方式|技术要求)(?:未注明|未明确|待定))/.test(content)) problems.push('原文要求尚未明确，请补充具体要求。');
     return { id: `technical:${item.requirement_id || index}`, field: technicalRequirementField(item, index),
-      label: TECH_LABELS[normalizeTechnicalRequirementType(item.type)] || "技术要求", content, current: content.length > 160 ? `${content.slice(0, 160)}…（全文见技术要求）` : content || "待补充",
-      state: control.state === "invalid" || control.state === "validating" ? "需核对" : technicalGroupStatus(group.members, review),
-      reason: control.state === "invalid" ? control.reason : "" };
+      number: index + 1, label: TECH_LABELS[normalizeTechnicalRequirementType(item.type)] || '技术要求',
+      content, current: content || '未注明', customer_issues: [...new Set(problems)] };
   });
-  // Valid suggestions for an optional empty field still belong in the issues
-  // section; they must not manufacture an empty parameter row.
-  const reportableFields = new Set(allFields.filter(field => !SPECIALIZED_ACCURACY_PARAMETER_FIELDS.has(field)));
-  const suggestions = reasonablenessSuggestions(review).filter(item => item.status !== "applied" && reportableFields.has(item.target_field)
-    && (item.status === "stale" || reasonablenessSuggestionHasEffectiveChange(item))
-    && (item.suggested_value != null || item.suggested_tolerance_upper != null || item.suggested_tolerance_lower != null)).map(item => ({
-    field: item.target_field, label: getFieldMeta(item.target_field, review).label,
-    stale: item.status === "stale" || !reasonablenessSuggestionIsFresh(item, review),
-    value: formatReasonablenessSuggestionValue(item.target_field, item.suggested_value, item.suggested_tolerance_upper, item.suggested_tolerance_lower, item.unit),
-    basis: String(item.basis || item.rule_id || "").slice(0, 280),
-  }));
-  // Local formula candidates can be recomputed without applying them. Other
-  // outdated standard recommendations remain explicitly unavailable.
-  let checks = null;
-  if (typeof CompressionDesignChecks !== "undefined") {
-    checks = CompressionDesignChecks.calculate(params, review.spring_features || {}, context.materialCatalog || {});
-    for (const [field, calculation] of [["spring_rate", checks.metrics.theoretical_spring_rate], ["solid_height", checks.nominal_solid_height || checks.metrics.nominal_solid_height], ["pitch", checks.pitch_calculation]]) {
-      if (calculation?.value == null || !Number.isFinite(calculation.value) || !(params[field]?.value == null || params[field]?.value === "" || params[field]?.derived_value_stale || params[field]?.formula_recommendation_stale)) continue;
-      const computed = { field, value: `${Number(calculation.value.toFixed(4))} ${calculation.unit || ""}`.trim(), basis: calculation.formula || calculation.basis || "现有公式计算", stale: false };
-      for (let index = suggestions.length - 1; index >= 0; index--) if (suggestions[index].field === field && suggestions[index].stale && (review.parameter_reasonableness?.suggestions || []).some(s => s.target_field === field && s.source === "formula")) suggestions.splice(index, 1);
-      if (!suggestions.some(s => s.field === field && !s.stale && s.value.replace(/\s+/g, "") === computed.value.replace(/\s+/g, ""))) suggestions.push(computed);
-    }
-  }
-  const roughness = params.surface_roughness_ra;
-  if (typeof SurfaceRoughnessReference !== "undefined" && SurfaceRoughnessReference.eligible(roughness) && !SurfaceRoughnessReference.dismissed(roughness)) {
-    for (const value of [12.5, 6.3]) suggestions.push({ field: "surface_roughness_ra", value: `Ra ${value} μm · 两端面`, basis: "项目参考，非原图识别值", stale: false });
-  }
   const summary = review.drawing_summary || {};
-  return ParameterConfirmationSheet.buildModel({ parameters: parameters.filter(item => COMPRESSION_CORE_PARAMETER_FIELDS.has(item.field)),
-    advanced: parameters.filter(item => !COMPRESSION_CORE_PARAMETER_FIELDS.has(item.field)),
-    calculations: ParameterConfirmationSheet.calculationRows(checks, field => getFieldMeta(field, review).label, {
-      review, assessmentAvailable: !notice,
-      parameterState: field => status(params[field], field),
-      loadState: point => status(point, loadPointField(point, params.load_points.indexOf(point)), "load_point"),
-    }), assessmentAvailable: !notice,
-    loads, requirements, suggestions,
-    issues: review.parameter_reasonableness_stale ? [] : confirmationSheetIssues(review), notice,
-    info: { drawingName: summary.drawing_name || "", drawingNo: summary.drawing_no || "", variant: review.multi_spec_origin?.code || (review.multi_spec_origin?.order ? `规格${review.multi_spec_origin.order}` : ""),
-      preparer: context.identity?.real_name?.trim() || context.identity?.username || "", date: new Date().toLocaleDateString("zh-CN"), revision: context.revision, local: !context.jobId } });
+  return ParameterConfirmationSheet.buildModel({ parameters, loads, requirements, issues, notice: [...new Set(notices)].join(' '),
+    info: { drawingName: summary.drawing_name || '', drawingNo: summary.drawing_no || '', variant: review.multi_spec_origin?.code || (review.multi_spec_origin?.order ? `规格${review.multi_spec_origin.order}` : ''),
+      preparer: context.identity?.real_name?.trim() || context.identity?.username || '', date: new Date().toLocaleDateString('zh-CN'), local: !context.jobId } });
 }
 
 function confirmationSheetIssues(review) {
-  return (review.parameter_reasonableness?.issues || []).flatMap(issue => {
-    if (!issue.fields?.length) return [issue];
-    const fields = issue.fields.filter(field => !SPECIALIZED_ACCURACY_PARAMETER_FIELDS.has(String(field).split(".")[0]));
-    if (!fields.length) return [];
-    // Optional missing fields are not customer questions by themselves. Keep
-    // actual risks and missing dependencies for other engineering checks.
-    if (issue.severity === "needs_input" && fields.every(field => OPTIONAL_ADVANCED_PARAMETER_FIELDS.has(field)
-      && !hasAdvancedParameterValue(review.spring_parameters?.[field]))) return [];
-    return [{ ...issue, fields }];
-  });
+  return (review.parameter_reasonableness?.issues || []).filter(issue => ParameterConfirmationSheet.reportableIssue(issue))
+    .filter(issue => !(issue.fields || []).some(field => {
+      const item = review.spring_parameters?.[String(field).split('.')[0]];
+      if (!item || Array.isArray(item)) return false;
+      return confirmationSheetStaleValue(item) || confirmationSheetProvisionalDefault(review.spring_parameters, String(field).split('.')[0]);
+    }))
+    .map(issue => ({ ...issue, customer_question: issue.rule_id === 'SPRING-GEO-COIL-COUNT' ? '请确认总圈数与有效圈数的正确数值。' : String(issue.customer_question || '').replace(/^请客户/, '请'), fields: (issue.fields || []).filter(field => ParameterConfirmationSheet.parameterFields.includes(String(field).split('.')[0])
+      || field === 'load_points' || String(field).startsWith('load_points.') || field === 'technical_requirements' || String(field).startsWith('technical_requirements.')) }))
+    .filter(issue => issue.fields.length);
+}
+
+function confirmationSheetHumanValue(item) {
+  return !!item?.human_modified || sourceValues(item?.source).some(source => /^(human|manual)/.test(source) || source === 'parameter_change_proposal');
+}
+
+function confirmationSheetStaleValue(item) {
+  return !!item?.derived_value_stale && !item.human_modified && !sourceValues(item.source).some(source => /^(human_edited|manual)/.test(source) || source === 'parameter_change_proposal');
+}
+
+function confirmationSheetUnitValid(unit, kind) {
+  const units = { length: ['mm','毫米','cm','m','in','inch','英寸'], coils: ['圈','turn','turns','coil','coils'], force: ['n','牛','kn','kgf'] };
+  return units[kind].includes(String(unit || '').trim().toLowerCase());
+}
+
+function confirmationSheetProvisionalDefault(params, field, path = []) {
+  const item = params?.[field];
+  if (!item || item.need_human_review === false || confirmationSheetHumanValue(item) || path.includes(field)) return false;
+  if (sourceValues(item.source).some(source => /formula|derived|company_active_coil_rule/.test(source)) && item.source_fields?.length) {
+    return item.source_fields.some(parent => confirmationSheetProvisionalDefault(params, parent, [...path, field]));
+  }
+  return usesSystemDefaultCandidate(item);
 }
 
 function renderParameterTableHtml(review) {
@@ -5630,7 +5683,7 @@ function parameterDisplayUnit(unit) {
 
 function parameterUnitLabel(field, label, param = {}, meta = {}) {
   const unitless = [
-    "material", "standard_no", "accuracy_grade", "handedness", "end_type", "end_grinding",
+    "material", "standard_no", "accuracy_grade", "handedness", "end_type", "end_grinding", "flattening",
     "end_coils_closed", "spring_family", "spring_shape", "manufacturing_method", "wire_section",
     "pitch_type", "controlled_diameter_field", "leg_end_type", "hook_type", "hook1_type",
     "hook2_type", "hook_orientation", "ring_type",
@@ -5653,7 +5706,7 @@ function parameterUnitLabelHtml(label) {
 }
 
 function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)) {
-  const defaultCandidateNotice = pendingDefaultCandidateNotice(param);
+  const defaultCandidateNotice = field === "flattening" ? "" : pendingDefaultCandidateNotice(param);
   let label = meta.label || FIELD_LABELS[field] || field;
   const requiredMark = meta.required ? " *" : "";
   const badges = [];
@@ -5698,12 +5751,15 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
   const roughnessCandidates = field === "surface_roughness_ra" ? surfaceRoughnessCandidatesHtml(param) : "";
   const materialNotes = field === "material" && isCompressionSpringReview(state.review) ? materialSelectionNotesHtml(param) : "";
   const displayLabel = parameterUnitLabel(field, label, param, meta);
-  const wideInput = ["material", "standard_no", "accuracy_grade"].includes(field)
-    && isCompressionSpringReview(state.review) && !formatTolerance(param).trim();
+  const withoutTolerance = ["handedness", "end_type", "end_grinding", "flattening"].includes(field);
+  const wideInput = withoutTolerance || (["material", "standard_no", "accuracy_grade"].includes(field)
+    && isCompressionSpringReview(state.review) && !formatTolerance(param).trim());
   return `
     <div class="data-row${wideInput ? " parameter-wide-input" : ""}${reasonablenessSeverity ? ` parameter-risk-${escapeHtml(reasonablenessSeverity)}` : ""}" data-kind="param" data-field="${escapeHtml(field)}">
       <div class="data-label">
-        ${typeof DrawingAnnotations !== "undefined" ? DrawingAnnotations.badgeHtml(field, param) : ""}
+        ${field === "flattening" && isCompressionSpringReview(state.review)
+          ? '<span class="parameter-annotation-number parameter-display-number">13</span>'
+          : typeof DrawingAnnotations !== "undefined" ? DrawingAnnotations.badgeHtml(field, param) : ""}
         <strong title="${escapeHtml(displayLabel.text)}">${parameterUnitLabelHtml(displayLabel)}${escapeHtml(requiredMark)}</strong>
         ${field === "spring_rate" && param.formula_material_catalog_stale ? `<small class="parameter-formula-reference-note">${escapeHtml(param.formula_calculation_reason || "公司材料表剪切模量已更新，请核对最新刚度建议。")}</small>` : ""}
         ${param.recognition_role_notice ? `<small class="parameter-default-candidate-note">${escapeHtml(param.recognition_role_notice)}</small>` : ""}
@@ -5715,17 +5771,17 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
         <span class="parameter-field-label" aria-hidden="true">数值</span>
         ${parameterValueControlHtml(field, param, displayLabel.text)}
       </label>
-      <div class="data-input-cell data-secondary">
+      ${withoutTolerance ? "" : `<div class="data-input-cell data-secondary">
         <span class="parameter-field-label" aria-hidden="true">公差</span>
         <div class="tolerance-input-control"><input data-role="tolerance" aria-label="${escapeHtml(displayLabel.text)}公差" title="${escapeHtml(formatTolerance(param) || '可输入 ±0.1、+0.1/-0.2，或点击编辑公差')}" value="${escapeHtml(formatTolerance(param))}"${getToleranceEditor()?.matching("parameter", field) ? " readonly" : ""}>
         ${supportsToleranceEditor(field, param, meta) ? getToleranceEditor()?.button("parameter", field, label) || "" : ""}</div>
-      </div>
+      </div>`}
       ${confirmationButtonHtml(param, { kind: "parameter", field, review: state.review })}
       ${roughnessCandidates}
       ${field === "surface_roughness_ra" && isCompressionSpringReview(state.review) ? `<div class="roughness-reference" data-role="roughness-reference" role="group" aria-label="粗糙度常规参考">${surfaceRoughnessReferenceHtml(param)}</div>` : ""}
       ${materialNotes}
       <div class="parameter-formula-candidate" data-role="formula-candidate">${["active_coils", "support_coils", "pitch", "solid_height"].includes(field) || param.diameter_linkage_managed ? formulaCandidateHtml(param) : ""}</div>
-      ${getToleranceEditor()?.html("parameter", field) || ""}
+      ${withoutTolerance ? "" : getToleranceEditor()?.html("parameter", field) || ""}
     </div>
   `;
 }
@@ -6527,6 +6583,11 @@ function rawGenerationParameter(parameters, field) {
 }
 
 function generationContractValue(field, rawValue) {
+  if (field === "flattening") {
+    const value = Flattening.normalize(rawValue);
+    if (value == null) throw new Error("是否制扁只能选择0（不制扁）或1（制扁）");
+    return value;
+  }
   if (field === "material") {
     if (typeof rawValue !== "string" || !rawValue.trim()) throw new Error("材料必须为非空文本");
     return rawValue.trim();
@@ -6568,6 +6629,7 @@ function generationContractValue(field, rawValue) {
 function generationContractState(parameters, field) {
   const item = generationSourceParameter(parameters, field);
   if (!item) return "missing";
+  if (field === "flattening") return Flattening.invalidReason(item) ? "invalid" : Flattening.confirmed(item) ? "confirmed" : "pending";
   if (item.need_human_review) return "pending";
   try {
     generationContractValue(field, item.value);
@@ -6580,7 +6642,7 @@ function generationContractState(parameters, field) {
 function applyGenerationDefaults(review) {
   if (currentSpringType(review) !== "compression_spring") return [];
   review.spring_parameters ||= {};
-  const applied = [];
+  const applied = Flattening.ensure(review) ? ["flattening"] : [];
   Object.entries(COMPRESSION_GENERATION_DEFAULTS).forEach(([field, value]) => {
     if (["active_coils", "mean_diameter"].includes(field)) return;
     if (generationSourceParameter(review.spring_parameters, field)) return;
@@ -6647,6 +6709,8 @@ function assessGenerationReadiness(review) {
     }
     else confirmed += 1;
   });
+  const flatteningWarning = Flattening.warning(parameters.flattening);
+  if (flatteningWarning) warnings.push(generationIssue("flattening", flatteningWarning, "是否制扁"));
   const materialState = generationContractState(parameters, "material");
   if (materialState !== "confirmed") {
     const materialWarnings = {
@@ -8957,6 +9021,7 @@ function formatStandardValue(value, unit = "") {
 
 function formatParameterDisplayValue(field, value, unit = "") {
   if (value == null || value === "") return "-";
+  if (field === "flattening") return Flattening.label(value);
   if (String(field || "") === "handedness") return handednessDisplayLabel(value) || "-";
   return formatStandardValue(value, unit);
 }
@@ -9245,8 +9310,8 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       refreshCompressionDesignChecks(root, review);
       scheduleParameterReasonablenessRefresh(messageId);
     };
-    toleranceInput.addEventListener("input", applyToleranceDraft);
-    toleranceInput.addEventListener("change", (event) => {
+    toleranceInput?.addEventListener("input", applyToleranceDraft);
+    toleranceInput?.addEventListener("change", (event) => {
       if (!editorIsCurrent()) return;
       if (!toleranceBeforeState) applyToleranceDraft(event);
       const afterState = parameterAuditState(param);
@@ -10897,10 +10962,6 @@ function renderCompareOverlay() {
           <h2>审图工作台</h2>
           <p>左侧查看原图，右侧按待处理事项完成核对、标准化与生图。</p>
         </div>
-        <div class="compare-actions">
-          <button type="button" data-action="export">导出确认版</button>
-          <button type="button" data-action="close">缩小</button>
-        </div>
       </header>
       <div class="compare-layout">
         <section class="compare-drawing-panel">
@@ -10919,10 +10980,6 @@ function renderCompareOverlay() {
     if(replacement){const url=replacement.querySelector('img')?.getAttribute('src');replacement.replaceWith(keptViewport);
       if(url&&image.getAttribute('src')!==url)image.src=url;}
   }
-  compareOverlay.querySelector('[data-action="close"]').addEventListener("click", closeCompareOverlay);
-  compareOverlay.querySelector('[data-action="export"]').addEventListener("click", () => {
-    downloadJson(makeExportReview(), "spring_review_confirmed.json");
-  });
   bindCompareTabs(compareOverlay);
   // Viewer controls stay usable even if a separate editor fails to bind.
   initializeCompareViewer();
@@ -11023,7 +11080,7 @@ function buildSafeConfirmationPlan(review) {
       skip(group, field, label, invalidReason);
       return;
     }
-    if (hasSystemDefault) {
+    if (hasSystemDefault && field !== "flattening") {
       skip(group, field, label, DEFAULT_CANDIDATE_NOTICE);
       return;
     }
@@ -11104,6 +11161,7 @@ function safeConfirmableReviewItems(review) {
 }
 
 function bulkParameterInvalidReason(field, param) {
+  if (field === "flattening") return Flattening.invalidReason(param);
   if (param?.diameter_role_conflict) return "多条原图直径尺寸不一致，请核对后单独确认";
   if (param?.derived_value_stale || param?.formula_recommendation_stale) return "公式结果已过期，请应用新候选值后确认";
   if (param?.value == null || param.value === "") return "参数值缺失";
@@ -11119,6 +11177,7 @@ function bulkParameterInvalidReason(field, param) {
 }
 
 function parameterConfirmationInvalidReason(field, param) {
+  if (field === "flattening") return Flattening.invalidReason(param);
   const value = param?.value;
   if (value == null || String(value).trim() === "") return "请先填写参数值";
   if (param?.tolerance_input_draft) return "公差格式应为 ±0.05 或 +0.1/-0.1";
@@ -11967,6 +12026,10 @@ function refreshMaterialCatalogControls() {
 }
 
 function parameterValueControlHtml(field, param, label) {
+  if (field === "flattening") {
+    const value = Flattening.normalize(param.value);
+    return `<select data-role="value" aria-label="${escapeHtml(label)}">${value == null ? '<option value="" selected>请选择</option>' : ""}${[0, 1].map(option => `<option value="${option}"${value === option ? " selected" : ""}>${Flattening.label(option)}</option>`).join("")}</select>`;
+  }
   if (field === "material" && isCompressionSpringReview(state.review)) {
     const name = materialDisplayValue(param?.value) || "请选择材料";
     const disabled = state.materialCatalog.status === "ready" ? "" : " disabled";
@@ -12402,14 +12465,15 @@ function applyPreviewFrame(image) {
   else {delete image.dataset.logicalWidth;delete image.dataset.logicalHeight;image.style.width="";image.style.height="";}
 }
 function renderCompareViewerHtml() {
+  const returnButton = `<button type="button" class="compare-return-button" data-action="close">返回目录</button>`;
   if (!state.imageUrl) {
-    return `<div class="compare-viewer empty-line">未加载图纸预览</div>`;
+    return `<div class="compare-viewer"><div class="compare-tools">${returnButton}</div><div class="empty-line">未加载图纸预览</div></div>`;
   }
   return `
     <div class="compare-viewer${typeof DrawingAnnotations !== "undefined" && state.lastJob?.job_id && isCompressionSpringReview(state.review) ? " with-annotations" : ""}">
       <div class="compare-tools">
+        ${returnButton}
         <button type="button" data-view-action="fit">适应窗口</button>
-        <button type="button" data-view-action="zoom-out">缩小</button>
         <span id="compareZoomLabel">100%</span>
         <button type="button" data-view-action="zoom-in">放大</button>
         <button type="button" data-view-action="actual">100%</button>
@@ -12439,6 +12503,8 @@ function refreshCompareViewer() {
   initializeCompareViewer();if(reviewSync.locked)reviewLoadingStatus(reviewSync.error?`加载失败：${reviewSync.error}`:'正在核对最新版本…',Boolean(reviewSync.error));
 }
 function initializeCompareViewer() {
+  const returnButton = compareOverlay.querySelector('[data-action="close"]');
+  if (returnButton) returnButton.onclick = closeCompareOverlay;
   const viewport = compareOverlay.querySelector("#compareViewport");
   const image = compareOverlay.querySelector("#compareImage");
   if (!viewport || !image) return;
@@ -12471,9 +12537,6 @@ function initializeCompareViewer() {
   });
   compareOverlay.querySelector('[data-view-action="zoom-in"]').addEventListener("click", () => {
     zoomCompareImage(1.2);
-  });
-  compareOverlay.querySelector('[data-view-action="zoom-out"]').addEventListener("click", () => {
-    zoomCompareImage(1 / 1.2);
   });
   compareOverlay.querySelector('[data-view-action="rotate-left"]').addEventListener("click", () => rotateCompareImage(-90));
   compareOverlay.querySelector('[data-view-action="rotate-right"]').addEventListener("click", () => rotateCompareImage(90));
@@ -13785,6 +13848,12 @@ function getSpringTemplate(review) {
   const currentType = currentSpringType(review);
   const backendTemplate = review?.spring_template;
   if (normalizeSpringTypeValue(backendTemplate?.spring_type) === currentType && Array.isArray(backendTemplate.fields)) {
+    if (currentType === "compression_spring" && !backendTemplate.fields.some(field => field.key === "flattening")) {
+      const fields = backendTemplate.fields.slice();
+      const position = fields.findIndex(field => field.key === "end_grinding");
+      fields.splice(position < 0 ? fields.length : position + 1, 0, { key: "flattening", label: "是否制扁" });
+      return { ...backendTemplate, fields };
+    }
     return backendTemplate;
   }
   return getLocalTemplate(currentType);
@@ -13849,6 +13918,7 @@ function acknowledgeScannedInput() {
 }
 
 function confirmParam(param, field) {
+  if (field === "flattening") param.value = Flattening.normalize(param.value);
   const acceptsDefaultAccuracy = field === "accuracy_grade" && param?.default_source === "company_default";
   param.need_human_review = false;
   param.confidence = Math.max(Number(param.confidence) || 0, 0.99);
@@ -13948,6 +14018,13 @@ function syncAccuracyInferenceInput(review, field, options = {}) {
 }
 
 function applyEditedConfirmationState(item, field, options = {}) {
+  if (field === "flattening") {
+    item.value = Flattening.normalize(item.value);
+    item.unit = item.tolerance_upper = item.tolerance_lower = null;
+    ["flattening_conflict", "flattening_unverified", "conflict", "value_conflict", "confirmation_snapshot"].forEach(key => delete item[key]);
+    markParamEdited(item, field, options);
+    return "modified";
+  }
   const confirmationField = options.confirmationField || field;
   if (!item.tolerance_input_draft && confirmationSnapshotMatches(item)) {
     state.reviewEditSerial += 1;
@@ -14271,8 +14348,8 @@ function makeGenerationParameterPackage(review = state.review, options = {}) {
       label: COMPRESSION_GENERATION_LABELS[field],
       value,
       unit: COMPRESSION_GENERATION_UNITS[field],
-      tolerance_upper: field === "material" ? null : param.tolerance_upper ?? null,
-      tolerance_lower: field === "material" ? null : param.tolerance_lower ?? null,
+      tolerance_upper: ["material", "flattening"].includes(field) ? null : param.tolerance_upper ?? null,
+      tolerance_lower: ["material", "flattening"].includes(field) ? null : param.tolerance_lower ?? null,
       confirmation_source: "human_confirmed",
     };
   });

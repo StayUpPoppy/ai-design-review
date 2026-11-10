@@ -18,6 +18,7 @@ const context = vm.createContext({
   getSpringTemplate: () => ({ fields: fields.map(key => ({ key })) }),
   isCompressionSpringReview: review => review.drawing_summary.spring_type === 'compression_spring',
 });
+vm.runInContext(fs.readFileSync('frontend/parameter-confirmation-sheet.js', 'utf8'), context);
 vm.runInContext(between('const SPECIALIZED_ACCURACY_PARAMETER_FIELDS', 'const COMPRESSION_ACCURACY_GRADE_OPTIONS'), context);
 vm.runInContext(between('function getParameterFields', 'const DEFAULT_CANDIDATE_NOTICE'), context);
 vm.runInContext(between('function confirmationSheetIssues', 'function renderParameterTableHtml'), context);
@@ -59,13 +60,13 @@ review.parameter_reasonableness = { issues: [
   { severity: 'needs_input', fields: ['body_length'], message: '单纯缺值不询问客户' },
   { severity: 'warning', fields: ['straightness'], message: '实际冲突保留' },
   { fields: ['diameter_accuracy_grade'], message: '内部专项等级' },
-  { fields: ['load_accuracy_grade', 'wire_diameter'], message: '关联的尺寸风险' },
+  { severity: 'warning', category: 'geometry', fields: ['load_accuracy_grade', 'wire_diameter'], message: '关联的尺寸风险' },
   { fields: ['free_length', 'body_length'], message: '实际计算依赖不足' },
   { fields: [], message: '一般风险' },
 ] };
 const diagnosticBefore = JSON.stringify(review);
 const issues = JSON.parse(JSON.stringify(context.confirmationSheetIssues(review)));
-assert.equal(issues.length, 4);
-assert.deepEqual(issues[1].fields, ['wire_diameter']);
+assert.equal(issues.length, 1);
+assert.deepEqual(issues[0].fields, ['wire_diameter']);
 assert.equal(JSON.stringify(review), diagnosticBefore, 'report filtering does not edit saved diagnostics');
 console.log('Advanced parameter visibility tests passed: empty/value/tolerance/stale, specialized grades, multi-spec, legacy data and report issues.');

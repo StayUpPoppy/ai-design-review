@@ -37,10 +37,10 @@ const context = {
   },
   SPRING_TYPE_LABELS: { compression_spring: "压缩弹簧" },
   COMPRESSION_GENERATION_CORE_FIELDS: ["wire_diameter", "mean_diameter", "free_length", "total_coils", "active_coils", "handedness", "end_grinding", "end_coils_closed"],
-  COMPRESSION_GENERATION_EXPORT_FIELDS: ["material", "wire_diameter", "mean_diameter", "free_length", "total_coils", "active_coils", "handedness", "end_grinding", "end_coils_closed"],
+  COMPRESSION_GENERATION_EXPORT_FIELDS: ["material", "flattening", "wire_diameter", "mean_diameter", "free_length", "total_coils", "active_coils", "handedness", "end_grinding", "end_coils_closed"],
   COMPRESSION_GENERATION_DEFAULTS: { wire_diameter: 3, mean_diameter: 23, free_length: 45, total_coils: 10, active_coils: 8, end_grinding: 1, end_coils_closed: 1 },
-  COMPRESSION_GENERATION_UNITS: { material: null, wire_diameter: "mm", mean_diameter: "mm", free_length: "mm", total_coils: null, active_coils: null, handedness: null, end_grinding: null, end_coils_closed: null },
-  COMPRESSION_GENERATION_LABELS: { material: "材料", wire_diameter: "线径", mean_diameter: "中径", free_length: "自由长度", total_coils: "总圈数", active_coils: "有效圈数", handedness: "旋向", end_grinding: "两端磨削", end_coils_closed: "端圈压并" },
+  COMPRESSION_GENERATION_UNITS: { flattening: null, material: null, wire_diameter: "mm", mean_diameter: "mm", free_length: "mm", total_coils: null, active_coils: null, handedness: null, end_grinding: null, end_coils_closed: null },
+  COMPRESSION_GENERATION_LABELS: { flattening: "是否制扁", material: "材料", wire_diameter: "线径", mean_diameter: "中径", free_length: "自由长度", total_coils: "总圈数", active_coils: "有效圈数", handedness: "旋向", end_grinding: "两端磨削", end_coils_closed: "端圈压并" },
   HANDEDNESS_OPTIONS: [{ value: "left", label: "左旋" }, { value: "right", label: "右旋" }],
   currentSpringType: (review) => review.drawing_summary?.spring_type || "unknown_spring",
   normalizeTechnicalRequirementType: (value) => String(value || "other").trim() || "other",
@@ -57,6 +57,8 @@ const context = {
   formatCompactNumber: (value) => Number.isInteger(Number(value)) ? String(Number(value)) : String(Number(Number(value).toFixed(4))),
 };
 vm.createContext(context);
+vm.runInContext(fs.readFileSync("frontend/diameter-role-candidates.js", "utf8"), context);
+vm.runInContext(appSource.slice(appSource.indexOf("const Flattening ="), appSource.indexOf("const COMPRESSION_CORE_PARAMETER_FIELDS")), context);
 vm.runInContext(fs.readFileSync(new URL("../frontend/compression-design-checks.js", import.meta.url), "utf8"), context);
 vm.runInContext(fs.readFileSync(new URL("../frontend/technical-requirement-equivalence.js", import.meta.url), "utf8"), context);
 vm.runInContext(fs.readFileSync(new URL("../frontend/solidworks-export.js", import.meta.url), "utf8"), context);
@@ -290,6 +292,7 @@ function readyReview() {
       handedness: param("右旋"),
       end_type: param("两端并紧"),
       end_grinding: param("两端磨平"),
+      flattening: param(0),
       load_points: [{ label: "F1", height: 25, force: 100, need_human_review: false }],
     },
     technical_requirements: [{ type: "surface", content: "镀锌", standard_content: "公司内部镀锌", need_human_review: false }],

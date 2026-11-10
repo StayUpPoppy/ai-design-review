@@ -54,6 +54,7 @@ FIELD_SYNONYMS: dict[str, tuple[str, ...]] = {
     "end_type": ("端部形式", "端圈压并", "端部", "端型", "不压并", "压并", "并紧", "不并紧", "闭口", "开口"),
     "handedness": ("旋向", "左旋", "右旋"),
     "end_grinding": ("端面磨削", "端面磨平", "两端磨平", "两端磨削", "两端不磨削", "磨平", "不磨"),
+    "flattening": ("是否制扁", "不制扁", "制扁", "flattening"),
     "spring_rate": ("刚度", "弹簧刚度", "k"),
     "perpendicularity": ("垂直度",),
     "straightness": ("直线度",),
@@ -100,6 +101,7 @@ PLAN_TARGET_FIELDS = (
     "support_coils",
     "end_type",
     "end_grinding",
+    "flattening",
     "spring_rate",
     "perpendicularity",
     "straightness",
@@ -1383,6 +1385,9 @@ def _coerce_supplement_value(target: str, raw_value: Any) -> Any | None:
     text = str(raw_value if raw_value is not None else "").strip()
     if not text:
         return None
+    if target == "flattening":
+        from .flattening import normalize
+        return normalize(text)
     if target.endswith("accuracy_grade"):
         grade = re.search(r"([Tt123])\s*级", text)
         return f"{grade.group(1).upper()}级" if grade else None
@@ -1836,6 +1841,14 @@ def _extract_requested_value(text: str, target: str) -> tuple[Any | None, str | 
         grade = re.search(r"([Tt123])\s*级", text)
         if grade:
             return f"{grade.group(1).upper()}级", None
+    if target == "flattening":
+        from .flattening import normalize
+        assignment = re.search(r"(?:改成|改为|设置为|设为|选择|为)\s*(不制扁|制扁|[01否是])", text)
+        if assignment:
+            return normalize(assignment.group(1)), None
+        from .flattening import mentions
+        values = mentions(text)
+        return (next(iter(values)) if len(values) == 1 else None), None
     if target == "end_grinding":
         binary = re.search(r"(?:改成|改为|设置为|设为|调整到|为)?\s*([01])(?:\D|$)", text)
         if binary:

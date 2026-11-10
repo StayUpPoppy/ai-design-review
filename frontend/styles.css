@@ -3492,25 +3492,6 @@ textarea {
   font-size: 12px;
 }
 
-.compare-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.compare-actions button {
-  min-height: 32px;
-  padding: 0 10px;
-  font-size: 12px;
-}
-
-.compare-actions button:first-child {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: #fff;
-}
-
 .compare-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) clamp(430px, 32vw, 540px);
@@ -3676,6 +3657,11 @@ textarea {
 
 .annotation-anchor {
   fill: #fff;
+  visibility: hidden;
+}
+
+.drawing-annotation-layer.annotation-editing .annotation-anchor {
+  visibility: visible;
 }
 
 .annotation-bubble {
@@ -3736,6 +3722,13 @@ textarea {
   outline-offset: 2px;
 }
 
+.data-label .parameter-display-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+
 .compare-tools {
   display: flex;
   flex-wrap: wrap;
@@ -3755,6 +3748,17 @@ textarea {
   min-height: 30px;
   padding: 0 9px;
   font-size: 12px;
+}
+
+.compare-tools .compare-return-button {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.compare-return-button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 #compareZoomLabel {
@@ -6061,7 +6065,8 @@ textarea {
   font-size: 12px;
 }
 
-.compare-data-panel .data-row button {
+.compare-data-panel .data-row button,
+.compare-data-panel .data-row :where(.parameter-display-number) {
   min-height: 30px;
   padding: 0 7px;
   font-size: 12px;
@@ -6542,11 +6547,6 @@ textarea {
   .compare-head {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .compare-actions {
-    width: 100%;
-    justify-content: flex-start;
   }
 
   .composer {

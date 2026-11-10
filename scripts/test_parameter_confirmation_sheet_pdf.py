@@ -4,6 +4,7 @@ Run after test_parameter_confirmation_sheet_browser.mjs with the bundled Python
 (pypdf/Pillow) and pdftoppm. No production data or remote services are used.
 """
 from pathlib import Path
+from math import hypot
 import subprocess
 import sys
 
@@ -24,14 +25,33 @@ def check(path: Path) -> list[Image.Image]:
         assert len(reader.pages) > 1, "Long fixture must exercise real pagination"
     combined = "".join((page.extract_text() or "") for page in reader.pages)
     assert "待客户澄清事项" in combined or path.stem == "normal"
-    assert "正确" not in combined and "需修改" not in combined
+    assert "【正确】" not in combined and "需修改" not in combined
+    assert "RFI-" not in combined and "紧凑异常示例" not in combined
+    assert "客户签字 / 盖章" in combined
+    assert "设计校核结果" not in combined and "理论刚度" not in combined
+    if path.stem in {"normal", "few-rfi", "compact", "long"}:
+        for body in ("Ra12.5", "不制扁"):
+            assert "".join(combined.split()).count(body) == 1, (path.name, "original requirement missing or repeated")
+    if path.stem in {"few-rfi", "compact", "long"}:
+        compact_text = "".join(combined.split())
+        assert compact_text.count("有效圈数不能大于总圈数") == 1, (path.name, "missing or duplicate reason")
+        assert "总圈数：6.5圈；有效圈数：8圈" in compact_text
+        assert "请确认总圈数与有效圈数的正确数值" in compact_text
+        assert "补充端部形式" not in compact_text and "SPRING-GEO-COIL-COUNT" not in compact_text
+        assert compact_text.count("客户回复：") == (5 if path.stem == "long" else 4)
     if path.stem == "long":
         compact_text = "".join(combined.replace("弹簧参数确认单", "").split())
         assert "长条款结束-完整保留。" in compact_text
         assert compact_text.count("镀层厚度≥15μm，先除氢后检验；不得漏镀，作用部位按原图执行。") == 100
     for index, page in enumerate(reader.pages, 1):
-        text = page.extract_text() or ""
+        spans = []
+        def collect(text, matrix, text_matrix, font, size):
+            if text.strip():
+                spans.append((text.strip(), size * hypot(matrix[0], matrix[1])))
+        text = page.extract_text(visitor_text=collect) or ""
         assert text.count("弹簧参数确认单") == 1, (path.name, index, "missing/duplicate title")
+        assert any("弹簧参数确认单" in body and abs(size - 14) < .05 for body, size in spans), (path.name, index, "title must be 14pt")
+        assert all(size >= 8.95 for _, size in spans), (path.name, index, "text shrunk below 9pt")
         assert len(text.replace("弹簧参数确认单", "").strip()) > 20, (path.name, index, "empty page")
         assert abs(float(page.mediabox.width) - 595.28) < 1
         assert abs(float(page.mediabox.height) - 841.89) < 1

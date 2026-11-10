@@ -4,6 +4,7 @@ from math import isfinite
 from typing import Any
 
 from .material_catalog import material_catalog_display_value
+from . import flattening
 
 from .end_conditions import (
     END_GRINDING_GROUND,
@@ -15,7 +16,7 @@ from .end_conditions import (
 )
 
 
-# V2 adds a non-geometric, optional material property.  Keep the mandatory
+# V2 supports optional material and flattening properties.  Keep the mandatory
 # geometry contract separate so all readiness and template matching rules stay
 # anchored to the original eight SolidWorks modelling inputs.
 GENERATION_SCHEMA_VERSION = "spring_generation_parameters/v2"
@@ -29,7 +30,7 @@ COMPRESSION_GENERATION_INPUT_FIELDS = (
     "end_grinding",
     "end_coils_closed",
 )
-COMPRESSION_GENERATION_OPTIONAL_EXPORT_FIELDS = ("material",)
+COMPRESSION_GENERATION_OPTIONAL_EXPORT_FIELDS = ("material", "flattening")
 COMPRESSION_GENERATION_EXPORT_FIELDS = (
     *COMPRESSION_GENERATION_OPTIONAL_EXPORT_FIELDS,
     *COMPRESSION_GENERATION_INPUT_FIELDS,
@@ -45,6 +46,7 @@ COMPRESSION_GENERATION_DEFAULTS: dict[str, int | float] = {
 }
 COMPRESSION_GENERATION_UNITS: dict[str, str | None] = {
     "material": None,
+    "flattening": None,
     "wire_diameter": "mm",
     "mean_diameter": "mm",
     "free_length": "mm",
@@ -56,6 +58,7 @@ COMPRESSION_GENERATION_UNITS: dict[str, str | None] = {
 }
 COMPRESSION_GENERATION_LABELS = {
     "material": "材料",
+    "flattening": "是否制扁",
     "wire_diameter": "线径",
     "mean_diameter": "中径",
     "free_length": "自由长度",
@@ -85,7 +88,7 @@ def apply_generation_defaults(review: dict[str, Any]) -> list[str]:
     if not isinstance(parameters, dict):
         return []
 
-    applied: list[str] = []
+    applied: list[str] = ["flattening"] if flattening.ensure(review) else []
     for field, default in COMPRESSION_GENERATION_DEFAULTS.items():
         # Effective coils require drawing/manual evidence or a valid end relation.
         # Neither effective coils nor a missing diameter has a universal size.
@@ -137,6 +140,8 @@ def generation_parameter_state(parameters: dict[str, Any], field: str) -> str:
     item = generation_source_item(parameters, field)
     if item is None:
         return "missing"
+    if field == "flattening":
+        return "invalid" if flattening.invalid_reason(item) else "confirmed" if flattening.confirmed(item) else "pending"
     if item.get("need_human_review"):
         return "pending"
     try:
@@ -147,6 +152,11 @@ def generation_parameter_state(parameters: dict[str, Any], field: str) -> str:
 
 
 def normalize_generation_value(field: str, value: Any) -> float | int | str:
+    if field == "flattening":
+        normalized = flattening.normalize(value)
+        if normalized is None:
+            raise ValueError("flattening must be 0 or 1")
+        return normalized
     if field == "material":
         if not isinstance(value, str):
             raise ValueError("material must be a non-empty string")
@@ -219,6 +229,8 @@ def export_generation_parameters(parameters: dict[str, Any]) -> dict[str, dict[s
         item = generation_source_item(parameters, field)
         if item is None or item.get("need_human_review"):
             continue
+        if field == "flattening" and not flattening.confirmed(item):
+            continue
         try:
             value = normalize_generation_value(field, item.get("value"))
         except ValueError:
@@ -231,8 +243,8 @@ def export_generation_parameters(parameters: dict[str, Any]) -> dict[str, dict[s
             "unit": COMPRESSION_GENERATION_UNITS[field],
             # Material is a named library property, not a dimensional value.
             # Its V2 representation intentionally keeps unit and tolerances null.
-            "tolerance_upper": None if field == "material" else item.get("tolerance_upper"),
-            "tolerance_lower": None if field == "material" else item.get("tolerance_lower"),
+            "tolerance_upper": None if field in {"material", "flattening"} else item.get("tolerance_upper"),
+            "tolerance_lower": None if field in {"material", "flattening"} else item.get("tolerance_lower"),
             "confirmation_source": "human_confirmed",
         }
     return exported

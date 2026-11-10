@@ -1370,6 +1370,12 @@ def _apply_action(review: dict[str, Any], action: dict[str, Any], *, confirmatio
     item["confidence"] = max(float(item.get("confidence") or 0), 0.99)
     item["source"] = _merge_sources(item.get("source"), ["parameter_change_proposal", confirmation_source])
     item["evidence"] = action.get("reason") or "AI对话参数修改方案经用户整体确认"
+    if target == "flattening":
+        item.update(need_human_review=True, unit=None, tolerance_upper=None, tolerance_lower=None)
+        item["source"] = _merge_sources([source for source in item["source"] if source != "human_confirmed"], ["human_edited"])
+        review.setdefault("manual_confirmations", {}).pop(target, None)
+        for key in ("confirmation_snapshot", "flattening_conflict", "flattening_unverified", "conflict", "value_conflict"):
+            item.pop(key, None)
     parameters[target] = item
     return _change(action, target, before, after, item.get("unit"))
 
@@ -1396,6 +1402,8 @@ def _apply_resolved_changes(review: dict[str, Any], proposal: dict[str, Any]) ->
             "proposal_version": proposal.get("version"),
             "confirmed_at": _now(),
         }
+        if target == "flattening":
+            review["manual_confirmations"][f"parameter_change_proposal_{target}"]["confirmed"] = False
         if target == "material":
             material = (review.get("spring_parameters") or {}).get("material") or {}
             review["manual_confirmations"][f"parameter_change_proposal_{target}"].update({
@@ -1713,6 +1721,9 @@ def _normalize_action(action: dict[str, Any]) -> dict[str, Any]:
     elif target == "end_grinding":
         binary = _binary_value(value)
         action["proposed_value"] = END_GRINDING_GROUND if binary == 1 else END_GRINDING_NOT_GROUND if binary == 0 else normalize_end_grinding(value)
+    elif target == "flattening":
+        from .flattening import normalize
+        action["proposed_value"] = normalize(value)
     elif target == "handedness":
         text = str(value or "").strip().lower()
         if text in {"左旋", "left", "left_hand", "l"}:

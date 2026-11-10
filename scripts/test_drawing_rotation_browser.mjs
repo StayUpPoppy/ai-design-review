@@ -50,6 +50,11 @@ const snapshot = ()=>page.evaluate(()=>{
   return{rotation:v.rotation,scale:v.scale,x:v.x,y:v.y,center:[center.x,center.y],key:DrawingAnnotations.entry().layout.key,document:JSON.stringify(DrawingAnnotations.entry().document),review:JSON.stringify(state.review)};
 });
 const near=(a,b)=>assert.ok(Math.abs(a-b)<.02,`${a} != ${b}`);
+const anchorsVisible = async expected => {
+  const visibility = await page.locator('.annotation-anchor').evaluateAll(elements => elements.map(el => getComputedStyle(el).visibility));
+  assert.ok(visibility.length > 0, 'Anchors remain in the DOM for geometry and history compatibility');
+  assert.ok(visibility.every(value => value === (expected ? 'visible' : 'hidden')));
+};
 const geometry = ()=>page.evaluate(()=>{
   const image=document.querySelector('#compareImage'),matrix=new DOMMatrix(image.style.transform),entry=DrawingAnnotations.entry();
   const locations=entry.document.annotations.flatMap(a=>a.locations.filter(l=>l.page===entry.page));
@@ -64,6 +69,17 @@ const geometry = ()=>page.evaluate(()=>{
 try{
   await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>state.identityReady&&state.recentReviews.length);
   await page.evaluate(async()=>{await openPersistedReview('normal');state.compareTab='parameters';renderCompareOverlay();});await ready();
+  assert.equal(await page.locator('.review-actions [data-action="export"]').count(),0);
+  assert.ok(await page.locator('.review-actions [data-action="fullscreen"]').count()>0);
+  assert.equal(await page.locator('[data-view-action="zoom-out"]').count(),0);
+  assert.equal(await page.locator('.compare-tools [data-action="close"]').textContent(),'返回目录');
+  assert.equal(await page.locator('.compare-tools [data-action="close"]').evaluate(el=>el.nextElementSibling?.dataset.viewAction),'fit');
+  await anchorsVisible(false);
+  const unmodifiedDocument=await page.evaluate(()=>JSON.stringify(DrawingAnnotations.entry().document));
+  await page.locator('.annotation-bubble').first().hover();await anchorsVisible(false);
+  await page.locator('.annotation-bubble').first().click();await ready();await anchorsVisible(false);
+  assert.equal(await page.evaluate(()=>JSON.stringify(DrawingAnnotations.entry().document)),unmodifiedDocument);
+  assert.equal(patches.length,0);
   assert.deepEqual(await page.locator('#compareOverlay .summary-strip').first().locator(':scope > .metric > span:first-child').allTextContents(),['类型','图纸名称','图号','物料编码']);
   const initial=await snapshot(),callsBefore=requests.length;
   const input=page.locator('#compareOverlay [data-role="drawing-name"]');await input.evaluate(el=>{window.rotationDraft=el;el.value='尚未提交的本地输入';});
@@ -76,12 +92,12 @@ try{
   assert.equal(requests.slice(callsBefore).filter(r=>r.m==='PATCH').length,0);
   await page.locator('[data-view-action="rotate-left"]').click();assert.equal(await angle(),270);await page.locator('[data-view-action="rotate-right"]').click();assert.equal(await angle(),0);
   await page.locator('[data-view-action="rotate-right"]').click();await page.locator('[data-view-action="actual"]').click();near((await snapshot()).scale,1);assert.equal(await angle(),90);
-  await page.locator('[data-view-action="zoom-out"]').click();near((await snapshot()).scale,1/1.2);assert.equal(await geometry(),true);
+  await page.locator('#compareViewport').dispatchEvent('wheel',{deltaY:100,clientX:250,clientY:250});near((await snapshot()).scale,1/1.12);assert.equal(await geometry(),true);
   await page.locator('[data-view-action="fit"]').click();assert.equal(await angle(),90);
-  await page.locator('[data-annotation-page]').selectOption('2');await ready();assert.equal(await angle(),0);
+  await page.locator('[data-annotation-page]').selectOption('2');await ready();assert.equal(await angle(),0);await anchorsVisible(false);
   await page.locator('[data-view-action="rotate-left"]').click();assert.equal(await angle(),270);
   await page.locator('[data-annotation-page]').selectOption('1');await ready();assert.equal(await angle(),90);
-  await page.locator('[data-annotation-action="edit"]').click();await ready();
+  await page.locator('[data-annotation-action="edit"]').click();await ready();await anchorsVisible(true);
   for(const rotation of [0,90,180,270]){
     await page.evaluate(r=>{rotateCompareImage(r-state.compareView.rotation);fitCompareImage();},rotation);
     const bubble=page.locator('[data-location-id="wire"]');await bubble.focus();const before=await bubble.boundingBox(),count=patches.length;
@@ -101,16 +117,27 @@ try{
   // Per-parameter focus centers the rotated evidence, without losing rotation.
   await page.evaluate(()=>DrawingAnnotations.focusField('free_length'));await ready();assert.equal(await angle(),270);
   const centered=await page.evaluate(()=>{const p=DrawingAnnotations.screenPoint({x:.75,y:.55}),v=document.querySelector('#compareViewport');return[p.x-v.clientWidth/2,p.y-v.clientHeight/2];});near(centered[0],0);near(centered[1],0);
-  await page.evaluate(()=>{closeCompareOverlay();openCompareOverlay();});await ready();assert.equal(await angle(),0);
+  const editSaves=patches.length,editedDocument=await page.evaluate(()=>JSON.stringify(DrawingAnnotations.entry().document));
+  await page.locator('[data-annotation-action="edit"]').click();await ready();await anchorsVisible(false);
+  assert.equal(patches.length,editSaves);assert.equal(await page.evaluate(()=>JSON.stringify(DrawingAnnotations.entry().document)),editedDocument);
+  await page.locator('.compare-tools [data-action="close"]').click();assert.equal(await page.locator('#compareOverlay').isHidden(),true);
+  await page.evaluate(()=>openCompareOverlay());await ready();assert.equal(await angle(),0);await anchorsVisible(false);
   await page.locator('[data-annotation-page]').selectOption('2');await ready();assert.equal(await angle(),0);
   await page.evaluate(()=>rotateCompareImage(90));await page.evaluate(()=>openPersistedReview('variant'));await ready();assert.equal(await angle(),0);
   assert.equal(await page.evaluate(()=>state.review.record_kind),'variant');
   await page.locator('[data-view-action="rotate-right"]').click();await page.evaluate(()=>{state.compareTab='parameters';renderCompareOverlay();});await ready();await page.locator('[data-view-action="fit"]').click();assert.equal(await geometry(),true);
-  await page.screenshot({path:path.join(output,'desktop.png')});await page.setViewportSize({width:390,height:844});await page.waitForFunction(()=>document.querySelector('#compareViewport')?.clientWidth>0);await page.screenshot({path:path.join(output,'mobile.png')});
+  await anchorsVisible(false);await page.screenshot({path:path.join(output,'desktop.png')});
+  await page.locator('[data-annotation-action="edit"]').click();await ready();await anchorsVisible(true);await page.screenshot({path:path.join(output,'desktop-adjusting.png')});
+  await page.locator('[data-annotation-action="edit"]').click();await ready();await anchorsVisible(false);
+  await page.setViewportSize({width:390,height:844});await page.waitForFunction(()=>document.querySelector('#compareViewport')?.clientWidth>0);await page.screenshot({path:path.join(output,'mobile.png')});
   assert.equal(await page.locator('.compare-tools').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true);
   await page.evaluate(()=>{const im=document.querySelector('#compareImage');im.src='/api/reviews/variant/artifacts/broken.jpg';});failImage=true;
   await page.waitForFunction(()=>document.querySelector('#compareImage').complete&&!document.querySelector('#compareImage').naturalWidth);assert.equal(await page.locator('[data-view-action="rotate-right"]').isDisabled(),true);
   await page.reload();await page.waitForFunction(()=>state.identityReady&&state.recentReviews.length);failImage=false;await page.evaluate(()=>openPersistedReview('normal'));await ready();assert.equal(await angle(),0);
+  await anchorsVisible(false);
+  await page.evaluate(()=>{state.imageUrl=null;renderCompareOverlay();});
+  await page.locator('.compare-tools [data-action="close"]').focus();await page.keyboard.press('Enter');
+  assert.equal(await page.locator('#compareOverlay').isHidden(),true);
   assert.deepEqual(errors,[]);assert.equal(requests.filter(r=>r.m==='PATCH'&&!r.p.endsWith('/annotations')).length,0);
-  console.log('PASS preview rotation: source/bitmap mapping, upright bubbles/leaders, unchanged scale/center/layout/drafts, PDF memory, manual drag/keyboard/placement saves, order/close/reload reset, image failure, four summary cards and desktop/mobile');
+  console.log('PASS preview controls/rotation: removed export/zoom-out, return navigation, viewing/adjusting anchor visibility, unchanged geometry/drafts, wheel zoom, PDF memory, drag/keyboard/placement saves, close/reload, image failure and desktop/mobile');
 }finally{await browser.close();server.close();}

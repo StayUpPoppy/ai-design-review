@@ -191,18 +191,22 @@ class GenerationParameterPackageV1(BaseModel):
 
 
 class CompressionSpringGenerationInputsV2(CompressionSpringGenerationInputsV1):
-    """V2 keeps every V1 geometry input and adds a non-blocking material property."""
+    """V2 keeps every V1 geometry input and adds optional material/flattening properties."""
 
     material: GenerationMaterialParameter | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
         description="可选材料。仅当前值已人工确认且非空时发送；缺失时 Worker 仍可生成，但不设置模型材料或二维图材料标注。",
     )
+    flattening: GenerationBinaryParameter | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+        description="可选制扁工艺。仅人工确认的整数0（不制扁）/1（制扁）发送；单位及公差为空。缺失或未确认不阻止生图且不向SW输出。",
+    )
 
 
 class GenerationParametersV2(GenerationParametersV1):
     spring_parameters: CompressionSpringGenerationInputsV2 = Field(
-        description="SolidWorks 的八个必填建模字段，以及可选的材料字段。"
+        description="SolidWorks 的八个必填建模字段，以及可选的材料、是否制扁字段。"
     )
     technical_requirements_text: str = Field(
         default="",

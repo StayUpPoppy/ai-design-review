@@ -30,6 +30,7 @@ const context = {
   },
 };
 vm.createContext(context);
+vm.runInContext(appSource.slice(appSource.indexOf("const Flattening ="), appSource.indexOf("const COMPRESSION_CORE_PARAMETER_FIELDS")), context);
 translationTestHelpers(context);
 vm.runInContext(appSource.slice(helperStart, helperEnd), context);
 

@@ -79,6 +79,11 @@ def build_solidworks_model_parameters(
     }
     if model_parameters["是否并紧"] == 0:
         del model_parameters["有效圈数n"]
+    item = spring_parameters.get("flattening")
+    if isinstance(item, dict) and item.get("confirmation_source") == "human_confirmed":
+        value = item.get("value")
+        if type(value) is int and value in (0, 1):
+            model_parameters["是否制扁"] = value
     return model_parameters
 
 

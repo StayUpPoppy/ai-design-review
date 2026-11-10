@@ -38,6 +38,7 @@ SPRING_TEMPLATES: dict[str, dict[str, Any]] = {
             {"key": "pitch", "label": "节距", "unit": "mm"},
             {"key": "end_type", "label": "端部形式"},
             {"key": "end_grinding", "label": "端面磨削"},
+            {"key": "flattening", "label": "是否制扁"},
             {"key": "spring_rate", "label": "刚度", "unit": "N/mm"},
             {"key": "perpendicularity", "label": "垂直度", "unit": "mm"},
             {"key": "straightness", "label": "直线度", "unit": "mm"},

@@ -29,6 +29,8 @@ def generate_balloons(
     status_by_field = _status_by_field(review_results)
 
     for field, param in spring_parameters.items():
+        if field == "flattening":
+            continue
         if field == "load_points":
             for item in param:
                 balloons.append(_load_point_balloon(len(balloons) + 1, item))

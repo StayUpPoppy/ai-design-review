@@ -58,7 +58,11 @@ try {
   });
   await page.goto(process.env.SW_EXPORT_FRONTEND_URL || `http://127.0.0.1:${server.address().port}`);
   await page.waitForFunction(() => state.identityReady);
-  const reopen = () => page.evaluate(async () => { await openPersistedReview("sw-export"); state.compareTab = "parameters"; renderCompareOverlay(); });
+  const reopen = async () => {
+    await page.evaluate(async () => { await openPersistedReview("sw-export"); state.compareTab = "parameters"; renderCompareOverlay(); });
+    const advanced=page.locator('.compare-tab-panel[data-compare-panel="parameters"] .advanced-parameters');
+    if (!await advanced.evaluate(el=>el.open)) await advanced.locator('summary').click();
+  };
   await reopen();
   const preview = () => page.evaluate(() => makeGenerationParameterPackage().solidworks_preview);
   let current = await preview();
@@ -128,7 +132,9 @@ try {
   await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
   assert.deepEqual(await preview(), before, "Save/reopen keeps exact SW projection");
   const materialRow = panel.locator('[data-kind="param"][data-field="material"]');
-  await materialRow.locator('[data-role="value"]').selectOption("65Mn");
+  await materialRow.locator('.material-picker-trigger').click();
+  await page.getByRole('combobox',{name:'搜索材料名称、牌号或别名',exact:true}).fill('65Mn');
+  await page.locator('.material-picker-panel').getByRole('option',{name:'65Mn',exact:true}).click();
   current = await preview();
   assert.equal(current.titleBlockProperties["材料"], undefined, "Pending material is omitted from title block");
   assert.equal(current.titleBlockProperties["重量"], cases.find((c) => c.name === "material_changed").package.solidworks_preview.titleBlockProperties["重量"]);
@@ -373,7 +379,7 @@ try {
     const before=JSON.stringify(state.review);
     const data=await buildConfirmationSheetSnapshot({review:structuredClone(state.review),revision:state.lastJob.review_revision,materialCatalog:state.materialCatalog});
     if(JSON.stringify(state.review)!==before) throw new Error("Report modified the active review");
-    return data.sections.find(section=>section.id==="requirements").rows.map(row=>row.content);
+    return ParameterConfirmationSheet.selectionRows(data).filter(row=>row.kind==="technical").sort((a,b)=>a.number-b.number).map(row=>row.content);
   });
   assert.deepEqual(snapshot,displayedCases.map(item=>item.expected));
   let prefixPreview = (await preview()).extraProperties["技术要求"];

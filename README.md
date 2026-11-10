@@ -9,6 +9,7 @@
 - [三径联动与图号编辑](docs/diameter-linkage-and-drawing-number.md)：固定线径双向联动三径，在摘要直接纠正或补填客户图号。
 - 直径类型核对仅处理原图候选，历史计算误报自动过滤；卡片右上角 × 可忽略候选改为手填，保存重开有效，原参数确认和生图校验保留。见[直径核对说明](docs/diameter-linkage-and-drawing-number.md)。
 - [圈数小数与图纸名称编辑](docs/decimal-coils-and-drawing-name.md)：圈数以数字完整传至SW，支持直接修改图纸名称并同步历史标题；新任务冻结名称。
+- [弹簧参数确认单](docs/parameter-confirmation-sheet.md)：九项最终参数、载荷点及完整技术要求集中核对，真实异常单独列出并留客户回复空白，支持A4打印与PDF续页。
 - [公司表面处理名称与中文成图](docs/company-surface-mapping.md)：新上传在原识别请求中匹配49项目录，支持搜索、纠正及置空公司关联；以已确认完整正文输出SW，原代号保留用于追溯。
 - 弹簧语义映射：把 OCR 文本、几何证据和模板字段映射成弹簧业务字段
 - 基础规则审查：缺失字段、载荷关系、公差风险、工艺能力风险
@@ -81,8 +82,10 @@ outputs/spring_example_review.json
 
 - 图纸预览和全屏数据对比
 - 关键弹簧参数编辑
+- “旋向”“端部形式”“端面磨削”“是否制扁”不显示公差控件，数值下拉框占用原数值与公差两列；桌面及窄屏均保留确认按钮，历史数据和确认规则保持原样。
 - 载荷点支持[直接高度、尺寸链换算及力值公差](docs/load-height-relations.md)，换算后仍需人工确认
 - 技术要求确认；顶部[成图技术要求预览](docs/technical-requirement-preview.md)显示参数自动项、已确认原图／人工要求及重复提示
+- 压缩弹簧可选“是否制扁”，默认不制扁、支持单项及批量确认，确认后传SW（见 [制扁参数与接口说明](docs/flattening.md)）
 - 压缩弹簧材料目录下拉、明确替代材料匹配与公司表内剪切模量计算（见 [材料选择说明](docs/material-catalog.md)）
 - 扫描图纸人工确认
 - ERP 放行预览
@@ -166,7 +169,7 @@ SolidWorks 通过 `POST /api/solidworks/status` 回调 `generating_3d`、`genera
 
 状态回调在联调阶段不使用应用层鉴权，**只能对可信内网开放**。Docker Nginx 会按 `SOLIDWORKS_CALLBACK_ALLOWED_CIDR` 限制来源；默认示例为 `192.168.31.0/24`。如果直接部署 API，请在防火墙或反向代理配置同样的来源限制，绝不能将此接口暴露到公网。
 
-`spring_generation_parameters/v2` 是当前圆柱螺旋压缩弹簧的内部冻结参数包。`generation_parameters.spring_parameters` 固定包含 `wire_diameter`、`mean_diameter`、`free_length`、`total_coils`、`active_coils`、`handedness`、`end_grinding`、`end_coils_closed` 八个必填建模字段，并可选包含已人工确认的 `material`；SolidWorks 使用中径与线径计算外径、内径，并使用材料值设置三维模型材料和二维图材料标注。材料缺失或待确认时任务仍可创建，但参数包会省略该字段并提示警告。中文技术要求同时提供结构化 `technical_requirements` 和内部 `technical_requirements_text`；最终成图文字以 `solidworks_preview.extraProperties.技术要求` 为准。中径缺失时优先由已确认的外径或内径与线径计算，无法计算时补入 23 mm 默认候选值并保持待人工确认；旋向没有默认值。Mock Worker 仍使用 `mock_solidworks_compression_v2` 能力，通过兼容 Worker API 运行。
+`spring_generation_parameters/v2` 是当前圆柱螺旋压缩弹簧的内部冻结参数包。`generation_parameters.spring_parameters` 固定包含 `wire_diameter`、`mean_diameter`、`free_length`、`total_coils`、`active_coils`、`handedness`、`end_grinding`、`end_coils_closed` 八个必填建模字段，并可选包含已人工确认的 `material` 和 `flattening`（是否制扁，整数0/1）；SolidWorks 使用中径与线径计算外径、内径，并使用材料值设置三维模型材料和二维图材料标注。材料缺失或待确认时任务仍可创建，但参数包会省略该字段并提示警告。中文技术要求同时提供结构化 `technical_requirements` 和内部 `technical_requirements_text`；最终成图文字以 `solidworks_preview.extraProperties.技术要求` 为准。中径缺失时优先由已确认的外径或内径与线径计算，无法计算时补入 23 mm 默认候选值并保持待人工确认；旋向没有默认值。Mock Worker 仍使用 `mock_solidworks_compression_v2` 能力，通过兼容 Worker API 运行。
 
 标准化是可选的审图辅助功能，不是创建生图任务的必备条件。八个建模字段、中文技术要求均已人工确认且参数合理性检查不存在阻断问题时，可以按当前参数直接生图；未选择标准、标准尚未确认、建议未处理或标准化结果过期只会产生 `ready_with_warnings` 提示。直接生图与标准化后生图均使用相同的 `generation_job.parameter_package` 冻结参数结构，未标准化时 `standard_context` 保持空值。
 

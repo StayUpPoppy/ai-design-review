@@ -381,6 +381,8 @@
     if (roughness != null) titleBlock["表面粗糙度"] = roughness.value;
     const modelParameters = Object.fromEntries([["线径", "wire_diameter"], ["中径", "mean_diameter"], ["自由高度", "free_length"], ["圈数", "total_coils"], ["有效圈数n", "active_coils"], ["是否磨平", "end_grinding"], ["是否并紧", "end_coils_closed"]].map(([label, field]) => [label, parameterValue(parameters[field], ["total_coils", "active_coils"].includes(field))]));
     if (modelParameters["是否并紧"] === 0) delete modelParameters["有效圈数n"];
+    const flattening = parameters.flattening;
+    if (flattening?.confirmation_source === "human_confirmed" && Number.isInteger(flattening.value) && [0, 1].includes(flattening.value)) modelParameters["是否制扁"] = flattening.value;
     const tolerances = modelParametersTolerance(review);
     return {
       ...(packageData.generation_settings ? { DrawingModel: packageData.generation_settings.drawing_model, Username: packageData.generation_settings.username,

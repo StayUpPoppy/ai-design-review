@@ -68,6 +68,8 @@ assert.equal(ui.screenPoint({ x: .2, y: .3 }).x, 120);
 assert.equal(ui.imagePoint({ clientX: 130, clientY: 170 }).y, .3);
 assert.match(ui.badgeHtml("wire_diameter", params.wire_diameter), />2<\/button>/);
 assert.equal(ui.badgeHtml("pitch", { value: 5 }), "");
+assert.equal(ui.numberForField("flattening"), null, "Parameter row 13 does not create an original-drawing annotation");
+assert.equal(ui.badgeHtml("flattening", { value: 0 }), "");
 const numberedFields = ["material", "wire_diameter", "outer_diameter", "inner_diameter", "mean_diameter", "free_length", "total_coils", "active_coils", "surface_roughness_ra", "handedness", "end_type", "end_grinding"];
 for (const [index, field] of numberedFields.entries()) {
   for (const param of [undefined, {}, { value: null }, { value: "", evidence: "" }, { value: 0 }, { value: "识别值", need_human_review: true }, { value: "已确认值", need_human_review: false }]) {

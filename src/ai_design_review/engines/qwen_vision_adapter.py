@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..end_conditions import normalize_end_grinding, normalize_end_type
+from .. import flattening
 from .base import RecognitionEngine
 from ..llm_standardization import LLM_STANDARDIZATION_FIELD
 from ..preprocessing import IMAGE_EXTENSIONS, render_pdf_with_pdftoppm
@@ -231,7 +232,8 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
 3. 按弹簧类型提取尺寸字段。字段名必须使用英文 key，前端会用中文标签显示；不要自造 key。
    - 通用：material、standard_no、accuracy_grade、wire_diameter、outer_diameter、inner_diameter、mean_diameter、free_length、body_length、total_coils、active_coils、handedness、pitch。
    - standard_no 只能填写弹簧产品适用的通用技术/公差标准，例如 GB/T 1239.2、GB/T 23934；材料或钢丝牌号标准（例如“弹簧钢丝 GB/T 4357-2009”）只能放在 material，绝不能填入 standard_no。
-   - 压缩弹簧：diameter_accuracy_grade、free_length_accuracy_grade、load_accuracy_grade、stiffness_accuracy_grade、controlled_diameter_field、solid_height、surface_roughness_ra、end_coils、support_coils、end_type、end_grinding、spring_rate、perpendicularity、straightness、permanent_set_limit，可提取 load_points。
+   - 压缩弹簧：diameter_accuracy_grade、free_length_accuracy_grade、load_accuracy_grade、stiffness_accuracy_grade、controlled_diameter_field、solid_height、surface_roughness_ra、end_coils、support_coils、end_type、end_grinding、flattening、spring_rate、perpendicularity、straightness、permanent_set_limit，可提取 load_points。
+   - 是否制扁 flattening：仅原图文字明确“制扁”填整数1、“不制扁/无需制扁”填整数0，否定表达优先，evidence保留完整原文。不同位置要求冲突时保留冲突依据；不得根据磨平、并紧、图形外观推断，不明确则不输出，不自行补默认值。
    - 扭转弹簧：coil_body_length、arm_length、short_arm_length、long_arm_length、leg1_length、leg2_length、free_angle、working_angle、leg1_angle、leg2_angle、bend_radius、leg_end_type、mandrel_diameter、torque。
    - 拉伸弹簧：hook_type、hook_outer_diameter、hook_inner_diameter、hook_gap、hook1_type、hook2_type、hook1_length、hook2_length、hook1_outer_diameter、hook2_outer_diameter、hook1_inner_diameter、hook2_inner_diameter、hook1_opening、hook2_opening、hook_orientation、center_to_center_length、initial_tension，可提取 load_points。
    - 卡簧/挡圈：ring_type、thickness、free_diameter、opening_width、gap_width、notch_depth、groove_diameter、groove_width、lug_hole_diameter、lug_center_distance、opening_angle、section_width、section_height、chamfer、corner_radius。
@@ -527,6 +529,9 @@ def _post_qwen_request(client: Any, endpoint: str, headers: dict[str, str], payl
 def _parameter_candidate(field: str, item: Any) -> list[dict[str, Any]]:
     if item is None:
         return []
+    if field == "flattening":
+        data = item if isinstance(item, dict) else {"value": item, "evidence": str(item)}
+        return flattening.prepare_candidates([_candidate(field, data.get("value"), data)])
     if isinstance(item, dict):
         value = item.get("value")
         if value in (None, ""):

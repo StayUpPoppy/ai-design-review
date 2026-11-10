@@ -145,6 +145,7 @@ const context = {
   },
 };
 vm.createContext(context);
+vm.runInContext(appSource.slice(appSource.indexOf("const Flattening ="), appSource.indexOf("const COMPRESSION_CORE_PARAMETER_FIELDS")), context);
 vm.runInContext(appSource.slice(appSource.indexOf("function getEditorParameterFieldGroups"), appSource.indexOf("function getParameterFieldGroups")), context);
 vm.runInContext(appSource.slice(appSource.indexOf("function hasAdvancedParameterValue"), appSource.indexOf("const DEFAULT_CANDIDATE_NOTICE")), context);
 translationTestHelpers(context);
@@ -430,3 +431,17 @@ assert.equal(warningReview.technical_requirements[2].normalization_status, "huma
 assert.ok(warningReview.technical_requirements.every((item) => item.need_human_review === false));
 
 console.log("bulk confirmation UI test passed");
+
+// Flattening alone may batch-confirm a system default; invalid/conflicting values are skipped.
+for (const value of [0, 1]) {
+  const optional = { spring_parameters: { flattening: pending(value, { source: ["solidworks_protocol_default"], default_source: "flattening-default/v1" }),
+    free_length: pending(45, { source: ["solidworks_protocol_default"], default_source: "v2" }) }, technical_requirements: [] };
+  const plan = context.buildSafeConfirmationPlan(optional);
+  assert.ok(plan.items.some(item => item.field === "flattening"));
+  assert.ok(!plan.items.some(item => item.field === "free_length"));
+}
+for (const item of [pending(2), pending(0, { flattening_conflict: true }), pending(1, { flattening_unverified: true }), pending(null)]) {
+  const plan = context.buildSafeConfirmationPlan({ spring_parameters: { flattening: item }, technical_requirements: [] });
+  assert.ok(!plan.items.some(entry => entry.field === "flattening"));
+}
+console.log("PASS flattening bulk eligibility: default/recognized/manual 0/1, conflicts and invalid values");

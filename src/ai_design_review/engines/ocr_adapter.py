@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ..end_conditions import normalize_end_grinding, normalize_end_type
+from ..flattening import mentions as flattening_mentions
 from .base import RecognitionEngine
 from ..io_utils import project_path, read_json, write_json
 from ..preprocessing import IMAGE_EXTENSIONS, render_pdf_with_pdftoppm
@@ -387,6 +388,10 @@ def ocr_payload_to_candidates(payload: dict[str, Any] | list[dict[str, Any]]) ->
     candidates.extend(_extract_free_length(full_text, anchor, blocks))
     candidates.extend(_extract_total_coils(full_text, anchor))
     candidates.extend(_extract_handedness(full_text, anchor))
+    for block in blocks:
+        text = str(block.get("text") or "")
+        for value in sorted(flattening_mentions(text)):
+            candidates.append(_candidate("flattening", value, block, text, 0.85))
     for page_number in sorted({b.get("page", 1) for b in blocks}):
         page_blocks = [b for b in blocks if b.get("page", 1) == page_number]
         candidates.extend(_extract_load_points("\n".join(str(b.get("text", "")) for b in page_blocks), _best_anchor(page_blocks)))

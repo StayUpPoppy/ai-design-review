@@ -233,7 +233,9 @@ window.DrawingAnnotations = (() => {
     const layer = config.getViewport()?.querySelector(".drawing-annotation-layer");
     const image = config.getImage();
     const item = entry();
-    if (!layer || !image?.naturalWidth) return;
+    if (!layer) return;
+    layer.classList.toggle("annotation-editing", Boolean(item?.editing));
+    if (!image?.naturalWidth) return;
     const entries = visibleAnnotations(item).flatMap((a) => a.locations.filter((l) => l.page === item.page).map((l) => ({ a, location: l, key: locationKey(a, l) })));
     const view = config.getView();
     const width = imageSize(image).width * view.scale, height = imageSize(image).height * view.scale;
