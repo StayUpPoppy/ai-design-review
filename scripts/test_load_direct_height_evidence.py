@@ -147,7 +147,7 @@ class DirectHeightTests(unittest.TestCase):
 
     def test_direct_api_save_confirm_and_export(self):
         from fastapi.testclient import TestClient
-        from ai_design_review import api
+        from ai_design_review import api, review_loading
         from ai_design_review.review_persistence import ReviewPersistence
         from ai_design_review.generation_readiness import build_generation_parameter_package
         with tempfile.TemporaryDirectory() as directory:
@@ -166,11 +166,17 @@ class DirectHeightTests(unittest.TestCase):
                 with patch.dict(os.environ,{"AI_REVIEW_IDENTITY_MODE":"mock","AI_REVIEW_MOCK_USER_ID":"direct-height-test"}),\
                      patch.object(api,"API_RUN_ROOT",root),patch.object(api,"REVIEW_PERSISTENCE",repo),\
                      patch.object(api,"verify_review_roughness",lambda *a,**k:None),\
-                     patch.object(evidence,"raster_pages",return_value=[direct_page()]),TestClient(api.app) as client:
+                     patch.object(evidence,"raster_pages",return_value=[direct_page()]),\
+                     patch("ai_design_review.drawing_annotations.build_annotations",return_value={}),TestClient(api.app) as client:
+                    pending=client.get("/api/reviews/direct").json()
+                    self.assertIsNone(pending["spring_parameters"]["load_points"][0]["height"])
+                    self.assertIsNone(repo.get_review("direct")["review"]["spring_parameters"]["load_points"][0]["height"])
+                    task=repo.claim_next_recognition_job("direct-qa")
+                    self.assertTrue(review_loading.execute(repo,task,"direct-qa",root,lambda *_:None))
+                    repo.complete_recognition_job(task["job_id"],worker_id="direct-qa")
                     current=client.get("/api/reviews/direct").json()
                     self.assertEqual([p["height"] for p in current["spring_parameters"]["load_points"]],[11.414,9.474])
-                    self.assertIsNone(repo.get_review("direct")["review"]["spring_parameters"]["load_points"][0]["height"])
-                    result=client.patch("/api/reviews/direct",json={"review":current,"expected_revision":1})
+                    result=client.patch("/api/reviews/direct",json={"review":current,"expected_revision":current["review_revision"]})
                     self.assertEqual(result.status_code,200,result.text)
                     revision=result.json()["review_revision"]
                     current=client.get("/api/reviews/direct").json()

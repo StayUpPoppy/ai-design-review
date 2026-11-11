@@ -2,6 +2,8 @@
 from copy import deepcopy
 import json
 import hashlib
+import os
+import shutil
 import tempfile
 from pathlib import Path
 import sys
@@ -26,7 +28,130 @@ def result(page,**kwargs):
     r={'spring_parameters':{'load_points':points}};refresh_load_heights(r)
     return {p['label']:p['height'] for p in points},points
 
+def single_station():
+    page=drawing()
+    page['texts']=[t for t in page['texts'] if t['text'] not in ('F1=29.26N','22.5')]
+    page['line_segments']=[line for line in page['line_segments'] if line not in ([260,70,260,170],[40,160,260,160])]
+    return page
+
+
 class GeometryTests(unittest.TestCase):
+    def test_provisional_model_value_requires_documented_direct_pairing(self):
+        from ai_design_review.engines.qwen_vision_adapter import qwen_payload_to_candidates
+        from ai_design_review.fusion import fuse_candidates
+        from ai_design_review.load_points import load_point_is_confirmed
+        point={"label":"P","height":225,"height_unit":"mm","force":83300,"force_unit":"N","evidence":"P=83300N，工作高度225"}
+        point["height_relation"]={"kind":"absolute_height","value":225,"unit":"mm","evidence":"尺寸线标注225对应P=83300N"}
+        def review_for(raw):
+            candidates=qwen_payload_to_candidates({"load_points":[raw]},require_height_relation=True)
+            fused=fuse_candidates(candidates)["load_points"][0]
+            return {"spring_parameters":{"load_points":[{**fused["value"],"need_human_review":fused["need_human_review"]}]}}
+        review=review_for(point)
+        refresh_load_heights(review)
+        draft=review["spring_parameters"]["load_points"][0]
+        self.assertEqual((draft["height"],draft["height_relation"]["status"],draft["height_relation"]["verified"]),(225,"model_pending",False))
+        self.assertFalse(load_point_is_confirmed(draft))
+        draft["need_human_review"]=False
+        self.assertEqual(refresh_load_heights(review),[])
+        self.assertTrue(load_point_is_confirmed(draft))
+        for value, evidence, kind in [(225,"估算工作高度约225","absolute_height"),(225,"原图P=83300N，工作高度225","free_deflection"),
+                                      (235,"尺寸线标注225对应P=83300N","absolute_height")]:
+            invalid=review_for({**point,"height_relation":{"kind":kind,"value":value,"unit":"mm","evidence":evidence}})
+            refresh_load_heights(invalid)
+            self.assertIsNone(invalid["spring_parameters"]["load_points"][0]["height"])
+
+    def test_overlapping_force_reads_are_one_station_and_height_is_independent(self):
+        from ai_design_review.load_points import load_point_is_confirmed
+        page=single_station()
+        page["texts"][0]["text"]="P=83300N"
+        page["texts"].append({"text":"P=8330N","bbox":[210,25,280,40]})
+        page["texts"].append({"text":"2","bbox":page["texts"][1]["bbox"]})
+        # The force fragment and equal-vote height fragment must not displace the complete reads.
+        heights,points=result(page)
+        self.assertEqual(heights,{"P":20})
+        self.assertEqual(points[0]["force"],83300)
+        page["texts"][-2]["text"]="P=83100N"
+        heights,points=result(page)
+        self.assertEqual(heights,{"P":20})
+        p=points[0]
+        self.assertEqual(p["force_alternatives"],[83100,83300])
+        p["need_human_review"]=False
+        self.assertFalse(load_point_is_confirmed(p))
+
+    def test_single_force_and_height_tolerance(self):
+        for force,label in [('42.56 N','F'),('F=42.56N','F'),('P=42.56N','P'),('W7=42.56N','W7'),('工况A=42.56N','工况A')]:
+            page=single_station()
+            page['texts'][0]['text']=force
+            page['texts'][1]['text']='20+2/0'
+            for turn in range(4):
+                heights,points=result(_frame(page,turn))
+                self.assertEqual(heights,{label:20},(label,turn))
+                p=points[0]
+                self.assertEqual((p['height_label'],p['height_tolerance_upper'],p['height_tolerance_lower']),
+                                 ('H7' if label=='W7' else 'H',2,0))
+            page['line_segments'].remove([220,100,320,100])
+            self.assertEqual(result(page)[0],{} if force=='42.56 N' else {label:None})
+
+    def test_unlabelled_duplicates_and_occupied_labels(self):
+        page=drawing()
+        page['texts'][0]['text']='42.56 N'
+        page['texts'][1]['text']='42.56N'
+        page['texts'].append({'text':'42.56N','bbox':[212,26,280,39]})
+        page['texts'].append({'text':'123 N','bbox':[30,250,80,260]})
+        self.assertEqual(result(page)[0],{'F1':20,'F2':22.5})
+        page['texts'][1]['text']='F1=42.56N'
+        heights,points=result(page)
+        self.assertEqual(heights,{'F2':20,'F1':22.5})
+        self.assertEqual({p['label']:p['height_label'] for p in points},{'F2':'H2','F1':'H1'})
+
+    def test_equal_force_and_printed_name_at_distinct_stations(self):
+        from ai_design_review.fusion import fuse_candidates
+        from ai_design_review.load_point_evidence import _point_candidates
+        page=drawing()
+        page['texts'][0]['text']=page['texts'][1]['text']='P=42.56N'
+        _,points=result(page)
+        fused=fuse_candidates(_point_candidates(points))["load_points"]
+        self.assertEqual(sorted((item["value"]["label"],item["value"]["height"]) for item in fused),[('P',20),('P',22.5)])
+
+    def test_verified_deflection_uses_free_height_and_keeps_offsets_local(self):
+        page=single_station()
+        page['texts'][1].update(text='10±2',bbox=[260,114,282,125])
+        page['line_segments'].remove([40,130,220,130])
+        page['line_segments'].append([220,130,320,130])
+        heights,points=result(page)
+        self.assertEqual(heights,{'F2':18})
+        p=points[0]
+        self.assertEqual(p['height_relation']['kind'],'free_deflection')
+        self.assertNotIn('height_tolerance_upper',p)
+        self.assertEqual(p['height_relation']['last_inputs']['free_length_mm'],28)
+
+    def test_work_height_offsets_do_not_borrow_free_height_or_force_offsets(self):
+        page=single_station()
+        page['texts'][0]['text']='F=42.56N±3%'
+        page['texts'][-1]['text']='28±3'
+        page['texts'] += [{'text':'+2','bbox':[145,110,158,117]},{'text':'-1','bbox':[145,118,158,126]}]
+        _,points=result(page)
+        p=points[0]
+        self.assertEqual((p['height'],p['height_tolerance_upper'],p['height_tolerance_lower'],p['load_tolerance_percent']),
+                         (20,2,-1,3))
+        self.assertIn('+2\n-1',p['height_relation']['evidence'])
+        page['texts'].pop()
+        _,points=result(page)
+        self.assertEqual((points[0]['height'],points[0].get('height_tolerance_status')),(20,'uncertain'))
+
+    def test_unlabelled_in_work_requirement_and_table(self):
+        page={'page':1,'width':500,'height':300,'line_segments':[],'lines':[],
+              'texts':[{'text':'工作高度104 ±2 mm，载荷为190 N','bbox':[30,40,300,54]}]}
+        heights,points=result(page)
+        self.assertEqual(heights,{'F':104})
+        self.assertEqual(points[0]['height_tolerance_upper'],2)
+        page['texts']=[
+            {'text':'高度(mm)','bbox':[30,30,100,40]}, {'text':'载荷(N)','bbox':[150,30,220,40]},
+            {'text':'104+2/-1','bbox':[40,50,90,60]}, {'text':'190','bbox':[170,50,200,60]},
+        ]
+        heights,points=result(page)
+        self.assertEqual(heights,{'F':104})
+        self.assertEqual(points[0]['height_tolerance_lower'],-1)
     def test_no_L0_direct_heights_and_metadata(self):
         heights,points=result(drawing());self.assertEqual(heights,{'F2':20,'F1':22.5})
         for p in points:
@@ -94,17 +219,19 @@ class GeometryTests(unittest.TestCase):
             cache=folder/'load_point_evidence.json'
             cache.write_text(json.dumps({'fingerprint':fingerprint,'points':points}),encoding='utf-8')
             before=deepcopy(old['spring_parameters']['load_points'])
-            with patch('ai_design_review.load_point_evidence.raster_pages',return_value=[drawing()]),patch('ai_design_review.load_point_evidence.original_points',side_effect=AssertionError('Successful v3 cache must not be reinterpreted')):
+            with patch('ai_design_review.load_point_evidence.raster_pages',return_value=[drawing()]):
                 reconcile_load_points(old,folder)
-            self.assertEqual(old['spring_parameters']['load_points'],before)
+            self.assertEqual([{k:v for k,v in p.items() if k!='load_relation_candidate'} for p in old['spring_parameters']['load_points']],before)
             # A pending sibling upgrades; a successful old height/confirmation stays verbatim.
             points[0]['height_relation'].update(kind='unknown',verified=False,value=None)
             cache.write_text(json.dumps({'fingerprint':fingerprint,'points':points}),encoding='utf-8')
             old['spring_parameters']['load_points'][0].update(height=None,need_human_review=True)
             old['spring_parameters']['load_points'][0]['height_relation']={'kind':'unknown','verified':False}
-            successful=deepcopy(next(p for p in old['spring_parameters']['load_points'] if p['label']=='F1'))
+            successful=deepcopy(next(p for p in before if p['label']=='F1'))
             with patch('ai_design_review.load_point_evidence.raster_pages',return_value=[drawing()]):reconcile_load_points(old,folder)
-            self.assertEqual(next(p for p in old['spring_parameters']['load_points'] if p['label']=='F1'),successful)
+            current=next(p for p in old['spring_parameters']['load_points'] if p['label']=='F1')
+            self.assertEqual({k:v for k,v in current.items() if k!='load_relation_candidate'},successful)
+            self.assertEqual(current['load_relation_candidate']['original']['height'],22.5)
             self.assertEqual(next(p for p in old['spring_parameters']['load_points'] if p['label']=='F2')['height'],20)
 
     def test_label_identity_and_missing_tolerance(self):
@@ -139,6 +266,54 @@ def local_replay():
         assert (folder/'review.json').read_bytes()==before,'The offline replay does not mutate saved orders'
         print(kind,expected,'new upload + old pending recovery passed')
 
+def scan_replay(first, second):
+    from ai_design_review.load_point_evidence import ground_job_candidates
+    from ai_design_review.page_images import render_pdf
+    from ai_design_review.workflow import DrawingReviewWorkflow
+
+    expected=[
+        [(p,'P',force,height,2 if p==3 else None,-2 if p==3 else None,None,False)
+         for p,(force,height) in enumerate(zip([29500,79100,3881,9384,32700,83300],[225,225,104,199,225,225]),1)],
+        [(1,'F1',11.9,11.414,None,None,10,False),(1,'F2',15.3,9.474,None,None,10,True)],
+    ]
+    rules=json.loads((ROOT/'config/factory_rules.json').read_text(encoding='utf-8'))
+    workflow=DrawingReviewWorkflow(rules)
+    root=ROOT/'outputs/load-height-offline-replay'
+
+    def outcomes(review):
+        return sorted((p['page'],p['label'],p['force'],p['height'],p.get('height_tolerance_upper'),
+                       p.get('height_tolerance_lower'),p.get('load_tolerance_percent'),
+                       bool(p['height_relation'].get('reference_only'))) for p in review['spring_parameters']['load_points'])
+
+    with patch.dict(os.environ,{'QWEN_MAX_PAGES':'6'}):
+        for index,source in enumerate((Path(first),Path(second)),1):
+            folder=root/str(index)
+            (folder/'inputs').mkdir(parents=True,exist_ok=True)
+            local=folder/'inputs'/source.name
+            assert not local.exists() or local.read_bytes()==source.read_bytes()
+            if not local.exists():
+                shutil.copyfile(source,local)
+            render_pdf(local,folder/'pages','page',220,False)
+            pages=raster_pages(folder,{},allow_ocr=True,diameter_geometry=True)
+            base={'field':'spring_type','value':'compression_spring','source':'manual','confidence':1}
+            with patch('ai_design_review.load_point_evidence.raster_pages',return_value=pages):
+                candidates=ground_job_candidates(folder,[base],{})
+                fresh=workflow.run(None,candidates,run_standardization=False)
+                assert outcomes(fresh)==expected[index-1],outcomes(fresh)
+                old=deepcopy(fresh)
+                ids={}
+                for p in old['spring_parameters']['load_points']:
+                    ids[p['page'],p['label']]=p['load_point_id']
+                    p.update(height=None,need_human_review=True,source=['qwen_vision'])
+                    p['height_relation']={'kind':'unknown','verified':False,'mode':'automatic'}
+                    for key in ('height_label','height_tolerance_upper','height_tolerance_lower'):
+                        p.pop(key,None)
+                reconcile_load_points(old,folder)
+                assert outcomes(old)==expected[index-1],outcomes(old)
+                assert {(p['page'],p['label']):p['load_point_id'] for p in old['spring_parameters']['load_points']}==ids
+            print(source.name, outcomes(fresh), '新识别及旧单补核通过',flush=True)
+
+
 def browser_cases():
     base=json.loads((ROOT/'data/test/compression_design_checks.json').read_text(encoding='utf-8'))['base']
     cases=[]
@@ -159,4 +334,5 @@ def browser_cases():
 if __name__=='__main__':
     if '--json' in sys.argv:browser_cases()
     elif '--local'  in sys.argv:local_replay()
+    elif '--scans' in sys.argv:scan_replay(*sys.argv[2:])
     else:unittest.main()

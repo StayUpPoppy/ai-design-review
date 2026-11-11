@@ -16,6 +16,7 @@ from ai_design_review import api
 from ai_design_review.review_persistence import ReviewPersistence
 from ai_design_review.load_point_recognition import partition_load_candidates
 from ai_design_review.generation_readiness import build_generation_parameter_package
+from ai_design_review.standardizers.design_checks import calculate_design_checks
 
 
 def main():
@@ -31,7 +32,7 @@ def main():
         repository.create_review("load-test", review, file_info={"kind": "image"}, artifact_dir=str(root / "load-test"), owner={"user_id": "load-recognition-test"})
         with patch.object(api, "API_RUN_ROOT", root), patch.object(api, "REVIEW_PERSISTENCE", repository), TestClient(api.app) as client:
             loaded = client.get("/api/reviews/load-test").json()
-            assert loaded["design_checks"]["work_stresses"] == []
+            assert calculate_design_checks(loaded["spring_parameters"], loaded.get("spring_features"))["work_stresses"] == []
             assert repository.get_review("load-test")["revision"] == 1
             assert loaded["load_point_diagnostics"] == review["load_point_diagnostics"]
             stale = copy.deepcopy(loaded)
@@ -39,6 +40,7 @@ def main():
             candidate["status"] = "promoted"
             candidate["promoted_load_point_id"] = "loadpt_verified"
             point = {"load_point_id": "loadpt_verified", "label": "F1", "height": 30, "height_unit": "mm", "force": 10, "force_unit": "N", "need_human_review": True, "source": ["human_added"], "recognition_candidate_id": candidate["candidate_id"]}
+            point.update(height_tolerance_upper=2, height_tolerance_lower=-1, load_tolerance_upper=1, load_tolerance_lower=-0.5)
             loaded["spring_parameters"]["load_points"].append(point)
             result = client.patch("/api/reviews/load-test", json={"review": loaded, "expected_revision": 1,
                 "events": [{"event_type": "load_candidate_promoted", "target_field": "load_point_diagnostics", "before_state": stale["load_point_diagnostics"][0], "after_state": candidate, "metadata": {"candidate_id": candidate["candidate_id"]}}]})
@@ -48,6 +50,17 @@ def main():
             reopened = client.get("/api/reviews/load-test").json()
             assert reopened["load_point_diagnostics"][0]["status"] == "promoted"
             assert reopened["spring_parameters"]["load_points"][0]["force"] == 10
+            assert build_generation_parameter_package(reopened)["generation_parameters"]["load_points"] == []
+            saved_point = reopened["spring_parameters"]["load_points"][0]
+            assert (saved_point["height_tolerance_upper"], saved_point["height_tolerance_lower"]) == (2, -1)
+            saved_point["need_human_review"] = False
+            exported = build_generation_parameter_package(reopened)["generation_parameters"]["load_points"][0]
+            assert exported["height"] == {"value": 30, "unit": "mm"}
+            assert (exported["force"]["tolerance_upper"], exported["force"]["tolerance_lower"]) == (1, -0.5)
+            saved_point["height_tolerance_input_draft"] = "±5%"
+            assert build_generation_parameter_package(reopened)["generation_parameters"]["load_points"] == []
+            saved_point.pop("height_tolerance_input_draft")
+            saved_point["height_tolerance_lower"] = 3
             assert build_generation_parameter_package(reopened)["generation_parameters"]["load_points"] == []
             assert any(e["event_type"] == "load_candidate_promoted" for e in repository.list_change_events("load-test"))
             # Legacy snapshots have no diagnostic field and keep confirmed point contents.

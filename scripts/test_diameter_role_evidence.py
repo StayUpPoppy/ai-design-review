@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from ai_design_review.diameter_evidence import CANDIDATE, PENDING, resolve_diameter_roles, select_role
+from ai_design_review.diameter_evidence import CANDIDATE, INFERENCE, PENDING, pending_roles, resolve_diameter_roles, select_role
 from ai_design_review.generation_readiness import assess_generation_readiness
 from ai_design_review.workflow import DrawingReviewWorkflow
 
@@ -48,8 +48,10 @@ class DiameterRoleTests(unittest.TestCase):
         cases.append(repeated)
         for page in cases:
             with self.subTest(page=page):
-                result, = resolve_diameter_roles([candidate()], [page])
-                self.assertEqual(result["field"], CANDIDATE)
+                results = resolve_diameter_roles([candidate()], [page])
+                self.assertEqual(len(results), 2 if page is repeated else 1)
+                self.assertTrue(all(result["field"]==CANDIDATE for result in results))
+                self.assertEqual(len(pending_roles({PENDING:results})),len(results))
 
     def test_ocr_zero_for_diameter_mark_requires_original_geometry(self):
         for text in ("0111", "0111+2", "0111 +2/0"):
@@ -61,7 +63,7 @@ class DiameterRoleTests(unittest.TestCase):
                 self.assertEqual(result["diameter_role_evidence"]["observation"]["text"], text)
                 self.assertEqual(result["tolerance_lower"], 0 if "/" in text else None)
                 result, = resolve_diameter_roles([candidate(evidence="111")], [page])
-                self.assertEqual(result["field"], CANDIDATE)
+                self.assertEqual(result["field"], INFERENCE)
                 page["wire_sections"] = []
                 result, = resolve_diameter_roles([candidate()], [page])
                 self.assertEqual(result["field"], CANDIDATE)
@@ -69,16 +71,16 @@ class DiameterRoleTests(unittest.TestCase):
         page = drawing()
         page["texts"][0]["text"] = "01110"
         result, = resolve_diameter_roles([candidate()], [page])
-        self.assertEqual(result["field"], CANDIDATE)
+        self.assertEqual(result["field"], INFERENCE)
 
     def test_label_requires_original_evidence_and_matches_value(self):
         proposed = candidate(evidence="图中明确标注外径 Φ111")
-        self.assertEqual(resolve_diameter_roles([proposed])[0]["field"], CANDIDATE)
+        self.assertEqual(resolve_diameter_roles([proposed])[0]["field"], INFERENCE)
         page = drawing()
         page["texts"][0]["text"] = "内径 Φ111 +2/0"
         self.assertEqual(resolve_diameter_roles([proposed], [page])[0]["field"], "inner_diameter")
         page["page"] = 2
-        self.assertEqual(resolve_diameter_roles([proposed], [page])[0]["field"], CANDIDATE)
+        self.assertEqual(resolve_diameter_roles([proposed], [page])[0]["field"], INFERENCE)
 
     def test_explicit_partial_tolerance_and_mixed_model_description(self):
         page = drawing()
@@ -95,7 +97,7 @@ class DiameterRoleTests(unittest.TestCase):
         self.assertEqual(resolve_diameter_roles([candidate()], [page], region=region)[0]["field"], "inner_diameter")
         for evidence in ("线径 Φ111", "⊥ Φ111 A"):
             self.assertEqual(resolve_diameter_roles([candidate(evidence=evidence)], [page]), [])
-        self.assertEqual(resolve_diameter_roles([candidate(evidence="Ra 111")], [page])[0]["field"], CANDIDATE)
+        self.assertEqual(resolve_diameter_roles([candidate(evidence="Ra 111")], [page])[0]["field"], INFERENCE)
 
     def test_stacked_offsets_and_duplicate_descriptions(self):
         page = drawing()
@@ -133,7 +135,7 @@ class DiameterRoleTests(unittest.TestCase):
                          ["surface_roughness_ra", "inner_diameter"])
         page["texts"] = []
         self.assertEqual(resolve_diameter_roles([{**false_candidate, "position": None}, rough], [page])[-1]["field"],
-                         CANDIDATE)
+                         INFERENCE)
 
     def test_verified_value_and_tolerance_fuse_together(self):
         fields = [{"field": "drawing_name", "value": "圆柱压缩弹簧", "source": "qwen_vision", "confidence": .99},
@@ -163,10 +165,10 @@ class DiameterRoleTests(unittest.TestCase):
         result, = resolve_specification_diameters([model], origin, {"outer_diameter": model}, blocks)
         self.assertEqual(result["field"], "mean_diameter")
         result, = resolve_specification_diameters([model], origin, {"outer_diameter": model}, blocks[2:])
-        self.assertEqual(result["field"], CANDIDATE)
+        self.assertEqual(result["field"], INFERENCE)
 
     def test_pending_blocks_generation_and_choice_preserves_confirmation_boundary(self):
-        pending, = resolve_diameter_roles([candidate()])
+        pending, = resolve_diameter_roles([candidate()],[drawing(end=300)])
         review = {"drawing_summary": {"spring_type": "compression_spring"},
                   "spring_parameters": {"wire_diameter": {"value": 32, "unit": "mm"}}, PENDING: [pending]}
         self.assertEqual(assess_generation_readiness(review)["status"], "blocked")

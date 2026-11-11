@@ -35,10 +35,6 @@ const context = {
   canonicalLoadPointLabel(value) { return String(value || "").trim().replace(/\s+/g, " ").toLowerCase(); },
   loadPointField(point, index = -1) { return `load_points.${String(point?.label || index + 1).trim() || index + 1}`; },
   loadPointConfirmationKey(point, index = -1) { return `load_point_${point?.load_point_id || index}`; },
-  isValidLoadPoint(point) {
-    return point?.height != null && point.height !== "" && point?.force != null && point.force !== ""
-      && Boolean(String(point?.label || "").trim()) && Number(point?.height) > 0 && Number.isFinite(Number(point?.force)) && Number(point?.force) >= 0;
-  },
   isDuplicateLoadPointLabel(review, label, excludedId = "") {
     const canonical = String(label || "").trim().toLowerCase();
     return (review.spring_parameters?.load_points || []).some((item) => String(item?.load_point_id || "") !== String(excludedId)
@@ -145,6 +141,8 @@ const context = {
   },
 };
 vm.createContext(context);
+vm.runInContext(appSource.slice(appSource.indexOf("function scaleLoadHeightTolerance"), appSource.indexOf("function toleranceTarget")), context);
+vm.runInContext(appSource.slice(appSource.indexOf("function isValidLoadPoint"), appSource.indexOf("function isDuplicateLoadPointLabel")), context);
 vm.runInContext(appSource.slice(appSource.indexOf("const Flattening ="), appSource.indexOf("const COMPRESSION_CORE_PARAMETER_FIELDS")), context);
 vm.runInContext(appSource.slice(appSource.indexOf("function getEditorParameterFieldGroups"), appSource.indexOf("function getParameterFieldGroups")), context);
 vm.runInContext(appSource.slice(appSource.indexOf("function hasAdvancedParameterValue"), appSource.indexOf("const DEFAULT_CANDIDATE_NOTICE")), context);

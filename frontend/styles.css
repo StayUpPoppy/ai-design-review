@@ -1175,7 +1175,11 @@ button:disabled {
 
 .load-point-create {
   display: grid;
-  grid-template-columns: repeat(3, minmax(90px, 1fr)) minmax(170px, 1.3fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas:
+    "label label"
+    "primary secondary"
+    "height-tolerance tertiary";
   gap: 9px;
   margin: 0 0 10px;
   border: 1px solid #cbdaf0;
@@ -1188,14 +1192,11 @@ button:disabled {
 .load-point-section { container: load-point-section / inline-size; }
 .load-point-create > label,
 .load-point-create-tolerance { min-width: 0; }
-.load-point-create-tolerance .tolerance-input-control { min-width: 150px; }
+.load-point-create > .load-create-label { grid-area: label; }
+.load-point-create > .data-primary { grid-area: primary; }
+.load-point-create > .data-secondary { grid-area: secondary; }
+.load-point-create > .load-point-create-tolerance { grid-area: tertiary; }
 .load-point-create .tolerance-editor { display: block; }
-@container load-point-section (width < 640px) {
-  .load-point-create { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@container load-point-section (width < 360px) {
-  .load-point-create { grid-template-columns: minmax(0, 1fr); }
-}
 
 .load-candidate-section { margin-top: 10px; padding: 10px 12px; border: 1px solid #dce7f5; border-radius: 6px; background: #f8fbff; color: #52637a; font-size: 11px; }
 .load-candidate-section summary { color: #253149; font-size: 12.5px; font-weight: 600; cursor: pointer; }
@@ -2334,13 +2335,17 @@ button:disabled {
 }
 
 .load-point-table {
-  container: load-table / inline-size;
-  --data-columns: 88px minmax(92px, 1fr) minmax(92px, 1fr) minmax(160px, 1.6fr);
+  --data-columns: repeat(2, minmax(0, 1fr));
 }
 
-.load-point-tolerance {
+.load-point-tolerance,
+.load-point-height-tolerance {
   min-width: 0;
 }
+
+.load-point-height-tolerance { grid-area: height-tolerance; }
+.load-height-tolerance-error { display: block; margin-top: 3px; color: #b42318; }
+.load-height-tolerance-error:empty { display: none; }
 
 .load-point-tolerance input::placeholder {
   color: #5573aa;
@@ -2425,8 +2430,10 @@ button:disabled {
 
 .load-point-table > .data-row {
   grid-template-areas:
-    "label primary secondary tertiary"
-    "action action action action";
+    "label label"
+    "primary secondary"
+    "height-tolerance tertiary"
+    "action action";
   align-items: start;
   padding-block: 10px;
 }
@@ -2508,18 +2515,18 @@ button:disabled {
   .parameter-data-table > .data-row > .confirm-button { justify-self: end; }
 }
 
-@container load-table (width < 640px) {
-  .load-point-table > .data-table-head { display: none; }
+@container load-point-section (width < 400px) {
+  .load-point-create,
   .load-point-table > .data-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
-      "label label"
-      "primary secondary"
-      "tertiary tertiary"
-      "action action";
-    gap: 8px;
-    padding: 10px 8px;
+      "label"
+      "primary"
+      "height-tolerance"
+      "secondary"
+      "tertiary";
   }
+  .load-point-table > .data-row > .load-point-actions { grid-area: auto; grid-column: 1 / -1; }
 }
 
 .compression-design-check {

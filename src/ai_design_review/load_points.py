@@ -5,7 +5,7 @@ import re
 import uuid
 from math import isfinite
 from typing import Any
-from .load_height_relations import relation_snapshot
+from .load_height_relations import number, relation_snapshot
 
 
 def new_load_point_id() -> str:
@@ -36,7 +36,30 @@ def load_point_is_complete(item: Any) -> bool:
 
 
 def load_point_is_confirmed(item: Any) -> bool:
-    return load_point_is_complete(item) and isinstance(item, dict) and item.get("need_human_review") is False and not item.get("load_relation_conflict") and not item.get("load_height_conflict") and not item.get("tolerance_input_draft") and item.get("force_tolerance_status") != "uncertain"
+    return (
+        load_point_is_complete(item)
+        and item.get("need_human_review") is False
+        and not item.get("load_relation_conflict")
+        and not item.get("load_height_conflict")
+        and not item.get("load_force_conflict")
+        and not item.get("tolerance_input_draft")
+        and item.get("force_tolerance_status") != "uncertain"
+        and _height_tolerance_is_valid(item)
+    )
+
+
+def _height_tolerance_is_valid(item: dict[str, Any]) -> bool:
+    if item.get("height_tolerance_input_draft") or item.get("height_tolerance_status") == "uncertain":
+        return False
+    upper = item.get("height_tolerance_upper")
+    lower = item.get("height_tolerance_lower")
+    if upper is None and lower is None:
+        return True
+    try:
+        upper, lower = number(upper), number(lower)
+    except OverflowError:
+        return False
+    return upper is not None and lower is not None and upper >= lower
 
 
 def load_point_snapshot(item: dict[str, Any]) -> dict[str, Any]:
@@ -46,12 +69,13 @@ def load_point_snapshot(item: dict[str, Any]) -> dict[str, Any]:
         **({"load_role": item["load_role"]} if item.get("load_role") in {"working", "solid", "unknown"} else {}),
         "height": item.get("height"),
         "height_unit": item.get("height_unit") or "mm",
+        **{key: item[key] for key in ("height_label", "height_tolerance_upper", "height_tolerance_lower", "height_tolerance_input_draft", "height_tolerance_status") if item.get(key) is not None},
         "force": item.get("force"),
         "force_unit": item.get("force_unit") or "N",
         "load_tolerance_upper": item.get("load_tolerance_upper"),
         "load_tolerance_lower": item.get("load_tolerance_lower"),
         **({"height_relation": relation_snapshot(item)} if item.get("height_relation") else {}),
-        **{k:item[k] for k in ("load_tolerance_percent", "force_tolerance_percent", "force_tolerance_status", "load_relation_conflict", "load_height_conflict") if k in item},
+        **{k:item[k] for k in ("load_tolerance_percent", "force_tolerance_percent", "force_tolerance_status", "load_relation_conflict", "load_height_conflict", "load_force_conflict") if k in item},
         "need_human_review": bool(item.get("need_human_review", True)),
     }
 

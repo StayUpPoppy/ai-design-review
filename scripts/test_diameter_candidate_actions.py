@@ -24,6 +24,12 @@ def mark(value=12, evidence="图形标注 Ø12（尺寸界线指向弹簧外缘�
             "source": "qwen_vision", "page": 1, "evidence": evidence, **extra}
 
 
+def grounded(value=12, evidence=None):
+    position={"x":.2,"y":.3,"width":.06,"height":.02,"coordinate_type":"normalized"}
+    return mark(value,evidence or f"Φ{value}",position=position,diameter_role_evidence={
+        "observation":{"source":"local_ocr","value":value,"page":1,"position":position,"text":f"Φ{value}"}})
+
+
 def provenance_fixtures():
     fixtures = [(mark(), False)]
     for text in (
@@ -41,7 +47,11 @@ def provenance_fixtures():
         (mark(10.4, "计算值：12-1.6=10.4", diameter_role_evidence={"observation": {"source": "local_ocr", "value": 10.4}}), False),
         (mark(10.4, "计算值：12-1.6=10.4", diameter_role_evidence={"observation": {"source": "qwen_vision", "value": 10.4}}), True),
     ]
-    return [{"candidate": item, "derived": expected} for item, expected in fixtures]
+    bare=grounded(175)
+    bare["diameter_role_evidence"]["observation"]["text"]="175"
+    return [{"candidate": item, "derived": expected, "eligible": False} for item, expected in fixtures] + [
+        {"candidate":bare,"derived":False,"eligible":False},
+        {"candidate":grounded(111,"假设 Φ175。等等，原图标的是 Φ111。"*50),"derived":False,"eligible":True}]
 
 
 class ProvenanceTests(unittest.TestCase):
@@ -51,21 +61,31 @@ class ProvenanceTests(unittest.TestCase):
             with self.subTest(evidence=item["evidence"]):
                 before = deepcopy(item)
                 self.assertEqual(model_derived_diameter(item), expected)
-                self.assertEqual(has_pending_roles({PENDING: [item]}), not expected)
+                self.assertEqual(has_pending_roles({PENDING: [item]}), fixture["eligible"])
                 self.assertEqual(item, before, "Historical filtering must not mutate its input")
 
     def test_screenshot_candidates_keep_original_and_exclude_model_result(self):
         original = {**mark(), "field": "outer_diameter"}
         derived = {**mark(10.4, "计算值：外径12 - 线径1.6 = 10.4"), "field": "mean_diameter"}
-        records = resolve_diameter_roles([original, derived])
+        page={"page":1,"width":400,"height":300,"source":"pdf_text_layer","lines":[],"line_segments":[],
+              "texts":[{"text":"Φ12","bbox":[80,90,104,96]}]}
+        records = resolve_diameter_roles([original, derived],[page])
         self.assertEqual([item["field"] for item in records], [CANDIDATE, INFERENCE])
         self.assertEqual(records[0]["value"], 12)
         self.assertEqual(records[1]["value"]["value"], 10.4)
         self.assertEqual(resolve_diameter_roles([mark(10.4, derived["evidence"])])[0]["field"], INFERENCE)
+        invented={**mark(175,"图纸上标的肯定是175。Φ111+2/0。外径=111+64=175。"*50),"field":"outer_diameter"}
+        actual={**mark(111,"尺寸标注 Φ111"),"field":"mean_diameter"}
+        page["texts"]=[{"text":"Φ111+2/0","bbox":[80,90,104,96]}]
+        actual_records=resolve_diameter_roles([invented,actual],[page])
+        grounded_record=next(item for item in actual_records if item["field"]==CANDIDATE)
+        self.assertEqual((grounded_record["value"],grounded_record["tolerance_upper"],grounded_record["tolerance_lower"]),(111,2,0))
+        self.assertEqual(grounded_record["evidence"],"Φ111+2/0")
+        self.assertEqual(len(pending_roles({PENDING:actual_records})),1)
 
     def test_selected_and_ignored_history_is_preserved(self):
         selected = mark(10.4, "计算值：12-1.6=10.4", selected_field="mean_diameter")
-        review = {PENDING: [selected, mark(13, "Φ13", ignored=True), mark()]}
+        review = {PENDING: [selected, mark(13, "Φ13", ignored=True), grounded()]}
         before = deepcopy(review)
         self.assertEqual([item["value"] for item in pending_roles(review)], [12])
         self.assertEqual(review, before)
@@ -91,7 +111,9 @@ class CandidateApiTests(unittest.TestCase):
         self.repo = ReviewPersistence(f"sqlite+pysqlite:///{self.root / 'review.db'}")
         self.repo.create_schema_for_testing()
         self.review = ready_review()
-        self.review[PENDING] = [mark(), mark(14, "图中标注Φ14")]
+        from ai_design_review.flattening import ensure
+        ensure(self.review)
+        self.review[PENDING] = [grounded(), grounded(14, "图中标注Φ14")]
         self.review["local_verification"] = {"version": VERSION}
         self.review["manual_confirmations"] = {"wire_diameter": {"confirmed": True}}
         self.review["diameter_linkage"] = {"version": "test-frozen", "status": "calculated", "inputs": {"test": 1}}
@@ -217,7 +239,7 @@ class CandidateApiTests(unittest.TestCase):
         self.assertEqual(self.stored(), before)
         identity = IdentityContext(**self.owner, source="test")
         review = deepcopy(before["review"])
-        review[PENDING] = [mark()]
+        review[PENDING] = [grounded()]
         _readiness_cache.clear()
         with patch("ai_design_review.generation_readiness.assess_generation_readiness", side_effect=lambda r: {"blocked": has_pending_roles(r)}):
             self.assertTrue(cached_readiness("candidate", 7, identity, review)["blocked"])

@@ -55,7 +55,9 @@ def classify_load_candidate(candidate: dict[str, Any]) -> tuple[str, str, str]:
     sentence_load = bool(not _GENERIC_TABLE.search(evidence) and _HEIGHT.search(evidence) and _FORCE.search(evidence)
                          and re.search(r"当|压缩(?:到|至)|压至|工作|试验|测试|when|compressed|test|working|height", evidence, re.I)
                          and re.search(_NUMBER, evidence) and (_FORCE_UNIT.search(evidence) or _H_SYMBOL.search(evidence) or declared_force_unit))
-    positive = table_load or annotation_load or sentence_load
+    value = candidate.get("value") or {}
+    local_load = "local_load_evidence" in sources and context.get("kind") in {"load_graph", "table", "load_requirement"} and value.get("force_evidence_verified") is True
+    positive = table_load or annotation_load or sentence_load or local_load
     if negative and positive:
         return "pending", "LOAD-EVIDENCE-CONFLICT", "载荷标注与尺寸公差表证据矛盾，请核对原图归属。"
     if negative:

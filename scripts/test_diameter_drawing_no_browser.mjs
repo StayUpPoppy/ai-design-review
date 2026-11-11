@@ -12,6 +12,11 @@ function review(id) {
   r.spring_parameters = { ...r.spring_parameters, ...Object.fromEntries(Object.entries({ wire_diameter: 2, outer_diameter: 20, inner_diameter: 16, mean_diameter: 18 }).map(([f, value]) => [f, { value, unit: 'mm', source: ['qwen_vision', 'human_confirmed'], need_human_review: false, tolerance_upper: .1, tolerance_lower: -.1, evidence: '原图识别' }])) };
   r.manual_confirmations = {}; r.standardization_results = []; return r;
 }
+function drawingMark(candidate_id, value, text, extra = {}) {
+  const position = { x: .2, y: .3, width: .05, height: .02, coordinate_type: 'normalized' };
+  return { candidate_id, value, unit: 'mm', evidence: text, ...extra,
+    diameter_role_evidence: { observation: { source: 'local_ocr', page: 1, value, text, position } } };
+}
 const catalog = JSON.parse(fs.readFileSync('config/compression_material_catalog.json', 'utf8'));
 const frontend = path.resolve('frontend'), output = path.resolve('outputs/diameter-drawing-no-qa'); fs.mkdirSync(output, { recursive: true });
 const server = http.createServer((req, res) => {
@@ -152,8 +157,8 @@ try {
   await page.screenshot({ path: path.join(output, 'mobile.png') });
   // An unassigned original mark stays out of the three fields until its choice is saved.
   const pending = models.get('b');
-  pending.review.diameter_role_candidates = [{ candidate_id: 'mark-111', value: 111, unit: 'mm',
-    evidence: 'Φ111 +2/0', tolerance_upper: 2, tolerance_lower: 0, reason: '尺寸线两端待核对。' }];
+  pending.review.diameter_role_candidates = [drawingMark('mark-111',111,'Φ111 +2/0',
+    { tolerance_upper: 2, tolerance_lower: 0, reason: '尺寸线两端待核对。' })];
   for (const field of ['inner_diameter', 'mean_diameter', 'outer_diameter']) {
     pending.review.spring_parameters[field] = { value: null, need_human_review: true, unit: 'mm' };
   }
@@ -171,9 +176,9 @@ try {
   // Historical model results never become cards; ignored marks stay hidden.
   pending.review = review('b');
   pending.review.diameter_role_candidates = [
-    { candidate_id: 'original-12', value: 12, unit: 'mm', source: 'qwen_vision', evidence: '图形标注 Ø12（尺寸界线指向弹簧外缘）', reason: '原图文字尚未与直径候选对应。' },
+    drawingMark('original-12',12,'Ø12',{ evidence: '反复推测图中可能是 Ø175，等等。'.repeat(50), reason: '请核对原图。' }),
     { candidate_id: 'calculated-10.4', value: 10.4, unit: 'mm', source: 'qwen_vision', evidence: '计算值：外径12 - 线径1.6 = 10.4' },
-    { candidate_id: 'original-16', value: 16, unit: 'mm', source: 'qwen_vision', evidence: '原图Φ16，尺寸界线类型尚未唯一对应弹簧边界。', reason: '请核对原图。' },
+    drawingMark('original-16',16,'Φ16',{ reason: '请核对原图。' }),
     { candidate_id: 'ignored-14', value: 14, unit: 'mm', evidence: 'Φ14', ignored: true },
   ];
   pending.revision++;
@@ -182,6 +187,8 @@ try {
   const card = id => root.locator(`[data-diameter-candidate-id="${id}"]:visible`);
   const close = id => card(id).getByRole('button', { name: '忽略此候选，改为手动填写' });
   assert.equal(await cards().count(), 2);
+  assert.match(await card('original-12').innerText(), /Ø12/);
+  assert.doesNotMatch(await card('original-12').innerText(), /反复推测/);
   assert.equal(await root.getByText('直径类型待核对 · 10.4 mm').count(), 0);
   await cards().first().scrollIntoViewIfNeeded();
   await page.screenshot({ path: path.join(output, 'candidate-close-desktop.png') });
@@ -217,14 +224,14 @@ try {
   assert.equal(pending.review.spring_parameters.outer_diameter.value, 24);
   assert.equal(await cards().count(), 0);
   // Unrelated server changes rebase an ignore without a conflict dialog.
-  pending.review.diameter_role_candidates.push({ candidate_id: 'concurrent', value: 18, unit: 'mm', evidence: 'Φ18' }); pending.revision++;
+  pending.review.diameter_role_candidates.push(drawingMark('concurrent',18,'Φ18')); pending.revision++;
   await open('a'); await open('b');
   conflict = m => { m.review.drawing_summary.drawing_name = '服务器保留的名称'; };
   await close('concurrent').click(); await saved();
   assert.equal(pending.review.drawing_summary.drawing_name, '服务器保留的名称');
   assert.equal(await cards().count(), 0); assert.equal(await page.getByRole('dialog').count(), 0);
   // A concurrent adoption wins over an attempted ignore.
-  pending.review.diameter_role_candidates.push({ candidate_id: 'adopted', value: 30, unit: 'mm', evidence: 'Φ30' }); pending.revision++;
+  pending.review.diameter_role_candidates.push(drawingMark('adopted',30,'Φ30')); pending.revision++;
   await open('a'); await open('b');
   conflict = m => { m.review.diameter_role_candidates.find(item => item.candidate_id === 'adopted').selected_field = 'outer_diameter'; m.review.spring_parameters.outer_diameter.value = 30; };
   await close('adopted').click(); await saved();
@@ -233,7 +240,7 @@ try {
   assert.equal(await page.getByRole('dialog').count(), 0);
   await open('a');
   // A late ignore receipt must not close or overwrite a different order.
-  models.get('a').review.diameter_role_candidates = [{ candidate_id: 'late-ignore', value: 27, unit: 'mm', evidence: 'Φ27' }];
+  models.get('a').review.diameter_role_candidates = [drawingMark('late-ignore',27,'Φ27')];
   models.get('a').revision++;
   await open('b'); await open('a');
   holdSave = true; releaseSave = null; await close('late-ignore').click();

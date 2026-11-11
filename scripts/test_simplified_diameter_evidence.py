@@ -67,10 +67,12 @@ class SimplifiedDiameterTests(unittest.TestCase):
     def test_mixed_model_explanation_keeps_original_but_not_derived_values(self):
         direct=claim(28,evidence="图中标注φ28，结合线径2推算外径约28")
         inferred=claim(26,field="mean_diameter",evidence="由外径28减线径2推算，原图未标注中径")
-        records=resolve_diameter_roles([direct,inferred])
+        page={"page":1,"width":400,"height":400,"lines":[],"texts":[{"text":"Φ28","bbox":[32,170,46,220]}]}
+        records=resolve_diameter_roles([direct,inferred],[page])
         self.assertEqual([r["field"] for r in records],[CANDIDATE,INFERENCE])
         self.assertEqual(records[0]["value"],28)
-        self.assertEqual(records[0]["diameter_role_evidence"]["model_derived_candidates"][0]["value"],26)
+        self.assertEqual(records[1]["value"]["value"],26)
+        self.assertEqual(records[0]["evidence"],"Φ28")
         inferred['evidence']='由外径28减线径2推算中径26，图中未标注Φ26'
         self.assertEqual(resolve_diameter_roles([inferred])[0]['field'],INFERENCE)
 
@@ -92,7 +94,7 @@ class SimplifiedDiameterTests(unittest.TestCase):
         self.assertEqual(record["field"],CANDIDATE)
         region={"x":.65,"y":0,"width":.35,"height":1,"page":1}
         record,=resolve_diameter_roles([claim()],[simplified()],region=region)
-        self.assertEqual(record["field"],CANDIDATE)
+        self.assertEqual(record["field"],INFERENCE)
 
     def test_same_view_dimensions_are_cross_checked_but_not_solved_by_numbers(self):
         p=simplified()

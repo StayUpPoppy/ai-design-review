@@ -16,7 +16,7 @@ CANDIDATE = "diameter_role_candidate"
 PENDING = "diameter_role_candidates"
 INFERENCE = "diameter_model_inference"
 VERSION = "diameter-role/v3"
-ROLE_STATE_VERSION = "diameter-candidates/v1"
+ROLE_STATE_VERSION = "diameter-candidates/v2"
 REASON = "直径类型待核对。请选择内径、中径或外径。"
 LABELS = {
     "inner_diameter": r"内径|內徑|内直径|inner\s+diameter|inside\s+diameter|\bI\.?D\.?",
@@ -537,7 +537,7 @@ def _observations(candidate, pages, region):
             dimensions = [{"axis": axis, "endpoints": [d["a"], d["b"]], "baseline": d["cross"],
                            "page_size": [page["width"], page["height"]]}
                           for axis, d in _witness_dimensions(text, page)]
-            if not (labels or is_diameter or geometry or (is_bare and (positioned or dimensions))):
+            if not (labels or is_diameter or geometry or corrected_mark and dimensions):
                 continue
             roles = labels or {field for field, _ in geometry}
             nominal = corrected if corrected_mark else content
@@ -669,7 +669,7 @@ def resolve_diameter_roles(candidates, pages=(), *, region=None):
     output, measurements, inferences = [], [], []
     roughness = [c for c in candidates if c.get("field") == "surface_roughness_ra"]
     for candidate in candidates:
-        if candidate.get("field") == CANDIDATE and not candidate.get("selected_field") and not candidate.get("ignored") and model_derived_diameter(candidate):
+        if candidate.get("field") == CANDIDATE and not candidate.get("selected_field") and not candidate.get("ignored") and not original_observation(candidate):
             inferences.append(deepcopy(candidate))
             continue
         if candidate.get("field") in {CANDIDATE, INFERENCE} or candidate.get("source") == SOURCE or not is_diameter_candidate(candidate):
@@ -694,30 +694,37 @@ def resolve_diameter_roles(candidates, pages=(), *, region=None):
                        _matching_position(_box(candidate, p), o["position"]) for p in pages) for o in observations):
                 continue
         ambiguous_mark = (rough_marks and not _diameter_number(text, value) and not _trusted_text_roles(candidate)
+                          and not any(_diameter_number(o["text"],value) or o["roles"] for o in observations)
                           and not any(_matching_position(_box(candidate, page), o["position"])
                                       for o in observations for _, page in rough_marks))
-        if not observations and model_derived_diameter(candidate):
+        trusted_roles = _trusted_text_roles(candidate) if not EXCLUDED.search(text) else set()
+        if not observations and not trusted_roles:
             inferences.append(deepcopy(candidate))
             continue
+        if len(observations)>1:
+            reason="同页有多处相同数值，请对照标注位置核对类型。"
+            for observation in observations:
+                record={**candidate,"position":observation["position"],"evidence":_observation_excerpt(observation),
+                        "diameter_role_evidence":{"version":VERSION,"original_field":candidate["field"],"observation":observation}}
+                measurements.append([(record,None,reason)])
+            continue
         observation = observations[0] if len(observations) == 1 else None
-        roles = set(observation["roles"]) if observation else set()
-        if not observations and not EXCLUDED.search(text):
-            roles = _trusted_text_roles(candidate)
+        roles = set(observation["roles"]) if observation else trusted_roles
         evidence = {"version": VERSION, "original_field": candidate["field"],
-                    "observation": observation, "original_evidence": candidate.get("evidence"),
+                    "observation": observation,
                     "original_position": deepcopy(candidate.get("position")), "original_source": candidate.get("source")}
         record = {**candidate, "diameter_role_evidence": evidence}
         if observation:
             record["position"] = observation["position"]
+            record["evidence"] = _observation_excerpt(observation)
         role = next(iter(roles)) if len(roles) == 1 and not ambiguous_mark else None
         reason = ("原图文字尚未与直径候选对应。" if not observations else
                   "同页有多处相同数值，无法确定标注位置。" if len(observations) > 1 else
                   "原图证据指向多个直径类型。" if len(roles) > 1 else
                   "尺寸线两端尚未唯一对应弹簧边界。")
         if ambiguous_mark:
-            reason = "原图还有同值粗糙度标注，候选位置待核对。"
-            record["position"] = deepcopy(candidate.get("position"))
-            record["diameter_role_evidence"]["observation"] = observation = None
+            inferences.append(deepcopy(candidate))
+            continue
         group = next((g for g in measurements if _same_observation(
             g[0][0]["diameter_role_evidence"]["observation"], observation)), None)
         if group is None:
@@ -738,8 +745,6 @@ def resolve_diameter_roles(candidates, pages=(), *, region=None):
                                      "evidence": record.get("evidence"), "position": record.get("position"), "page": record.get("page", 1),
                                      "reason": "尺寸线沿弹簧轴向跨越端面，不属于直径。"}})
             continue
-        if inferences:
-            record["diameter_role_evidence"]["model_derived_candidates"] = [deepcopy(c) for c in inferences if c.get("page", 1) == record.get("page", 1)]
         choices, offsets = set(), {}
         for entry, entry_role, _ in group:
             observation = entry["diameter_role_evidence"]["observation"]
@@ -755,7 +760,7 @@ def resolve_diameter_roles(candidates, pages=(), *, region=None):
             record["diameter_role_evidence"]["tolerance_options"] = {k: sorted(v) for k, v in offsets.items()}
             role, reason = None, "同一原图标注的公差证据存在冲突。"
             record.update(tolerance_upper=None, tolerance_lower=None)
-        elif offsets or role and record["diameter_role_evidence"]["observation"]:
+        elif observation:
             record.update({key: next(iter(offsets.get(key, ())), None)
                            for key in ("tolerance_upper", "tolerance_lower")})
         if role:
@@ -768,9 +773,10 @@ def resolve_diameter_roles(candidates, pages=(), *, region=None):
         if not any(c.get("candidate_id") == identifier for c in output):
             output.append({**record, "field": CANDIDATE, "candidate_id": identifier, "reason": reason})
     for candidate in inferences:
-        output.append({**candidate, "field": INFERENCE, "feature_type": "dimension_evidence",
-                       "value": {"kind": INFERENCE, "value": candidate["value"], "evidence": candidate.get("evidence"),
-                                 "page": candidate.get("page", 1), "reason": "模型推导值，仅供追溯，不作为原图尺寸。"}})
+        reason = "尚无对应的原图直径标注。"
+        output.append({**candidate, "field": INFERENCE, "feature_type": "dimension_evidence", "evidence": reason,
+                       "value": {"kind": INFERENCE, "value": candidate["value"],
+                                 "page": candidate.get("page", 1), "reason": reason}})
     return output
 
 
@@ -875,16 +881,126 @@ def has_pending_roles(review):
     return bool(pending_roles(review))
 
 
+def original_observation(item):
+    observation = (item.get("diameter_role_evidence") or {}).get("observation") or {}
+    value = _value(item.get("value"))
+    position = observation.get("position")
+    if (value is not None and observation.get("source") in {"local_ocr","pdf_text"}
+            and _value(observation.get("value")) == value
+            and observation.get("page",item.get("page",1)) == item.get("page",1)
+            and isinstance(position,dict) and all(isinstance(position.get(k),(int,float)) for k in ("x","y","width","height"))
+            and position["width"]>0 and position["height"]>0):
+        if (observation.get("roles") or observation.get("geometry") or _diameter_number(_text(observation.get("text")),value)
+                or observation.get("dimensions") and _diameter_number(_text(observation.get("normalized_text")),value)):
+            return observation
+    return None
+
+
+def _observation_excerpt(observation):
+    text=" ".join(str(observation.get("text") or "").split())
+    return text if len(text)<=96 else ""
+
+
 def pending_roles(review):
     return [item for item in review.get(PENDING) or [] if isinstance(item, dict)
-            and not item.get("selected_field") and not item.get("ignored") and not model_derived_diameter(item)]
+            and not item.get("selected_field") and not item.get("ignored") and original_observation(item)]
+
+
+def public_candidates(review):
+    """Expose only drawing excerpts for pending cards, keeping saved audit rows intact."""
+    return [
+        {**item,"evidence":_observation_excerpt(original_observation(item) or {}),
+         "diameter_role_evidence":{k:v for k,v in (item.get("diameter_role_evidence") or {}).items()
+                                   if k not in {"original_evidence","model_derived_candidates"}}}
+        for item in review.get(PENDING) or [] if isinstance(item,dict)
+        and (item.get("selected_field") or item.get("ignored") or original_observation(item))
+    ]
+
+
+def public_roles(review):
+    if PENDING in review:
+        review[PENDING]=public_candidates(review)
+
+
+def reconcile_diameter_review(review, job_dir):
+    """Recheck old, unhandled candidates with cached original evidence in the worker."""
+    saved=review.get(PENDING) or []
+    pending=[item for item in saved if not item.get("selected_field") and not item.get("ignored")]
+    if not pending or review.get("drawing_summary",{}).get("spring_type")!="compression_spring":
+        return
+    origin=review.get("multi_spec_origin") or {}
+    region=origin.get("effective_region") or origin.get("region")
+    if origin and not region:
+        return
+    from .engines.qwen_vision_adapter import qwen_payload_to_candidates
+    from .load_point_evidence import _pdf_pages, _read_json, raster_pages
+    from pathlib import Path
+    job_dir=Path(job_dir)
+    payload=_read_json(job_dir/"qwen_vision_raw.json").get("parsed") or {}
+    raw=[c for c in qwen_payload_to_candidates(payload) if c.get("field") in {*DIAMETERS,"wire_diameter","surface_roughness_ra"}]
+    seeds=[*raw]
+    for item in pending:
+        field=(item.get("diameter_role_evidence") or {}).get("original_field")
+        if field not in DIAMETERS:
+            field="outer_diameter"
+        seeds.append({**item,"field":field})
+    pages=raster_pages(job_dir,review,diameter_geometry=True)
+    source=next((p for p in (job_dir/"inputs").glob("*.pdf")),None)
+    if source:
+        stat=source.stat()
+        pages=[*pages,*_pdf_pages(str(source.resolve()),stat.st_size,stat.st_mtime_ns,
+                                 max([p["page"] for p in pages],default=1))]
+    if not pages:
+        return
+    resolved=resolve_diameter_roles(seeds,pages,region=region)
+    processed=[item for item in saved if item.get("selected_field") or item.get("ignored")]
+    retained=list(saved)
+    parameters=review["spring_parameters"]
+    changed=False
+
+    def same_mark(a,b):
+        if (_value(a.get("value")),a.get("page",1))!=(_value(b.get("value")),b.get("page",1)):
+            return False
+        first,second=original_observation(a),original_observation(b)
+        return not first or not second or _same_observation(first,second)
+
+    for item in resolved:
+        field=item.get("field")
+        if not original_observation(item) or any(same_mark(item,p) for p in processed):
+            continue
+        previous=next((p for p in retained if not p.get("selected_field") and not p.get("ignored") and same_mark(item,p)),None)
+        if field==CANDIDATE:
+            if previous:
+                retained[retained.index(previous)]={**item,"candidate_id":previous["candidate_id"]}
+            elif not any(same_mark(item,p) for p in retained):
+                retained.append(item)
+            continue
+        if field not in DIAMETERS or item.get("source")!=SOURCE:
+            continue
+        current=parameters.get(field) or {}
+        sources=current.get("source") or []
+        sources=[sources] if isinstance(sources,str) else sources
+        protected=current.get("need_human_review") is False or any(str(s).startswith(("human","manual")) for s in sources)
+        writable=current.get("value") in (None,"") or "formula_calculation" in sources or same_mark(current,item)
+        if writable and not protected:
+            parameters[field]={k:deepcopy(item[k]) for k in ("value","unit","page","position","evidence","confidence","tolerance_upper","tolerance_lower","diameter_role_evidence") if k in item}
+            parameters[field].update(source=[SOURCE],need_human_review=True,status="need_review")
+            changed=True
+        if previous and previous in retained and (writable and not protected or same_mark(current,item)):
+            retained.remove(previous)
+    review[PENDING]=retained
+    if changed:
+        from .standardizers.diameters import apply_formula_compression_diameter_completion
+        apply_formula_compression_diameter_completion(parameters)
 
 
 def ignore_role(review, candidate_id):
     if not isinstance(candidate_id, str) or not candidate_id:
         raise ValueError("缺少直径候选标识，请刷新后核对。")
     candidate = next((item for item in review.get(PENDING, []) if item.get("candidate_id") == candidate_id), None)
-    if candidate is None or candidate.get("selected_field"):
+    if candidate is not None and candidate.get("ignored") and not candidate.get("selected_field"):
+        return candidate
+    if candidate is None or candidate.get("selected_field") or not original_observation(candidate):
         raise ValueError("这条直径标注已处理或不存在，请刷新后核对。")
     candidate["ignored"] = True
     return candidate
@@ -933,7 +1049,7 @@ def select_role(review, candidate_id, field):
     candidate = next((item for item in review.get(PENDING, []) if item["candidate_id"] == candidate_id), None)
     if candidate is not None and candidate.get("selected_field") == field:
         return candidate
-    if candidate is None or candidate.get("selected_field") or candidate.get("ignored") or model_derived_diameter(candidate):
+    if candidate is None or candidate.get("selected_field") or candidate.get("ignored") or not original_observation(candidate):
         raise ValueError("这条直径标注已处理，请刷新后核对。")
     from .standardizers.diameters import apply_formula_compression_diameter_completion
     from .diameter_linkage import supported
@@ -951,7 +1067,8 @@ def select_role(review, candidate_id, field):
             _value(candidate["value"]), candidate.get("unit") or "mm", upper, lower
         ):
             raise ValueError("该字段已有不同的原图或人工尺寸，请先核对该尺寸。")
-    item = {**current, **{k: deepcopy(candidate.get(k)) for k in ("value", "evidence", "page", "position")},
+    item = {**current, **{k: deepcopy(candidate.get(k)) for k in ("value", "page", "position")},
+            "evidence": _observation_excerpt(original_observation(candidate)),
             "unit": candidate.get("unit") or "mm", "tolerance_upper": upper, "tolerance_lower": lower,
             "diameter_role_evidence": deepcopy(candidate["diameter_role_evidence"]),
             "source": [SOURCE, "human_diameter_role"], "need_human_review": True,

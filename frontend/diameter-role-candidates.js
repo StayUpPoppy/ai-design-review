@@ -1,6 +1,6 @@
 /* Read-only provenance filtering, including saved candidates from older rules. */
 (function (root) {
-  const VERSION = "diameter-candidates/v1";
+  const VERSION = "diameter-candidates/v2";
   const number = "\\d+(?:\\.\\d+)?", mark = "[φΦϕøØ⌀]";
   const derivation = /推算|推导|计算|换算|\b(?:derived|calculated|inferred|computed)\b|(?:外径|内径|中径|线径).{0,24}(?:减去|减|加上|乘以|除以)|(?:外径|内径|中径|线径|\bD[oim]?\b|\bd\b)\s*[-+−×*÷/]\s*(?:外径|内径|中径|线径|\bD[oim]?\b|\bd\b)/i;
   const drawing = /图中|图纸|原图|标注|marked|drawing/i;
@@ -32,8 +32,25 @@
     if (source.includes("formula_calculation") || candidate.formula_calculation_kind === "diameter_completion") return true;
     return Boolean((derivation.test(text) || formulaResult(text, value)) && !directClaim(text, value));
   }
-  function pending(review) {
-    return (review?.diameter_role_candidates || []).filter(item => item && !item.selected_field && !item.ignored && !modelDerived(item));
+  function observation(candidate) {
+    const item = candidate?.diameter_role_evidence?.observation, value = numeric(candidate?.value);
+    const position = item?.position;
+    const marked = text => [...String(text || "").normalize("NFKC").matchAll(new RegExp(`${mark}\\s*(${number})(?![\\d.])`, "g"))]
+      .some(match => numeric(match[1]) === value);
+    return item && value != null && ["local_ocr", "pdf_text"].includes(item.source)
+      && numeric(item.value) === value && (item.page ?? candidate.page ?? 1) === (candidate.page ?? 1)
+      && position && ["x", "y", "width", "height"].every(key => typeof position[key] === "number")
+      && position.width > 0 && position.height > 0
+      && (item.roles?.length || item.geometry?.length || marked(item.text) || item.dimensions?.length && marked(item.normalized_text))
+      ? item : null;
   }
-  root.DiameterRoleCandidates = { VERSION, modelDerived, pending };
+  function eligible(candidate) {
+    return Boolean(candidate && !candidate.selected_field && !candidate.ignored && observation(candidate));
+  }
+  function excerpt(candidate) {
+    const text = String(observation(candidate)?.text || "").trim().replace(/\s+/g, " ");
+    return text.length <= 96 ? text : "";
+  }
+  const pending = review => (review?.diameter_role_candidates || []).filter(eligible);
+  root.DiameterRoleCandidates = { VERSION, modelDerived, eligible, excerpt, pending };
 })(globalThis);

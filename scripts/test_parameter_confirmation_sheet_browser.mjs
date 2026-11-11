@@ -15,7 +15,8 @@ base.spring_parameters.active_coils = { value: 8.25, unit: 'turns', source: ['hu
 base.spring_parameters.support_coils = { value: 1.125, unit: 'turns', source: ['human_edited'], need_human_review: false };
 base.spring_parameters.surface_roughness_ra = { value: null, unit: 'μm', source: [], need_human_review: true };
 base.spring_parameters.outer_diameter = { value: 9, unit: 'mm', tolerance_upper: .1, tolerance_lower: 0, need_human_review: true };
-base.spring_parameters.load_points = [{ load_point_id: 'zero', label: 'F1', height: 20, force: 0, height_unit: 'mm', force_unit: 'N', load_tolerance_percent: 10, need_human_review: true }];
+base.spring_parameters.load_points = [{ load_point_id: 'zero', label: 'F1', height: 20, force: 0, height_unit: 'mm', force_unit: 'N',
+  height_tolerance_upper: 2, height_tolerance_lower: -2, load_tolerance_percent: 10, need_human_review: true }];
 const noteContent = '其他要求：待客户确认 <script>window.reportInjected=true</script>';
 base.technical_requirements = [{ requirement_id: 'heat', type: 'heat_treatment', content: '热处理：消除应力退火', need_human_review: false },
   { requirement_id: 'note', type: 'other', content: noteContent, translation_status: 'translated',
@@ -136,6 +137,33 @@ try {
   assert.equal(healthy.sections.find(section=>section.id==='parameters').rows.length,9);
   assert.equal(healthy.sections.find(section=>section.id==='issues').rows.length,0,'valid pending values and real derived values need no internal confirmation for this report');
   assert.match(healthy.sections.find(section=>section.id==='requirements').rows[0].content,/Ra12.5，不制扁/);
+  assert.equal(healthy.sections.find(section=>section.id==='loads').rows[0].height,'32 mm');
+  const tolerancedHeight=await page.evaluate(async()=>{
+    const review=structuredClone(window.detachedSheetReview), point=review.spring_parameters.load_points[0];
+    Object.assign(point,{height_unit:'cm',height:3.2,height_tolerance_upper:2,height_tolerance_lower:-2});
+    const context={review,identity:state.identity,revision:1,jobId:'a'};
+    const valid=await buildConfirmationSheetSnapshot(context);
+    point.height_tolerance_input_draft='±5%';
+    const invalid=await buildConfirmationSheetSnapshot(context);
+    return {valid,invalid};
+  });
+  assert.equal(tolerancedHeight.valid.sections.find(section=>section.id==='loads').rows[0].height,'3.2 ±0.2 cm');
+  const badHeightTolerance=tolerancedHeight.invalid.sections.find(section=>section.id==='issues').rows.flatMap(group=>group.items).find(row=>row.kind==='load');
+  assert.ok(badHeightTolerance.messages.some(message=>message.includes('高度公差格式无效')));
+  assert.doesNotMatch(badHeightTolerance.current,/±0.2/);
+  const provisionalLoads=await page.evaluate(async()=>{
+    const review=structuredClone(window.detachedSheetReview);
+    const point=review.spring_parameters.load_points[0];
+    Object.assign(point,{height:12.4,height_unit:"mm",force:83300,force_unit:"N",need_human_review:true,
+      height_relation:{kind:"absolute_height",value:12.4,unit:"mm",verified:false,verification_method:"qwen_provisional",status:"model_pending"}});
+    const context={review,identity:state.identity,revision:1,jobId:'a'};
+    const draft=await buildConfirmationSheetSnapshot(context);
+    point.need_human_review=false;
+    const confirmed=await buildConfirmationSheetSnapshot(context);
+    return {draft,confirmed};
+  });
+  assert.doesNotMatch(JSON.stringify(provisionalLoads.draft.sections),/83300/);
+  assert.match(JSON.stringify(provisionalLoads.confirmed.sections),/83300/);
   const coilCheck=await page.evaluate(async()=>{
     const review=structuredClone(window.detachedSheetReview);
     review.spring_parameters.total_coils.value=6.5;
@@ -230,6 +258,7 @@ try {
   const content = await frame().locator('body').innerText();
   assert.match(content,/00123-A/); assert.match(content,/测试工程师/); assert.match(content,/10\.5/); assert.match(content,/8\.25/);
   assert.match(content,/0 N/); assert.match(content,/±10%/); assert.match(content,/\+0.1 \/ 0/);
+  assert.match(content,/高度 20 ±2 mm/,'a valid height tolerance stays with the height in an abnormal load row');
   assert.doesNotMatch(content,/审图修订|【确认】|【RFI|RFI-\d|设计校核结果|理论刚度|单件重量|表面粗糙度|名义压并高度/);
   assert.equal(await frame().locator('input,.paper-check,script').count(),0);
   assert.ok(await frame().locator('.parameter-report-table').count()===1);

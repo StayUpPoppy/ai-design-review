@@ -30,18 +30,24 @@ def exercise(kind,pages,expected,saved=None):
         repo=ReviewPersistence(f"sqlite+pysqlite:///{root/'reviews.db'}");repo.create_schema_for_testing()
         repo.create_review(kind,fixture,file_info={'kind':'image'},artifact_dir=str(job),owner={'user_id':'load-graph-test'})
         before=deepcopy(repo.get_review(kind)['review'])
-        with patch.object(api,'API_RUN_ROOT',root),patch.object(api,'REVIEW_PERSISTENCE',repo),patch.object(api,'verify_review_roughness',lambda *a,**k:None),patch('ai_design_review.load_point_evidence.raster_pages',return_value=pages),TestClient(api.app) as client:
+        from ai_design_review import review_loading
+        with patch.object(api,'API_RUN_ROOT',root),patch.object(api,'REVIEW_PERSISTENCE',repo),patch.object(api,'verify_review_roughness',lambda *a,**k:None),patch('ai_design_review.load_point_evidence.raster_pages',return_value=pages),patch('ai_design_review.drawing_annotations.build_annotations',return_value={}),TestClient(api.app) as client:
             def load():
                 r=client.get('/api/reviews/'+kind);assert r.status_code==200,r.text;return r.json()
             def save(r,revision=None):
                 response=client.patch('/api/reviews/'+kind,json={'review':r,'expected_revision':revision or r['review_revision']});assert response.status_code==200,response.text;return response.json()
+            pending=load()
+            assert all(p['height'] is None for p in pending['spring_parameters']['load_points'])
+            assert repo.get_review(kind)['review']==before,'GET cannot mutate stored review'
+            task=repo.claim_next_recognition_job('graph-qa')
+            assert review_loading.execute(repo,task,'graph-qa',root,lambda *_:None)
+            repo.complete_recognition_job(task['job_id'],worker_id='graph-qa')
             current=load();ps=current['spring_parameters']['load_points']
             assert {p['label']:p['height'] for p in ps}==expected
             assert all(p['need_human_review'] and p['height_relation']['geometry_evidence'] for p in ps)
-            assert repo.get_review(kind)['review']==before,'GET cannot mutate stored review'
             assert build_generation_parameter_package(current)['generation_parameters']['load_points']==[]
             save(current);current=load()
-            assert any(e['event_type']=='load_height_evidence_reconciled' for e in repo.list_change_events(kind))
+            assert any(e['event_type']=='local_verification_completed' for e in repo.list_change_events(kind))
             assert not current.get('load_height_adjustment',{}).get('pending_save')
             for p in current['spring_parameters']['load_points']:p['need_human_review']=False
             save(current);current=load()

@@ -12,7 +12,7 @@ const labels={material:'材料',wire_diameter:'线径',outer_diameter:'外径',i
 const values={material:'SUS304',wire_diameter:2,outer_diameter:20,inner_diameter:16,mean_diameter:18,free_length:36,total_coils:12,active_coils:10,handedness:'右旋'};
 const data={info:{drawingName:'压缩弹簧',drawingNo:'00123-A',variant:'规格1',preparer:'测试工程师',date:'2026/11/10'},
  parameters:Object.entries(values).map(([field,value])=>({id:`param:${field}`,field,label:labels[field],value,unit:field.includes('diameter')||field==='free_length'?'mm':field.includes('coils')?'圈':'',state:'待确认',tolerance:field==='wire_diameter'?'±0.05':'—'})),
- loads:[{id:'load:one',field:'load_points.F1',label:'F1',height:'32 mm',force:'10 N',tolerance:'±10%'},{id:'load:two',field:'load_points.F2',label:'F2',height:'28 mm',force:'20 N',tolerance:'±10%'}],
+ loads:[{id:'load:one',field:'load_points.F1',label:'F1',height:'32 ±2 mm',force:'10 N',tolerance:'±10%'},{id:'load:two',field:'load_points.F2',label:'F2',height:'28 mm',force:'20 N',tolerance:'±10%'}],
  requirements:['热处理：消除应力退火。','表面处理：防锈处理，不得有油污及毛刺。','寿命要求：40000次循环内不得失效。','其他要求：两端并紧并磨平，Ra12.5，不制扁。'].map((content,i)=>({id:`technical:${i}`,field:`technical_requirements.${i}`,number:i+1,label:'技术要求',content,state:'待确认'}))};
 const few=structuredClone(data);
 few.parameters.find(row=>row.field==='wire_diameter').value=null;
@@ -43,6 +43,8 @@ try{
   assert.equal(new Set(ids).size,ids.length,'each selected project is printed once');
   assert.equal(await page.locator('.parameter-report-table').count(),1);
   assert.equal(await page.locator('.load-report-table').count(),1);
+  assert.equal(await page.locator('[data-report-row="load:one"] td').nth(1).textContent(),'32 ±2 mm');
+  if(name==='normal')assert.equal(await page.locator('[data-report-row="load:two"] td').nth(1).textContent(),'28 mm');
   assert.equal(await page.locator('.issue-reply').count(),name==='normal'?0:name==='long'?5:4);
   assert.match(await page.locator('body').innerText(),/两端并紧并磨平，Ra12.5，不制扁/,'original technical text stays complete');
   assert.doesNotMatch(await page.locator('body').innerText(),/RFI-|【确认】|紧凑异常示例|设计校核结果/);

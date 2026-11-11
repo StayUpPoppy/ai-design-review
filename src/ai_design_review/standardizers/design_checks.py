@@ -411,7 +411,10 @@ def calculate_design_checks(parameters: dict[str, Any], features: dict[str, Any]
         "solid_height_used": _result(hb, "mm", "用于 Pb = P′*(H0-Hb)", ["solid_height"], c, reason=hb_reason, estimated=height_source.endswith("nominal"), basis=height_basis),
     }
     metrics["solid_height_used"].update(height_source=height_source, model_id=geometry["model_id"] if height_source.endswith("nominal") else "input_height")
-    points = parameters.get("load_points") or []
+    from ..load_height_relations import MODEL_PROVISIONAL
+    points = [p for p in parameters.get("load_points") or [] if not p.get("load_force_conflict")
+              and not (p.get("need_human_review") is not False
+                       and (p.get("height_relation") or {}).get("verification_method")==MODEL_PROVISIONAL)]
     solid_points = [point for point in points if _is_solid_point(point)]
     def stress(point: dict[str, Any], *, solid: bool = False) -> dict[str, Any]:
         force = None

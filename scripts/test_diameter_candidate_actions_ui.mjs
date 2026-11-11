@@ -12,7 +12,8 @@ const api = context.DiameterRoleCandidates;
 for (const fixture of fixtures) {
   const candidate = structuredClone(fixture.candidate), before = structuredClone(candidate);
   assert.equal(api.modelDerived(candidate), fixture.derived, candidate.evidence);
-  assert.equal(api.pending({ diameter_role_candidates: [candidate] }).length, fixture.derived ? 0 : 1, candidate.evidence);
+  assert.equal(api.pending({ diameter_role_candidates: [candidate] }).length, fixture.eligible ? 1 : 0, candidate.evidence);
+  if (fixture.eligible) assert.equal(api.excerpt(candidate), 'Φ111');
   for (const state of [{ ignored: true }, { selected_field: 'mean_diameter' }]) {
     assert.equal(api.pending({ diameter_role_candidates: [{ ...candidate, ...state }] }).length, 0);
   }

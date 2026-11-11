@@ -29,7 +29,10 @@ def check(path: Path) -> list[Image.Image]:
     assert "RFI-" not in combined and "紧凑异常示例" not in combined
     assert "客户签字 / 盖章" in combined
     assert "设计校核结果" not in combined and "理论刚度" not in combined
+    if path.stem in {"confirmation-sheet", "confirmation-sheet-no-background"}:
+        assert "高度20±2mm" in "".join(combined.split()), (path.name, "abnormal load lost its height tolerance")
     if path.stem in {"normal", "few-rfi", "compact", "long"}:
+        assert "32±2mm" in "".join(combined.split()), (path.name, "height tolerance missing from print")
         for body in ("Ra12.5", "不制扁"):
             assert "".join(combined.split()).count(body) == 1, (path.name, "original requirement missing or repeated")
     if path.stem in {"few-rfi", "compact", "long"}:

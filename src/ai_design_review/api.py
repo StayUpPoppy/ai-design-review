@@ -2217,6 +2217,8 @@ def get_review(job_id: str, metadata_only: bool = False, identity: IdentityConte
     if revision is not None:
         review["review_revision"] = revision
     review["image_url"] = _review_preview_url(job_id)
+    from .diameter_evidence import public_roles
+    public_roles(review)
     LOGGER.info('Review read %s elapsed_ms=%.1f',job_id,(time.perf_counter()-started)*1000)
     return review
 
@@ -2514,6 +2516,8 @@ def _load_persisted_review(
         ensure_load_point_ids(review)
         ensure_technical_requirement_ids(review)
         reconcile_load_points(review, review_path.parent)
+        from .diameter_evidence import reconcile_diameter_review
+        reconcile_diameter_review(review, review_path.parent)
         _prepare_review_reasonableness(review, stored["revision"])
         return review, stored["revision"]
     if not _local_job_owned(review_path.parent, identity.user_id) or not review_path.exists():
@@ -2529,6 +2533,8 @@ def _load_persisted_review(
     ensure_load_point_ids(review)
     ensure_technical_requirement_ids(review)
     reconcile_load_points(review, review_path.parent)
+    from .diameter_evidence import reconcile_diameter_review
+    reconcile_diameter_review(review, review_path.parent)
     _prepare_review_reasonableness(review, None)
     return review, None
 
@@ -2592,7 +2598,7 @@ def _apply_diameter_ignores(review: dict[str, Any], events: list[dict[str, Any]]
 
 def _save_diameter_ignores(job_id, previous, current_revision, *, review_path, expected_revision, events, identity):
     """Candidate-only saves must not recalculate or revoke engineering values."""
-    from .diameter_evidence import PENDING
+    from .diameter_evidence import public_candidates
 
     revision = _expected_review_revision(expected_revision)
     if current_revision is not None and revision != current_revision:
@@ -2601,7 +2607,7 @@ def _save_diameter_ignores(job_id, previous, current_revision, *, review_path, e
     changed = _apply_diameter_ignores(review, events)
     if not changed:
         return {"mode": "postgresql" if REVIEW_PERSISTENCE.configured else "json_fallback", "revision": current_revision,
-                "events": [], "diameter_role_update": {"candidates": review.get(PENDING, []), "candidates_only": True}}
+                "events": [], "diameter_role_update": {"candidates": public_candidates(review), "candidates_only": True}}
     for event in changed:
         event["actor"] = identity.as_audit_actor()
     fallback = _merge_audit_events_into_review_history(review, changed, status="saved" if REVIEW_PERSISTENCE.configured else "saved_local")
@@ -2621,7 +2627,7 @@ def _save_diameter_ignores(job_id, previous, current_revision, *, review_path, e
         raise _persistence_http_error(exc) from exc
     if result.get("mode") == "json_fallback":
         result["events"] = fallback
-    result["diameter_role_update"] = {"candidates": review[PENDING], "candidates_only": True}
+    result["diameter_role_update"] = {"candidates": public_candidates(review), "candidates_only": True}
     write_json(review_path, review)
     return result
 
@@ -2670,9 +2676,9 @@ def _save_review_persistence(
         review.pop(key, None)
     if 'local_verification' in previous: review['local_verification'] = deepcopy(previous['local_verification'])
     else: review.pop('local_verification', None)
-    load_changes = prepare_load_height_save(review, previous)
     events = list(events or [])
-    from .diameter_evidence import PENDING as DIAMETER_ROLE_CANDIDATES, select_role
+    load_changes = prepare_load_height_save(review, previous, events)
+    from .diameter_evidence import PENDING as DIAMETER_ROLE_CANDIDATES, public_candidates, select_role
     from .diameter_linkage import group_state
     role_events = [event for event in events if event.get("event_type") == "diameter_role_selected"]
     ignore_events = [event for event in events if event.get("event_type") == "diameter_role_ignored"]
@@ -2879,14 +2885,14 @@ def _save_review_persistence(
             atomic_annotation_write(review_path.parent / "annotations.json", review["drawing_annotations"])
     if role_events:
         result["diameter_role_update"] = {
-            "candidates": review[DIAMETER_ROLE_CANDIDATES],
+            "candidates": public_candidates(review),
             **group_state(review),
             "accuracy_grade": (review.get("spring_parameters") or {}).get("accuracy_grade"),
             "accuracy_inference": review.get("accuracy_inference"),
             "annotations": review.get("drawing_annotations"),
         }
     elif ignore_events:
-        result["diameter_role_update"] = {"candidates": review.get(DIAMETER_ROLE_CANDIDATES, []), "candidates_only": True}
+        result["diameter_role_update"] = {"candidates": public_candidates(review), "candidates_only": True}
     write_json(review_path, review)
     return result
 

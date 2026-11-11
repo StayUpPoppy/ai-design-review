@@ -1,6 +1,9 @@
 """Geometry-backed bilingual height/force cells. Labels are identity hints only."""
 from __future__ import annotations
 import re
+from .load_height_dimension import dimension_with_offsets, read_height_dimension
+
+FORCE_HEADER = re.compile(r"(?:load|force|负荷|载荷|力值)\s*(?:[（(]\s*(?:N|kN|kgf)\s*[）)])?",re.I)
 
 
 def table_height(point, texts):
@@ -11,14 +14,21 @@ def table_height(point, texts):
         force = float(point["force"])
     except (ValueError, TypeError, KeyError):
         return None
-    numeric = [(t, float(t["text"].strip())) for t in texts if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", t["text"].strip())]
+    force_unit=point.get("force_unit") or "N"
+    force_cell_pattern=re.compile(rf"([+-]?\d+(?:\.\d+)?)\s*(?:{re.escape(force_unit)})?",re.I)
+    numeric = [(t, float(match[1])) for t in texts if (match:=force_cell_pattern.fullmatch(t["text"].strip()))]
     # OCR rotations may split a whole number into contained digit boxes; never join cells.
     numeric = [(t,x) for t,x in numeric if not any(len(v["text"]) > len(t["text"]) and t["text"] in v["text"]
                and v["bbox"][0]-height(v)*.2<=t["bbox"][0] and v["bbox"][1]-height(v)*.2<=t["bbox"][1]
                and v["bbox"][2]+height(v)*.2>=t["bbox"][2] and v["bbox"][3]+height(v)*.2>=t["bbox"][3] for v,_ in numeric)]
+    height_cells=[(t,parsed["value"]) for t in texts if (parsed:=read_height_dimension(t["text"])) and parsed["unit"].lower() in {"mm","毫米"}]
+    # The dimension parser also reads a single digit from split OCR boxes.
+    height_cells=[(t,x) for t,x in height_cells if not any(len(v["text"])>len(t["text"]) and t["text"] in v["text"]
+                  and v["bbox"][0]-height(v)*.2<=t["bbox"][0] and v["bbox"][1]-height(v)*.2<=t["bbox"][1]
+                  and v["bbox"][2]+height(v)*.2>=t["bbox"][2] and v["bbox"][3]+height(v)*.2>=t["bbox"][3] for v,_ in height_cells)]
     force_cells = []
     for t, value in numeric:
-        if abs(value - force) > 1e-7:
+        if abs(value - force) > 1e-7 or point.get("_force_bbox") and point["_force_bbox"]!=t["bbox"]:
             continue
         cells = row(t)
         labels = [v for v in cells if v["bbox"][2] < t["bbox"][0] and re.search(r"\b(?:load|force)\b|负荷|载荷|力值", v["text"], re.I)]
@@ -28,8 +38,8 @@ def table_height(point, texts):
     matches = []
     # Horizontal tables: a header owns a column; the force and height own one row.
     for f,value in numeric:
-        if abs(value-force)>1e-7:continue
-        headers=[t for t in texts if re.fullmatch(r"(?:load|force|负荷|载荷|力值)\s*(?:[（(]\s*(?:N|kN|kgf)\s*[）)])?",t["text"].strip(),re.I)
+        if abs(value-force)>1e-7 or point.get("_force_bbox") and point["_force_bbox"]!=f["bbox"]:continue
+        headers=[t for t in texts if FORCE_HEADER.fullmatch(t["text"].strip())
                  and 0<cy(f)-cy(t)<12*height(t)]
         for header in headers:
             peers=row(header)
@@ -47,7 +57,7 @@ def table_height(point, texts):
             if not unit_at(header,re.escape(point.get("force_unit") or "N")):continue
             for label in peers:
                 if not re.fullmatch(r"(?:height|working\s+height|installed\s+height|高度|工作高度|安装高度)\s*(?:[（(]\s*(?:mm|毫米)\s*[）)])?",label["text"].strip(),re.I) or not unit_at(label,"mm|毫米"):continue
-                values=[(t,x) for t,x in numeric if x>0 and t in row(f) and owns(label,t)]
+                values=[(t,x) for t,x in height_cells if t in row(f) and owns(label,t)]
                 if len({x for _,x in values})==1:
                     t,x=values[0];matches.append((0,x,t,label,f))
     for f in force_cells:
@@ -62,7 +72,7 @@ def table_height(point, texts):
             cells = row(label)
             if not any(re.search(r"\bmm\b|毫米", v["text"], re.I) for v in cells):
                 continue
-            values = [(v, x) for v, x in numeric if x > 0 and v in cells and v["bbox"][0] > label["bbox"][2]
+            values = [(v, x) for v, x in height_cells if v in cells and v["bbox"][0] > label["bbox"][2]
                       and abs((v["bbox"][0] + v["bbox"][2] - f["bbox"][0] - f["bbox"][2]) / 2)
                       < max(v["bbox"][2] - v["bbox"][0], f["bbox"][2] - f["bbox"][0])]
             if len({x for _, x in values}) == 1:
@@ -79,5 +89,6 @@ def table_height(point, texts):
     if len({v[1] for v in matches}) != 1:
         return {"conflict": True}
     _, value, cell, label, force_cell = matches[0]
-    return {"value": value, "cell": cell, "force_cell": force_cell,
+    dimension, evidence=dimension_with_offsets(cell,texts,cell["bbox"][3])
+    return {"value": value, "cell": evidence, "force_cell": force_cell, "dimension":dimension,
             "evidence": f"{label['text']} (mm) {value:g}; Load {force:g} {point.get('force_unit') or 'N'}"}

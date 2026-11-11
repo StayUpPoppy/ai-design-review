@@ -3,11 +3,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 import math
+import re
+import unicodedata
 from typing import Any
 
 VERSION = "load-height/v2"
 KINDS = {"absolute_height", "free_deflection", "incremental_deflection", "unknown"}
 LENGTH_UNITS = {"mm": 1., "毫米": 1., "cm": 10., "厘米": 10., "m": 1000., "米": 1000., "in": 25.4, "inch": 25.4}
+MODEL_PROVISIONAL = "qwen_provisional"
 
 
 def number(value: Any) -> float | None:
@@ -25,6 +28,42 @@ def millimeters(value: Any, unit: Any) -> float | None:
     return round(value * factor, 12) if value is not None and factor is not None else None
 
 
+def model_load_relation(candidate):
+    """Accept a documented direct reading as a draft, with no verification authority."""
+    sources = candidate.get("source") or []
+    if "qwen_vision" not in ([sources] if isinstance(sources, str) else sources):
+        return None
+    point = candidate.get("value") or {}
+    relation = point.get("height_relation") or {}
+    units = candidate.get("reported_units", point)
+    height = millimeters(relation.get("value"), relation.get("unit"))
+    force = number(point.get("force"))
+    force_unit = str(units.get("force_unit") or "").strip()
+    page = candidate.get("page", 1)
+    if (relation.get("kind") != "absolute_height" or height is None or height <= 0
+            or force is None or force < 0 or force_unit.lower() not in {"n", "kn", "kgf", "牛顿", "牛"}
+            or relation.get("page", page) != page or not str(point.get("label") or "").strip()):
+        return None
+    if point.get("height") is not None and millimeters(point["height"], units.get("height_unit")) != height:
+        return None
+    evidence = unicodedata.normalize("NFKC", str(relation.get("evidence") or ""))
+    if not re.search(r"标注|尺寸线|高度|工作长度|height|dimension|[HL]\s*\d*\s*=", evidence, re.I):
+        return None
+    if re.search(r"未标注|未明确|估算|计算值|推测|可能|inferred|estimated",evidence,re.I):
+        return None
+    force_marks = list(re.finditer(r"(?<![\d.])([+-]?\d+(?:\.\d+)?)\s*(kN|kgf|N|牛顿|牛)(?![A-Za-z]|\s*[/·])", evidence, re.I))
+    if not any(number(mark[1]) == force and mark[2].casefold() == force_unit.casefold() for mark in force_marks):
+        return None
+    height_evidence = re.sub(r"(?<![A-Za-z0-9_])[A-Za-z]+\d+(?=\s*[=:])", "", evidence)
+    height_evidence = re.sub(r"(?<![\d.])[+-]?\d+(?:\.\d+)?\s*(?:kN|kgf|N|牛顿|牛)(?![A-Za-z])", "", height_evidence, flags=re.I)
+    if not any(number(m[0]) == number(relation.get("value"))
+               for m in re.finditer(r"(?<![\d.])\d+(?:\.\d+)?(?![\d.])", height_evidence)):
+        return None
+    result = normalize_relation(relation)
+    result.update(page=page, verification_method=MODEL_PROVISIONAL)
+    return result
+
+
 def normalize_relation(value: Any, *, trusted: bool = False) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -40,7 +79,7 @@ def normalize_relation(value: Any, *, trusted: bool = False) -> dict[str, Any] |
     if isinstance(value.get("graphic_hint"), dict):
         # Model positions are preserved as candidates, never as verified evidence.
         result["graphic_hint"] = deepcopy(value["graphic_hint"])
-    for key in ("last_inputs", "formula", "status", "reason", "verification_method", "source_document_id", "preserve_existing_value", "geometry_evidence", "verification_failure", "geometry_candidate"):
+    for key in ("last_inputs", "formula", "status", "reason", "verification_method", "source_document_id", "preserve_existing_value", "geometry_evidence", "verification_failure", "geometry_candidate", "observed_free_height_mm"):
         if trusted and key in value:
             result[key] = deepcopy(value[key])
     return result
@@ -117,6 +156,8 @@ def refresh_load_heights(review: dict[str, Any]) -> list[dict[str, Any]]:
         distance = millimeters(relation.get("value"), relation.get("unit"))
         if point.get("load_height_conflict"):
             reason = "原图存在多个高度或公差证据冲突，请核对"
+        elif kind == "absolute_height" and relation.get("verification_method") == MODEL_PROVISIONAL:
+            value = distance
         elif not relation.get("verified") or kind == "unknown":
             reason = relation.get("verification_failure") or ("表格中的高度与载荷关联尚未核实，请核对原图" if (point.get("source_context") or {}).get("kind")=="table" else "高度尺寸的起止关系尚未核实，请核对原图")
         elif distance is None or distance < 0:
@@ -124,13 +165,18 @@ def refresh_load_heights(review: dict[str, Any]) -> list[dict[str, Any]]:
         elif kind == "absolute_height":
             value, formula = distance, "H = 原图工作高度"
         elif kind == "free_deflection":
-            if free_height is None or free_height <= 0:
-                reason = "缺少有效自由高度，工作高度保持空值"
-            elif free.get("derived_value_stale") or free.get("formula_recommendation_stale"):
+            datum=free_height
+            sources=free.get("source") or []
+            sources=[sources] if isinstance(sources,str) else sources
+            if free.get("value") in (None,"") and not any(str(source).startswith(("human","manual")) for source in sources):
+                datum=number(relation.get("observed_free_height_mm"))
+            if free.get("derived_value_stale") or free.get("formula_recommendation_stale"):
                 reason = "自由高度已失效，请先核对"
+            elif datum is None or datum <= 0:
+                reason = "缺少有效自由高度，工作高度保持空值"
             else:
-                value, formula = free_height - distance, "H = H0 - S"
-                inputs["free_length_mm"] = free_height
+                value, formula = datum - distance, "H = H0 - S"
+                inputs["free_length_mm"] = datum
         elif kind == "incremental_deflection":
             base_id = relation.get("base_point_id")
             if base_id:
@@ -144,6 +190,8 @@ def refresh_load_heights(review: dict[str, Any]) -> list[dict[str, Any]]:
                 reason = "追加行程的参考载荷点未唯一确定或已删除"
             else:
                 base_height = resolve(base)
+                if base.get("need_human_review") is not False and (base.get("height_relation") or {}).get("status") == "model_pending":
+                    base_height = None
                 if base_height is None:
                     reason = "参考载荷点高度未确定或存在循环依赖"
                 else:
@@ -157,7 +205,9 @@ def refresh_load_heights(review: dict[str, Any]) -> list[dict[str, Any]]:
                 value, reason = None, "换算工作高度须为正数且不能超过自由高度"
         changed = point.get("height") != value or point.get("height_unit") != "mm" or relation.get("last_inputs") != inputs
         point.update(height=value, height_unit="mm")
-        relation.update(status="calculated" if value is not None else "pending", reason=reason, formula=formula, last_inputs=inputs)
+        provisional = not relation.get("verified") and relation.get("verification_method") == MODEL_PROVISIONAL
+        status = "model_pending" if provisional and value is not None else "calculated" if value is not None else "pending"
+        relation.update(status=status, reason=reason, formula=formula, last_inputs=inputs)
         if changed:
             point["need_human_review"] = True
             confirmations = review.get("manual_confirmations") or {}
@@ -196,7 +246,7 @@ def refresh_load_heights(review: dict[str, Any]) -> list[dict[str, Any]]:
     return changes
 
 
-def prepare_load_height_save(review: dict[str, Any], previous: dict[str, Any]) -> list[dict[str, Any]]:
+def prepare_load_height_save(review: dict[str, Any], previous: dict[str, Any], events=()) -> list[dict[str, Any]]:
     """Client edits cannot certify an original dimension or replace another point's evidence."""
     old_points = {p.get("load_point_id"): p for p in (previous.get("spring_parameters") or {}).get("load_points", [])}
     expected = deepcopy(review)
@@ -208,6 +258,19 @@ def prepare_load_height_save(review: dict[str, Any], previous: dict[str, Any]) -
     calculated = {p.get("load_point_id"): p for p in expected.get("spring_parameters", {}).get("load_points", [])}
     for p in review.get("spring_parameters", {}).get("load_points", []):
         old = old_points.get(p.get("load_point_id"))
+        force=number(p.get("force"))
+        force_changed=bool(old and (old.get("force"),old.get("force_unit"))!=(p.get("force"),p.get("force_unit")))
+        reviewed_force=any(e.get("event_type")=="load_point_value_updated"
+                           and (e.get("metadata") or {}).get("load_point_id")==p.get("load_point_id")
+                           and (e.get("before_state") or {}).get("load_force_conflict") is True
+                           and not (e.get("after_state") or {}).get("load_force_conflict")
+                           and number((e.get("after_state") or {}).get("force"))==force for e in events)
+        for field in ("force_evidence_verified","load_force_conflict","force_alternatives"):
+            p.pop(field,None)
+            if old and field in old and not force_changed and not reviewed_force:
+                p[field]=deepcopy(old[field])
+            elif old and old.get("load_force_conflict") and field in old and (force is None or force<0):
+                p[field]=deepcopy(old[field])
         if not old or not old.get("height_relation"):
             if p.get("height_relation"):
                 p["height_relation"] = normalize_relation(p["height_relation"])

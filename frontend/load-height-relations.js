@@ -1,12 +1,14 @@
 /* Original dimension types and deterministic load-height chains; no IO. */
 (() => {
   const VERSION = "load-height/v2", units = { mm:1, "毫米":1, cm:10, "厘米":10, m:1000, "米":1000, in:25.4, inch:25.4 };
+  const unitFactor = unit => String(unit || "").trim() === "英寸" ? units.in : units[String(unit || "").trim().toLowerCase()];
   const number = value => typeof value === "boolean" || value == null || typeof value === "object" || String(value).trim() === "" ? null : Number.isFinite(Number(value)) ? Number(value) : null;
   const mm = (value,unit) => number(value) != null && units[String(unit || "").trim().toLowerCase()] != null ? Number((number(value)*units[String(unit).trim().toLowerCase()]).toFixed(12)) : null;
   const clone = value => value == null ? value : structuredClone(value);
   const stable = value => Array.isArray(value) ? value.map(stable) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key,stable(value[key])])) : value;
   const same = (a,b) => JSON.stringify(stable(a)) === JSON.stringify(stable(b));
   const sameScope = (a,b) => (a.height_relation?.page ?? a.page ?? 1) === (b.height_relation?.page ?? b.page ?? 1) && (a.height_relation?.scope || "") === (b.height_relation?.scope || "");
+  const isProvisional = point => point?.height_relation?.verification_method === "qwen_provisional" && !point.height_relation.verified;
   const snapshot = point => point.height_relation ? Object.fromEntries(["version","kind","mode","value","unit","base_point_id","reference_only","verified","last_inputs","status"].map(key => [key,clone(point.height_relation[key] ?? null)])) : null;
   function manual(point) {
     if (point.height_relation) Object.assign(point.height_relation,{mode:"manual",status:"manual",reason:"",formula:""});
@@ -37,13 +39,16 @@
       const before = clone(point), distance = mm(relation.value,relation.unit), inputs = {};
       let value = null, reason = "", formula = "";
       if (point.load_height_conflict) reason = "原图存在多个高度或公差证据冲突，请核对";
+      else if (relation.kind === "absolute_height" && isProvisional(point)) value = distance;
       else if (!relation.verified || relation.kind === "unknown") reason = relation.verification_failure || (point.source_context?.kind === "table" ? "表格中的高度与载荷关联尚未核实，请核对原图" : "高度尺寸的起止关系尚未核实，请核对原图");
       else if (distance == null || distance < 0) reason = "原始高度/行程的数值或单位无效";
       else if (relation.kind === "absolute_height") { value = distance; formula = "H = 原图工作高度"; }
       else if (relation.kind === "free_deflection") {
-        if (h0 == null || h0 <= 0) reason = "缺少有效自由高度，工作高度保持空值";
-        else if (free.derived_value_stale || free.formula_recommendation_stale) reason = "自由高度已失效，请先核对";
-        else { value = h0-distance; formula = "H = H0 - S"; inputs.free_length_mm = h0; }
+        const manualFree = [free.source || []].flat().some(source => /^(human|manual)/.test(String(source)));
+        const datum = (free.value == null || free.value === "") && !manualFree ? number(relation.observed_free_height_mm) : h0;
+        if (free.derived_value_stale || free.formula_recommendation_stale) reason = "自由高度已失效，请先核对";
+        else if (datum == null || datum <= 0) reason = "缺少有效自由高度，工作高度保持空值";
+        else { value = datum-distance; formula = "H = H0 - S"; inputs.free_length_mm = datum; }
       } else if (relation.kind === "incremental_deflection") {
         let base;
         if (relation.base_point_id) base = byId.get(relation.base_point_id);
@@ -53,7 +58,8 @@
         }
         if (!base || !sameScope(point,base)) reason = "追加行程的参考载荷点未唯一确定或已删除";
         else {
-          const baseHeight = resolve(base);
+          const resolved = resolve(base);
+          const baseHeight = isProvisional(base) && base.need_human_review !== false ? null : resolved;
           if (baseHeight == null) reason = "参考载荷点高度未确定或存在循环依赖";
           else { value = baseHeight-distance; formula = "H = H参考点 - ΔS"; Object.assign(inputs,{base_point_id:base.load_point_id,base_height_mm:baseHeight,base_inputs:clone(base.height_relation?.last_inputs ?? null)}); }
         }
@@ -65,7 +71,7 @@
       }
       const changed = point.height !== value || point.height_unit !== "mm" || !same(relation.last_inputs,inputs);
       point.height = value; point.height_unit = "mm";
-      Object.assign(relation,{status:value != null ? "calculated" : "pending",reason,formula,last_inputs:inputs});
+      Object.assign(relation,{status:value != null ? isProvisional(point) ? "model_pending" : "calculated" : "pending",reason,formula,last_inputs:inputs});
       if (changed) {
         point.need_human_review = true;
         if (review.manual_confirmations) { delete review.manual_confirmations[`load_point_${point.load_point_id}`]; delete review.manual_confirmations[`load_points_${points.indexOf(point)}`]; }
@@ -88,5 +94,5 @@
     }
     return changes;
   }
-  globalThis.LoadHeightRelations = { VERSION, refresh, manual, snapshot };
+  globalThis.LoadHeightRelations = { VERSION, refresh, manual, snapshot, unitFactor, isProvisional };
 })();

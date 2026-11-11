@@ -95,7 +95,10 @@ try {
   assert.equal(exported.titleBlockProperties["垂直度A"], 0);
   // Inline editing stages signed drafts and guards all mutation/generation entry points.
   const editor = panel.locator('[data-tolerance-editor]');
-  const edit = row => row.locator('[data-tolerance-action="open"]').click();
+  const edit = async row => {
+    const kind = await row.getAttribute('data-kind') === 'load_point' ? 'load' : 'parameter';
+    await row.locator(`[data-tolerance-action="open"][data-tolerance-kind="${kind}"]`).click();
+  };
   const action = name => editor.locator(`[data-tolerance-action="${name}"]`);
   const pair = () => editor.locator('[data-tolerance-mode="pair"]').click();
   const upper = () => editor.locator('[data-tolerance-input="upper"]');
@@ -195,21 +198,21 @@ try {
       paramWidth: row.closest('.data-table').clientWidth, loadWidth: load.closest('.data-table').clientWidth,
       scale: row.getBoundingClientRect().width / row.offsetWidth,
       param: ['.data-label', '.data-primary', '.data-secondary', '.confirm-button'].map(s => box(row.querySelector(s))),
-      load: ['.data-label', '.data-primary', '.data-secondary', '.data-tertiary', '.load-point-actions'].map(s => box(load.querySelector(s))),
+      load: ['.data-label', '.data-primary', '.load-point-height-tolerance', '.data-secondary', '.data-tertiary', '.load-point-actions'].map(s => box(load.querySelector(s))),
+      loadColumns: getComputedStyle(load).gridTemplateColumns.split(' ').length,
       fits: [fit(row.querySelector('[data-role="tolerance"]'), ['+0.05/-0.04', '0/-0.2']), fit(load.querySelector('[data-role="load-tolerance"]'), ['+0.15/-0.25N', '±10%'])],
       valueFits: fit(row.querySelector('[data-role="value"]'), ['1.8', '133.35']),
       paramHeaderVisible: getComputedStyle(parameterTable.querySelector('.data-table-head')).display !== 'none',
       paramHeaderAligned: [...parameterTable.querySelectorAll('.data-table-head span')].every((cell, index) => Math.abs(box(cell).x - box(row.children[index]).x) < 1),
       inlineFieldLabelsHidden: [...row.querySelectorAll('.parameter-field-label')].every(node => getComputedStyle(node).display === 'none'),
       wire: ['.data-label strong', '.parameter-annotation-number', '.data-primary', '.data-secondary'].map(s => box(wire.querySelector(s))),
-      controls: [box(row.querySelector('.tolerance-input-control')), box(load.querySelector('.tolerance-input-control'))],
+      controls: [box(row.querySelector('.tolerance-input-control')), box(load.querySelector('.data-tertiary .tolerance-input-control'))],
       choiceRows: ['handedness', 'end_type', 'end_grinding', 'flattening'].map(field => {
         const choice = panel.querySelector(`[data-field="${field}"]`), value = choice.querySelector('[data-role="value"]');
         return { field, value: box(value), primary: box(choice.querySelector('.data-primary')), button: box(choice.querySelector('.confirm-button')),
           hiddenControls: choice.querySelectorAll('[data-role="tolerance"], .data-secondary, .tolerance-editor, .tolerance-edit-button').length,
           labels: [...choice.querySelectorAll('.parameter-field-label')].map(label => label.textContent) };
       }),
-      headerAligned: [...load.closest('.data-table').querySelectorAll('.data-table-head span')].every((cell, index) => Math.abs(box(cell).x - box(load.children[index]).x) < 1),
       clipped: [...panel.querySelectorAll('.parameter-data-table > .data-row, .load-point-table > .data-row')].some(node => node.getClientRects().length && node.scrollWidth > node.clientWidth + 2),
     };
   });
@@ -247,10 +250,13 @@ try {
     }
     if (metrics.paramWidth < 360) assert.ok(confirm.y >= Math.max(value.bottom, tolerance.bottom) - 1, `${scenario.name}: confirmation wraps`);
     else assert.ok(confirm.x >= tolerance.right - 1);
-    const [name, height, force, loadTolerance, actions] = metrics.load;
-    if (metrics.loadWidth < 640) assert.ok(loadTolerance.y >= Math.max(height.bottom, force.bottom) - 1, `${scenario.name}: force tolerance gets its own row`);
-    else { assert.ok(Math.abs(name.width - 88 * metrics.scale) < 1); assert.ok(force.right <= loadTolerance.x); assert.equal(metrics.headerAligned, true); }
-    assert.ok(actions.y >= Math.max(height.bottom, force.bottom, loadTolerance.bottom) - 1, `${scenario.name}: load actions stay below inputs`);
+    const [name, height, heightTolerance, force, loadTolerance, actions] = metrics.load;
+    assert.ok(name.bottom <= height.y + 1);
+    assert.ok(heightTolerance.y >= height.bottom - 1 && Math.abs(heightTolerance.x - height.x) < 1);
+    assert.ok(loadTolerance.y >= force.bottom - 1 && Math.abs(loadTolerance.x - force.x) < 1);
+    if (metrics.loadColumns === 1) assert.ok(force.y >= heightTolerance.bottom - 1);
+    else { assert.ok(height.right <= force.x + 1); assert.ok(Math.abs(heightTolerance.y - loadTolerance.y) < 1); }
+    assert.ok(actions.y >= Math.max(heightTolerance.bottom, loadTolerance.bottom) - 1, `${scenario.name}: load actions stay below inputs`);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2), false);
     if (scenario.name === 'sidebar') {
       const extra = await panel.evaluate(panel => {
@@ -300,5 +306,5 @@ try {
     await page.screenshot({ path: `outputs/sw-optional-fields-qa/identity-${width}.png` });
   }
   assert.deepEqual(errors, []);
-  console.log("PASS: PC parameter rows and headers align at narrow/wide/125%, full values and tolerances, unchanged load layout, editing, save/retry/reopen and asymmetric SW output; mocked API only.");
+  console.log("PASS: PC parameter rows and headers align at narrow/wide/125%, full values and tolerances, paired load fields, editing, save/retry/reopen and asymmetric SW output; mocked API only.");
 } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }

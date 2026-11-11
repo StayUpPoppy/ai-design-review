@@ -8,11 +8,11 @@
     owner() { return this.config.owner(); }
     current() { return this.drafts.get(this.owner()); }
     dirty() { const d = this.current(); return Boolean(d && JSON.stringify([d.mode, d.magnitude, d.upper, d.lower, d.clear]) !== d.initial); }
-    basis(r, kind) { return JSON.stringify([r.liveNominal ? null : r.nominal, r.unit, read(r.item, isLoad(kind)), r.item.tolerance_input_draft ?? null]); }
+    basis(r, kind) { return JSON.stringify([r.liveNominal ? null : r.nominal, r.unit, read(r.item, isLoad(kind)), r.item.tolerance_input_draft ?? null, Boolean(r.pending)]); }
     seed(kind, target, r) {
       const value = read(r.item, isLoad(kind));
       const mode = value.percent != null ? "percent" : value.upper == null && value.lower == null || number(value.upper) >= 0 && number(value.upper) === -number(value.lower) ? "symmetric" : "pair";
-      const d = { kind, target, mode, magnitude: text(value.percent ?? (mode === "symmetric" ? value.upper : null)), upper: text(value.upper), lower: text(value.lower), clear: false, notice: "", needsInput: false, basis: this.basis(r, kind) };
+      const d = { kind, target, mode, magnitude: text(value.percent ?? (mode === "symmetric" ? value.upper : null)), upper: text(value.upper), lower: text(value.lower), clear: false, notice: "", needsInput: Boolean(r.pending), basis: this.basis(r, kind) };
       if (r.item.tolerance_input_draft) { d.magnitude = r.item.tolerance_input_draft; d.mode = "symmetric"; }
       d.initial = JSON.stringify([d.mode, d.magnitude, d.upper, d.lower, d.clear]);
       return d;
@@ -64,7 +64,7 @@
       const d = this.current(); if (!d || this.config.busy()) return;
       const r = this.config.resolve(d.kind, d.target), value = this.result(d);
       if (this.error(d, r, value)) { this.sync(document); return; }
-      if (!equals(read(r.item, isLoad(d.kind)), value) || r.item.tolerance_input_draft) {
+      if (!equals(read(r.item, isLoad(d.kind)), value) || r.item.tolerance_input_draft || r.pending) {
         if (this.config.commit(d, r, value) === false) return;
       }
       this.drafts.delete(this.owner()); this.config.render(); this.restoreFocus(d);
@@ -87,7 +87,7 @@
         if (node.dataset.toleranceKind !== d.kind || node.dataset.toleranceTarget !== d.target) return;
         node.querySelector('[data-tolerance-error]').textContent = error || d.notice;
         node.querySelector('[data-tolerance-preview]').textContent = preview(v, r?.nominal, r?.unit);
-        node.querySelector('[data-tolerance-nominal]').textContent = `当前${isLoad(d.kind) ? "力值" : "数值"}：${text(r?.nominal)} ${r?.unit || ""}`;
+        node.querySelector('[data-tolerance-nominal]').textContent = `当前${r?.quantity || (isLoad(d.kind) ? "力值" : "数值")}：${text(r?.nominal)} ${r?.unit || ""}`;
         node.querySelector('[data-tolerance-label]').textContent = `编辑公差 · ${r?.label || ""}`;
         node.querySelector('[data-tolerance-action="save"]').disabled = Boolean(error || this.config.busy());
       });
@@ -96,6 +96,8 @@
   }
   function editorHtml(controller, d, r) {
     const v = controller.result(d), error = controller.error(d, r, v);
+    const rangeLabel = r.quantity || (isLoad(d.kind) ? "力值" : "尺寸");
+    const nominalLabel = r.quantity || (isLoad(d.kind) ? "力值" : "数值");
     const modes = [["symmetric", "对称公差"], ["pair", "上下偏差"], ...(isLoad(d.kind) ? [["percent", "百分比"]] : [])];
     return `<div class="tolerance-editor" data-tolerance-editor data-tolerance-kind="${d.kind}" data-tolerance-target="${esc(d.target)}">
       <div class="tolerance-editor-heading"><strong data-tolerance-label>编辑公差 · ${esc(r.label)}</strong><span>单位：${esc(d.mode === "percent" ? "%" : r.unit || "无量纲")}</span></div>
@@ -103,7 +105,7 @@
       <div class="tolerance-editor-fields">${d.mode === "pair" ? `<label>上偏差${r.unit ? `（${esc(r.unit)}）` : ""}<input data-tolerance-input="upper" inputmode="decimal" autocomplete="off" value="${esc(d.upper)}" placeholder="例如：+0.1"></label><label>下偏差${r.unit ? `（${esc(r.unit)}）` : ""}<input data-tolerance-input="lower" inputmode="decimal" autocomplete="off" value="${esc(d.lower)}" placeholder="例如：-0.2"></label>` : `<label>${d.mode === "percent" ? "公差百分比（%）" : "公差幅值"}<span class="tolerance-magnitude">±<input data-tolerance-input="magnitude" inputmode="decimal" autocomplete="off" value="${esc(d.magnitude)}" placeholder="例如：0.1">${esc(d.mode === "percent" ? "%" : r.unit)}</span></label>`}</div>
       <small class="tolerance-editor-help">${d.mode === "pair" ? "支持正、负偏差；单边公差请将另一侧填 0。" : "只填写非负数，无需输入 ± 符号。"}</small>
       <p class="tolerance-editor-error" data-tolerance-error role="status">${esc(error || d.notice)}</p>
-      <div class="tolerance-editor-footer"><div class="tolerance-editor-preview" aria-live="polite"><small>${isLoad(d.kind) ? "力值" : "尺寸"}范围（按公差计算）</small><strong data-tolerance-preview>${esc(preview(v, r.nominal, r.unit))}</strong><small data-tolerance-nominal>当前${isLoad(d.kind) ? "力值" : "数值"}：${esc(text(r.nominal))} ${esc(r.unit)}</small></div><div class="tolerance-editor-actions"><button type="button" class="secondary-action" data-tolerance-action="clear">清除公差</button><button type="button" class="secondary-action" data-tolerance-action="cancel">取消</button><button type="button" data-tolerance-action="save"${error || controller.config.busy() ? " disabled" : ""}>保存公差</button></div></div>
+      <div class="tolerance-editor-footer"><div class="tolerance-editor-preview" aria-live="polite"><small>${rangeLabel}范围（按公差计算）</small><strong data-tolerance-preview>${esc(preview(v, r.nominal, r.unit))}</strong><small data-tolerance-nominal>当前${nominalLabel}：${esc(text(r.nominal))} ${esc(r.unit)}</small></div><div class="tolerance-editor-actions"><button type="button" class="secondary-action" data-tolerance-action="clear">清除公差</button><button type="button" class="secondary-action" data-tolerance-action="cancel">取消</button><button type="button" data-tolerance-action="save"${error || controller.config.busy() ? " disabled" : ""}>保存公差</button></div></div>
     </div>`;
   }
   function bindEditor(c, root, binding) {

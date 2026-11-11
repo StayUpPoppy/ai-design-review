@@ -30,6 +30,8 @@ const context = {
   },
 };
 vm.createContext(context);
+const heightToleranceHelpers = appSource.slice(appSource.indexOf("function scaleLoadHeightTolerance"), appSource.indexOf("function toleranceTarget"));
+vm.runInContext(heightToleranceHelpers, context);
 vm.runInContext(appSource.slice(appSource.indexOf("const Flattening ="), appSource.indexOf("const COMPRESSION_CORE_PARAMETER_FIELDS")), context);
 translationTestHelpers(context);
 vm.runInContext(appSource.slice(helperStart, helperEnd), context);
@@ -138,6 +140,7 @@ const lifecycle = {
   normalizeLoadPointLabel(value) { return String(value || "").trim().replace(/\s+/g, " "); },
 };
 vm.createContext(lifecycle);
+vm.runInContext(heightToleranceHelpers, lifecycle);
 vm.runInContext(appSource.slice(lifecycleStart, lifecycleEnd), lifecycle);
 
 const editable = { value: 3, need_human_review: false, source: ["human_confirmed"] };

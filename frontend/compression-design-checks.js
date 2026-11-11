@@ -493,7 +493,9 @@
       solid_height_used: result(hb, "mm", "用于 Pb = P′*(H0-Hb)", ["solid_height"], c, { reason: hbReason, estimated: heightSource.endsWith("nominal"), basis: heightBasis }),
     };
     Object.assign(metrics.solid_height_used, { height_source: heightSource, model_id: heightSource.endsWith("nominal") ? g.model_id : "input_height" });
-    const points = params.load_points || [], solidPoints = points.filter(isSolidPoint);
+    const points = (params.load_points || []).filter(point => !point.load_force_conflict
+      && !(point.need_human_review !== false && point.height_relation?.verification_method === "qwen_provisional"));
+    const solidPoints = points.filter(isSolidPoint);
     function stress(point, solid = false) {
       let force = null, estimated = false, reason = "";
       if (!empty(point.force)) {
