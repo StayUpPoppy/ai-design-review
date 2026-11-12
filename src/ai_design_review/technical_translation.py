@@ -344,7 +344,8 @@ def apply_translation_result(review: dict[str, Any], item: dict[str, Any], resul
     return True
 
 
-def prepare_review_translations(review: dict[str, Any], engine: TechnicalTranslationEngine | None = None) -> list[dict[str, Any]]:
+def prepare_review_translations(review: dict[str, Any], engine: TechnicalTranslationEngine | None = None,
+                                *, allow_remote: bool = True) -> list[dict[str, Any]]:
     """Recognition-only: accept returned translations, leaving confirmation to users."""
     from .technical_requirements import ensure_technical_requirement_ids
     ensure_technical_requirement_ids(review)
@@ -376,7 +377,8 @@ def prepare_review_translations(review: dict[str, Any], engine: TechnicalTransla
                 results.append(result)
                 continue
             item["content"] = original
-        pending.append(item)
+        if allow_remote or not requires_translation(translation_snapshot(item)["content"]):
+            pending.append(item)
     for result in translator.translate(pending):
         item = next(i for i in pending if i["requirement_id"] == result["requirement_id"])
         apply_translation_result(review, item, result)

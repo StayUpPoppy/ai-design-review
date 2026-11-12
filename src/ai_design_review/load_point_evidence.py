@@ -18,7 +18,7 @@ from .load_height_relations import VERSION, model_load_relation, number, millime
 
 _PDF_LOCK = RLock()
 LOGGER = logging.getLogger(__name__)
-EVIDENCE_VERSION = "load-evidence/v6"
+EVIDENCE_VERSION = "load-evidence/v7"
 
 
 def _verification_warning(stage, error, warnings=None):
@@ -254,38 +254,18 @@ def _set_height_fields(point, evidence):
 
 
 def _assign_load_labels(records):
+    from .load_point_identity import assign_load_names
+
     def order(record):
         point,text=record
         return point.pop("_graph_order", (text["bbox"][0],text["bbox"][1]))
     ordered=sorted(records,key=order)
-    occupied={p[key].casefold() for p,_ in ordered for key in ("label","height_label") if p.get(key)}
-    fields=(("label","F","height_label"),("height_label","H","label"))
-
-    def assign(point,missing,start,explicit_zero=False):
-        while True:
-            suffix=str(start) if start or explicit_zero else ""
-            names={field:prefix+suffix for field,prefix in missing}
-            if not any(name.casefold() in occupied for name in names.values()):
-                point.update(names)
-                occupied.update(name.casefold() for name in names.values())
-                return start
-            start+=1
-
     for point,_ in ordered:
         if not point.get("label"):
             point.setdefault("source_context",{})["force_label_inferred"]=True
-        for field,prefix,partner in fields:
-            if not point.get(field) and (suffix:=re.search(r"\d+$",point.get(partner) or "")):
-                assign(point,[(field,prefix)],int(suffix[0]),explicit_zero=True)
-
-    next_pair=1 if len(ordered)>1 else 0
-    for point,_ in ordered:
-        if not point.get("label") and not point.get("height_label"):
-            next_pair=1+assign(point,[(field,prefix) for field,prefix,_ in fields],next_pair)
-    for index,(point,_) in enumerate(ordered,1):
-        for field,prefix,_ in fields:
-            if not point.get(field):
-                assign(point,[(field,prefix)],index if len(ordered)>1 else 0)
+        if not point.get("height_label"):
+            point.setdefault("source_context", {})["height_label_inferred"] = True
+    assign_load_names([point for point, _ in ordered])
     return [p for p,_ in records]
 
 
@@ -402,15 +382,19 @@ def extract_page_points(page: dict[str, Any], *, region=None, document_id="", sc
             point["height_relation"]={"kind":"unknown","mode":"automatic","verified":False,"page":page["page"],"scope":scope,"reason":"原图工作高度的起止关系待核对"}
             records.append((point,text))
     for hint in hints or []:
-        if hint.get("page",1)!=page["page"] or not hint.get("label") or number(hint.get("force")) is None:continue
-        if any(p["label"].casefold()==str(hint["label"]).casefold() for p,_ in records):continue
+        if hint.get("page",1)!=page["page"] or number(hint.get("force")) is None:continue
+        if hint.get("label") and any(p["label"].casefold()==str(hint["label"]).casefold() for p,_ in records):continue
         if sum(h.get("page",1)==page["page"] and h.get("force")==hint.get("force") for h in hints)>1:continue
         match=table_height(hint,texts)
         if match and not match.get("conflict"):
             point=deepcopy(hint)
             point.update(page=page["page"],source_document_id=document_id,source=["local_load_evidence"],need_human_review=True)
-            point["position"]=_position(match["cell"],page)
-            records.append((point,match["cell"]))
+            # A table match proves the value pair. A draft name still requires original text.
+            from .load_point_identity import explicit_label
+            point["source_context"] = {**(hint.get("source_context") or {}),
+                                       "force_label_inferred": not bool(explicit_label({**hint, "source": hint.get("source") or "qwen_vision"}))}
+            point["position"]=_position(match["force_cell"],page)
+            records.append((point,match["force_cell"]))
     for point,text in records:
         if not point["label"]:
             point["_force_bbox"]=text["bbox"]
@@ -422,7 +406,10 @@ def extract_page_points(page: dict[str, Any], *, region=None, document_id="", sc
             relation.update(verification_method="table_cells",evidence=table["evidence"])
             relation["evidence_refs"]+=_relation("absolute_height",table["value"],"mm",table["force_cell"],page,document_id,scope)["evidence_refs"]
             point["height_relation"]=relation
-            point["source_context"]={"kind":"table","row_text":table["evidence"],"unit_evidence":"mm; "+(point.get("force_unit") or "N")}
+            point["evidence"] = table["evidence"]
+            point["force_evidence_verified"] = True
+            point["source_context"]={**(point.get("source_context") or {}), "kind":"table",
+                                     "row_text":table["evidence"],"unit_evidence":"mm; "+(point.get("force_unit") or "N")}
             _set_height_fields(point,table.get("dimension",{}))
             continue
         if table and table.get("conflict"):point["load_height_conflict"]=True
@@ -603,20 +590,19 @@ def _merge_original_points(primary, supplementary):
         return primary
     if not primary:
         return supplementary
-    from .fusion import fuse_candidates
-    originals=[*primary,*supplementary]
-    fused=fuse_candidates(_point_candidates(originals))
-    result=[]
-    for entry in fused["load_points"]:
-        value=entry["value"]
-        page=entry.get("page",1)
-        scope=(value.get("height_relation") or {}).get("scope","")
-        matching=[p for p in originals if p.get("page",1)==page and p["label"].casefold()==value["label"].casefold() and p["height_relation"].get("scope","")==scope]
-        anchor=_load_anchor(value)
-        origin=next((p for p in matching if anchor and _load_anchor(p)==anchor),matching[0])
-        point={**deepcopy({k:v for k,v in origin.items() if k not in HEIGHT_FIELDS}),**deepcopy(value)}
-        point["height_relation"]=value.get("height_relation") or deepcopy(origin["height_relation"])
-        point["need_human_review"]=True
+    from .fusion import _merge_load_point, _station_names
+    from .load_point_identity import group_load_points
+
+    result = []
+    for group in group_load_points(_point_candidates([*primary, *supplementary])):
+        origin = group[0]["value"]
+        names = _station_names(group)
+        label = names["label"] or origin["label"]
+        entry = _merge_load_point(label, group, [])
+        point = {**deepcopy(origin), **deepcopy(entry["value"]), "evidence": entry["evidence"],
+                 "source_context": entry["source_context"], "need_human_review": True}
+        if names["height_label"]:
+            point["height_label"] = names["height_label"]
         result.append(point)
     return result
 
@@ -733,26 +719,16 @@ def _section_circles(mask, circles, scale):
 
 
 def _load_ocr_targets(loads,recovered):
-    def identity(point):
-        return point.get("page",1),str(point.get("label") or "").casefold()
-    local={identity(p):p for p in recovered}
-    complete={identity(p) for p in recovered if p["height_relation"].get("verified") and not p.get("load_force_conflict")
-              and p.get("height_tolerance_status")!="uncertain"}
-    drafts={}
-    for c in loads:
-        key=identity({**c["value"],"page":c.get("page",1)})
-        if model_load_relation(c):
-            drafts[key]=c["value"]
-    supported=complete|set(drafts)
-    missing={p["page"] for p in recovered if identity(p) not in supported}
-    missing.update(c.get("page",1) for c in loads if identity({**c["value"],"page":c.get("page",1)}) not in supported)
-    for key,draft in drafts.items():
-        original=local.get(key)
-        if original and key not in complete and str(original.get("force_unit") or "").lower()==str(draft.get("force_unit") or "").lower():
-            if number(original.get("force"))!=number(draft.get("force")):
-                missing.add(key[0])
-    missing.update(p["page"] for p in recovered if p.get("load_force_conflict") or p.get("height_tolerance_status")=="uncertain"
-                   or p.get("force_tolerance_status")=="uncertain")
+    from . import load_point_identity as identity
+
+    missing = set()
+    for group in identity.group_load_points([*loads, *recovered]):
+        if any(identity.value(p).get("load_force_conflict") or identity.value(p).get("load_height_conflict")
+               or identity.value(p).get("height_tolerance_status") == "uncertain"
+               or identity.value(p).get("force_tolerance_status") == "uncertain" for p in group):
+            missing.add(identity.scope(group[0])[0])
+        elif not any(identity.relation(point).get("verified") or model_load_relation(point if "value" in point else {**point, "value": point}) for point in group):
+            missing.add(identity.scope(group[0])[0])
     return missing
 
 
@@ -765,7 +741,20 @@ def ground_job_candidates(job_dir,candidates,raw_payloads, *, warnings=None):
         verify_diameters = supported_candidates(candidates)
         pdf_points=original_points(source) if source.suffix.lower()==".pdf" else []
         loads=[c for c in candidates if c.get("field")=="load_point" and isinstance(c.get("value"),dict)]
-        hints=[{**c["value"],"page":c.get("page",1)} for c in loads]
+        # The OCR adapter extracts these candidates from concatenated page text.
+        # Their shared anchor cannot compete with a specific table row.
+        aggregate_loads = [candidate for payload in raw_payloads.values()
+                           if isinstance(payload, dict) and payload.get("provider") and payload.get("texts")
+                           for candidate in payload.get("candidates") or []
+                           if candidate.get("field") == "load_point" and isinstance(candidate.get("value"), dict)]
+        def force_key(candidate):
+            value = candidate["value"]
+            return (candidate.get("page", 1), number(value.get("force")), str(value.get("force_unit") or "").casefold())
+
+        specific_forces = {force_key(candidate) for candidate in loads if candidate not in aggregate_loads}
+        hints = [{**candidate["value"], "page": candidate.get("page", 1), "source": candidate.get("source"),
+                  "evidence": candidate.get("evidence"), "source_context": candidate.get("source_context") or {}} for candidate in loads
+                 if candidate not in aggregate_loads or force_key(candidate) not in specific_forces]
         pitch_known=next((c for c in candidates if c.get("field")=="pitch" and c.get("value") is not None),{})
         review={"drawing_summary":{"spring_type":"compression_spring"},"spring_parameters":{"pitch":pitch_known}}
         diameter_requests = diameter_ocr_requests(candidates) if verify_diameters else []
@@ -802,6 +791,12 @@ def ground_job_candidates(job_dir,candidates,raw_payloads, *, warnings=None):
     except Exception as error:
         _verification_warning("upload", error, warnings)
         return candidates
+    table_keys = {(p["page"], number(p.get("force")), str(p.get("force_unit") or "").casefold(),
+                   re.sub(r"\d+$", "", p.get("label") or "").casefold()) for p in recovered
+                  if p.get("height_relation", {}).get("verification_method") == "table_cells" and p.get("force_evidence_verified")}
+    redundant = [candidate for candidate in aggregate_loads if
+                 (*force_key(candidate), str(candidate["value"].get("label") or "").casefold()) in table_keys]
+    candidates = [candidate for candidate in candidates if candidate not in redundant]
     return [*candidates,*_point_candidates(recovered)]
 
 
@@ -852,7 +847,159 @@ def _automatic_load_point(point):
         r"qwen|rapidocr|baidu|pdf_text|local_load_evidence|^ocr|^cad|^formula|^multi_spec",str(s),re.I) for s in sources)
 
 
-def reconcile_load_points(review, job_dir):
+_PROTECTED_LOAD_EVENTS = {"load_point_value_updated", "load_point_tolerance_updated", "load_point_added",
+                          "load_point_restored", "load_point_confirmed"}
+
+
+def _protected_load_ids(review, points):
+    confirmations = review.get("manual_confirmations") or {}
+    protected = {point.get("load_point_id") for index, point in enumerate(points)
+                 if not _automatic_load_point(point) or confirmations.get(f"load_point_{point.get('load_point_id')}")
+                 or confirmations.get(f"load_points_{index}")}
+    for event in review.get("change_history") or []:
+        if not isinstance(event, dict) or event.get("event_type") not in _PROTECTED_LOAD_EVENTS:
+            continue
+        metadata = event.get("metadata") or {}
+        point_id = metadata.get("load_point_id") or (event.get("after_state") or {}).get("load_point_id")
+        if point_id:
+            protected.add(point_id)
+        elif (target := str(event.get("target_field") or "")).startswith("load_point_"):
+            protected.add(target.removeprefix("load_point_"))
+        elif match := re.fullmatch(r"load_points_(\d+)", target):
+            index = int(match[1])
+            if index < len(points):
+                protected.add(points[index].get("load_point_id"))
+    return protected
+
+
+def _saved_original_loads(snapshot, source, scope):
+    from .page_images import fingerprint
+
+    candidates = [candidate for candidate in snapshot.get("candidates", [])
+                  if candidate.get("field") == "load_point" and candidate.get("source") == "local_load_evidence"]
+    if not candidates:
+        return []
+    document = fingerprint(source)
+    originals = []
+    for candidate in candidates:
+        point = candidate.get("value") or {}
+        relation = point.get("height_relation") or {}
+        if (relation.get("verified") and relation.get("scope", "") == scope
+                and (point.get("source_document_id") or relation.get("source_document_id")) == document):
+            originals.append({**point, "source": ["local_load_evidence"], "evidence": candidate.get("evidence") or point.get("evidence", ""),
+                              "source_context": candidate.get("source_context") or point.get("source_context") or {}})
+    return originals
+
+
+def _collapse_saved_load_duplicates(review, points):
+    from . import load_point_identity as identity
+    from .fusion import _merge_load_point, _station_names
+
+    protected = _protected_load_ids(review, points)
+    remapped = {}
+    retired_ids = {}
+    replaced = {}
+    for group in identity.group_load_points(points):
+        ids = {point.get("load_point_id") for point in group}
+        if len(group) < 2 or None in ids or ids & protected:
+            continue
+        if any(identity.relation(point).get("base_point_id") in ids for point in group):
+            continue
+        survivor = max(group, key=lambda point: (bool(identity.station_position(point)), bool(identity.relation(point).get("verified"))))
+        survivor_id = survivor["load_point_id"]
+        removed = ids - {survivor_id}
+        aliases = {str(point["label"]).casefold() for point in group if point.get("label")}
+        if any(point.get("load_point_id") in protected and (
+            identity.relation(point).get("base_point_id") in ids or not identity.relation(point).get("base_point_id")
+            and identity.scope(point) == identity.scope(survivor)
+            and str(identity.relation(point).get("base_label") or "").casefold() in aliases
+        ) for point in points):
+            continue
+        names = _station_names([{"value": p, "source": p.get("source", []), "confidence": p.get("confidence", 0),
+                                "evidence": p.get("evidence", "")} for p in group])
+        label = names["label"] or survivor["label"]
+        renamed = aliases - {label.casefold()}
+        references = [point for point in points if identity.relation(point).get("base_point_id") in removed
+                      or not identity.relation(point).get("base_point_id") and identity.scope(point) == identity.scope(survivor)
+                      and str(identity.relation(point).get("base_label") or "").casefold() in renamed]
+        if any(point.get("load_point_id") in protected for point in references):
+            continue
+        if any(not identity.relation(point).get("base_point_id") and sum(
+            identity.scope(other) == identity.scope(point) and str(other.get("label") or "").casefold()
+            == str(identity.relation(point).get("base_label") or "").casefold() for other in points
+        ) != 1 for point in references):
+            continue
+
+        candidates = [{**point, "value": point, "source_context": point.get("source_context") or {}} for point in group]
+        merged = _merge_load_point(label, candidates, [])
+        fused = {**survivor, **merged["value"], "source": merged["source"], "evidence": merged["evidence"],
+                 "source_context": {**(survivor.get("source_context") or {}), "merged_labels": sorted(aliases),
+                                    "force_label_inferred": not names["label"], "height_label_inferred": not names["height_label"]},
+                 "need_human_review": True}
+        fused["height_label"] = names["height_label"] or survivor.get("height_label")
+        for point in references:
+            remapped[point["load_point_id"]] = (survivor_id, label)
+        replaced[survivor_id] = fused
+        replaced.update(dict.fromkeys(removed))
+        retired_ids.update(dict.fromkeys(removed, (survivor_id, label)))
+
+    if not replaced:
+        return
+    # Legacy confirmation keys are positional. Preserve their already promoted
+    # stable keys before shifting any rows.
+    confirmations = review.get("manual_confirmations") or {}
+    for index, point in enumerate(points):
+        if isinstance(old := confirmations.pop(f"load_points_{index}", None), dict):
+            confirmations.setdefault(f"load_point_{point['load_point_id']}", {**old, "load_point_id": point["load_point_id"]})
+    points[:] = [replacement for point in points if (replacement := replaced.get(point["load_point_id"], point)) is not None]
+    for point in points:
+        if target := (retired_ids.get(identity.relation(point).get("base_point_id")) or remapped.get(point["load_point_id"])):
+            point["height_relation"].update(base_point_id=target[0], base_label=target[1])
+
+
+def _deleted_load_station(review, original, recovered, snapshot):
+    from . import load_point_identity as identity
+
+    for event in review.get("change_history") or []:
+        if not isinstance(event, dict) or event.get("event_type") != "load_point_deleted":
+            continue
+        before = event.get("before_state") or {}
+        label = str(before.get("label") or "").casefold()
+        if not label:
+            continue
+        named = [point for point in recovered if point["label"].casefold() == label]
+        if len(named) == 1 and named[0] is original:
+            return True
+        matched = set()
+        for candidate in snapshot.get("candidates", []):
+            if (candidate.get("field") != "load_point" or str(identity.value(candidate).get("label") or "").casefold() != label
+                    or identity.readings(candidate) != identity.readings(before)):
+                continue
+            matches = identity.unique_match(candidate, recovered, [*recovered, candidate])
+            if len(matches) == 1:
+                matched.add(id(matches[0]))
+        if matched == {id(original)}:
+            return True
+    return False
+
+
+def reconcile_saved_load_duplicates(review):
+    """Project an already evidenced merge in memory, without OCR or file writes."""
+    if review.get("drawing_summary", {}).get("spring_type") != "compression_spring" or review.get("record_kind") == "source":
+        return
+    points = review.get("spring_parameters", {}).get("load_points") or []
+    if len(points) < 2:
+        return
+    from .load_points import ensure_load_point_ids
+    ensure_load_point_ids(review)
+    before = deepcopy(points)
+    _collapse_saved_load_duplicates(review, points)
+    if len(points) < len(before):
+        refresh_load_heights(review)
+        review["load_height_adjustment"] = {"version": EVIDENCE_VERSION, "before": before, "pending_save": True}
+
+
+def reconcile_load_points(review, job_dir, *, merge_saved_duplicates=True):
     """GET-only repair in memory. Normal CAS saving persists the repair and its audit."""
     if review.get("drawing_summary",{}).get("spring_type")!="compression_spring" or review.get("record_kind")=="source":
         return
@@ -876,9 +1023,10 @@ def reconcile_load_points(review, job_dir):
         return hashlib.sha256(f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:{version}:{json.dumps(region,sort_keys=True)}:{signatures}".encode()).hexdigest()
 
     fingerprint=cache_fingerprint(EVIDENCE_VERSION)
-    legacy_fingerprints={cache_fingerprint(f"load-evidence/{version}") for version in ("v3","v4","v5")}
+    legacy_fingerprints={cache_fingerprint(f"load-evidence/{version}") for version in ("v3","v4","v5","v6")}
     cache_path=job_dir/"load_point_evidence.json"
     cache=_read_json(cache_path)
+    snapshot = _read_json(job_dir / "candidates.json")
     from .pitch_evidence import recover_pitch
     pitch_item=(review.get("spring_parameters") or {}).get("pitch") or {}
     repair_pitch=(pitch_item.get("value") in (None,"") or pitch_item.get("formula_calculation_kind")=="pitch") and not any(str(s).startswith(("human_edited","manual")) for s in pitch_item.get("source",[]))
@@ -895,13 +1043,13 @@ def reconcile_load_points(review, job_dir):
     else:
         try:
             hints=(review.get("spring_parameters") or {}).get("load_points") or []
-            pdf_points=original_points(source,region=region,scope=scope,hints=hints)
+            automatic=[{**p,"value":p} for p in hints if _automatic_load_point(p)]
+            saved = _saved_original_loads(snapshot, source, scope)
+            pdf_points = saved if saved and not _load_ocr_targets(automatic, saved) else original_points(source,region=region,scope=scope,hints=hints)
             recovered=pdf_points
             if not recovered or any(not p["height_relation"].get("verified") for p in recovered):
                 pages=evidence_pages if evidence_pages is not None else raster_pages(job_dir,review,warnings=verification_warnings)
                 recovered=_merge_original_points(pdf_points,original_points(source,region=region,scope=scope,pages=pages,hints=hints))
-                automatic=[{"source":p.get("source"),"value":p,"page":p.get("page",1)}
-                           for p in hints if _automatic_load_point(p)]
                 missing=_load_ocr_targets(automatic,recovered) if automatic or not hints else set()
                 if missing or not (hints or recovered):
                     pages=raster_pages(job_dir,review,allow_ocr=True,warnings=verification_warnings,load_ocr_pages=missing or None)
@@ -927,6 +1075,10 @@ def reconcile_load_points(review, job_dir):
     parameters=review.setdefault("spring_parameters",{})
     points=parameters.setdefault("load_points",[])
     before=deepcopy(points)
+    if merge_saved_duplicates:
+        _collapse_saved_load_duplicates(review, points)
+    from . import load_point_identity as identity
+    protected_ids = _protected_load_ids(review, points)
     for point in points:
         relation=point.get("height_relation") or {}
         if _automatic_load_point(point) and not relation.get("verified"):
@@ -941,29 +1093,28 @@ def reconcile_load_points(review, job_dir):
     meta=review.setdefault("load_point_recovery",{"version":VERSION,"applied_keys":[]})
     seen=set(meta.get("applied_keys") or [])
     for original,expected_height in zip(recovered,expected_heights):
-        identity=[original.get("source_document_id") or (original.get("height_relation") or {}).get("source_document_id"),original["page"],scope,original["label"].casefold()]
+        identity_parts=[original.get("source_document_id") or (original.get("height_relation") or {}).get("source_document_id"),original["page"],scope,original["label"].casefold()]
         anchor=_load_anchor(original)
         repeated=sum(p["page"]==original["page"] and p["label"].casefold()==original["label"].casefold() for p in recovered)>1
         if repeated and anchor:
-            identity.append([round(anchor["x"],3),round(anchor["y"],3)])
-        key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()[:24]
-        matches=[p for p in points if str(p.get("label") or "").casefold()==original["label"].casefold() and p.get("page",1)==original["page"]]
-        if repeated and anchor and matches:
-            nearby=[p for p in matches if (known:=_load_anchor(p)) and abs(known["x"]-anchor["x"])<=.008 and abs(known["y"]-anchor["y"])<=.008]
-            if nearby or all(_load_anchor(p) for p in matches):
-                matches=nearby
-            else:
-                continue
-        if not matches and not repeated:
-            matches=[p for p in points if p.get("page",1)==original["page"] and any(v["label"].casefold()==original["label"].casefold() for v in extract_force_annotations(str(p.get("evidence") or "")))]
-        if not matches and original.get("source_context",{}).get("force_label_inferred"):
-            same_force=lambda p: p.get("page",1)==original["page"] and number(p.get("force"))==original["force"] and str(p.get("force_unit") or "").casefold()==original["force_unit"].casefold()
-            if sum(same_force(p) for p in recovered)==1:
-                matches=[p for p in points if same_force(p)]
+            identity_parts.append([round(anchor["x"],3),round(anchor["y"],3)])
+        key=hashlib.sha256(json.dumps(identity_parts,sort_keys=True).encode()).hexdigest()[:24]
+        comparable = {**original, "height": expected_height} if expected_height is not None else original
+        known = [*recovered, *points]
+        matches = identity.unique_match(comparable, points, known)
+        if len(matches) == 1 and identity.match_rank(comparable, matches[0], known) == 1 and len(identity.unique_match(matches[0], recovered, known)) != 1:
+            continue
+        if not matches and not repeated and identity.explicit_label(original):
+            # Legacy records may contain the same original symbol before label provenance existed.
+            matches = [point for point in points if point.get("page", 1) == original["page"]
+                       and not identity.station_position(point)
+                       and (str(point.get("label") or "").casefold() == original["label"].casefold()
+                            or any(mark["label"].casefold() == original["label"].casefold()
+                                   for mark in extract_force_annotations(str(point.get("evidence") or ""))))]
         if len(matches)>1:
             continue
         if not matches:
-            if key in seen or any(e.get("event_type")=="load_point_deleted" and str((e.get("before_state") or {}).get("label","")).casefold()==original["label"].casefold() for e in review.get("change_history",[]) if isinstance(e,dict)):
+            if key in seen or _deleted_load_station(review, original, recovered, snapshot):
                 continue
             point=deepcopy(original)
             point["load_point_id"]=f"loadpt_evidence_{key}"
@@ -973,7 +1124,7 @@ def reconcile_load_points(review, job_dir):
             point=matches[0]
             relation=point.get("height_relation") or {}
             verified_original=relation.get('verified') and (not relation.get('source_document_id') or relation.get('source_document_id')==original.get('source_document_id'))
-            protected=not _automatic_load_point(point)
+            protected=point.get("load_point_id") in protected_ids or not _automatic_load_point(point)
             existing=millimeters(point.get("height"),point.get("height_unit"))
             if verified_original and not protected and expected_height is not None and expected_height==existing and original.get("force")==point.get("force"):
                 if not point.get("height_label") and original.get("height_label"):
@@ -1040,3 +1191,29 @@ def prepare_recovery_save(review, previous):
         review["load_height_adjustment"].update(pending_save=False,audit_recorded=True)
     else:
         review.pop("load_height_adjustment",None)
+
+
+def align_pending_load_recovery(review, previous, events):
+    """Reject edits from a stale view of a row already merged on the server."""
+    from .load_points import load_point_snapshot
+
+    adjustment = previous.get("load_height_adjustment") or {}
+    if not adjustment.get("pending_save"):
+        return
+    retained = {p.get("load_point_id") for p in previous.get("spring_parameters", {}).get("load_points", [])}
+    retired = {p["load_point_id"]: p for p in adjustment.get("before", []) if p.get("load_point_id") and p["load_point_id"] not in retained}
+    if not retired:
+        return
+    points = review.get("spring_parameters", {}).get("load_points") or []
+    touched = {(e.get("metadata") or {}).get("load_point_id") for e in events if e.get("event_type") in _PROTECTED_LOAD_EVENTS}
+    for point in points:
+        point_id = point.get("load_point_id")
+        if point_id not in retired:
+            continue
+        baseline = load_point_snapshot(retired[point_id])
+        current = load_point_snapshot(point)
+        baseline.pop("height_relation", None)
+        current.pop("height_relation", None)
+        if point_id in touched or current != baseline:
+            raise ValueError("载荷测点已合并，请刷新后核对并保存原测点的修改。")
+    points[:] = [point for point in points if point.get("load_point_id") not in retired]

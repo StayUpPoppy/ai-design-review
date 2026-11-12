@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 from unittest.mock import patch
@@ -19,8 +20,10 @@ from sqlalchemy.pool import NullPool
 from ai_design_review import recognition_worker as worker
 from ai_design_review.engines.qwen_vision_adapter import QwenVisionEngine, parse_qwen_json, _message_content
 from ai_design_review.multi_spec import MULTI_SPEC_PROMPT, MultiSpecError, parse_multi_spec, source_review, child_review
+from ai_design_review.multi_spec_layout import layout_evidence
 from ai_design_review.multi_spec_replay import REPLAY_OPTION, prepare_retry_options, fingerprint, load_replay
 from ai_design_review.review_persistence import ReviewPersistence
+from ai_design_review.technical_translation import TechnicalTranslationEngine
 
 QA = Path("outputs/multi-spec-layout-qa")
 
@@ -84,6 +87,8 @@ def saved_responses():
     values=json.loads(path.read_text(encoding="utf-8-sig"));saved=[]
     evidence=Path("outputs/multi-spec-annotation-qa/saved.json")
     blocks=json.loads(evidence.read_text(encoding="utf-8-sig"))["ocr"]["blocks"] if evidence.exists() else None
+    if blocks:
+        assert [(item["kind"], item["observed_count"]) for item in layout_evidence(blocks) if item["strong"]] == [("blocks", 3)]
     for job,raw in values.items():
         before=deepcopy(raw);decoded=QwenVisionEngine().parse_response(raw,[],total_pages=1)
         multi=decoded["multi_spec"];assert multi["layout"]=="blocks" and len(multi["variants"])==3
@@ -139,6 +144,41 @@ def queue_tests(replies):
                     return job
                 def forbid_models():
                     return patch.object(QwenVisionEngine,"_call_qwen",side_effect=AssertionError("No Qwen during replay"))
+                single_cache = Path("outputs/multi-spec-diagnosis-3/runtime-cache")
+                if (single_cache / "candidates.json").is_file():
+                    job = submit("3.pdf", (single_cache / "incoming/3.pdf").read_bytes())
+                    directory = api.API_RUN_ROOT / job
+                    for folder in ("qwen_pages", "ocr_dimension_grounding_pages"):
+                        shutil.copytree(single_cache / folder, directory / folder)
+                    diagnostic = single_cache / "multi_spec_diagnostics.json"
+                    shutil.copyfile(diagnostic, directory / diagnostic.name)
+                    snapshot = json.loads((single_cache / "candidates.json").read_bytes())
+                    for frame in snapshot["raw_payloads"]["rapidocr_dimension_grounding"]["raw_pages"]:
+                        suffix = frame["image_path"].split("/ocr_dimension_grounding_pages/", 1)[1]
+                        frame["image_path"] = str(directory / "ocr_dimension_grounding_pages" / suffix)
+                    (directory / "candidates.json").write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+                    claimed = repo.claim_next_recognition_job(runner.worker_id)
+                    assert claimed["job_id"] == job
+                    assert repo.fail_recognition_job(job, worker_id=runner.worker_id, error_message="MultiSpecError: 已停止单规格OCR兜底")
+                    raw_hash = fingerprint(directory / "qwen_pages/response.json")
+                    with (forbid_models() as model,
+                          patch.object(api.UnifiedOcrEngine, "extract_with_raw", side_effect=AssertionError("Use cached OCR")) as ocr,
+                          patch.object(TechnicalTranslationEngine, "_complete", side_effect=AssertionError("No remote translation during replay")) as translate):
+                        assert client.post(f"/api/reviews/{job}/retry").status_code == 202
+                        claimed = repo.claim_next_recognition_job(runner.worker_id)
+                        assert claimed["options"][REPLAY_OPTION]["ocr_snapshot"]["frames"]
+                        runner._process_job(claimed)
+                        assert model.call_count == ocr.call_count == translate.call_count == 0
+                    stored = repo.get_review(job, owner_user_id=OWNER["user_id"])
+                    assert stored and stored["record_kind"] == "single", repo.get_recognition_job(job, owner_user_id=OWNER["user_id"])
+                    loads = stored["review"]["spring_parameters"]["load_points"]
+                    assert [(p["label"], p.get("height_label"), p["height"], p["force"]) for p in loads] == [
+                        ("F1", "H1", 155, 44.2), ("F2", "H2", 75, 91.4)
+                    ], loads
+                    assert fingerprint(directory / "qwen_pages/response.json") == raw_hash
+                    assert (directory / diagnostic.name).read_bytes() == diagnostic.read_bytes()
+                    assert json.loads((directory / "multi_spec_recovery.json").read_bytes())["decision"] == "single"
+                    print("PASS actual failed 3.pdf cache through retry API and worker: one spring, two load points, zero Qwen requests")
                 # New uploads use the same canonical path and one file-level request.
                 job=submit()
                 with patch.object(QwenVisionEngine,"_call_qwen",return_value=replies[0]) as model:

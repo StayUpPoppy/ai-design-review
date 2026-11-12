@@ -20,12 +20,17 @@ from test_multi_spec import api, OWNER
 from test_multi_spec_pipeline import table_response
 from ai_design_review import recognition_worker as worker
 from ai_design_review.engines.qwen_vision_adapter import QwenVisionEngine
-from ai_design_review.multi_spec import MultiSpecError, local_multi_spec_hint, parse_multi_spec
+from ai_design_review.multi_spec import MultiSpecError, parse_multi_spec
+from ai_design_review.multi_spec_layout import layout_blocks, layout_evidence
 from ai_design_review.review_persistence import ReviewPersistence
 
 
 def block(text, x=100, y=20, page=1):
-    return {"text":text,"page":page,"position":{"x":x,"y":y,"width":200,"height":20,"coordinate_type":"pixel"}}
+    return {"text":text,"page":page,"position":{"x":x/1200,"y":y/800,"width":.08,"height":.025,"coordinate_type":"normalized"}}
+
+
+def local_hint(payload):
+    return next((item for item in layout_evidence(layout_blocks({"ocr": payload}, page_count=2)) if item["strong"]), None)
 
 
 def table_ocr():
@@ -41,22 +46,43 @@ def main():
     with patch.dict(os.environ,{"QWEN_VISION_TIMEOUT_SECONDS":"75","QWEN_TIMEOUT_SECONDS":"180"},clear=True):
         assert QwenVisionEngine(api_key="offline").timeout_seconds==75
         assert QwenVisionEngine(api_key="offline",timeout_seconds=12).timeout_seconds==12
-    assert local_multi_spec_hint({"ocr":table_ocr()},[])["observed_count"]==13
+    assert local_hint(table_ocr())["observed_count"]==13
     one={"texts":[block("规格"),block("总圈数"),block("Φ10x75x260",y=100),block("10×75×260",y=100.1)]}
-    assert local_multi_spec_hint({"ocr":one},[]) is None, "Duplicate OCR is not a second spec"
+    assert local_hint(one) is None, "Duplicate OCR is not a second spec"
     single={"texts":[block("规格"),block("总圈数"),block("10x75x260",y=100),block("载荷 高度 F1 F2 Fb",y=140)]}
-    assert local_multi_spec_hint({"ocr":single},[]) is None
+    assert local_hint(single) is None
     pages={"texts":[block("规格",page=page) for page in (1,2)]+[block("总圈数",page=page) for page in (1,2)]+[block(f"{10+page}x75x260",y=100,page=page) for page in (1,2)]}
-    assert local_multi_spec_hint({"ocr":pages},[]) is None
-    repeated={"texts":[block(label,x=x,y=y) for x in (100,500,900) for y,label in enumerate(["线径d","中径D","自由高度H0","总圈数n1"])]}
-    assert local_multi_spec_hint({"ocr":repeated},[])["kind"]=="blocks"
+    assert local_hint(pages) is None
+    labels = ["线径d", "中径D", "自由高度H0", "总圈数n1"]
+    values = [14, 66, 607, 22]
+    repeated = {"texts": [entry for x in (100, 500, 900) for row, (label, value) in enumerate(zip(labels, values))
+                           for entry in (block(label, x=x, y=40 + row * 28), block(str(value), x=x + 125, y=40 + row * 28))]}
+    assert local_hint(repeated)["observed_count"] == 3
+    bilingual = {"texts": [entry for row, (label, translated, value) in enumerate(zip(
+        labels, ("wire diameter", "mean diameter", "free length", "total coils"), values))
+        for entry in (block(label, x=100, y=40+row*28), block(translated, x=220, y=40+row*28), block(str(value), x=350, y=40+row*28))]}
+    assert layout_evidence(layout_blocks({"ocr": bilingual})) == []
+    summary = {**block("\n".join(labels), x=500), "field": "document_text_1"}
+    assert local_hint({"texts": [*repeated["texts"][:8], summary], "candidates": [summary]}) is None
+    assert local_hint({"texts": [{"text": t} for t in ("规格", "总圈数", "10x75x260", "11x75x260")]}) is None
+    weak = {"texts": [block("规格"), block("总圈数"), block("10x75x260", y=100), block("11x75x", y=140)]}
+    corrected = layout_blocks({"crop": {"texts": [block("11x75x261", y=140)]}})
+    with patch("ai_design_review.multi_spec_layout.reread_region", return_value=corrected) as reread:
+        diagnostic, conflict = api._recognition_layout_check(Path("unused"), Path("single.png"), ["page.png"], 1, {"ocr": weak}, None, None)
+        assert reread.call_count == 1 and diagnostic["local_reread"]["page"] == 1
+        assert conflict["observed_count"] == 2
     assert parse_multi_spec({"notes":"仅包含1种规格"}) is None
     try: parse_multi_spec({"notes":"该表包含13种规格，需按行提取。"})
     except MultiSpecError: pass
     else: raise AssertionError("Declared multi cannot become legacy single")
     snapshot=Path("outputs/multi-spec-timeout-qa/ocr_snapshot.json")
-    actual=json.loads(snapshot.read_text(encoding="utf-8-sig")) if snapshot.exists() else table_ocr()
-    actual_hint=local_multi_spec_hint({"rapidocr_fallback":actual},[])
+    actual = table_ocr()
+    if snapshot.exists():
+        actual = json.loads(snapshot.read_text(encoding="utf-8-sig"))
+        frame = actual["raw_pages"][0]
+        # The Docker snapshot was recorded against the 2800 x 1700 source image.
+        frame.update(width=2800, height=1700)
+    actual_hint = local_hint(actual)
     assert actual_hint and actual_hint["observed_count"]==13,actual_hint
 
     old_repo,old_root=api.REVIEW_PERSISTENCE,api.API_RUN_ROOT
@@ -87,6 +113,18 @@ def main():
                     assert call.call_count==1
                 source=client.get(f"/api/reviews/{job_id}").json();assert source["record_kind"]=="source" and len(source["multi_spec"]["variants"])==13
                 assert client.get(f"/api/reviews/{job_id}/recognition-status").json()["recognition"]["status"]=="completed"
+                # A self-consistent model count can still omit a row visible in local evidence.
+                incomplete = table_response()
+                incomplete["variants"].pop()
+                incomplete["spec_count"] -= 1
+                partial_response = {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(incomplete)}}]}
+                with patch("ai_design_review.engines.qwen_vision_adapter._configured", return_value=True), patch.object(QwenVisionEngine, "_call_qwen", return_value=partial_response) as call, patch.object(api.UnifiedOcrEngine, "extract_with_raw", return_value=deepcopy(actual)):
+                    receipt = client.post("/api/reviews", files={"drawing": ("missing.png", png.getvalue(), "image/png")}, data={"use_qwen": "true", "use_ocr": "true"})
+                    missing_id = receipt.json()["job_id"]
+                    runner._process_job(repo.claim_next_recognition_job(runner.worker_id))
+                    status = client.get(f"/api/reviews/{missing_id}/recognition-status").json()["recognition"]
+                    assert status["status"] == "failed" and "至少13个规格" in status["error_message"], status
+                    assert call.call_count == 1 and repo.get_review(missing_id, owner_user_id=OWNER["user_id"]) is None
                 # Ordinary single-spring OCR fallback is unchanged.
                 with patch("ai_design_review.engines.qwen_vision_adapter._configured",return_value=True),patch.object(QwenVisionEngine,"_call_qwen",side_effect=httpx.ReadTimeout("offline")),patch.object(api.UnifiedOcrEngine,"extract_with_raw",return_value={**single,"candidates":table_ocr()["candidates"]}),patch.object(api,"verify_job_candidates",side_effect=lambda directory,candidates,*a,**k:candidates):
                     receipt=client.post("/api/reviews",files={"drawing":("single.png",png.getvalue(),"image/png")},data={"use_qwen":"true","use_ocr":"false"})

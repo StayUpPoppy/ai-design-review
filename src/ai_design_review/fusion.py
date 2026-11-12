@@ -6,6 +6,7 @@ from typing import Any
 
 from .technical_translation import TRANSLATION_KEYS
 from . import flattening
+from . import load_point_identity as load_identity
 from .standardizers.support_coils import classify_support_candidate
 from .technical_requirement_recognition import TECHNICAL_FIELD_TYPES, collect_technical_requirements
 from .surface_roughness import ROUGHNESS_VERIFICATION_VERSION, merge_roughness_candidates, verified_roughness_candidate, roughness_selection, selected_roughness_location
@@ -189,69 +190,53 @@ def _normalize_load_point(candidate: dict[str, Any]) -> dict[str, Any]:
     return {
         "field": "load_point",
         "value": value,
-        "source": [candidate.get("source", "unknown")],
+        "source": candidate.get("source") if isinstance(candidate.get("source"), list) else [candidate.get("source", "unknown")],
         "evidence": candidate.get("evidence", ""),
         "confidence": float(candidate.get("confidence", 0) or 0),
         "page": candidate.get("page", 1),
         "position": candidate.get("position"),
         "suggested_region": candidate.get("suggested_region", ""),
         "need_human_review": _candidate_source_weight(candidate) < 0.98,
-        "source_context": candidate.get("source_context") or {},
+        "source_context": load_identity.context(candidate),
+        **({"reported_units": candidate["reported_units"]} if "reported_units" in candidate else {}),
     }
 
 
 def _merge_load_points(load_points: list[dict[str, Any]], conflicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Merge duplicate F1/F2 candidates emitted by multiple extraction engines."""
-    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for index, point in enumerate(load_points):
-        label = str((point.get("value") or {}).get("label") or "").strip().upper()
-        key = f"{point.get('page', 1)}:{(point.get('value') or {}).get('height_relation', {}).get('scope', '')}:{label}" if label else f"__unnamed_{index}"
-        groups[key].append(point)
+    groups = load_identity.group_load_points(load_points)
+    groups.sort(key=lambda group: min(map(load_identity.diagram_order, group)))
+    names = [_station_names(group) for group in groups]
+    original_names = [dict(item) for item in names]
+    load_identity.assign_load_names(names)
+    aliases = defaultdict(set)
+    for group, assigned in zip(groups, names):
+        for point in group:
+            if old_label := point["value"].get("label"):
+                for source in load_identity.sources(point):
+                    aliases[load_identity.scope(point), source, str(old_label).casefold()].add(assigned["label"])
 
-    merged = [
-        _merge_load_point(str((points[0].get("value") or {}).get("label") or key).strip().upper(), station, conflicts)
-        for key, points in groups.items()
-        for station in _load_station_groups(points)
-    ]
-    return sorted(
-        merged,
-        key=lambda item: _number_or_default((item.get("value") or {}).get("height"), 999999),
-        reverse=True,
-    )
+    result = []
+    for group, assigned, originals in zip(groups, names, original_names):
+        adjusted = []
+        for point in group:
+            height_relation = load_identity.relation(point)
+            base = str(height_relation.get("base_label") or "").casefold()
+            targets = {target for source in load_identity.sources(point)
+                       for target in aliases[load_identity.scope(point), source, base]} if base else set()
+            if len(targets) == 1:
+                point = {**point, "value": {**point["value"], "height_relation": {**height_relation, "base_label": next(iter(targets))}}}
+            adjusted.append(point)
+        fused = _merge_load_point(assigned["label"], adjusted, conflicts)
+        fused["value"].update(assigned)
+        fused["source_context"].update(force_label_inferred=not originals["label"], height_label_inferred=not originals["height_label"])
+        result.append(fused)
+    return result
 
 
-def _load_station_groups(points):
-    """Keep independently grounded locations even when the drawing reuses a name."""
-    def anchor(point):
-        geometry=((point.get("value") or {}).get("height_relation") or {}).get("geometry_evidence") or {}
-        return geometry.get("load_anchor") if "local_load_evidence" in str(point.get("source")) else None
-
-    def close(left,right):
-        return abs(left["x"]-right["x"])<=.008 and abs(left["y"]-right["y"])<=.008
-
-    stations=[]
-    for point in points:
-        position=anchor(point)
-        if not position:
-            continue
-        group=next((group for origin,group in stations if close(origin,position)),None)
-        if group is None:
-            stations.append((position,[point]))
-        else:
-            group.append(point)
-    if len(stations)<2:
-        return [points]
-    for point in points:
-        if anchor(point):
-            continue
-        position=point.get("position") or {}
-        if position.get("coordinate_type")!="normalized" or not all(isinstance(position.get(k),(int,float)) for k in ("x","y","width","height")):
-            continue
-        center={"x":position["x"]+position["width"]/2,"y":position["y"]+position["height"]/2}
-        nearby=[group for origin,group in stations if close(center,origin)]
-        if len(nearby)==1:
-            nearby[0].append(point)
-    return [group for _,group in stations]
+def _station_names(points):
+    preferred = sorted(points, key=lambda point: ("local_load_evidence" in load_identity.sources(point), _candidate_score(point)), reverse=True)
+    return {field: next((label for point in preferred if (label := load_identity.explicit_label(point, field))), "")
+            for field in ("label", "height_label")}
 
 
 def _merge_load_point(
@@ -278,13 +263,19 @@ def _merge_load_point(
     for key in value_keys:
         merged_value[key] = _first_load_point_value(ordered, key)
     force_points = [p for p in ordered if (p.get("value") or {}).get("force") is not None]
-    local_force = [p for p in force_points if p.get("source") == "local_load_evidence"]
+    local_force = [p for p in force_points if "local_load_evidence" in load_identity.sources(p)]
     verified_force = [p for p in local_force if p["value"].get("force_evidence_verified") is True]
-    force_identities = {(p["value"]["force"],p["value"].get("force_unit")) for p in verified_force}
+    located_together = any(load_identity.same_station(a, b) for i, a in enumerate(ordered) for b in ordered[i+1:])
+    comparable_force = force_points if located_together else verified_force
+    force_identities = {round(force, 8) for p in comparable_force if (force := load_identity.readings(p)[0]) is not None}
     force_conflict = len(force_identities)>1 or any(p["value"].get("load_force_conflict") for p in local_force)
     if force_conflict:
         merged_value["load_force_conflict"] = True
-        merged_value["force_alternatives"] = sorted({n for p in local_force for n in p["value"].get("force_alternatives",[p["value"]["force"]])})
+        display_unit = (verified_force or local_force or force_points)[0]["value"].get("force_unit")
+        factor = load_identity.force_newtons(1, display_unit) or 1
+        alternatives = {round(force / factor, 8) for force in force_identities}
+        alternatives.update(n for p in local_force for n in p["value"].get("force_alternatives", []) if p["value"].get("force_unit") == display_unit)
+        merged_value["force_alternatives"] = sorted(alternatives)
         conflicts.append({"field":f"load_points.{label}.force","message":"同一原图载荷标注有多个力值读数，请核对",
                           "need_human_review":True})
     elif verified_force:
@@ -293,12 +284,11 @@ def _merge_load_point(
         force_bundle = (verified_force or local_force or force_points)[0]["value"]
         tolerance_keys=("load_tolerance_upper","load_tolerance_lower","load_tolerance_percent","force_tolerance_percent")
         if not verified_force and not force_conflict and all(force_bundle.get(k) is None for k in tolerance_keys):
-            factors={"n":1.,"kn":1000.,"kgf":9.80665}
-            base_force=_number_or_default(force_bundle.get("force"),float("nan"))*factors.get(str(force_bundle.get("force_unit") or "").lower(),float("nan"))
+            base_force = load_identity.force_newtons(force_bundle.get("force"), force_bundle.get("force_unit"))
             for candidate in force_points[1:]:
                 bundle=candidate["value"]
-                other_force=_number_or_default(bundle.get("force"),float("nan"))*factors.get(str(bundle.get("force_unit") or "").lower(),float("nan"))
-                if isfinite(base_force) and isfinite(other_force) and abs(base_force-other_force)<=1e-9 and any(bundle.get(k) is not None for k in tolerance_keys):
+                other_force = load_identity.force_newtons(bundle.get("force"), bundle.get("force_unit"))
+                if base_force is not None and other_force is not None and abs(base_force-other_force)<=1e-9 and any(bundle.get(k) is not None for k in tolerance_keys):
                     force_bundle=bundle
                     break
         for key in ("force", "force_unit", "load_tolerance_upper", "load_tolerance_lower", "load_tolerance_percent", "force_tolerance_percent", "force_tolerance_status"):
@@ -334,14 +324,20 @@ def _merge_load_point(
         if len(signatures)>1:
             merged_value["load_height_conflict"]=True
             conflicts.append({"field":f"load_points.{label}.height_relation","message":"载荷高度存在不同的原图尺寸关系，请核对","need_human_review":True})
-    original_label = next((p["value"].get("label") for p in ordered if "local_load_evidence" in str(p.get("source")) and p["value"].get("label")),None)
-    merged_value["label"] = original_label or (label if not label.startswith("__unnamed_") else merged_value.get("label"))
+    heights = sorted({round(height, 8) for point in ordered if (height := load_identity.readings(point)[1]) is not None})
+    if located_together and len(heights) > 1:
+        merged_value["load_height_conflict"] = True
+        reason = "高度待核对（" + " / ".join(f"{height:g}" for height in heights) + " mm）"
+        if merged_value.get("height_relation"):
+            merged_value["height_relation"]["verification_failure"] = reason
+        conflicts.append({"field": f"load_points.{label}.height_relation", "message": reason, "values": heights, "need_human_review": True})
+    merged_value["label"] = label
     merged_value["reference_only"] = all(bool((item.get("value") or {}).get("reference_only")) for item in ordered)
 
     for key, display_name in (("height", "height"), ("force", "force")):
-        if key=="height" and verified or key=="force" and (verified_force or force_conflict):
+        if key=="height" and (verified or merged_value.get("load_height_conflict")) or key=="force" and (verified_force or force_conflict):
             continue
-        values = [_load_point_value(item, key) for item in ordered]
+        values = [load_identity.readings(item)[0 if key == "force" else 1] for item in ordered]
         values = [value for value in values if value not in (None, "")]
         if len(values) > 1 and any(not _values_close(values[0], value) for value in values[1:]):
             conflicts.append(
@@ -373,7 +369,7 @@ def _merge_load_point(
         "position": best.get("position"),
         "suggested_region": best.get("suggested_region", ""),
         "need_human_review": bool(provisional) or has_conflict or any("local_load_evidence" in str(p.get("source")) for p in ordered) or _needs_human_review(best, ordered),
-        "source_context": next((point["source_context"] for point in ordered if point.get("source_context")), {}),
+        "source_context": dict(next((point["source_context"] for point in ordered if point.get("source_context")), {})),
     }
 
 

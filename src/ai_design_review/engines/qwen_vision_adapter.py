@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..load_height_relations import normalize_relation
+from ..load_point_identity import explicit_label
 
 from ..load_point_recognition import normalize_source_context
 
@@ -260,7 +261,7 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
 7. 对压缩弹簧，只识别图纸已写明的标准号、等级、端部形式、刚度、垂直度、直线度等；不要计算标准公差，标准公差由后端规则表计算。
    - 提取载荷前先判断表格用途。未注尺寸/无标示尺寸/一般公差表中的尺寸区间上下限及公差，绝不能配成高度和力值，不能生成 F1/F2/F3。不能仅凭两列数字、自动编号或默认 N 单位推断载荷。
    - 保留明确 H/F 标注、写明压缩高度及对应载荷的要求文字，以及有高度/载荷表头的真实载荷表；真实载荷表可以没有 F 编号，也可以包含载荷公差列。缺少高度或力值时保留已写明的部分，不补算力值。
-   - 载荷编号保留原图P/F字母，P1/P2不得改成F1/F2。分别提取力值及该点自己的公差；绝对公差填load_tolerance_upper/lower（带偏差符号），百分比填load_tolerance_percent；没有公差时留空，不填0或复制另一点。
+   - 载荷编号label和高度编号height_label仅填写图上实际标出的符号，并在evidence或表头中保留原文。只有数字和单位时将对应编号留空，由系统统一编号。分别提取力值及该点自己的公差；绝对公差填load_tolerance_upper/lower（带偏差符号），百分比填load_tolerance_percent；没有公差时留空，不填0或复制另一点。
    - 高度必须区分直接工作高度、从自由位置起算的压缩量、两个载荷点之间的追加行程。增加height_relation：kind为absolute_height/free_deflection/incremental_deflection/unknown，value为原始尺寸，unit为明确单位，base_label为追加行程的参考点编号，reference_only记录括号参考尺寸，evidence逐字记录原标注。编号可为任意原图名称，例如Pn、Fmin、F_A、工况1；表格Height/Installed Load等须保留相应单元格及上下文，不能将独立的另一尺寸混入。不能只看P1/P2顺序判断尺寸关系。load_role可选working/solid/unknown，只有原图明确压并用途才选solid，不能凭最大载荷推测。pitch优先提取图中相邻簧圈节距尺寸，不自行用自由高度或圈数改算。
    - 例如工作高度H1=25mm应填height=25及absolute_height；自由状态压缩10mm到P1应填height=null、free_deflection、value=10；再压缩20mm到P2应填height=null、incremental_deflection、base_label=P1、value=20。不要提前把减法结果当成原图高度。关系不清楚填unknown，保留已识别力值，不猜坐标或单位。
    - load_points.evidence 必须逐字保留可见标注，不用“载荷表第一行”等描述代替原文。增加 source_context：kind 为 annotation/sentence/table/unknown；表格候选保留 table_title、headers（原文列名数组）、row_text（对应原文行）；unit_evidence 保留明确表头或图纸统一单位原文。没有证据的单位保持空，不因格式默认值声称原图有单位。证据不足时保留候选并标记 need_human_review=true，后端将单列待核对。
@@ -287,7 +288,7 @@ JSON 结构：
   },
   "standard_selection_inference": {"selected_standard": "", "manufacturing_method": "unknown", "confidence": 0.0, "evidence": [], "reason": "", "need_human_review": true},
   "load_points": [
-    {"label": "F1", "height": null, "height_unit": "mm", "force": null, "force_unit": "N", "force_tolerance_percent": null, "load_tolerance_upper": null, "load_tolerance_lower": null, "load_tolerance_percent": null, "height_relation": {"kind": "unknown", "value": null, "unit": "", "base_label": "", "reference_only": false, "evidence": ""}, "test_height_type": "", "reference_only": false, "confidence": 0.0, "evidence": "", "source_context": {"kind": "unknown", "table_title": "", "headers": [], "row_text": "", "unit_evidence": ""}, "need_human_review": true}
+    {"label": "", "height_label": "", "height": null, "height_unit": "mm", "force": null, "force_unit": "N", "force_tolerance_percent": null, "load_tolerance_upper": null, "load_tolerance_lower": null, "load_tolerance_percent": null, "height_relation": {"kind": "unknown", "value": null, "unit": "", "base_label": "", "reference_only": false, "evidence": ""}, "test_height_type": "", "reference_only": false, "confidence": 0.0, "evidence": "", "source_context": {"kind": "unknown", "table_title": "", "headers": [], "row_text": "", "unit_evidence": ""}, "need_human_review": true}
   ],
   "technical_requirements": [
     {"type": "surface", "content": "中文技术要求正文", "original_content": "图纸可见原文", "original_number": null, "source_order": 1, "page": 1, "source_language": "zh", "confidence": 0.0, "evidence": "", "need_human_review": true}
@@ -399,7 +400,8 @@ def qwen_payload_to_candidates(payload: dict[str, Any], *, require_height_relati
         if not isinstance(item, dict):
             continue
         value = {
-            "label": item.get("label") or f"F{len([c for c in candidates if c.get('field') == 'load_point']) + 1}",
+            "label": item.get("label") or "",
+            **({"height_label": item["height_label"]} if isinstance(item.get("height_label"), str) and item["height_label"].strip() else {}),
             "height": _numeric_or_none(item.get("height")),
             "height_unit": item.get("height_unit") or "mm",
             "force": _numeric_or_none(item.get("force")),
@@ -427,6 +429,8 @@ def qwen_payload_to_candidates(payload: dict[str, Any], *, require_height_relati
             )
         )
         candidates[-1]["source_context"] = normalize_source_context(item.get("source_context"))
+        for field, key in (("label", "force_label_inferred"), ("height_label", "height_label_inferred")):
+            candidates[-1]["source_context"][key] = not bool(explicit_label(candidates[-1], field))
         candidates[-1]["reported_units"] = {key: item.get(key) for key in ("height_unit", "force_unit")}
 
     for source_order, item in enumerate(payload.get("technical_requirements") or [], start=1):

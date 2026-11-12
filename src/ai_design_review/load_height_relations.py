@@ -42,7 +42,7 @@ def model_load_relation(candidate):
     page = candidate.get("page", 1)
     if (relation.get("kind") != "absolute_height" or height is None or height <= 0
             or force is None or force < 0 or force_unit.lower() not in {"n", "kn", "kgf", "牛顿", "牛"}
-            or relation.get("page", page) != page or not str(point.get("label") or "").strip()):
+            or relation.get("page", page) != page):
         return None
     if point.get("height") is not None and millimeters(point["height"], units.get("height_unit")) != height:
         return None
@@ -155,7 +155,7 @@ def refresh_load_heights(review: dict[str, Any]) -> list[dict[str, Any]]:
         visiting.add(key)
         distance = millimeters(relation.get("value"), relation.get("unit"))
         if point.get("load_height_conflict"):
-            reason = "原图存在多个高度或公差证据冲突，请核对"
+            reason = relation.get("verification_failure") or "原图存在多个高度或公差证据冲突，请核对"
         elif kind == "absolute_height" and relation.get("verification_method") == MODEL_PROVISIONAL:
             value = distance
         elif not relation.get("verified") or kind == "unknown":

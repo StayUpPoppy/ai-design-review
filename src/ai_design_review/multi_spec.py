@@ -7,12 +7,11 @@ import re
 from pathlib import Path
 import uuid
 
+from .multi_spec_layout import LAYOUT_RULE_VERSION
+
 
 class MultiSpecError(ValueError):
     pass
-
-
-LAYOUT_RULE_VERSION = "multi-spec-layout/v1"
 
 
 def normalize_layout(value):
@@ -46,70 +45,6 @@ def box(value):
 def number(value):
     if isinstance(value, dict): value = value.get("value")
     return float(value) if not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) else None
-
-
-def local_multi_spec_hint(raw_payloads, candidates):
-    """Detect strong layout evidence only; never create parameters from it.
-
-    Reuse completed OCR/PDF text, without another OCR/model call. Composite
-    dimension cells in a specification table and repeated complete block labels
-    are distinct from an ordinary single-spring force/height table.
-    """
-    import unicodedata
-    pages = {}
-    seen = set()
-
-    def append(item):
-        if not isinstance(item, dict): return
-        content = item.get("text")
-        if content is None and str(item.get("field", "")).startswith("document_text"): content = item.get("value")
-        if not isinstance(content, str): return
-        page = item.get("page") or 1
-        for text in content.splitlines():
-            text = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
-            if not text: continue
-            pos = item.get("position") if isinstance(item.get("position"), dict) else {}
-            identity = (str(page), text, pos.get("x"), pos.get("y"))
-            if identity in seen: continue
-            seen.add(identity); pages.setdefault(str(page), []).append((text, pos))
-
-    def walk(value):
-        if isinstance(value, dict):
-            for item in value.get("texts") or []: append(item)
-            for child in value.get("raw_pages") or []: walk(child)
-            for item in value.get("candidates") or []: append(item)
-        elif isinstance(value, list):
-            for item in value: append(item)
-
-    for value in raw_payloads.values(): walk(value)
-    for value in candidates: append(value)
-    composite = re.compile(r"^[ΦφØø⌀$]?\d+(?:\.\d+)?[xX×*].*[xX×*][ΦφØø⌀$]?\d")
-    labels = (r"(?:簧丝直径|钢丝直径|线径)[dD]?", r"中径[Dd]?", r"自由(?:高度|长度)[HLhl]?[0oO]?", r"(?:总|有效)圈数[nN]?1?")
-    for page, entries in pages.items():
-        text = "\n".join(t for t, _ in entries)
-        cells = [(t, p) for t, p in entries if composite.match(t)]
-        has_header = "规格" in text and ("圈数" in text or re.search(r"d[x×*]D1?[x×*]H[0o]", text, re.I))
-        located = [p for _, p in cells if all(isinstance(p.get(k), (int, float)) for k in ("x", "y", "width", "height"))]
-        rows = 0
-        for anchor in located:
-            column = sorted((p for p in located if abs(p["x"]-anchor["x"]) <= max(p["width"], anchor["width"])*.5), key=lambda p: p["y"])
-            independent = []
-            for p in column:
-                if not independent or p["y"]-independent[-1]["y"] > max(p["height"],independent[-1]["height"])*.5: independent.append(p)
-            rows = max(rows, len(independent))
-        if not located: rows = len({t.replace("×", "x").lower() for t, _ in cells})
-        if has_header and rows >= 2:
-            return {"page": page, "kind": "rows", "observed_count": rows, "reason": "规格表含多行独立的复合几何尺寸"}
-        repeated = 0
-        for pattern in labels:
-            matches = [(t, p) for t, p in entries if re.fullmatch(pattern, t)]
-            # Prefer position-bearing OCR; whole-page text duplicates are not
-            # additional blocks, and a label inside a sentence is not a header.
-            locations = {(p.get("x"), p.get("y")) for _, p in matches if p.get("x") is not None and p.get("y") is not None}
-            if len(locations) >= 2: repeated += 1
-        if repeated >= 3:
-            return {"page": page, "kind": "blocks", "reason": "多个参数区块重复包含线径、中径、自由高度或圈数表头"}
-    return None
 
 
 def parse_multi_spec(payload, page_count=None):

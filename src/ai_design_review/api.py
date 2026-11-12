@@ -101,7 +101,10 @@ from .solidworks import build_solidworks_command, build_solidworks_technical_pro
 from .technical_output_deletions import refresh_technical_output_deletions
 from .load_points import ensure_load_point_ids
 from .load_height_relations import refresh_load_heights, prepare_load_height_save
-from .load_point_evidence import reconcile_load_points, prepare_recovery_save, ground_job_candidates
+from .load_point_evidence import (
+    align_pending_load_recovery, ground_job_candidates, prepare_recovery_save,
+    reconcile_load_points, reconcile_saved_load_duplicates,
+)
 from .material_catalog import ensure_compression_material, load_material_catalog, validate_material_change
 from .rules import refresh_compression_material_check
 from .standardizers.stiffness import refresh_compression_spring_rate_freshness
@@ -1208,6 +1211,8 @@ async def run_recognition_execution(
     raw_payloads: dict[str, Any] = {}
 
     replay_payload = None
+    cached_layout_replay = qwen_replay.get("ocr_snapshot") if qwen_replay else None
+    cached_multi_replay = False
     if qwen_replay is not None:
         _report_recognition_progress(progress_callback, "qwen_vision", 35)
         page_count = qwen_replay["metadata"]["page_count"]
@@ -1215,11 +1220,21 @@ async def run_recognition_execution(
             raise MultiSpecError("本地恢复失败：预览页数与原文件不一致；未重新调用Qwen。")
         replay_payload = QwenVisionEngine().parse_response(qwen_replay["raw_response"], images or [], total_pages=page_count)
         replay_payload["local_recovery"] = qwen_replay["metadata"]
-        if not qwen_replay["metadata"].get("page_retry"):
+        if not qwen_replay["metadata"].get("page_retry") and not cached_layout_replay:
             if not replay_payload.get("multi_spec"):
                 raise MultiSpecError("本地恢复失败：缓存不是完整多规格结果；未重新调用Qwen。")
+            cached_multi_replay = True
+        if cached_layout_replay:
+            raw_payloads.update(cached_layout_replay["raw_payloads"])
+            candidates.extend(cached_layout_replay["candidates"])
+        if cached_layout_replay or cached_multi_replay:
+            raw_payloads["qwen_vision"] = replay_payload
+            candidate_sources.extend(raw_payloads)
+            use_werk24 = use_cached_werk24 = use_qwen = False
+            use_geometry = use_ocr = use_paddleocr = use_sample_ocr = use_vlm = False
+            ocr_provider = None
+            candidate_json = ocr_json = None
             write_json(job_dir / "qwen_vision_raw.json", replay_payload)
-            return _persist_multi_spec_source(job_id, replay_payload, uploaded_file_info, identity, image_url, progress_callback)
 
     if candidate_json is not None and candidate_json.filename:
         candidate_json_path = input_dir / _safe_filename(candidate_json.filename)
@@ -1249,6 +1264,7 @@ async def run_recognition_execution(
         except Exception as exc:
             warnings.append(f"Werk24 extraction failed: {exc}")
 
+    qwen_layout_error = None
     if use_qwen:
         _report_recognition_progress(progress_callback, "qwen_vision", 35)
         try:
@@ -1261,21 +1277,17 @@ async def run_recognition_execution(
             raw_payloads["qwen_vision"] = qwen_payload
             candidate_sources.append("qwen_vision")
             write_json(job_dir / "qwen_vision_raw.json", qwen_payload)
-        except MultiSpecError:
-            raise
+        except MultiSpecError as exc:
+            qwen_layout_error = exc
         except Exception as exc:
             raw_payloads["qwen_vision_failure"] = {"error_type": type(exc).__name__, "message": str(exc)}
             warnings.append(f"Qwen vision extraction failed: {type(exc).__name__}: {exc}")
 
     multi_payload = raw_payloads.get("qwen_vision") or {}
-    if multi_payload.get("multi_spec"):
-        persisted = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id) if REVIEW_PERSISTENCE.configured else None
-        if page_origin or (persisted and persisted["review"].get("page_origin")):
-            raise MultiSpecError("本页包含多规格，请将该页单独上传处理；其他页不受影响。")
-        return _persist_multi_spec_source(job_id, multi_payload, uploaded_file_info, identity, image_url,
-                                          progress_callback, raw_payloads=raw_payloads)
+    multi = multi_payload.get("multi_spec")
+    single_path = not (multi or qwen_layout_error or cached_layout_replay)
 
-    if _needs_dimension_grounding_ocr(candidates, uploaded_file_info, candidate_sources):
+    if single_path and _needs_dimension_grounding_ocr(candidates, uploaded_file_info, candidate_sources):
         _report_recognition_progress(progress_callback, "dimension_ocr", 55)
         try:
             warnings.append(
@@ -1300,7 +1312,7 @@ async def run_recognition_execution(
         except Exception as exc:
             warnings.append(f"Dimension-grounding OCR failed: {type(exc).__name__}: {exc}")
 
-    if use_geometry:
+    if single_path and use_geometry:
         _report_recognition_progress(progress_callback, "geometry_review", 65)
         try:
             geometry_payload = await run_in_threadpool(
@@ -1372,7 +1384,7 @@ async def run_recognition_execution(
             "and must not invent dimensions."
         )
 
-    if _needs_ocr_fallback(candidates, uploaded_file_info, candidate_sources):
+    if single_path and _needs_ocr_fallback(candidates, uploaded_file_info, candidate_sources):
         _report_recognition_progress(progress_callback, "ocr_fallback", 78)
         try:
             warnings.append("No structured candidates were produced from the selected engines; trying local RapidOCR fallback.")
@@ -1395,17 +1407,29 @@ async def run_recognition_execution(
         except Exception as exc:
             warnings.append(f"RapidOCR fallback failed: {type(exc).__name__}: {exc}")
 
-    from .multi_spec import local_multi_spec_hint
-    multi_hint = local_multi_spec_hint(raw_payloads, candidates)
-    if multi_hint:
-        # Do not label an OCR-only merge as successful recognition of a family.
-        # Preserve diagnostics for retry without saving a misleading review.
+    layout_diagnostic, conflict = await run_in_threadpool(
+        _recognition_layout_check, job_dir, drawing_path, images, uploaded_file_info.get("page_count", 1),
+        raw_payloads, multi, qwen_layout_error,
+    )
+    if cached_layout_replay or cached_multi_replay:
+        layout_diagnostic["recovery"] = qwen_replay["metadata"]
+    write_json(job_dir / ("multi_spec_recovery.json" if cached_layout_replay or cached_multi_replay else "multi_spec_diagnostics.json"), layout_diagnostic)
+    if conflict or qwen_layout_error:
         write_json(job_dir / "candidates.json", {"candidates": candidates, "raw_payloads": raw_payloads})
         write_json(job_dir / "warnings.json", {"warnings": warnings})
-        write_json(job_dir / "multi_spec_diagnostics.json", multi_hint)
+        if qwen_layout_error:
+            raise qwen_layout_error
+        if multi:
+            raise MultiSpecError(f"原图第{conflict['page']}页可定位到至少{conflict['observed_count']}个规格，识别结果未列全。请重试或拆分文件。")
         failure = raw_payloads.get("qwen_vision_failure") or {}
         reason = "Qwen请求超时" if "Timeout" in failure.get("error_type", "") else "未取得完整的多规格识别结果"
-        raise MultiSpecError(f"检测到多规格图纸（{multi_hint['reason']}），但{reason}。已停止单规格OCR兜底，避免混合参数；请重试或拆分文件。")
+        raise MultiSpecError(f"检测到多规格图纸（{conflict['reason']}），但{reason}。已停止单规格OCR兜底，避免混合参数；请重试或拆分文件。")
+    if multi:
+        persisted = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id) if REVIEW_PERSISTENCE.configured else None
+        if page_origin or (persisted and persisted["review"].get("page_origin")):
+            raise MultiSpecError("本页包含多规格，请将该页单独上传处理；其他页不受影响。")
+        return _persist_multi_spec_source(job_id, multi_payload, uploaded_file_info, identity, image_url,
+                                          progress_callback, raw_payloads=raw_payloads, layout_diagnostic=layout_diagnostic)
 
     business_candidates = [
         candidate
@@ -1435,8 +1459,14 @@ async def run_recognition_execution(
     rules = read_json(project_path("config", "factory_rules.json"))
     review = DrawingReviewWorkflow(rules).run(str(drawing_path), candidates, run_standardization=False, verify_diameter_roles=True)
     apply_generation_defaults(review)
+    if cached_layout_replay:
+        review.setdefault("change_history", []).append({"event_type": "multi_spec_layout_recovered",
+            "source": "saved_qwen_response", "reason": "按原图坐标重新核对后恢复单规格审图"})
     llm_standardization_payload: dict[str, Any] | None = None
-    translation_results = await run_in_threadpool(prepare_review_translations, review)
+    if cached_layout_replay:
+        translation_results = await run_in_threadpool(prepare_review_translations, review, allow_remote=False)
+    else:
+        translation_results = await run_in_threadpool(prepare_review_translations, review)
     for translated in translation_results:
         if translated["translation_status"] == "not_required":
             continue
@@ -2503,6 +2533,7 @@ def _load_persisted_review(
         from .flattening import ensure as ensure_flattening
         ensure_flattening(review)
         if not recover:
+            reconcile_saved_load_duplicates(review)
             return review, stored["revision"]
         if stored.get("record_kind") == "variant" and not review.get("page_origin"):
             try: multi_spec_store.materialize(REVIEW_PERSISTENCE, job_id, identity.user_id, API_RUN_ROOT)
@@ -2515,7 +2546,7 @@ def _load_persisted_review(
         apply_generation_defaults(review)
         ensure_load_point_ids(review)
         ensure_technical_requirement_ids(review)
-        reconcile_load_points(review, review_path.parent)
+        reconcile_load_points(review, review_path.parent, merge_saved_duplicates=False)
         from .diameter_evidence import reconcile_diameter_review
         reconcile_diameter_review(review, review_path.parent)
         _prepare_review_reasonableness(review, stored["revision"])
@@ -2525,7 +2556,9 @@ def _load_persisted_review(
     review = read_json(review_path)
     from .flattening import ensure as ensure_flattening
     ensure_flattening(review)
-    if not recover: return review, None
+    if not recover:
+        reconcile_saved_load_duplicates(review)
+        return review, None
     ensure_compression_material(review)
     ensure_surface_roughness_parameter(review)
     verify_review_roughness(review, review_path.parent, lambda path: _artifact_url(job_id, path))
@@ -2677,6 +2710,10 @@ def _save_review_persistence(
     if 'local_verification' in previous: review['local_verification'] = deepcopy(previous['local_verification'])
     else: review.pop('local_verification', None)
     events = list(events or [])
+    try:
+        align_pending_load_recovery(review, previous, events)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"message": str(exc), "current_revision": current_revision}) from exc
     load_changes = prepare_load_height_save(review, previous, events)
     from .diameter_evidence import PENDING as DIAMETER_ROLE_CANDIDATES, public_candidates, select_role
     from .diameter_linkage import group_state
@@ -3038,7 +3075,47 @@ def _reuse_multi_spec_source(job_id, identity, progress_callback):
     return _source_recognition_response(job_id, stored["review"], stored["revision"], _review_preview_url(job_id))
 
 
-def _persist_multi_spec_source(job_id, payload, file_info, identity, image_url, progress_callback, *, raw_payloads=None):
+def _recognition_layout_check(job_dir, drawing_path, images, page_count, raw_payloads, multi, qwen_error):
+    from collections import Counter
+    from .multi_spec_layout import LAYOUT_RULE_VERSION, layout_blocks, layout_evidence, reread_region
+
+    blocks = layout_blocks(raw_payloads, drawing_path, page_count, artifact_dir=job_dir)
+    previous = job_dir / "candidates.json"
+    if previous.is_file() and (multi or qwen_error):
+        try:
+            blocks.extend(layout_blocks(read_json(previous).get("raw_payloads", {}), page_count=page_count, artifact_dir=job_dir))
+        except (OSError, ValueError, TypeError, AttributeError):
+            LOGGER.warning("Saved layout evidence unreadable for %s", job_dir.name)
+    evidence = layout_evidence(blocks)
+    counts = Counter(variant["page"] for variant in multi["variants"]) if multi else Counter()
+    conflict = next((item for item in evidence if item["strong"] and item["observed_count"] > counts[item["page"]]), None)
+    diagnostic = {"layout_rules_version": LAYOUT_RULE_VERSION}
+    if qwen_error:
+        diagnostic.update(getattr(qwen_error, "layout_diagnostics", {}), reason=str(qwen_error), raw_response_path="qwen_pages/response.json")
+    if not conflict:
+        resolved = {(item["page"], item["kind"]) for item in evidence if item["strong"]}
+        target = next((item for item in evidence if not item["strong"] and (item["page"], item["kind"]) not in resolved
+                       and item["page"] <= len(images or [])), None)
+        if target:
+            try:
+                extra = reread_region(images[target["page"] - 1], target, job_dir)
+                evidence = layout_evidence(blocks + extra)
+                if extra:
+                    raw_payloads["local_layout_ocr"] = {"texts": [
+                        {**item, "position": {**item["position"], "coordinate_type": "normalized"}} for item in extra
+                    ]}
+                diagnostic["local_reread"] = {"page": target["page"], "region": target["region"], "text_count": len(extra)}
+            except Exception:
+                LOGGER.exception("Local multi-spec layout reread failed for %s", job_dir.name)
+                diagnostic["local_reread"] = {"page": target["page"], "region": target["region"], "failed": True}
+            conflict = next((item for item in evidence if item["strong"] and item["observed_count"] > counts[item["page"]]), None)
+    if conflict:
+        diagnostic.update(conflict)
+    diagnostic.update(decision="blocked" if conflict or qwen_error else "multi" if multi else "single", evidence=evidence)
+    return diagnostic, conflict
+
+
+def _persist_multi_spec_source(job_id, payload, file_info, identity, image_url, progress_callback, *, raw_payloads=None, layout_diagnostic=None):
     """Normal requests and cached replies publish through the same source path."""
     from .multi_spec import source_review, normalize_layout
     if file_info.get("page_count", 1) > int(os.getenv("QWEN_MAX_PAGES", "3")):
@@ -3051,7 +3128,8 @@ def _persist_multi_spec_source(job_id, payload, file_info, identity, image_url, 
     from .diameter_evidence import VERSION as DIAMETER_ROLE_VERSION
     review["diameter_role_verification"] = DIAMETER_ROLE_VERSION
     recovery = payload.get("local_recovery")
-    diagnostic = {"layout_normalization": payload["multi_spec"].get("layout_normalization") or normalize_layout(payload["multi_spec"].get("layout")),
+    diagnostic = {"decision": "multi", **(layout_diagnostic or {}),
+                  "layout_normalization": payload["multi_spec"].get("layout_normalization") or normalize_layout(payload["multi_spec"].get("layout")),
                   "variant_count": len(payload["multi_spec"]["variants"])}
     if recovery:
         diagnostic["recovery"] = recovery

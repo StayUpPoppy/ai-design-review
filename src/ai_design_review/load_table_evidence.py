@@ -4,6 +4,7 @@ import re
 from .load_height_dimension import dimension_with_offsets, read_height_dimension
 
 FORCE_HEADER = re.compile(r"(?:load|force|负荷|载荷|力值)\s*(?:[（(]\s*(?:N|kN|kgf)\s*[）)])?",re.I)
+HEIGHT_LABEL = r"height|(?:installed|working|test)\s+height|work(?:ing)?\s+length|高度|安装高度|工作高度|测试高度"
 
 
 def table_height(point, texts):
@@ -56,14 +57,15 @@ def table_height(point, texts):
                     0<cy(t)-cy(label)<2*height(label) and owns(label,t) and re.fullmatch(rf"\s*[（(]?{unit}[）)]?\s*",t["text"],re.I) for t in texts)
             if not unit_at(header,re.escape(point.get("force_unit") or "N")):continue
             for label in peers:
-                if not re.fullmatch(r"(?:height|working\s+height|installed\s+height|高度|工作高度|安装高度)\s*(?:[（(]\s*(?:mm|毫米)\s*[）)])?",label["text"].strip(),re.I) or not unit_at(label,"mm|毫米"):continue
+                if not re.fullmatch(rf"(?:{HEIGHT_LABEL})\s*(?:[（(]\s*(?:mm|毫米)\s*[）)])?",label["text"].strip(),re.I) or not unit_at(label,"mm|毫米"):continue
                 values=[(t,x) for t,x in height_cells if t in row(f) and owns(label,t)]
                 if len({x for _,x in values})==1:
-                    t,x=values[0];matches.append((0,x,t,label,f))
+                    t,x=values[0];matches.append((0,x,t,label,f,None))
+    force_suffix = re.search(r"\d+$", str(point.get("label") or ""))
     for f in force_cells:
         candidates = []
         for label in texts:
-            if not re.fullmatch(r"(?:height|(?:installed|working|test)\s+height|高度|安装高度|工作高度|测试高度)", label["text"].strip(), re.I):
+            if not re.fullmatch(HEIGHT_LABEL, label["text"].strip(), re.I):
                 continue
             if abs(cy(label) - cy(f)) > 2.5 * max(height(f), height(label)) or label["bbox"][0] >= f["bbox"][0]:
                 continue
@@ -77,18 +79,28 @@ def table_height(point, texts):
                       < max(v["bbox"][2] - v["bbox"][0], f["bbox"][2] - f["bbox"][0])]
             if len({x for _, x in values}) == 1:
                 v, x = values[0]
-                candidates.append((abs(cy(label) - cy(f)), x, v, label))
+                symbols = {re.sub(r"\s+", "", cell["text"].upper()) for cell in cells
+                           if label["bbox"][2] <= cell["bbox"][0] < v["bbox"][0]
+                           and re.fullmatch(r"[HL]\s*[1-9]\d*", cell["text"].strip(), re.I)}
+                symbol = next(iter(symbols)) if len(symbols) == 1 else None
+                if force_suffix and symbol and symbol[1:] != force_suffix[0]:
+                    continue
+                candidates.append((abs(cy(label) - cy(f)), x, v, label, f, symbol))
         if candidates:
-            candidates.sort(key=lambda v: v[0])
+            if force_suffix and any(candidate[5] for candidate in candidates):
+                candidates = [candidate for candidate in candidates if candidate[5]]
+            candidates.sort(key=lambda candidate: candidate[0])
             best = candidates[0]
             if any(abs(v[0] - best[0]) < height(f) * .5 and v[1] != best[1] for v in candidates[1:]):
                 continue
-            matches.append((*best, f))
+            matches.append(best)
     if not matches:
         return None
     if len({v[1] for v in matches}) != 1:
         return {"conflict": True}
-    _, value, cell, label, force_cell = matches[0]
+    _, value, cell, label, force_cell, symbol = matches[0]
     dimension, evidence=dimension_with_offsets(cell,texts,cell["bbox"][3])
+    if symbol:
+        dimension["height_label"] = symbol
     return {"value": value, "cell": evidence, "force_cell": force_cell, "dimension":dimension,
             "evidence": f"{label['text']} (mm) {value:g}; Load {force:g} {point.get('force_unit') or 'N'}"}
