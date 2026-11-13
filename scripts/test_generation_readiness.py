@@ -423,7 +423,7 @@ def _assert_duplicate_technical_requirements_export_once() -> None:
     assert readiness["status"] == "ready_with_warnings", readiness
     assert not readiness["pending_fields"]
     assert len(review["technical_requirements"]) == 2
-    text = build_generation_parameter_package(review)["solidworks_preview"]["extraProperties"]["技术要求"]
+    text = build_generation_parameter_package(review)["solidworks_preview"]["technicalRequirements"]["技术要求"]
     assert text.count("镀锌") == 1
     review["technical_requirements"][-1]["need_human_review"] = True
     assert assess_generation_readiness(review)["status"] == "needs_confirmation"

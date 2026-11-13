@@ -6,7 +6,9 @@ from typing import Any
 
 from .standardizers.calculation_state import LENGTH_UNITS
 
-FORCE_UNITS = {"n": 1, "牛": 1, "kn": 1000, "kgf": 9.80665}
+from .engineering_units import FACTORS
+
+FORCE_UNITS = {unit: float(scale) for unit, scale in FACTORS["force"].items()}
 
 
 def in_base_units(value: Any, unit: Any, *, force: bool = False) -> float | None:

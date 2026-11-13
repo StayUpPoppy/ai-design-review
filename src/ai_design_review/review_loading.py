@@ -12,7 +12,7 @@ from sqlalchemy import select
 from .review_persistence import ReviewRecord, RecognitionJobRecord, _apply_summary
 from .page_images import read_json, write_json, fingerprint
 
-VERSION='review-local/v3-load-diameter'
+VERSION='review-local/v4-engineering-units'
 KIND='local_verification'
 
 
@@ -124,9 +124,10 @@ _readiness_lock = threading.RLock()
 def cached_readiness(job_id, revision, identity, review):
     from .generation_readiness import assess_generation_readiness
     from .diameter_evidence import ROLE_STATE_VERSION
+    from .engineering_units import VERSION as ENGINEERING_UNITS_VERSION
     from .io_utils import project_path
     from .material_catalog import load_material_catalog
-    versions = (project_path('config/factory_rules.json').stat().st_mtime_ns, load_material_catalog()['version'], ROLE_STATE_VERSION)
+    versions = (project_path('config/factory_rules.json').stat().st_mtime_ns, load_material_catalog()['version'], ROLE_STATE_VERSION, ENGINEERING_UNITS_VERSION)
     signature=hashlib.sha256(json.dumps([review.get(k) for k in ('spring_parameters','technical_requirements','technical_output_deletions','spring_features','generation_settings','diameter_role_candidates')],sort_keys=True,default=str).encode()).hexdigest()
     key=(job_id,revision,identity.user_id,versions,signature)
     if revision is not None:

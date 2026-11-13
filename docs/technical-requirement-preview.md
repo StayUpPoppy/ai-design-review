@@ -27,7 +27,7 @@
 
 输入期间按当前草稿副本刷新，不修改参数或确认状态，也不为刷新预览重建编辑卡片。未保存、保存中和保存失败会显示相应草稿提示；保存失败保留本地内容。
 
-保存成功且订单就绪时，复用已有的`GET /api/reviews/{id}/generation-package`读取该修订的`solidworks_preview.extraProperties.技术要求`，以服务端文字为准。响应增加可选`technical_requirements_projection`（`text`和带稳定来源、关联ID、依据快照的`entries`），不进入SW请求或冻结参数包。兼容旧响应，能唯一对应本地条目时仍可操作，无法对应时不猜测来源。成功结果按服务地址、用户、订单及修订缓存，避免逐字请求。核对失败保留草稿，并提供“重试核对”；不会将读取失败显示成无技术要求。
+保存成功且订单就绪时，复用已有的`GET /api/reviews/{id}/generation-package`读取该修订的`solidworks_preview.technicalRequirements.技术要求`，以服务端文字为准。响应增加可选`technical_requirements_projection`（`text`和带稳定来源、关联ID、依据快照的`entries`），不进入SW请求或冻结参数包。旧响应可从 `extraProperties.技术要求` 读取。能唯一对应本地条目时仍可操作，无法对应时不猜测来源。成功结果按服务地址、用户、订单及修订缓存，避免逐字请求。核对失败保留草稿，并提供“重试核对”；不会将读取失败显示成无技术要求。
 
 请求同时检查订单打开轮次、本地编辑序号及数据快照，编辑或切换后旧响应失效。本地导入数据只显示本地草稿预览。图纸版式和姓名的输入校验不妨碍查看技术要求。
 

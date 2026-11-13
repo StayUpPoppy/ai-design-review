@@ -15,8 +15,15 @@ from .surface_roughness import confirmed_surface_roughness, surface_roughness_ma
 from .technical_output_deletions import technical_output_basis, technical_output_is_deleted
 from .technical_requirements import TECHNICAL_REQUIREMENT_TYPE_LABELS, format_technical_requirement, strip_technical_requirements_title, technical_requirement_output_content, technical_requirement_body, technical_requirement_equivalence_key
 
-CALCULATED_PROPERTIES = {"P'": "theoretical_spring_rate", "C": "spring_index", "τ_b": "solid_stress"}
+CALCULATED_PROPERTIES = {"P'": "theoretical_spring_rate", "C": "spring_index", "τb": "solid_stress", "L": "wire_length"}
 FROZEN_CALCULATION_METRICS = (*CALCULATED_PROPERTIES.values(), "unit_mass")
+TOLERANCE_FIELDS = (
+    ("外径", "outer_diameter"),
+    ("内径", "inner_diameter"),
+    ("自由高度", "free_length"),
+    ("中径", "mean_diameter"),
+)
+DIAMETER_FIELDS = {"outer_diameter", "inner_diameter", "mean_diameter"}
 SOLID_LABELS = {"fb", "pb", "压并载荷", "压并负荷", "压并力"}
 _SW_DIRECTION_LABEL = re.compile(r"^((?:(?:" + "|".join(TECHNICAL_REQUIREMENT_TYPE_LABELS.values()) + r")\s*[:：]\s*)*)绕制方向(?=\s*[:：])")
 
@@ -42,12 +49,20 @@ def build_solidworks_command(
         raise ValueError("SolidWorks TaskId must be a positive 10-digit Long value.")
 
     preview = parameter_package.get("solidworks_preview")
-    if not isinstance(preview, dict) or not all(isinstance(preview.get(key), dict) for key in ("modelParameters", "customProperties", "extraProperties")) or "技术要求" not in preview["extraProperties"]:
+    legacy = False
+    if isinstance(preview, dict) and all(isinstance(preview.get(key), dict) for key in ("modelParameters", "customProperties", "extraProperties")):
+        requirements = preview.get("technicalRequirements")
+        current = isinstance(requirements, dict) and isinstance(requirements.get("技术要求"), str)
+        legacy = not current and isinstance(preview["extraProperties"].get("技术要求"), str)
+    else:
+        current = False
+    if not (current or legacy):
         preview = build_solidworks_preview(parameter_package, review)
     source = parameter_package.get("source") or {}
     spring_label = str(source.get("spring_type_label") or "压缩弹簧")
     return {
         "TaskId": task_id,
+        **({"companyName": source.get("company_name") or ""} if not legacy else {}),
         "models": [
             {
                 "modelId": 1,
@@ -69,9 +84,9 @@ def build_solidworks_model_parameters(
     generation_parameters = parameter_package.get("generation_parameters") or {}
     spring_parameters = generation_parameters.get("spring_parameters") or {}
     model_parameters = {
-        "线径": _parameter_value(spring_parameters.get("wire_diameter")),
-        "中径": _parameter_value(spring_parameters.get("mean_diameter")),
-        "自由高度": _parameter_value(spring_parameters.get("free_length")),
+        "线径": _parameter_value(spring_parameters.get("wire_diameter"), preserve_precision=True),
+        "中径": _parameter_value(spring_parameters.get("mean_diameter"), preserve_precision=True),
+        "自由高度": _parameter_value(spring_parameters.get("free_length"), preserve_precision=True),
         "圈数": _parameter_value(spring_parameters.get("total_coils"), preserve_precision=True),
         "有效圈数n": _parameter_value(spring_parameters.get("active_coils"), preserve_precision=True),
         "是否磨平": _parameter_value(spring_parameters.get("end_grinding")),
@@ -150,8 +165,8 @@ def _confirmed_optional_mm(parameters: dict[str, Any], field: str, *, allow_zero
 
 def solidworks_tolerance_issues(review: dict[str, Any]) -> list[dict[str, str]]:
     issues = []
-    for label, field in (("外径", "outer_diameter"), ("自由高度", "free_length"), ("中径", "mean_diameter")):
-        if (review.get("diameter_linkage") or {}).get("status") == "invalid" and field in {"outer_diameter", "mean_diameter"}:
+    for label, field in TOLERANCE_FIELDS:
+        if (review.get("diameter_linkage") or {}).get("status") == "invalid" and field in DIAMETER_FIELDS:
             continue
         confirmed = _confirmed_optional_mm(review.get("spring_parameters") or {}, field)
         if confirmed is None:
@@ -169,8 +184,8 @@ def _model_parameters_tolerance(review: dict[str, Any]) -> dict[str, float | lis
     parameters = review.get("spring_parameters") or {}
     invalid_linkage = (review.get("diameter_linkage") or {}).get("status") == "invalid"
     result = {}
-    for label, field in (("外径", "outer_diameter"), ("自由高度", "free_length"), ("中径", "mean_diameter")):
-        if invalid_linkage and field in {"outer_diameter", "mean_diameter"}:
+    for label, field in TOLERANCE_FIELDS:
+        if invalid_linkage and field in DIAMETER_FIELDS:
             continue
         confirmed = _confirmed_optional_mm(parameters, field)
         if confirmed is None:
@@ -196,7 +211,8 @@ def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str
         "metrics": {key: deepcopy(checks["metrics"][key]) for key in FROZEN_CALCULATION_METRICS},
     }
     parameters = (parameter_package.get("generation_parameters") or {}).get("spring_parameters") or {}
-    extra: dict[str, Any] = {"技术要求": build_solidworks_technical_text(parameter_package, review)}
+    technical_requirements = {"技术要求": build_solidworks_technical_text(parameter_package, review)}
+    extra: dict[str, Any] = {}
     for key, metric in CALCULATED_PROPERTIES.items():
         result = checks["metrics"][metric]
         number = _number(result.get("value"))
@@ -218,7 +234,7 @@ def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str
         title_block["垂直度A"] = perpendicularity[1]
     roughness = confirmed_surface_roughness(review)
     if roughness is not None:
-        title_block["表面粗糙度"] = roughness["value"]
+        title_block["表面粗糙度Ra"] = roughness["value"]
     settings = parameter_package.get("generation_settings")
     tolerances = _model_parameters_tolerance(review)
     return {**({"DrawingModel": settings["drawing_model"], "Username": settings["username"],
@@ -227,6 +243,7 @@ def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str
             "modelParameters": build_solidworks_model_parameters(parameter_package, review),
             **({"modelParametersTolerance": tolerances} if tolerances else {}),
             "customProperties": {"旋向": handedness_label(_parameter_value(parameters.get("handedness")))},
+            "technicalRequirements": technical_requirements,
             "extraProperties": extra, "titleBlockProperties": title_block}
 
 

@@ -203,7 +203,7 @@ def cases():
     def optional(name, edits, tolerances=None, perpendicularity=None, **kwargs):
         add("optional_" + name, edits, **kwargs)
         result[-1].update(expected_tolerances=tolerances, expected_perpendicularity=perpendicularity)
-    for label, field, value in (("外径", "outer_diameter", 28.8), ("自由高度", "free_length", 19), ("中径", "mean_diameter", 25.2)):
+    for label, field, value in (("外径", "outer_diameter", 28.8), ("内径", "inner_diameter", 21.6), ("自由高度", "free_length", 19), ("中径", "mean_diameter", 25.2)):
         base = parameter(value, "mm", tolerance_upper=1.5, tolerance_lower=-1.5)
         optional(field, {field: base}, {label: 1.5})
         optional(field + "_zero", {field: {**base, "tolerance_upper": 0, "tolerance_lower": 0}}, {label: 0})
@@ -232,7 +232,7 @@ def cases():
     for name, unit, value, tolerance, expected in (("cm", "cm", 2.88, 0.15, 1.5), ("m", "m", .0288, .0015, 1.5),
         ("inch", "in", 1.2, .01, .01*25.4), ("alias", "毫米", 28.8, .25, .25)):
         optional("unit_"+name,{"outer_diameter":parameter(value,unit,tolerance_upper=tolerance,tolerance_lower=-tolerance)}, {"外径":expected})
-    optional("no_copy",{"inner_diameter":parameter(21.6,"mm",tolerance_upper=2,tolerance_lower=-2),"outer_diameter":parameter(28.8,"mm")})
+    optional("no_copy",{"inner_diameter":parameter(21.6,"mm",tolerance_upper=2,tolerance_lower=-2),"outer_diameter":parameter(28.8,"mm")}, {"内径": 2})
     optional("bad_nominal",{"outer_diameter":parameter(0,"mm",tolerance_upper=1.5,tolerance_lower=-1.5)})
     optional("dependency_stale",{"outer_diameter":parameter(28.8,"mm",source=["derived"],source_fields=["pitch"],tolerance_upper=1.5,tolerance_lower=-1.5),"pitch":{"derived_value_stale":True}})
     for suffix, patch, expected in (
@@ -246,6 +246,11 @@ def cases():
         ("old_confirmation",{"confirmation_snapshot":{"kind":"parameter","value":.02}},None),
     ):
         optional("perpendicularity_"+suffix,{"perpendicularity":{**parameter(.01,"mm"),**patch}}, perpendicularity=expected)
+    add("precise_dimensions", {
+        "wire_diameter": parameter(1.8288, "mm"),
+        "mean_diameter": parameter(37.0841, "mm"),
+        "free_length": parameter(96.0123, "mm"),
+    })
     optional("fullwidth", {"perpendicularity":parameter("１", "mm")})
     optional("snapshot_boolean", {"perpendicularity":parameter(1, "mm", confirmation_snapshot={"value":True})})
     optional("snapshot_empty_kind", {"perpendicularity":parameter(.01,"mm",confirmation_snapshot={"kind":"","value":.01})})
@@ -292,7 +297,7 @@ def run():
         if complete_contract:
             GenerationParameterPackageV2.model_validate(package)
         preview = package["solidworks_preview"]
-        assert list(preview) == [*(["materialCode"] if "material_code" in package.get("source", {}) else []), "modelParameters", *(["modelParametersTolerance"] if "modelParametersTolerance" in preview else []), "customProperties", "extraProperties", "titleBlockProperties"]
+        assert list(preview) == [*(["materialCode"] if "material_code" in package.get("source", {}) else []), "modelParameters", *(["modelParametersTolerance"] if "modelParametersTolerance" in preview else []), "customProperties", "technicalRequirements", "extraProperties", "titleBlockProperties"]
         command = build_solidworks_command("1000000099", package, review)
         model = command["models"][0]
         assert {k: model[k] for k in preview} == preview
@@ -300,10 +305,12 @@ def run():
         if preview["modelParameters"]["是否并紧"] == 0:
             expected_model_keys.remove("有效圈数n")
         assert list(preview["modelParameters"]) == expected_model_keys, case["name"]
+        if case["name"] == "precise_dimensions":
+            assert [preview["modelParameters"][key] for key in ("线径", "中径", "自由高度")] == [1.8288, 37.0841, 96.0123]
         assert review["spring_parameters"]["active_coils"] == original_review["spring_parameters"]["active_coils"]
         if "active_coils" in package["generation_parameters"]["spring_parameters"]:
             active = package["generation_parameters"]["spring_parameters"]["active_coils"]["value"]
-            coil_text = preview["extraProperties"]["技术要求"]
+            coil_text = preview["technicalRequirements"]["技术要求"]
             if preview["modelParameters"]["是否并紧"] != 0:
                 assert f"有效圈数：{active}。" in coil_text
             elif case["name"] not in {"end_open_active_original", "end_open_active_legacy_text"}:
@@ -311,8 +318,8 @@ def run():
         assert preview["modelParameters"]["是否并紧"] == package["generation_parameters"]["spring_parameters"].get("end_coils_closed", {}).get("value")
         extra = preview["extraProperties"]
         title = preview["titleBlockProperties"]
-        assert isinstance(title, dict) and set(title) <= {"材料", "重量", "客户图号", "垂直度A", "表面粗糙度"}
-        assert list(title) == [key for key in ("材料", "重量", "客户图号", "垂直度A", "表面粗糙度") if key in title]
+        assert isinstance(title, dict) and set(title) <= {"材料", "重量", "客户图号", "垂直度A", "表面粗糙度Ra"}
+        assert list(title) == [key for key in ("材料", "重量", "客户图号", "垂直度A", "表面粗糙度Ra") if key in title]
         drawing_no = package["source"].get("drawing_no")
         if isinstance(drawing_no, str) and drawing_no.strip():
             assert title["客户图号"] == drawing_no.strip() and isinstance(title["客户图号"], str)
@@ -322,19 +329,23 @@ def run():
         if "expected_tolerances" in case:
             assert preview.get("modelParametersTolerance") == case["expected_tolerances"], (case["name"], preview)
             assert title.get("垂直度A") == case["expected_perpendicularity"], (case["name"], title)
-            for field in ("outer_diameter", "free_length", "mean_diameter", "perpendicularity"):
+            for field in ("outer_diameter", "inner_diameter", "free_length", "mean_diameter", "perpendicularity"):
                 assert review["spring_parameters"].get(field) == original_review["spring_parameters"].get(field), (case["name"], field)
 
         if case["name"] == "drawing_no_without_weight":
-            assert title == {"客户图号": "0001", "表面粗糙度": 12.5}
+            assert title == {"客户图号": "0001", "表面粗糙度Ra": 12.5}
         if case["name"] == "drawing_no_only":
             assert title == {"客户图号": "0"}
         mass = package["derived_parameters"]["solidworks_design_checks"]["metrics"]["unit_mass"]
         assert mass["unit"] == "kg" and "formula" in mass and "inputs" in mass
         if "重量" in title:
             assert isinstance(title["重量"], (int, float)) and title["重量"] == round(mass["value"], 8)
-        assert list(extra)[0] == "技术要求" and set(extra) <= {"技术要求", "P'", "C", "τ_b"}
-        notes = extra["技术要求"]
+        assert set(extra) <= {"P'", "C", "τb", "L"}
+        assert set(preview["technicalRequirements"]) == {"技术要求"}
+        notes = preview["technicalRequirements"]["技术要求"]
+        length = package["derived_parameters"]["solidworks_design_checks"]["metrics"]["wire_length"]
+        assert length["unit"] == "mm"
+        assert extra.get("L") == (round(length["value"], 4) if length["value"] is not None else None)
         if case["name"] == "legacy_mixed_load":
             assert "+0.1/-0.2 N" in notes and "F8 = 20 N（允差 ±10%）" not in notes
         if case["name"] == "tiny_asymmetric_load":
@@ -382,31 +393,31 @@ def run():
         if name == "end_different_conditions":
             assert "每端磨300°" in notes and "去除毛刺" in notes and "备用弹簧" in notes
         if name == "book_baseline":
-            assert extra == {"技术要求": notes, "P'": 2.9314, "C": 14, "τ_b": 451.2669}, extra
+            assert extra == {"P'": 2.9314, "C": 14, "τb": 451.2669, "L": 318.3461}, extra
             assert "Hb = 6.3 mm" in notes and "Fb =" not in notes
-            assert title == {"材料": "SUS304", "重量": 0.00642403, "表面粗糙度": 12.5}
+            assert title == {"材料": "SUS304", "重量": 0.00642403, "表面粗糙度Ra": 12.5}
         if name == "material_pending":
-            assert title == {"重量": 0.00642403, "表面粗糙度": 12.5}, "Valid weight and Ra are independent of material text confirmation"
+            assert title == {"重量": 0.00642403, "表面粗糙度Ra": 12.5}, "Valid weight and Ra are independent of material text confirmation"
         if name == "material_empty":
-            assert title == {"表面粗糙度": 12.5}
+            assert title == {"表面粗糙度Ra": 12.5}
         if name in {"pitch_missing", "pitch_stale", "pitch_invalid", "invalid_wire", "wire_stale", "non_round"}:
-            assert title == {"材料": "SUS304", "表面粗糙度": 12.5}, (name, title)
+            assert title == {"材料": "SUS304", "表面粗糙度Ra": 12.5}, (name, title)
         if name in {"roughness_manual_clear", "roughness_pending_note", "roughness_stale_note", "roughness_legacy_scopes"}:
-            assert "表面粗糙度" not in title and "两端面表面粗糙度：Ra 12.5 μm" in notes
+            assert "表面粗糙度Ra" not in title and "两端面表面粗糙度：Ra 12.5 μm" in notes
             if name == "roughness_legacy_scopes":
                 assert "外圆表面粗糙度：Ra 12.5 μm" in notes and review["spring_parameters"]["surface_roughness_ra"]["value"] is None
         elif name in {f"roughness_{suffix}" for suffix in ["pending", "missing", "empty", "zero", "negative", "nan", "infinity", "text", "boolean", "stale", "formula_stale", "cycle", "conflict", "unsupported_unit", "all_missing", "hex", "underscore"]}:
-            assert "表面粗糙度" not in title and "粗糙度" not in notes, (name, title, notes)
+            assert "表面粗糙度Ra" not in title and "粗糙度" not in notes, (name, title, notes)
         elif name == "drawing_no_only":
-            assert "表面粗糙度" not in title and "粗糙度" not in notes
+            assert "表面粗糙度Ra" not in title and "粗糙度" not in notes
         else:
             expected_ra = review["spring_parameters"]["surface_roughness_ra"]["value"]
-            assert title["表面粗糙度"] == expected_ra and not isinstance(title["表面粗糙度"], bool)
+            assert title["表面粗糙度Ra"] == expected_ra and not isinstance(title["表面粗糙度Ra"], bool)
             assert f"两端面表面粗糙度：Ra {expected_ra} μm。" not in notes
         if name == "roughness_all_missing":
             assert title == {}
         if name == "roughness_only":
-            assert title == {"表面粗糙度": 12.5}
+            assert title == {"表面粗糙度Ra": 12.5}
         if name == "roughness_requirements":
             assert "外圆表面粗糙度：Ra 12.5 μm" in notes
             assert "两端面表面粗糙度：Ra 6.3 μm" in notes
@@ -423,7 +434,7 @@ def run():
         if name in {"hb_pending", "hb_stale", "hb_formula_stale", "hb_cleared", "hb_reference", "hb_unknown", "hb_invalid_range", "hb_cycle"}:
             assert "Hb =" not in notes, (name, notes)
         if name in {"hb_stale", "hb_formula_stale", "hb_cleared", "hb_unknown", "hb_invalid_range", "hb_cycle", "fb_invalid", "fb_ambiguous", "non_round", "c_one", "wire_stale", "no_material", "invalid_wire", "pitch_missing"}:
-            assert "τ_b" not in extra, (name, extra)
+            assert "τb" not in extra, (name, extra)
         if name in {"fb_pending", "fb_invalid", "fb_ambiguous"}:
             assert "Fb =" not in notes, (name, notes)
         if name == "fb_matching":
@@ -432,9 +443,9 @@ def run():
             assert "压并高度：Hb = 6.3 mm" in notes and "载荷测试高度 7 mm" in notes
             assert "对应压并载荷" not in notes
         if name == "fb_zero":
-            assert extra["τ_b"] == 0 and "Fb = 0 N" in notes
+            assert extra["τb"] == 0 and "Fb = 0 N" in notes
         if name == "fb_without_material":
-            assert "P'" not in extra and extra["τ_b"] > 0
+            assert "P'" not in extra and extra["τb"] > 0
         if name == "units":
             assert "Hb = 6.3 mm 时，对应压并载荷 Fb = 25 N（允差 ±0.2 N）" in notes, notes
         if name == "unsupported_load_unit":
@@ -474,7 +485,7 @@ def run():
     for value in (float("nan"), float("inf"), float("-inf")):
         invalid = base_review()
         invalid["spring_parameters"]["surface_roughness_ra"]["value"] = value
-        assert "表面粗糙度" not in build_generation_parameter_package(invalid)["solidworks_preview"]["titleBlockProperties"]
+        assert "表面粗糙度Ra" not in build_generation_parameter_package(invalid)["solidworks_preview"]["titleBlockProperties"]
     baseline = outputs[0]
     for field, updates in [
         ("end_type", {"value": "两端不并紧"}), ("end_grinding", {"value": "invalid"}),
@@ -483,20 +494,30 @@ def run():
         changed = deepcopy(baseline["review"])
         changed["spring_parameters"][field].update(updates)
         rebuilt = build_solidworks_preview(deepcopy(baseline["package"]), changed)
-        assert not rebuilt["extraProperties"]["技术要求"].startswith("1.两端"), field
+        assert not rebuilt["technicalRequirements"]["技术要求"].startswith("1.两端"), field
     old_open = deepcopy(next(item["package"] for item in outputs if item["name"] == "end_binary_0_1"))
     old_open["solidworks_preview"]["modelParameters"]["有效圈数n"] = 2
-    old_open["solidworks_preview"]["extraProperties"]["技术要求"] = old_open["solidworks_preview"]["extraProperties"]["技术要求"].replace("1.两端不并紧，端面磨平。", "1.两端不并紧，端面磨平，每端磨270°。", 1)
-    old_open["solidworks_preview"]["extraProperties"]["技术要求"] += "\n99.工作圈数：2 圈。"
+    old_open["solidworks_preview"]["technicalRequirements"]["技术要求"] = old_open["solidworks_preview"]["technicalRequirements"]["技术要求"].replace("1.两端不并紧，端面磨平。", "1.两端不并紧，端面磨平，每端磨270°。", 1)
+    old_open["solidworks_preview"]["technicalRequirements"]["技术要求"] += "\n99.工作圈数：2 圈。"
     frozen_open = deepcopy(old_open["solidworks_preview"])
     assert {key: build_solidworks_command("1000000099", old_open, baseline["review"])["models"][0][key] for key in frozen_open} == frozen_open
     historical = deepcopy(baseline["package"])
-    old_text = historical["solidworks_preview"]["extraProperties"]["技术要求"].splitlines()[1:]
+    old_text = historical["solidworks_preview"]["technicalRequirements"]["技术要求"].splitlines()[1:]
     old_text = "\n".join(f"{index}.{line.split('.', 1)[1]}" for index, line in enumerate(old_text, 1)).replace("有效圈数：", "工作圈数：")
-    historical["solidworks_preview"]["extraProperties"]["技术要求"] = old_text
-    del historical["solidworks_preview"]["modelParameters"]["是否并紧"]
-    assert "是否并紧" not in build_solidworks_command("1000000099", historical, baseline["review"])["models"][0]["modelParameters"]
-    assert build_solidworks_command("1000000099", historical, baseline["review"])["models"][0]["extraProperties"]["技术要求"] == old_text, "pre-feature frozen requests must not gain the new template"
+    old_preview = historical["solidworks_preview"]
+    del old_preview["technicalRequirements"]
+    del old_preview["extraProperties"]["L"]
+    old_preview["extraProperties"]["τ_b"] = old_preview["extraProperties"].pop("τb")
+    old_preview["extraProperties"]["技术要求"] = old_text
+    old_preview["titleBlockProperties"]["表面粗糙度"] = old_preview["titleBlockProperties"].pop("表面粗糙度Ra")
+    del old_preview["modelParameters"]["是否并紧"]
+    historical["source"].pop("company_name")
+    before = deepcopy(historical)
+    GenerationParameterPackageV2.model_validate(historical)
+    old_command = build_solidworks_command("1000000099", historical, baseline["review"])
+    assert "companyName" not in old_command and "是否并紧" not in old_command["models"][0]["modelParameters"]
+    assert {key: old_command["models"][0][key] for key in old_preview} == old_preview
+    assert historical == before
     for invalid in (float("nan"), float("inf"), -float("inf"), True, {}, []):
         changed = deepcopy(outputs[0]["review"])
         changed["spring_parameters"].update(outer_diameter=parameter(28.8,"mm",tolerance_upper=invalid,tolerance_lower=-1),perpendicularity=parameter(invalid,"mm"))
@@ -530,12 +551,13 @@ def label_cases():
         expected = "\n".join(f"{i}.{line}" for i, line in enumerate(sample["expected"], 1))
         assert build_solidworks_technical_text(package, review) == expected, sample["name"]
         preview = build_solidworks_preview(package, review)
-        assert preview["extraProperties"]["技术要求"] == expected
+        assert preview["technicalRequirements"]["技术要求"] == expected
         assert preview["customProperties"]["旋向"] == {"left": "左旋", "right": "右旋"}.get((parameters.get("handedness") or {}).get("value"))
         assert review == original_review and package["generation_parameters"] == original["generation_parameters"]
         # Frozen pre-change requests are projections already stored, never re-cleaned.
         frozen = deepcopy(package); frozen["solidworks_preview"] = deepcopy(preview)
         old_notes = "1.两端并紧磨平，每端磨270°。\n2.材料：SUS304。\n3.绕制方向：左旋。\n4.总圈数：6 圈。\n5.有效圈数：4 圈。\n6.其他要求：原始冻结正文。"
+        del frozen["solidworks_preview"]["technicalRequirements"]
         frozen["solidworks_preview"]["extraProperties"]["技术要求"] = old_notes
         before = deepcopy(frozen)
         assert build_solidworks_command("1000000009", frozen, review)["models"][0]["extraProperties"]["技术要求"] == old_notes

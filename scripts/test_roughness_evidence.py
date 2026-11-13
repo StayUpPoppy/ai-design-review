@@ -63,7 +63,7 @@ def run():
     ensure_surface_roughness_parameter(review)
     assert review["spring_parameters"]["surface_roughness_ra"] == before
     preview = build_generation_parameter_package(review)["solidworks_preview"]
-    assert preview["titleBlockProperties"]["表面粗糙度"] == 6.3
+    assert preview["titleBlockProperties"]["表面粗糙度Ra"] == 6.3
     assert "evidence_status" not in json.dumps(preview)
     print(f"PASS: {len(fixtures)} shared evidence fixtures, commentary exclusion, unverified candidates, locations, sources and old-review protection")
 

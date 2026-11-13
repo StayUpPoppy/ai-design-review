@@ -95,7 +95,7 @@ def run():
     assert item["value"] is None and len(item["roughness_candidates"]) == 1
     assert item["roughness_original_recognition"]["value"] == 3.2
     assert not apply_roughness_verification(review, verified, "doc"), "Ordinary reads don't repeat an upgrade"
-    assert "表面粗糙度" not in build_generation_parameter_package(review)["solidworks_preview"]["titleBlockProperties"]
+    assert "表面粗糙度Ra" not in build_generation_parameter_package(review)["solidworks_preview"]["titleBlockProperties"]
     for protection in ({"source": ["human_edited"]}, {"source": ["human_roughness_reference"]}, {"source": ["human_confirmed"]},
                        {"need_human_review": False}, {"need_human_review": None}):
         human = deepcopy(review)

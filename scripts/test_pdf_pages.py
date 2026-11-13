@@ -7,6 +7,8 @@ import sys
 import tempfile
 from unittest.mock import patch
 from pypdf import PdfReader, PdfWriter
+from pypdf.errors import PdfReadError
+from pypdf.generic import NameObject
 from sqlalchemy import select
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -18,12 +20,20 @@ from ai_design_review.generation_readiness import build_generation_parameter_pac
 from ai_design_review.solidworks import build_solidworks_command
 
 PDF = Path('C:/Users/29580/Desktop/扫描全能王 2024-09-09 10.38.pdf')
+COMPAT_PDF = Path('C:/Users/29580/Desktop/工作/图纸识别/罗工图纸/3-3.pdf')
 
-def pdf_bytes(count, encrypted=False):
+def pdf_bytes(count, encrypted=False, duplicate=None):
     writer=PdfWriter()
     for _ in range(count): writer.add_blank_page(width=600, height=800)
     if encrypted: writer.encrypt('secret')
-    stream=io.BytesIO();writer.write(stream);return stream.getvalue()
+    if duplicate:
+        target = writer._root_object if duplicate == 'catalog' else writer.pages[0]
+        target[NameObject('/PageMode')] = NameObject('/UseOC')
+        target[NameObject('/PageMock')] = NameObject('/UseOutlines')
+    stream = io.BytesIO()
+    writer.write(stream)
+    data = stream.getvalue()
+    return data.replace(b'/PageMock', b'/PageMode') if duplicate else data
 
 def main():
     import logging
@@ -148,6 +158,54 @@ def main():
             with patch.object(api,'run_recognition_execution',return_value={'review':ready_review()}) as execution:
                 result=asyncio.run(api.run_recognition_job_record(claimed));assert execution.call_count==1 and not result.get('pdf_pages_dispatched')
             repo.complete_recognition_job(one,worker_id=worker.worker_id)
+            # Retry a historical failure using the saved original, with no model requests.
+            compatibility_pdf = COMPAT_PDF.read_bytes() if COMPAT_PDF.is_file() else pdf_bytes(1, duplicate='catalog')
+            with patch.object(pages, '_repair_catalog_page_mode', side_effect=PdfReadError('strict only')):
+                failed = upload(compatibility_pdf, '3-3.pdf')
+                worker._process_job(repo.claim_next_recognition_job(worker.worker_id))
+            assert repo.get_recognition_job(failed)['status'] == 'failed'
+            assert client.post(f'/api/reviews/{failed}/retry').status_code == 202
+            async def recognize_original(**kwargs):
+                assert kwargs['job_id'] == failed and kwargs['drawing'].file.read() == compatibility_pdf
+                review = ready_review()
+                repo.create_review(failed, review, artifact_dir=str(root / failed), owner=OWNER)
+                return {'review': review}
+            with patch.object(api, 'run_recognition_execution', side_effect=recognize_original) as execution:
+                if os.environ.get('PDF_TEST_SKIP_RENDER'):
+                    with patch.object(pages, '_render_compatible_pdf') as render:
+                        worker._process_job(repo.claim_next_recognition_job(worker.worker_id))
+                    render.assert_called_once_with(root / failed / 'incoming/3-3.pdf', 1)
+                else:
+                    worker._process_job(repo.claim_next_recognition_job(worker.worker_id))
+                execution.assert_awaited_once()
+            retried = repo.get_recognition_job(failed)
+            assert retried['status'] == 'completed', retried['error_message']
+            assert (root / failed / 'incoming/3-3.pdf').read_bytes() == compatibility_pdf
+            # A duplicate outside the catalog never enters the rendering fallback.
+            other = upload(pdf_bytes(1, duplicate='page'))
+            with patch.object(pages, '_render_compatible_pdf') as render:
+                worker._process_job(repo.claim_next_recognition_job(worker.worker_id))
+            assert not render.called and repo.get_recognition_job(other)['status'] == 'failed'
+            payload = pdf_bytes(2, duplicate='catalog')
+            unrenderable = upload(payload)
+            from PIL import Image
+            def render_page(source, folder, *, page_number, **kwargs):
+                if page_number == 2:
+                    raise RuntimeError('renderer cannot decode page 2')
+                output = Path(folder) / 'page.png'
+                Image.new('L', (16, 16)).save(output)
+                return [output]
+            with patch('ai_design_review.preprocessing._render_pdf_uncached', side_effect=render_page) as render:
+                worker._process_job(repo.claim_next_recognition_job(worker.worker_id))
+            assert render.call_count == 2
+            assert '第2页无法渲染' in repo.get_recognition_job(unrenderable)['error_message']
+            assert repo.get_review(unrenderable, owner_user_id=OWNER['user_id']) is None
+            assert (root / unrenderable / 'incoming/drawings.pdf').read_bytes() == payload
+            recovered_group = upload(payload)
+            with patch('ai_design_review.preprocessing._render_pdf_uncached', side_effect=lambda source, folder, **kw: render_page(source, folder, page_number=1)):
+                worker._process_job(repo.claim_next_recognition_job(worker.worker_id))
+            assert pages.describe(repo, recovered_group, OWNER['user_id'])['created_count'] == 2
+            client.delete(f'/api/reviews/{recovered_group}?expected_source_revision=1')
             # Material code: strings, explicit clear, validation, package snapshot and old retry isolation.
             review=ready_review();repo.create_review('material',review,owner=OWNER)
             for value in [' 00123 ', 'YB156b7509', 'AB-01  02', '']:
@@ -179,6 +237,6 @@ def main():
                 stored=repo.get_review('material',owner_user_id=OWNER['user_id']);stored['review']['drawing_summary']['material_code']=invalid
                 assert client.patch('/api/reviews/material',json={'review':stored['review'],'expected_revision':stored['revision']}).status_code==422
         repo.dispose()
-    print('PASS real six pages, independent jobs 4–6/local page1, partial success, per-page retry, no duplicate/resurrection, 50-page limit, cancellation/deletion, ownership, single-page compatibility and material-code save/SW')
+    print('PASS PDF fan-out, strict validation, duplicate catalog PageMode, original-file retry, rendering failure atomicity, and material-code save/SW')
 
 if __name__=='__main__': main()

@@ -2,12 +2,18 @@
 from copy import deepcopy
 from datetime import UTC, datetime
 import hashlib
+from io import BytesIO
 import json
+from math import isfinite
 from pathlib import Path
+import re
 import shutil
 import tempfile
 
 from pypdf import PdfReader, PdfWriter
+from pypdf._utils import read_non_whitespace, skip_over_comment
+from pypdf.errors import PdfReadError
+from pypdf.generic import IndirectObject, NameObject, read_object
 from sqlalchemy import select
 
 from .review_persistence import ReviewRecord, RecognitionJobRecord, _apply_summary
@@ -15,6 +21,7 @@ from .multi_spec_store import owned, lock, children, VariantStoreError
 
 VERSION = "pdf-pages/v1"
 MAX_PAGES = 50
+_DUPLICATE_PAGE_MODE = re.compile(r"Multiple definitions in dictionary at byte (0x[0-9a-f]+) for key /PageMode")
 
 
 def is_source(review):
@@ -25,17 +32,94 @@ def origin(review):
     return (review or {}).get("page_origin") or {}
 
 
+def _check_pages(reader):
+    if reader.is_encrypted:
+        raise ValueError("PDF已加密，请先解除加密后上传。")
+    count = len(reader.pages)
+    if not 1 <= count <= MAX_PAGES:
+        raise ValueError(f"PDF共{count}页，每文件支持1至{MAX_PAGES}页；请分批上传。")
+    for number, page in enumerate(reader.pages, 1):
+        try:
+            box = page.mediabox
+            valid = all(isfinite(size) and size > 0 for size in (float(box.width), float(box.height)))
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            raise ValueError(f"PDF第{number}页无法读取，请检查原文件。") from exc
+        if not valid:
+            raise ValueError(f"PDF第{number}页的页面尺寸无效，请检查原文件。")
+
+
+def _repair_catalog_page_mode(reader, error):
+    """Blank a duplicate direct catalog preference without shifting xref offsets."""
+    match = _DUPLICATE_PAGE_MODE.fullmatch(str(error))
+    if not match:
+        raise error
+    stop = int(match[1], 16)
+    root = reader.trailer.raw_get("/Root")
+    offset = reader.xref.get(root.generation, {}).get(root.idnum) if isinstance(root, IndirectObject) else None
+    if offset is None or offset >= stop:
+        raise error
+    stream = reader.stream
+    stream.seek(offset)
+    if reader.read_object_header(stream) != (root.idnum, root.generation):
+        raise error
+    token = read_non_whitespace(stream)
+    if token != b"<" or stream.read(1) != b"<":
+        raise error
+    seen = False
+    while stream.tell() < stop:
+        token = read_non_whitespace(stream)
+        if token == b"%":
+            skip_over_comment(stream)
+            continue
+        if token != b"/":
+            break
+        start = stream.tell() - 1
+        stream.seek(start)
+        key = read_object(stream, reader)
+        token = read_non_whitespace(stream)
+        while token == b"%":
+            skip_over_comment(stream)
+            token = read_non_whitespace(stream)
+        if not token:
+            break
+        stream.seek(-1, 1)
+        value = read_object(stream, reader)
+        if key == "/PageMode" and isinstance(value, NameObject):
+            if seen and stream.tell() == stop:
+                stream.seek(0)
+                data = stream.read()
+                return data[:start] + b" " * (stop - start) + data[stop:]
+            seen = True
+    raise error
+
+
+def _render_compatible_pdf(path, count):
+    from PIL import Image
+    from .preprocessing import _render_pdf_uncached
+
+    with tempfile.TemporaryDirectory(prefix="pdf-upload-check-") as folder:
+        for page in range(1, count + 1):
+            try:
+                rendered = _render_pdf_uncached(path, folder, prefix="page", dpi=72, max_side=600, page_number=page)
+                with Image.open(rendered[0]) as image:
+                    image.load()
+            except (OSError, RuntimeError, ValueError, IndexError) as exc:
+                raise ValueError(f"PDF第{page}页无法渲染，请检查原文件。") from exc
+
+
 def inspect_pdf(path):
     try:
         reader = PdfReader(path, strict=True)
-        if reader.is_encrypted:
-            raise ValueError("PDF已加密，请先解除加密后上传。")
-        count = len(reader.pages)
-        if not 1 <= count <= MAX_PAGES:
-            raise ValueError(f"PDF共{count}页，每文件支持1至{MAX_PAGES}页；请分批上传。")
-        # Force page object access before creating any durable children.
-        for page in reader.pages:
-            _ = page.mediabox
+        repaired = False
+        while True:
+            try:
+                _check_pages(reader)
+                break
+            except PdfReadError as error:
+                reader = PdfReader(BytesIO(_repair_catalog_page_mode(reader, error)), strict=True)
+                repaired = True
+        if repaired:
+            _render_compatible_pdf(path, len(reader.pages))
         return reader
     except ValueError:
         raise

@@ -38,6 +38,7 @@ def load_point_is_complete(item: Any) -> bool:
 def load_point_is_confirmed(item: Any) -> bool:
     return (
         load_point_is_complete(item)
+        and not item.get("unit_pending")
         and item.get("need_human_review") is False
         and not item.get("load_relation_conflict")
         and not item.get("load_height_conflict")

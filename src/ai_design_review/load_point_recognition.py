@@ -17,8 +17,8 @@ _FORCE = re.compile(r"载荷|负荷|力值|荷重|load|force", re.I)
 _NUMBER = r"[-+]?\d+(?:\.\d+)?"
 _H_SYMBOL = re.compile(rf"(?<![A-Za-z0-9_])H\s*(?:\d+|b)?\s*(?:=|＝|:|：|压缩到)?\s*{_NUMBER}", re.I)
 _F_SYMBOL = re.compile(rf"(?<![A-Za-z0-9_])[FP]\s*(?:\d+|b)?\s*(?:=|＝|:|：)\s*{_NUMBER}|(?<![A-Za-z0-9_])[FP](?:\d+|b)\s+{_NUMBER}", re.I)
-_FORCE_UNIT = re.compile(rf"{_NUMBER}\s*(?:kN|N|kgf|牛顿|牛)(?![A-Za-z])", re.I)
-_DECLARED_FORCE_UNIT = re.compile(r"(?<![A-Za-z])(?:kN|N|kgf|牛顿|牛)(?![A-Za-z])", re.I)
+_FORCE_UNIT = re.compile(rf"{_NUMBER}\s*(?:kN|N|kgf?|lbf|lbs?|牛顿|牛)(?![A-Za-z]|\s*[/·]|\s+per\b)", re.I)
+_DECLARED_FORCE_UNIT = re.compile(r"(?<![A-Za-z])(?:kN|N|kgf?|lbf|lbs?|牛顿|牛)(?![A-Za-z]|\s*[/·]|\s+per\b)", re.I)
 _GENERIC_TABLE = re.compile(r"参数表载荷|(?:载荷表|载荷列|表格|参数表).{0,12}第[一二三四五六七八九十\d]+[行列]", re.I)
 
 
@@ -53,7 +53,7 @@ def classify_load_candidate(candidate: dict[str, Any]) -> tuple[str, str, str]:
     # The force unit/engineering context establishes a load; its name is not a whitelist.
     annotation_load = bool(annotations) or bool(_F_SYMBOL.search(evidence) and _H_SYMBOL.search(evidence))
     sentence_load = bool(not _GENERIC_TABLE.search(evidence) and _HEIGHT.search(evidence) and _FORCE.search(evidence)
-                         and re.search(r"当|压缩(?:到|至)|压至|工作|试验|测试|when|compressed|test|working|height", evidence, re.I)
+                         and re.search(r"当|压缩(?:到|至)|压至|工作|试验|测试|when|compressed|test|working|height|@|\bat\b", evidence, re.I)
                          and re.search(_NUMBER, evidence) and (_FORCE_UNIT.search(evidence) or _H_SYMBOL.search(evidence) or declared_force_unit))
     value = candidate.get("value") or {}
     local_load = "local_load_evidence" in sources and context.get("kind") in {"load_graph", "table", "load_requirement"} and value.get("force_evidence_verified") is True

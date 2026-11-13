@@ -54,7 +54,16 @@ window.DrawingAnnotations = (() => {
     },
   };
   function imageSize(image){return {width:Number(image?.dataset?.logicalWidth)||image?.naturalWidth||0,height:Number(image?.dataset?.logicalHeight)||image?.naturalHeight||0};}
-  function release(id){const item=cache.get(id);if(item?.pending.size||item?.saving)return;cache.delete(id);}
+  function release(id, { keepDiagnostics = false } = {}) {
+    const item = cache.get(id);
+    if (item?.pending.size || item?.saving) return;
+    cache.delete(id);
+    if (keepDiagnostics && item?.diagnosticsOpen && entry()?.id === id) entry().diagnosticsOpen = true;
+  }
+  function resetDiagnostics(id = config?.getJobId()) {
+    const item = cache.get(id);
+    if (item) item.diagnosticsOpen = false;
+  }
   function entry() {
     const id = config?.getJobId();
     if (!id || !config.isCompression()) return null;
@@ -114,17 +123,79 @@ window.DrawingAnnotations = (() => {
     const selected = numberForField(item.selected) != null ? annotation(item.selected) : null;
     const current = selected ? config.getParameter(selected.field) : null;
     const unlocated = visibleAnnotations(item).filter((a) => !a.locations.length && (a.original_value != null || config.getParameter(a.field)?.value != null && config.getParameter(a.field)?.value !== ""));
-    const diagnostics = (item.document.diagnostics || []).filter((d) => numberForField(d.field) != null && d.kind !== "unlocated" && (d.kind !== "value_mismatch" || String(d.evidence_value) !== String(config.getParameter(d.field)?.value)));
     return `<div class="annotation-info" aria-live="polite">
       ${selected ? `<span><strong>${numberForField(selected.field)} · ${esc(selected.label)}</strong>　原图识别值：${esc(selected.original_value ?? "无直接标注")}　当前值：${esc(current?.value ?? "未填写")}</span>${item.editing ? ` <button type="button" data-annotation-place="${esc(selected.field)}">重新定位</button>` : ""}` : ""}
       ${item.placing ? '<p>点击原图中的标注位置。Esc 可取消；拖动气泡或使用方向键仅调整气泡位置。</p>' : item.editing ? '<p>拖动气泡调整位置；选择未定位参数可在原图补位置。调整不改变参数。</p>' : ""}
       ${item.error ? `<p class="annotation-error">${esc(item.error)}</p>` : ""}
-      ${diagnostics.length ? `<ul class="annotation-diagnostics">${diagnostics.map((d) => `<li><strong>${esc(config.fieldLabel(d.field))}</strong>：${d.kind === "value_mismatch" ? `原图证据 ${esc(d.evidence_value)}，当前参数 ${esc(config.getParameter(d.field)?.value ?? "未填写")}。请核对后修改并重新确认。` : esc(d.reason)}</li>`).join("")}</ul>` : ""}
+      <div data-annotation-diagnostics>${diagnosticsHtml(item)}</div>
       ${unlocated.length ? `<details class="annotation-unlocated"><summary>${unlocated.length} 项暂无可靠原图位置</summary><ul>${unlocated.map((a) => `<li><span>${numberForField(a.field)} · ${esc(a.label)}：${esc(a.reason)}</span><button type="button" data-annotation-place="${esc(a.field)}">人工定位</button></li>`).join("")}</ul></details>` : ""}
       <small class="annotation-layout-warning" role="status">${esc(item.layoutWarning || "")}</small>
       ${selected?.locations?.length && selected.reason ? `<small>${esc(selected.reason)}</small>` : ""}
       ${(item.document.warnings || []).map((warning) => `<small>${esc(warning)}</small>`).join("")}
     </div>`;
+  }
+
+  function diagnosticsHtml(item) {
+    if (!item?.document) return "";
+    const units = globalThis.EngineeringUnits;
+    const { diagnostics = [], value_comparisons: comparisons } = item.document;
+    const records = new Map(diagnostics.filter(d => d.kind !== "unlocated" && numberForField(d.field) != null)
+      .filter(d => !units || !comparisons || !d.quantity || !["value_mismatch", "unit_pending", "role_conflict"].includes(d.kind))
+      .filter(d => d.quantity || d.kind !== "value_mismatch" || String(d.evidence_value) !== String(config.getParameter(d.field)?.value))
+      .map(d => [d.field, d]));
+    for (const d of (units && comparisons) || []) {
+      if (numberForField(d.field) == null || !d.quantity) continue;
+      const current = config.getParameter(d.field);
+      const evidence = d.evidence_base_value;
+      if (current?.value != null && current.value !== "") {
+        const base = units.annotationBaseValue(current, d.quantity);
+        if (evidence == null || base == null) {
+          records.set(d.field, { ...d, kind: "unit_pending", reason: evidence == null ? "原图单位待核对。" : "当前参数单位待核对。" });
+          continue;
+        }
+        if (Math.abs(base - evidence) > Math.max(1e-9, 1e-12 * Math.max(Math.abs(base), Math.abs(evidence)))) {
+          records.set(d.field, { ...d, kind: "value_mismatch" });
+          continue;
+        }
+      }
+      if (d.field === "outer_diameter" && evidence != null) {
+        const inputs = ["inner_diameter", "wire_diameter"].map(field => config.getParameter(field));
+        const independent = inputs.every(p => ![p?.source || []].flat().some(s => /formula|^derived$/i.test(s)));
+        const [inner, wire] = inputs.map(p => units.annotationBaseValue(p, "length"));
+        if (independent && inner != null && wire != null && Math.abs(evidence - inner - 2 * wire) > .0001) {
+          records.set(d.field, { ...d, kind: "role_conflict", reason: "图中直径标注与内径、线径关系不一致，请核对尺寸角色。" });
+        }
+      }
+    }
+    if (!records.size) return "";
+    const rows = [...records.values()].map(d => {
+      const current = config.getParameter(d.field);
+      const shown = config.displayParameter?.(d.field, current) || current;
+      const originalUnit = d.evidence_unit ? ` ${d.evidence_unit}` : "";
+      const currentUnit = shown?.unit || d.current_unit || d.evidence_unit && !d.quantity;
+      const text = d.kind === "value_mismatch"
+        ? `原图证据 ${d.evidence_value}${originalUnit}，当前参数 ${shown?.value ?? "未填写"}${currentUnit ? ` ${currentUnit}` : ""}。请核对。`
+        : d.reason;
+      return `<li><strong>${esc(config.fieldLabel(d.field))}</strong>：${esc(text)}</li>`;
+    }).join("");
+    return `<details class="annotation-checks"${item.diagnosticsOpen ? " open" : ""}><summary>原图数值核对 · ${records.size} 项</summary><ul class="annotation-diagnostics">${rows}</ul></details>`;
+  }
+
+  function bindDiagnostics(host, item) {
+    const details = host?.querySelector(".annotation-checks");
+    if (details) details.ontoggle = () => {
+      if (details.isConnected && entry() === item) item.diagnosticsOpen = details.open;
+    };
+  }
+
+  function refreshDiagnostics(root) {
+    const item = entry();
+    const host = root?.querySelector("[data-annotation-diagnostics]");
+    if (!host || !item?.document) return;
+    const details = host.querySelector(".annotation-checks");
+    if (details) item.diagnosticsOpen = details.open;
+    host.innerHTML = diagnosticsHtml(item);
+    bindDiagnostics(host, item);
   }
   function badgeHtml(field, param) {
     const number = numberForField(field);
@@ -346,6 +417,7 @@ window.DrawingAnnotations = (() => {
   function bindViewer(root) {
     const item = entry();
     if (!item) return;
+    bindDiagnostics(root.querySelector("[data-annotation-diagnostics]"), item);
     root.querySelectorAll("[data-annotation-action]").forEach((button) => button.addEventListener("click", () => {
       const action = button.dataset.annotationAction;
       if (action === "relocalize") { void relocalize(item); return; }
@@ -450,7 +522,7 @@ window.DrawingAnnotations = (() => {
     void load(item);
     renderLayer();
   }
-  return { release, acceptDocument, imageSize, configure: (options) => { config = options; }, toolsHtml, infoHtml, badgeHtml, bindFields, bindViewer, renderLayer,
+  return { release, resetDiagnostics, refreshDiagnostics, acceptDocument, imageSize, configure: (options) => { config = options; }, toolsHtml, infoHtml, badgeHtml, bindFields, bindViewer, renderLayer,
     imageUrl: () => page()?.image_url ? config.assetUrl(page().image_url) : null,
     capturesPointer: (event) => Boolean(entry()?.placing || event.target.closest("[data-annotation-id]")),
     hasUnsaved: () => Array.from(cache.values()).some((item) => item.pending.size || item.saving),

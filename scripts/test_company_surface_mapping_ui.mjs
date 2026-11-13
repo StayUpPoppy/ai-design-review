@@ -48,7 +48,7 @@ const parity = spawnSync('.venv/Scripts/python.exe', ['-c', "import sys,json;sys
 assert.equal(parity.status, 0, parity.stderr);
 assert.deepEqual(JSON.parse(parity.stdout), checked.map((v) => mapping.reason(v)));
 const preview = context.SolidWorksExport.buildPreview(structuredClone(fixture.package), fixture.review, {});
-assert.equal(preview.extraProperties['技术要求'], fixture.package.solidworks_preview.extraProperties['技术要求']);
+assert.equal(preview.technicalRequirements['技术要求'], fixture.package.solidworks_preview.technicalRequirements['技术要求']);
 const legacy = structuredClone(fixture.package); legacy.generation_parameters.technical_requirements = []; legacy.generation_parameters.technical_requirements_text = fixture.raw + '\n消除应力退火';
-assert.equal(context.SolidWorksExport.buildPreview(legacy, fixture.review, {}).extraProperties['技术要求'].includes('Fe/Ep'), false);
+assert.equal(context.SolidWorksExport.buildPreview(legacy, fixture.review, {}).technicalRequirements['技术要求'].includes('Fe/Ep'), false);
 console.log(`Company surface UI: 49 names, linked edits, explicit none, unsafe replacement, compounds, ${checked.length} Python/JS parity cases and SW output passed`);

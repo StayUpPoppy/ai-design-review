@@ -24,7 +24,7 @@ LABELS = {
     "outer_diameter": r"外径|外徑|外直径|outer\s+diameter|outside\s+diameter|\bO\.?D\.?",
 }
 MARK = r"[φΦϕøØ⌀]"
-NUMBER = r"\d+(?:\.\d+)?"
+NUMBER = r"(?:\d+(?:\.\d+)?|\.\d+)"
 DERIVATION = re.compile(r"推算|推导|计算|换算|\b(?:derived|calculated|inferred|computed)\b"
                         r"|(?:外径|内径|中径|线径).{0,24}(?:减去|减|加上|乘以|除以)"
                         r"|(?:外径|内径|中径|线径|\bD[oim]?\b|\bd\b)\s*[-+−×*÷/]\s*(?:外径|内径|中径|线径|\bD[oim]?\b|\bd\b)", re.I)
@@ -34,7 +34,7 @@ NON_SPRING_DIAMETER = re.compile(r"[⊥∥⌖]|形位公差|几何公差|线径|
 # dimension witnesses must independently verify the drawing annotation.
 OCR_DIAMETER_PREFIX = re.compile(rf"^[09opq]\s*(?={NUMBER})", re.I)
 BARE_DIMENSION = re.compile(rf"^[≤≥<>]?\s*{MARK}?\s*((?:[1-9]\d*|0)(?:\.\d+)?)(?![\d.])"
-                            rf"(?:\s*(?:mm|[+±−/\-\d.])*)?\s*$", re.I)
+                            rf"(?:\s*(?:mm|inches|inch|in|[+±−/\-\d.\"″]))*\s*$", re.I)
 
 
 def _value(value):
@@ -84,7 +84,7 @@ def _observed_tolerance(text, value):
     if nominal is None:
         return {}
     tail = text[nominal.end():].replace("−", "-")
-    match = re.match(rf"\s*(?:mm\s*)?±\s*({NUMBER})(?![\d.])", tail, re.I)
+    match = re.match(rf"\s*(?:(?:mm|inches|inch|in)\s*)?(?:±|\+\s*/\s*-)\s*({NUMBER})(?![\d.])", tail, re.I)
     if match:
         upper = float(match.group(1))
         return {"tolerance_upper": upper, "tolerance_lower": -upper}
@@ -479,6 +479,8 @@ def _witness_dimensions(text, page):
             if abs(a-c) <= max(1.6 * epsilon, abs(b-d) * .025) and abs(b-d) >= depth * .45:
                 if max(b, d) >= lo - depth * 1.5 and min(b, d) <= hi + depth * 1.5:
                     witnesses.append(((a + c) / 2, b, d))
+        for dimension in _outside_arrow_witnesses(page, axis, start, end, lo, hi, depth, witnesses):
+            yield axis, dimension
         seen = []
         for cross, _, _ in baselines:
             strokes = sorted((a, b) for y, a, b in baselines if abs(y - cross) <= epsilon * 1.6)
@@ -502,6 +504,36 @@ def _witness_dimensions(text, page):
                     continue
                 seen.append((p, q, cross))
                 yield axis, {"a": p, "b": q, "cross": cross, "guides": [[t, y, t, z] for t, y, z in starts + ends]}
+
+
+def _outside_arrow_witnesses(page, axis, start, end, lo, hi, depth, witnesses):
+    """A drawing may put both opposing arrowheads outside the measured span."""
+    epsilon = page.get("epsilon", .8)
+    tips = {side: [] for side in (-1, 1)}
+    segments = page.get("line_segments") or page["lines"]
+    for endpoint, first, last in witnesses:
+        for line in segments:
+            for tip_index, tail_index in ((0, 2), (2, 0)):
+                x, y = line[tip_index + axis], line[tip_index + 1 - axis]
+                tx, ty = line[tail_index + axis], line[tail_index + 1 - axis]
+                dx, dy = tx - x, ty - y
+                if not (.25 * depth <= abs(dx) <= 2 * depth and .5 <= abs(dy) <= .4 * abs(dx)):
+                    continue
+                if abs(x - endpoint) <= epsilon and lo - epsilon <= y <= hi + epsilon and min(first, last) <= y <= max(first, last):
+                    tips[1 if dx > 0 else -1].append((endpoint, y, dy, first, last))
+    seen = []
+    for a, cross, slope, y, z in tips[-1]:
+        if not any(abs(x-a) <= epsilon and abs(t-cross) <= epsilon and slope*d < 0 for x, t, d, _, _ in tips[-1]):
+            continue
+        for b, other, ds, u, v in tips[1]:
+            if abs(other-cross) > epsilon or b-a < 2*depth or (a, b) in seen:
+                continue
+            if not (a < (start+end)/2 < b or min(abs(a-end), abs(b-start)) <= 2*depth):
+                continue
+            if not any(abs(x-b) <= epsilon and abs(t-other) <= epsilon and ds*d < 0 for x, t, d, _, _ in tips[1]):
+                continue
+            seen.append((a, b))
+            yield {"a": a, "b": b, "cross": (cross+other)/2, "guides": [[a, y, a, z], [b, u, b, v]]}
 
 
 def _observations(candidate, pages, region):
@@ -537,13 +569,15 @@ def _observations(candidate, pages, region):
             dimensions = [{"axis": axis, "endpoints": [d["a"], d["b"]], "baseline": d["cross"],
                            "page_size": [page["width"], page["height"]]}
                           for axis, d in _witness_dimensions(text, page)]
-            if not (labels or is_diameter or geometry or corrected_mark and dimensions):
+            if not (labels or is_diameter or geometry or corrected_mark and dimensions
+                    or is_bare and has_diameter_mark and dimensions):
                 continue
             roles = labels or {field for field, _ in geometry}
             nominal = corrected if corrected_mark else content
-            tolerance = {}
+            printed_offsets = _observed_tolerance(nominal, value)
+            tolerance = {key: {offset} for key, offset in printed_offsets.items()}
             offset_quality = 0
-            for _, mark in geometry:
+            for _, mark in geometry if len(printed_offsets) < 2 else ():
                 a, b = mark["endpoints"]
                 dimension = {"a": a, "b": b}
                 values_by_side, quality = _stacked_tolerance(text, page, mark["axis"], dimension, value, nominal)
@@ -553,9 +587,6 @@ def _observations(candidate, pages, region):
                     continue
                 for key, values in values_by_side.items():
                     tolerance.setdefault(key, set()).update(values)
-            if not offset_quality:
-                for key, offset in _observed_tolerance(nominal, value).items():
-                    tolerance.setdefault(key, set()).add(offset)
             observation = {"position": box, "text": content, "page": page["page"],
                            "value": value, "unit": candidate.get("unit") or "mm",
                            "source": "pdf_text" if page.get("source") == "pdf_text_layer" else "local_ocr",
@@ -563,7 +594,7 @@ def _observations(candidate, pages, region):
                            "roles": sorted(roles), "geometry": [evidence for _, evidence in geometry],
                            "dimensions": dimensions,
                            "offsets": {key: sorted(values) for key, values in tolerance.items()},
-                           "offset_quality": max(offset_quality, 2 if len(_observed_tolerance(nominal, value)) == 2 else 0)}
+                           "offset_quality": max(offset_quality, 2 if len(printed_offsets) == 2 else 0)}
             if corrected_mark:
                 observation["normalized_text"] = corrected
             overlap = next((o for o in found if _same_observation(o, observation)), None)
@@ -812,7 +843,7 @@ def model_derived_diameter(candidate):
     """Classify a value, not the whole model explanation; never run OCR here."""
     evidence = candidate.get("diameter_role_evidence") or {}
     observation = evidence.get("observation") or {}
-    if observation.get("source") in {"local_ocr", "pdf_text"} and _value(observation.get("value")) == _value(candidate.get("value")):
+    if observation.get("source") in {"local_ocr", "pdf_text"} and original_observation(candidate):
         return False
     value = _value(candidate.get("value"))
     if value is None:
@@ -883,7 +914,7 @@ def has_pending_roles(review):
 
 def original_observation(item):
     observation = (item.get("diameter_role_evidence") or {}).get("observation") or {}
-    value = _value(item.get("value"))
+    value = _value((item.get("engineering_source") or {}).get("value", item.get("value")))
     position = observation.get("position")
     if (value is not None and observation.get("source") in {"local_ocr","pdf_text"}
             and _value(observation.get("value")) == value
@@ -926,8 +957,11 @@ def reconcile_diameter_review(review, job_dir):
     """Recheck old, unhandled candidates with cached original evidence in the worker."""
     saved=review.get(PENDING) or []
     pending=[item for item in saved if not item.get("selected_field") and not item.get("ignored")]
-    if not pending or review.get("drawing_summary",{}).get("spring_type")!="compression_spring":
+    parameters=review.get("spring_parameters") or {}
+    if review.get("drawing_summary",{}).get("spring_type")!="compression_spring" or not parameters:
         return
+    from .engineering_units import apply_drawing_units, metric_item, page_length_units
+    from .standardizers.calculation_state import human_override
     origin=review.get("multi_spec_origin") or {}
     region=origin.get("effective_region") or origin.get("region")
     if origin and not region:
@@ -936,14 +970,18 @@ def reconcile_diameter_review(review, job_dir):
     from .load_point_evidence import _pdf_pages, _read_json, raster_pages
     from pathlib import Path
     job_dir=Path(job_dir)
+    cached_payloads = _read_json(job_dir/"candidates.json").get("raw_payloads") or {}
     payload=_read_json(job_dir/"qwen_vision_raw.json").get("parsed") or {}
+    outer = parameters.get("outer_diameter") or {}
+    if not pending and (not page_length_units(cached_payloads) or outer.get("value") not in (None, "") or human_override(outer)):
+        return
     raw=[c for c in qwen_payload_to_candidates(payload) if c.get("field") in {*DIAMETERS,"wire_diameter","surface_roughness_ra"}]
     seeds=[*raw]
     for item in pending:
         field=(item.get("diameter_role_evidence") or {}).get("original_field")
         if field not in DIAMETERS:
             field="outer_diameter"
-        seeds.append({**item,"field":field})
+        seeds.append({**item, **{k: v for k, v in (item.get("engineering_source") or {}).items() if k in {"value", "unit", "tolerance_upper", "tolerance_lower"}}, "field":field})
     pages=raster_pages(job_dir,review,diameter_geometry=True)
     source=next((p for p in (job_dir/"inputs").glob("*.pdf")),None)
     if source:
@@ -952,22 +990,23 @@ def reconcile_diameter_review(review, job_dir):
                                  max([p["page"] for p in pages],default=1))]
     if not pages:
         return
-    resolved=resolve_diameter_roles(seeds,pages,region=region)
+    resolved=resolve_diameter_roles(apply_drawing_units(seeds, cached_payloads, pages),pages,region=region)
     processed=[item for item in saved if item.get("selected_field") or item.get("ignored")]
     retained=list(saved)
-    parameters=review["spring_parameters"]
     changed=False
 
     def same_mark(a,b):
-        if (_value(a.get("value")),a.get("page",1))!=(_value(b.get("value")),b.get("page",1)):
-            return False
         first,second=original_observation(a),original_observation(b)
-        return not first or not second or _same_observation(first,second)
+        if first and second:
+            return _same_observation(first,second)
+        return (a.get("page",1) == b.get("page",1) and
+                _value(metric_item(a, "outer_diameter").get("value")) == _value(metric_item(b, "outer_diameter").get("value")))
 
     for item in resolved:
         field=item.get("field")
         if not original_observation(item) or any(same_mark(item,p) for p in processed):
             continue
+        item = metric_item(item, "outer_diameter")
         previous=next((p for p in retained if not p.get("selected_field") and not p.get("ignored") and same_mark(item,p)),None)
         if field==CANDIDATE:
             if previous:
@@ -983,7 +1022,7 @@ def reconcile_diameter_review(review, job_dir):
         protected=current.get("need_human_review") is False or any(str(s).startswith(("human","manual")) for s in sources)
         writable=current.get("value") in (None,"") or "formula_calculation" in sources or same_mark(current,item)
         if writable and not protected:
-            parameters[field]={k:deepcopy(item[k]) for k in ("value","unit","page","position","evidence","confidence","tolerance_upper","tolerance_lower","diameter_role_evidence") if k in item}
+            parameters[field]={k:deepcopy(item[k]) for k in ("value","unit","page","position","evidence","confidence","tolerance_upper","tolerance_lower","diameter_role_evidence","engineering_source","unit_pending") if k in item}
             parameters[field].update(source=[SOURCE],need_human_review=True,status="need_review")
             changed=True
         if previous and previous in retained and (writable and not protected or same_mark(current,item)):
@@ -1051,6 +1090,8 @@ def select_role(review, candidate_id, field):
         return candidate
     if candidate is None or candidate.get("selected_field") or candidate.get("ignored") or not original_observation(candidate):
         raise ValueError("这条直径标注已处理，请刷新后核对。")
+    if candidate.get("unit_pending"):
+        raise ValueError("请先核对原图直径单位，再手动填写对应参数。")
     from .standardizers.diameters import apply_formula_compression_diameter_completion
     from .diameter_linkage import supported
     from .standardizers.calculation_state import human_override, sources
@@ -1071,6 +1112,7 @@ def select_role(review, candidate_id, field):
             "evidence": _observation_excerpt(original_observation(candidate)),
             "unit": candidate.get("unit") or "mm", "tolerance_upper": upper, "tolerance_lower": lower,
             "diameter_role_evidence": deepcopy(candidate["diameter_role_evidence"]),
+            **({"engineering_source": deepcopy(candidate["engineering_source"])} if candidate.get("engineering_source") else {}),
             "source": [SOURCE, "human_diameter_role"], "need_human_review": True,
             "status": "need_review", "confidence": .99}
     for key in ("default_source", "formula_calculation_kind", "formula_dependencies", "diameter_linkage_managed",

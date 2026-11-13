@@ -107,7 +107,7 @@ try {
   assert.match(await body().inputValue(), /保持清洁/); failSave = false; await confirm().click(); await saved();
   await confirm().click(); await saved();
   let outgoing = await page.evaluate(() => makeGenerationParameterPackage());
-  const text = outgoing.solidworks_preview.extraProperties['技术要求'];
+  const text = outgoing.solidworks_preview.technicalRequirements['技术要求'];
   assert.equal(text.includes('Fe/Ep'), false); assert.equal(text.split('保持清洁').length - 1, 1); assert.match(text, /消除应力退火/); assert.match(text, /保持6h/); assert.match(text, /268mm/);
   assert.equal(outgoing.generation_parameters.technical_requirements.filter((v) => v.surface_mapping).length, 2);
   console.log('PASS save retry and Chinese output');

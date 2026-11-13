@@ -123,7 +123,7 @@ try {
     const expected = saved.annotations.filter(a=>displayFields.includes(a.field)).reduce((n,a)=>n+a.locations.filter(l=>l.page===1).length,0);
     const originalAnnotations=JSON.parse(JSON.stringify(saved));
     const verifyNumbers=async()=>{
-      const pairs=await page.locator('.parameter-annotation-number').evaluateAll(es=>es.map(e=>[e.dataset.annotationField,e.textContent.trim()]));
+      const pairs=await page.locator('.parameter-annotation-number[data-annotation-field]').evaluateAll(es=>es.map(e=>[e.dataset.annotationField,e.textContent.trim()]));
       for(const [field,text] of pairs)assert.equal(text,String(displayFields.indexOf(field)+1));
       assert.ok(pairs.some(([f,n])=>f==="wire_diameter" && n==="2"));
       assert.equal(pairs.some(([f])=>f==="accuracy_grade"),false);
@@ -154,7 +154,7 @@ try {
       assert.equal(parameterSaves, baselineParameterSaves);
       assert.equal(locationSaves, 0);
       await advanced.locator('summary').click();
-      const pairs=await page.locator('#compareOverlay [data-compare-panel="parameters"] .parameter-annotation-number').evaluateAll(es=>es.map(e=>[e.dataset.annotationField,e.textContent.trim()]));
+      const pairs=await page.locator('#compareOverlay [data-compare-panel="parameters"] .parameter-annotation-number[data-annotation-field]').evaluateAll(es=>es.map(e=>[e.dataset.annotationField,e.textContent.trim()]));
       assert.deepEqual(pairs,displayFields.map((f,i)=>[f,String(i+1)]));
       await page.locator('[data-annotation-page]').selectOption('2');
       await page.waitForFunction(()=>DrawingAnnotations.entry().page===2 && document.querySelector('#compareImage')?.complete);
@@ -338,6 +338,51 @@ try {
       await page.evaluate(async (id) => { await openPersistedReview(id); focusMissingStandardizationField('solid_height'); }, fixture.id);
       assert.equal(await height.inputValue(), '7.25');
       await verifyNumbers();
+
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.evaluate(() => {
+        const ann = DrawingAnnotations.entry().document;
+        const params = state.review.spring_parameters;
+        const readings = { wire_diameter: [.072, 1.8288], outer_diameter: [1.532, 38.9128], free_length: [3.78, 96.012] };
+        ann.value_comparisons = Object.entries(readings).map(([field, [raw, metric]]) => {
+          Object.assign(params[field], { value: metric, unit: 'mm', unit_pending: false });
+          return { field, quantity: 'length', evidence_value: raw, evidence_unit: 'in', evidence_base_value: metric };
+        });
+        params.inner_diameter.source = ['formula_calculation'];
+        refreshCompareViewer();
+      });
+      const checks = page.locator('.annotation-checks');
+      assert.equal(await checks.count(), 0, 'equivalent inch values leave no checks');
+      await page.evaluate(() => { state.review.spring_parameters.free_length.value = 99; syncBubbleValue('free_length', 99); });
+      await checks.waitFor();
+      assert.equal(await checks.evaluate(el => el.open), false);
+      await checks.locator('summary').press('Enter');
+      await page.waitForFunction(() => DrawingAnnotations.entry().diagnosticsOpen);
+      assert.match(await checks.innerText(), /原图数值核对 · 1 项[\s\S]*3\.78 in[\s\S]*99 mm/);
+      await page.locator('[data-annotation-page]').selectOption('2');
+      await page.locator('[data-view-action="zoom-in"]').click();
+      assert.equal(await checks.evaluate(el => el.open), true);
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.locator('[data-view-action="fit"]').click();
+      assert.equal(await checks.evaluate(el => el.open), true);
+      const units = page.locator('#compareOverlay [data-role="engineering-unit-display"]');
+      await page.evaluate(() => { state.compareTab = 'parameters'; renderCompareOverlay(); });
+      await units.selectOption('imperial');
+      assert.equal(await units.inputValue(), 'imperial');
+      assert.equal(await checks.evaluate(el => el.open), true);
+      assert.match(await checks.innerText(), /当前参数 [\d.]+ in/);
+      await units.selectOption('metric');
+      await page.evaluate(() => { closeCompareOverlay(); openCompareOverlay(); });
+      assert.equal(await checks.evaluate(el => el.open), false);
+      await page.evaluate(() => { state.review.spring_parameters.free_length.value = 96.012; syncBubbleValue('free_length', 96.012); });
+      assert.equal(await checks.count(), 0, 'restoring the value immediately clears the check');
+      await page.evaluate(() => {
+        const reading = DrawingAnnotations.entry().document.value_comparisons.find(item => item.field === 'free_length');
+        Object.assign(reading, { evidence_unit: null, evidence_base_value: null });
+        refreshCompareViewer();
+      });
+      await checks.locator('summary').click();
+      assert.match(await checks.innerText(), /自由长度[\s\S]*原图单位待核对/);
     }
     assert.deepEqual(errors, []);
     await page.close();

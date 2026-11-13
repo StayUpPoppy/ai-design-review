@@ -140,9 +140,9 @@ def run():
     review = order2_review()
     package = build_generation_parameter_package(review)
     GenerationParameterPackageV2.model_validate(package)
-    text = package["solidworks_preview"]["extraProperties"]["技术要求"]
+    text = package["solidworks_preview"]["technicalRequirements"]["技术要求"]
     assert len(text.splitlines()) == 12, text
-    assert package["solidworks_preview"]["titleBlockProperties"]["表面粗糙度"] == 12.5
+    assert package["solidworks_preview"]["titleBlockProperties"]["表面粗糙度Ra"] == 12.5
     assert "粗糙度" not in text
     assert len(review["technical_requirements"]) == 9 and len(package["generation_parameters"]["technical_requirements"]) == 10
     for token in ["300", "720", "产品不可有油污"]:
@@ -166,16 +166,16 @@ def run():
     hard = hardness_review()
     original_hard = deepcopy(hard["technical_requirements"])
     hard_package = build_generation_parameter_package(hard)
-    hard_notes = hard_package["solidworks_preview"]["extraProperties"]["技术要求"]
+    hard_notes = hard_package["solidworks_preview"]["technicalRequirements"]["技术要求"]
     assert len(hard_notes.splitlines()) == 7 and hard_notes.count("HRC45-50") == 1, hard_notes
     assert "6.HRC45-50" in hard_notes
     assert hard["technical_requirements"] == original_hard and len(original_hard) == 3
     legacy_hard = {"generation_parameters": {"technical_requirements_text": "技术要求\n8.硬度要求：硬度 HRC45-50\n10.硬度要求：HRC45~50"}}
     assert build_solidworks_technical_text(legacy_hard, {}) == "1.HRC45-50"
     old_hard = deepcopy(hard_package)
-    old_hard["solidworks_preview"]["extraProperties"]["技术要求"] = "1.硬度要求：HRC45-50\n2.硬度要求：HRC45-50"
+    old_hard["solidworks_preview"]["technicalRequirements"]["技术要求"] = "1.硬度要求：HRC45-50\n2.硬度要求：HRC45-50"
     frozen_hard = deepcopy(old_hard)
-    assert build_solidworks_command("1000000199", old_hard, hard)["models"][0]["extraProperties"]["技术要求"].count("硬度要求：") == 2
+    assert build_solidworks_command("1000000199", old_hard, hard)["models"][0]["technicalRequirements"]["技术要求"].count("硬度要求：") == 2
     assert old_hard == frozen_hard, "Historical duplicate notes are not rewritten"
     # Recovery uses engineering equivalence, while retaining every original condition.
     for row in rows:
@@ -195,7 +195,7 @@ def run():
     for item in confirmed_eight["technical_requirements"]:
         item["need_human_review"] = False
     eight_package = build_generation_parameter_package(confirmed_eight)
-    assert len(eight_package["solidworks_preview"]["extraProperties"]["技术要求"].splitlines()) == 14
+    assert len(eight_package["solidworks_preview"]["technicalRequirements"]["技术要求"].splitlines()) == 14
     return {"prefixes": prefixes, "pairs": rows, "review": order2_review(), "package": package, "merged": merged,
             "hardness_review": hard, "hardness_package": hard_package, "eight_review": eight, "eight_package": eight_package, "eight_pending_package": build_generation_parameter_package(eight)}
 

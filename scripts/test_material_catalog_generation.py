@@ -62,8 +62,8 @@ def main() -> None:
         model = command["models"][0]
         assert model["titleBlockProperties"]["材料"] == grade
         assert model["materialCode"] is None, "Catalog ids are not SolidWorks materialCode"
-        assert model["extraProperties"]["技术要求"].startswith("1.")
-        assert not model["extraProperties"]["技术要求"].startswith("技术要求\n")
+        assert model["technicalRequirements"]["技术要求"].startswith("1.")
+        assert not model["technicalRequirements"]["技术要求"].startswith("技术要求\n")
         assert model["modelParameters"] == package["solidworks_preview"]["modelParameters"]
         if baseline_model is None:
             baseline_model = deepcopy(model["modelParameters"])
@@ -96,7 +96,7 @@ def main() -> None:
         package = build_generation_parameter_package(review)
         assert "material" not in package["generation_parameters"]["spring_parameters"]
         command = build_solidworks_command("1000000020", package, review)
-        assert "材料：" not in command["models"][0]["extraProperties"]["技术要求"]
+        assert "材料：" not in command["models"][0]["technicalRequirements"]["技术要求"]
 
     historical = ready_review("ХН70МВТЮБ ГОСТ 5632-72")
     frozen = build_generation_parameter_package(historical)
@@ -106,8 +106,8 @@ def main() -> None:
     assert build_solidworks_command("1000000021", frozen, historical)["models"][0]["titleBlockProperties"]["材料"] == "ХН70МВТЮБ ГОСТ 5632-72"
     assert build_solidworks_command("1000000022", current, historical)["models"][0]["titleBlockProperties"]["材料"] == "Inconel X750"
     assert json.dumps(frozen, ensure_ascii=False, sort_keys=True) == snapshot
-    frozen["solidworks_preview"]["extraProperties"]["技术要求"] = "1.材料：SUS304 不锈钢。"
-    assert build_solidworks_command("1000000023", frozen, historical)["models"][0]["extraProperties"]["技术要求"] == "1.材料：SUS304 不锈钢。"
+    frozen["solidworks_preview"]["technicalRequirements"]["技术要求"] = "1.材料：SUS304 不锈钢。"
+    assert build_solidworks_command("1000000023", frozen, historical)["models"][0]["technicalRequirements"]["技术要求"] == "1.材料：SUS304 不锈钢。"
     print("PASS: all 15 pure grades and legacy names, unchanged calculations/confirmation, pending omission and frozen history")
 
 

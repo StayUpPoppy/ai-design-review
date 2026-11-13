@@ -915,9 +915,15 @@ button:disabled {
 
 .summary-strip {
   display: grid;
-  grid-template-columns: repeat(3, minmax(112px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin-top: 16px;
+}
+
+@media (min-width: 981px) {
+  .summary-strip > .material-code-editor {
+    grid-area: 2 / 2;
+  }
 }
 
 .spring-type-panel {
@@ -1056,6 +1062,56 @@ button:disabled {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.parameter-section-title {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.parameter-review-section { container: parameter-review / inline-size; }
+
+.parameter-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+}
+
+.parameter-toolbar-units {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.parameter-toolbar > .parameter-bulk-actions {
+  margin-inline-start: auto;
+  max-width: 100%;
+}
+
+.engineering-unit-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
+.engineering-unit-display select { padding: 0.35rem 0.5rem; }
+.engineering-display-notice:empty { display: none; }
+
+.engineering-display-notice {
+  flex-basis: 100%;
+  color: #a24a0d;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  overflow-anchor: none;
+}
+
+@container parameter-review (width < 390px) {
+  .parameter-toolbar > .parameter-bulk-actions { order: 1; }
 }
 
 .parameter-bulk-actions button {
@@ -3620,6 +3676,7 @@ textarea {
   padding-block: 3px;
 }
 
+.annotation-checks summary,
 .annotation-unlocated summary {
   padding: 5px 0;
   cursor: pointer;
@@ -3724,6 +3781,7 @@ textarea {
 }
 
 .parameter-annotation-number:focus-visible,
+.annotation-checks summary:focus-visible,
 .annotation-unlocated summary:focus-visible {
   outline: 2px solid #2452cb;
   outline-offset: 2px;

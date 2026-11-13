@@ -44,7 +44,7 @@ def main():
                 original_notes = deepcopy(linked["technical_requirements"])
                 linked_package = client.get("/api/reviews/linked/generation-package")
                 assert linked_package.status_code == 200, linked_package.text
-                assert "Fe/Ep" not in linked_package.json()["parameter_package"]["solidworks_preview"]["extraProperties"]["技术要求"]
+                assert "Fe/Ep" not in linked_package.json()["parameter_package"]["solidworks_preview"]["technicalRequirements"]["技术要求"]
                 linked["technical_requirements"][0]["surface_mapping"]["source_requirement_ids"] = ["heat"]
                 saved_link = client.patch("/api/reviews/linked", json={"review": linked, "expected_revision": linked["review_revision"]})
                 assert saved_link.status_code == 200, saved_link.text
@@ -74,13 +74,13 @@ def main():
                 current = client.get(endpoint).json()
                 assert all(v["need_human_review"] is False for v in current["technical_requirements"])
                 package = client.get(endpoint + "/generation-package").json()["parameter_package"]
-                text = package["solidworks_preview"]["extraProperties"]["技术要求"]
+                text = package["solidworks_preview"]["technicalRequirements"]["技术要求"]
                 assert "Fe/Ep" not in text and text.count(CHINESE) == 1, text
                 assert next(v for v in package["generation_parameters"]["technical_requirements"] if v.get("surface_mapping"))["surface_mapping"]["catalog_ids"] == [company_id("电镀-镀彩锌")]
                 created = client.post(endpoint + "/generation-jobs", json={**create_request("surface-frozen"), "expected_review_revision": current["review_revision"]})
                 assert created.status_code == 202, created.text
                 job = created.json()["generation_job"]
-                frozen = deepcopy(submissions[-1]); assert frozen["models"][0]["extraProperties"]["技术要求"] == text
+                frozen = deepcopy(submissions[-1]); assert frozen["models"][0]["technicalRequirements"]["技术要求"] == text
                 previous = deepcopy(current)
                 first = current["technical_requirements"][0]
                 first["surface_mapping"]["catalog_ids"] = [company_id("电镀-镀白锌")]

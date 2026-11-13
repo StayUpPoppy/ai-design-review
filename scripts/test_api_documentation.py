@@ -279,7 +279,8 @@ def main() -> None:
     assert "不发送给SW" in schema["components"]["schemas"]["ReviewParameterValue"]["properties"]["roughness_reference_dismissed"]["description"]
     sw_preview_schema = schema["components"]["schemas"]["SolidWorksPreviewV2"]["properties"]
     assert "是否并紧为0时省略有效圈数n" in sw_preview_schema["modelParameters"]["description"]
-    assert "仅并紧且磨平时追加每端磨270°" in sw_preview_schema["extraProperties"]["description"]
+    assert "成图技术要求" in sw_preview_schema["technicalRequirements"]["description"]
+    assert "L（mm）" in sw_preview_schema["extraProperties"]["description"]
     claim_response = operations[("POST", "/api/generation-worker/jobs/claim")]["responses"]["200"]
     assert claim_response["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/GenerationWorkerClaimResponse"

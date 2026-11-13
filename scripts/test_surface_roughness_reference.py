@@ -35,10 +35,10 @@ def cases():
             package = build_generation_parameter_package(review)
             preview = package["solidworks_preview"]
             if stage in {"confirmed", "confirmed_6_3", "custom"}:
-                assert preview["titleBlockProperties"]["表面粗糙度"] == value
+                assert preview["titleBlockProperties"]["表面粗糙度Ra"] == value
             else:
-                assert "表面粗糙度" not in preview["titleBlockProperties"]
-            assert "粗糙度" not in preview["extraProperties"]["技术要求"]
+                assert "表面粗糙度Ra" not in preview["titleBlockProperties"]
+            assert "粗糙度" not in preview["technicalRequirements"]["技术要求"]
             assert "roughness_reference_dismissed" not in json.dumps(preview)
             assert review["spring_parameters"]["surface_roughness_ra"] == before
             assert not any(item["field"] == "surface_roughness_ra" for item in assess_generation_readiness(review)["pending_fields"])

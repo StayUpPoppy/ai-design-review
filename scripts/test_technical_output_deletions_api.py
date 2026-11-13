@@ -25,12 +25,15 @@ def main():
         try:
             with TestClient(api.app) as client:
                 url = "/api/reviews/output-delete"
+                initial = client.get(url).json()
+                saved = client.patch(url, json={"review": initial, "expected_revision": initial["review_revision"]})
+                assert saved.status_code == 200, saved.text
                 package = client.get(url + "/generation-package")
                 assert package.status_code == 200, package.text
                 payload = package.json()
                 frozen = deepcopy(payload["parameter_package"])
                 projection = payload["technical_requirements_projection"]
-                assert projection["text"] == frozen["solidworks_preview"]["extraProperties"]["技术要求"]
+                assert projection["text"] == frozen["solidworks_preview"]["technicalRequirements"]["技术要求"]
                 assert all(entry["source_key"] and entry["basis"] for entry in projection["entries"])
                 entry = next(entry for entry in projection["entries"] if entry["source_key"] == "auto:handedness")
                 review = client.get(url).json()
@@ -48,9 +51,9 @@ def main():
                 assert "旋向" not in current["technical_requirements_projection"]["text"]
                 assert stable_payload_hash(current["parameter_package"]) != stable_payload_hash(frozen)
                 command = build_solidworks_command("1000000001", current["parameter_package"], reopened)
-                assert command["models"][0]["extraProperties"]["技术要求"] == current["technical_requirements_projection"]["text"]
+                assert command["models"][0]["technicalRequirements"]["技术要求"] == current["technical_requirements_projection"]["text"]
                 assert command["models"][0]["customProperties"]["旋向"] == "右旋"
-                assert build_solidworks_command("1000000002", frozen, reopened)["models"][0]["extraProperties"]["技术要求"] == projection["text"]
+                assert build_solidworks_command("1000000002", frozen, reopened)["models"][0]["technicalRequirements"]["技术要求"] == projection["text"]
                 # Existing task creation/freezing accepts the new review metadata.
                 body = {"expected_review_revision": revision, "idempotency_key": "deleted-direction-v1", "requested_artifact_types": ["pdf"], "mock_scenario": "success"}
                 created = client.post(url + "/generation-jobs", json=body)
@@ -58,7 +61,7 @@ def main():
                 task = created.json()["generation_job"]
                 with repository._session() as session:
                     task_package = deepcopy(session.get(GenerationJobRecord, task["generation_id"]).parameter_package)
-                assert "旋向" not in task_package["solidworks_preview"]["extraProperties"]["技术要求"]
+                assert "旋向" not in task_package["solidworks_preview"]["technicalRequirements"]["技术要求"]
                 again = client.post(url + "/generation-jobs", json=body)
                 assert again.status_code == 200 and again.json()["generation_job"]["generation_id"] == task["generation_id"]
                 stale = client.patch(url, json={"review": reopened, "expected_revision": revision - 1})

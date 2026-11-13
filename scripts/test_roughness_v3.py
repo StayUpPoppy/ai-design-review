@@ -59,9 +59,9 @@ def run():
                 review["spring_parameters"][FIELD] = pending
                 a = next(a for a in locate_fields(review, [], []) if a["field"] == FIELD)
                 assert not a["locations"] and a["original_value"] == value
-                assert "表面粗糙度" not in build_generation_parameter_package(review)["solidworks_preview"]["titleBlockProperties"]
+                assert "表面粗糙度Ra" not in build_generation_parameter_package(review)["solidworks_preview"]["titleBlockProperties"]
                 pending.update(need_human_review=False, source=["human_confirmed"])
-                assert build_generation_parameter_package(review)["solidworks_preview"]["titleBlockProperties"]["表面粗糙度"] == value
+                assert build_generation_parameter_package(review)["solidworks_preview"]["titleBlockProperties"]["表面粗糙度Ra"] == value
             # One real end can be located while the second stays pending.
             one = verify_roughness_candidates(claims, blocks[:1], "doc", view_context=context)
             projected = fuse_candidates(one)["fields"][FIELD]

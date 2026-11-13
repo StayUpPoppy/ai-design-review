@@ -10,7 +10,7 @@ const labelCases = JSON.parse(execFileSync(python, ["scripts/test_solidworks_exp
 for (const sample of labelCases) {
   const original = structuredClone(sample.review), generation = structuredClone(sample.package.generation_parameters);
   const result = context.SolidWorksExport.buildPreview(structuredClone(sample.package), sample.review);
-  assert.equal(result.extraProperties["技术要求"], sample.expected_text, sample.name);
+  assert.equal(result.technicalRequirements["技术要求"], sample.expected_text, sample.name);
   assert.equal(result.customProperties["旋向"], ({left:"左旋",right:"右旋"})[sample.package.generation_parameters.spring_parameters.handedness?.value] ?? null);
   assert.deepEqual(sample.review, original, `${sample.name} keeps review text and confirmation`);
   assert.deepEqual(sample.package.generation_parameters, generation, `${sample.name} keeps internal text`);
@@ -39,14 +39,14 @@ for (const test of cases) {
   }
   const beforeProjection = structuredClone(test.review);
   const projection = context.SolidWorksExport.technicalProjection(structuredClone(test.package), test.review, catalog);
-  assert.equal(projection.text, test.package.solidworks_preview.extraProperties["技术要求"], `${test.name} projection text`);
+  assert.equal(projection.text, test.package.solidworks_preview.technicalRequirements["技术要求"], `${test.name} projection text`);
   assert.equal(projection.entries.map((entry, index) => `${index + 1}.${entry.body}`).join("\n"), projection.text);
   assert.deepEqual(test.review, beforeProjection, `${test.name} projection is read-only`);
   const input = structuredClone(test.package);
   delete input.solidworks_preview;
   const preview = context.SolidWorksExport.buildPreview(input, test.review, catalog);
   assert.deepEqual(JSON.parse(JSON.stringify(preview)), test.package.solidworks_preview, test.name);
-  assert.deepEqual(Object.keys(preview.titleBlockProperties), ["材料", "重量", "客户图号", "垂直度A", "表面粗糙度"].filter((key) => Object.hasOwn(preview.titleBlockProperties, key)), `${test.name} title-block order`);
+  assert.deepEqual(Object.keys(preview.titleBlockProperties), ["材料", "重量", "客户图号", "垂直度A", "表面粗糙度Ra"].filter((key) => Object.hasOwn(preview.titleBlockProperties, key)), `${test.name} title-block order`);
   assert.deepEqual(input.source, test.package.source, `${test.name} source snapshot is not rewritten`);
   assert.deepEqual(JSON.parse(JSON.stringify(input.derived_parameters.solidworks_design_checks.metrics.unit_mass)),
     test.package.derived_parameters.solidworks_design_checks.metrics.unit_mass, `${test.name} frozen weight basis`);
@@ -95,12 +95,12 @@ for (const [field, updates] of [
   const changed = structuredClone(base.review);
   Object.assign(changed.spring_parameters[field], updates);
   const rebuilt = context.SolidWorksExport.buildPreview(structuredClone(base.package), changed, catalog);
-  assert.ok(!rebuilt.extraProperties["技术要求"].startsWith("1.两端"), `new snapshot ${field} does not reuse frozen end state`);
+  assert.ok(!rebuilt.technicalRequirements["技术要求"].startsWith("1.两端"), `new snapshot ${field} does not reuse frozen end state`);
 }
 for (const value of [NaN, Infinity, -Infinity, 0, -1, true, "0x10", "1_2"]) {
   const invalid = structuredClone(base.review);
   invalid.spring_parameters.surface_roughness_ra.value = value;
-  assert.equal(context.SolidWorksExport.buildPreview(structuredClone(base.package), invalid, catalog).titleBlockProperties["表面粗糙度"], undefined);
+  assert.equal(context.SolidWorksExport.buildPreview(structuredClone(base.package), invalid, catalog).titleBlockProperties["表面粗糙度Ra"], undefined);
 }
 for (const value of [NaN, Infinity, -Infinity, true, {}, []]) {
   const invalid = structuredClone(base.review);

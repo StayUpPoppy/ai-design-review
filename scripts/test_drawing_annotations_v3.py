@@ -13,7 +13,7 @@ from ai_design_review.dimension_text import dimension_number, dimension_text
 from ai_design_review.dimension_text import safe_glyph_run
 from ai_design_review.drawing_annotations import (
     _annotation_diagnostics, _unique_blocks, build_annotations, locate_fields,
-    merge_annotation_upgrade, recover_pdf_dimension_candidates,
+    merge_annotation_upgrade, project_annotation_diagnostics, recover_pdf_dimension_candidates,
 )
 from ai_design_review.annotation_ocr import local_ocr_blocks
 from ai_design_review.engines.ocr_adapter import _outer_diameter_vertical_cluster, _vertical_number_clusters
@@ -54,6 +54,8 @@ def numeric_tests():
     assert _outer_diameter_vertical_cluster([{"text": "44", "position": {"x": 200, "y": 100}}]) is None
 
     r = review(outer_diameter=20.0528, free_length=30.25, surface_roughness_ra=12.5)
+    r["drawing_length_units"] = {"1": "mm"}
+    r["spring_parameters"]["outer_diameter"]["unit"] = "mm"
     r["spring_parameters"]["outer_diameter"]["evidence"] = "vertical dimension candidate .020.0528"
     r["spring_parameters"]["outer_diameter"].update(human_confirmed=True, need_human_review=False)
     saved = copy.deepcopy(r)
@@ -66,6 +68,46 @@ def numeric_tests():
     assert next(x for x in d if x["field"] == "outer_diameter")["kind"] == "value_mismatch"
     assert r == saved, "localization must not rewrite confirmed parameters"
     assert not _annotation_diagnostics(review(handedness="right"), locate_fields(review(handedness="right"), [], [block("右旋")]), {})
+
+
+def comparison_tests():
+    nominal = {"wire_diameter": 0.072, "outer_diameter": 1.532, "free_length": 3.78}
+    metric = {"wire_diameter": 1.8288, "outer_diameter": 38.9128, "free_length": 96.012}
+    r = review(**metric)
+    r["drawing_length_units"] = {"1": "in", "2": "mm"}
+    for parameter in r["spring_parameters"].values():
+        parameter.update(unit="mm", human_confirmed=True)
+    annotations = [
+        {"field": field, "original_value": value, "evidence": str(value), "evidence_pages": [1],
+         "status": "located", "reason": "", "locations": [{"page": 1, "bbox": {}, "evidence": str(value), "source": "pdf_text"}]}
+        for field, value in nominal.items()
+    ]
+    document = {"annotation_revision": 5, "annotations": annotations,
+                "diagnostics": [{"field": field, "kind": "value_mismatch"} for field in nominal]}
+    original = copy.deepcopy(document)
+    saved = copy.deepcopy(r)
+    checked = project_annotation_diagnostics(document, r)
+    assert checked["diagnostics"] == [] and checked["annotation_revision"] == 5
+    assert document == original and r == saved
+    outer = annotations[1]
+    outer["locations"][0].update(evidence="Ø1.532 ± .015 in", source="manual", bbox={"x": 0.5})
+    r["drawing_length_units"]["1"] = "conflict"
+    compared = {item["field"]: item for item in project_annotation_diagnostics(document, r)["value_comparisons"]}
+    assert compared["outer_diameter"]["evidence_unit"] == "in", "the original text box survives manual repositioning"
+    assert compared["wire_diameter"]["evidence_unit"] is None
+    r["drawing_length_units"]["1"] = "in"
+    r["spring_parameters"]["free_length"]["value"] = 96.0121
+    [mismatch] = project_annotation_diagnostics(document, r)["diagnostics"]
+    assert (mismatch["kind"], mismatch["evidence_unit"], mismatch["current_unit"]) == ("value_mismatch", "in", "mm")
+    annotations[-1]["locations"][0]["evidence"] = "3.78 ± .09 mm"
+    [mismatch] = project_annotation_diagnostics(document, r)["diagnostics"]
+    assert mismatch["evidence_unit"] == "mm", "explicit label overrides page unit"
+    annotations[-1]["locations"][0].update(page=3, evidence="3.78")
+    [pending] = project_annotation_diagnostics(document, r)["diagnostics"]
+    assert pending["kind"] == "unit_pending", "do not infer units from a different page or the edited parameter"
+    r["spring_parameters"]["free_length"]["engineering_source"] = {"value": 3.78, "unit": "in", "page": 3}
+    r["spring_parameters"]["free_length"]["value"] = 96.012
+    assert not project_annotation_diagnostics(document, r)["diagnostics"]
 
 
 def cache_tests():
@@ -110,6 +152,8 @@ def cache_tests():
         assert fields(merged["annotations"])["outer_diameter"]["locations"] == old
         assert fields(merged["annotations"])["surface_roughness_ra"]["locations"]
         legacy = review(outer_diameter=20.0528)
+        legacy["drawing_length_units"] = {"1": "mm"}
+        legacy["spring_parameters"]["outer_diameter"]["unit"] = "mm"
         legacy["spring_parameters"]["outer_diameter"]["evidence"] = "vertical dimension candidate .020.0528"
         base = build_annotations(legacy, p, str, candidates_payload={"candidates": []}, allow_ocr=False)
         located = fields(locate_fields(review(outer_diameter=8.25), [], [block("8.25")]))["outer_diameter"]
@@ -184,6 +228,7 @@ def real_tests():
 
 if __name__ == "__main__":
     numeric_tests()
+    comparison_tests()
     cache_tests()
     if "--real" in sys.argv:
         real_tests()

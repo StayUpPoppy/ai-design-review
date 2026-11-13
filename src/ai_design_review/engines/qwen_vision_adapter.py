@@ -266,7 +266,7 @@ QWEN_SYSTEM_PROMPT = """你是弹簧工程图纸识别助手。请阅读上传�
    - 例如工作高度H1=25mm应填height=25及absolute_height；自由状态压缩10mm到P1应填height=null、free_deflection、value=10；再压缩20mm到P2应填height=null、incremental_deflection、base_label=P1、value=20。不要提前把减法结果当成原图高度。关系不清楚填unknown，保留已识别力值，不猜坐标或单位。
    - load_points.evidence 必须逐字保留可见标注，不用“载荷表第一行”等描述代替原文。增加 source_context：kind 为 annotation/sentence/table/unknown；表格候选保留 table_title、headers（原文列名数组）、row_text（对应原文行）；unit_evidence 保留明确表头或图纸统一单位原文。没有证据的单位保持空，不因格式默认值声称原图有单位。证据不足时保留候选并标记 need_human_review=true，后端将单列待核对。
 8. 不确定或识别不到的字段不要猜；可以留空或省略，并标记 need_human_review=true。只根据图纸可见文字、尺寸线和表格内容输出。
-9. 每个参数附带page（原图页码，从1开始）和具体可见标注原文evidence，说明对应尺寸角色。图形载荷的height_relation可附graphic_hint，包含load_contact（引出线实际落点）、dimension_start、dimension_end、datum，使用当前原图左上为原点的0至1坐标；不能确定的位置填null。须沿引出线落点、载荷竖线及尺寸界线核对，不能按编号或文字左右顺序配对；无L0文字也可能是直接工作高度。其余参数不要猜测坐标；模型位置仅作候选，服务端用PDF/OCR和线段独立核实。
+9. 每个参数附带page（原图页码，从1开始）和具体可见标注原文evidence，说明对应尺寸角色。所有工程量保留原值和原单位，服务端负责换算。尺寸未单独标单位时，引用该页或规格适用的单位原文，找不到就将单位留空。外径 evidence 逐字保留 Ø 及公差（例如 Ø1.532 ± .015），position 只标实际可见的尺寸文字框。环规尺寸只属于技术要求。图形载荷的height_relation可附graphic_hint，包含load_contact（引出线实际落点）、dimension_start、dimension_end、datum，使用当前原图左上为原点的0至1坐标；不能确定的位置填null。须沿引出线落点、载荷竖线及尺寸界线核对，不能按编号或文字左右顺序配对；无L0文字也可能是直接工作高度。其余参数不要猜测坐标；模型位置仅作候选，服务端用PDF/OCR和线段独立核实。
 
 JSON 结构：
 {

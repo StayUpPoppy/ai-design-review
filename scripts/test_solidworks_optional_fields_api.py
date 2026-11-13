@@ -16,6 +16,7 @@ def optional_review():
     review = ready_review()
     parameters = review["spring_parameters"]
     parameters["outer_diameter"].update(tolerance_upper=1.5, tolerance_lower=-1.5)
+    parameters["inner_diameter"] = {**parameter(26, "mm"), "tolerance_upper": .01, "tolerance_lower": -.01}
     parameters["free_length"].update(tolerance_upper=.5, tolerance_lower=-.5)
     parameters["mean_diameter"] = {**parameter(29, "mm"), "tolerance_upper": .2, "tolerance_lower": -.2}
     parameters["perpendicularity"] = parameter(.01, "mm")
@@ -42,8 +43,8 @@ def main():
                 assert response.status_code == 200, response.text
                 package = response.json()["parameter_package"]
                 preview = package["solidworks_preview"]
-                expected = {"外径": 1.5, "自由高度": .5, "中径": .2}
-                notes = preview["extraProperties"]["技术要求"]
+                expected = {"外径": 1.5, "内径": .01, "自由高度": .5, "中径": .2}
+                notes = preview["technicalRequirements"]["技术要求"]
                 assert notes.startswith("1.旋向：左。\n2.总圈数：6.64，有效圈数：4.64。\n3.两端并紧并磨平，磨面角≥270°。\n")
                 assert "材料：" not in notes and preview["titleBlockProperties"]["材料"] == "60Si2Mn"
                 assert preview["customProperties"]["旋向"] == "左旋"
@@ -54,7 +55,7 @@ def main():
                 title_keys = list(preview["titleBlockProperties"])
                 assert title_keys[title_keys.index("客户图号") + 1] == "垂直度A"
                 GenerationParameterPackageV2.model_validate(package)
-                for invalid in ({"外径": -1}, {"外径": "1.5"}, {"外径": True}, {"内径": 1}, {"外径": float("inf")},
+                for invalid in ({"外径": -1}, {"外径": "1.5"}, {"外径": True}, {"线径": 1}, {"内径": [1]}, {"外径": float("inf")},
                     {"外径": []}, {"外径": [1]}, {"外径": [1, 2, 3]}, {"外径": [-1, 2]}, {"外径": [1, True]},
                     {"外径": ["1", 2]}, {"外径": [1, float("nan")]}):
                     bad = deepcopy(package)
@@ -79,6 +80,7 @@ def main():
 
                 changed = optional_review()
                 changed["spring_parameters"]["outer_diameter"].update(tolerance_upper=.000012345, tolerance_lower=-.000012345)
+                changed["spring_parameters"]["inner_diameter"].update(tolerance_upper=.1, tolerance_lower=-.2)
                 changed["spring_parameters"]["free_length"].update(tolerance_upper=.1, tolerance_lower=-.2)
                 changed["spring_parameters"]["mean_diameter"].update(tolerance_upper=0, tolerance_lower=-.2)
                 changed["spring_parameters"]["perpendicularity"]["value"] = 0
@@ -88,6 +90,7 @@ def main():
                 revision = saved.json()["review_revision"]
                 current = client.get(endpoint + "/generation-package").json()["parameter_package"]["solidworks_preview"]
                 assert current["modelParametersTolerance"]["外径"] == .000012345
+                assert current["modelParametersTolerance"]["内径"] == [.1, .2]
                 assert current["modelParametersTolerance"]["自由高度"] == [.1, .2]
                 assert current["modelParametersTolerance"]["中径"] == [0, .2]
                 assert current["titleBlockProperties"]["垂直度A"] == 0 and "客户图号" not in current["titleBlockProperties"]
@@ -101,7 +104,7 @@ def main():
                 assert len(submissions) == 2
                 assert client.post(endpoint + "/generation-jobs", json={**request, "idempotency_key": "optional-first"}).status_code == 409
 
-                for field, label in (("outer_diameter", "外径"), ("free_length", "自由高度"), ("mean_diameter", "中径")):
+                for field, label in (("outer_diameter", "外径"), ("inner_diameter", "内径"), ("free_length", "自由高度"), ("mean_diameter", "中径")):
                     for upper, lower in ((.2, .1), (-.1, -.2)):
                         blocked = optional_review()
                         blocked["spring_parameters"][field].update(tolerance_upper=upper, tolerance_lower=lower)
@@ -128,6 +131,15 @@ def main():
                             record = session.get(GenerationJobRecord, job["generation_id"])
                             original = deepcopy(record.parameter_package)
                             assert ("modelParametersTolerance" in original["solidworks_preview"]) == (name == "new")
+                            if name == "legacy":
+                                preview = original["solidworks_preview"]
+                                preview["extraProperties"].update(preview.pop("technicalRequirements"))
+                                preview["extraProperties"].pop("L", None)
+                                preview["extraProperties"]["τ_b"] = preview["extraProperties"].pop("τb")
+                                title = preview["titleBlockProperties"]
+                                title["表面粗糙度"] = title.pop("表面粗糙度Ra")
+                                original["source"].pop("company_name")
+                                record.parameter_package = deepcopy(original)
                             record.status = "failed"
                             session.commit()
                         live = optional_review()

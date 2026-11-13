@@ -36,8 +36,11 @@ await page.route('**/api/**', async (route) => {
         if (failSave) return route.fulfill({ status: 503, json: { detail: '模拟保存失败' } });
         if (conflictSave) {
           conflictSave = false; model.revision++;
-          model.review.generation_settings ||= {};
-          model.review.generation_settings[conflictField] = conflictField === 'typeface' ? '宋体' : '其他页面的姓名';
+          if (conflictField === 'company_name') model.review.drawing_summary.company_name = '其他页面的公司';
+          else {
+            model.review.generation_settings ||= {};
+            model.review.generation_settings[conflictField] = conflictField === 'typeface' ? '宋体' : '其他页面的姓名';
+          }
           return route.fulfill({ status: 409, json: { detail: '模拟版本冲突' } });
         }
         const input = request.postDataJSON();
@@ -80,7 +83,12 @@ const saved = () => page.waitForFunction(() => !state.reviewPersistenceSaving &&
 const waitRelease = () => new Promise((resolve, reject) => { const deadline = Date.now() + 10000;
   const check = () => releaseCreate ? resolve() : Date.now() > deadline ? reject(new Error('No mocked create request arrived')) : setTimeout(check, 10); check(); });
 async function open(id) {
-  await page.evaluate(async (id) => { await openPersistedReview(id); state.compareTab = 'generation'; renderCompareOverlay(); }, id);
+  await page.evaluate(async (id) => {
+    await openPersistedReview(id);
+    await loadGenerationState(id, { render: false });
+    state.compareTab = 'generation';
+    renderCompareOverlay();
+  }, id);
   await username().waitFor();
 }
 try {
@@ -90,7 +98,7 @@ try {
   assert.equal(await username().inputValue(), '登录真实姓名');
   assert.equal(await orientation().inputValue(), 'X型');
   assert.equal(await typeface().inputValue(), '宋体');
-  assert.deepEqual(await typeface().locator('option').allTextContents(), ['宋体', '黑体']);
+  assert.deepEqual(await typeface().locator('option').allTextContents(), ['宋体', '黑体', '仿宋']);
   const createButton=()=>root.locator('[data-action="create-generation-job"]');
   const initialRequests={packages:packageCount,creates:createCount};
   await root.locator('[data-compare-tab="workbench"]').click();
@@ -268,6 +276,57 @@ try {
   assert.equal(await page.evaluate(()=>state.generationBusy),true,'old export cannot unlock the new creation');
   assert.equal(await createButton().isDisabled(),true);
   releaseCreate();await page.waitForFunction(()=>!state.generationBusy);
+
+  await page.evaluate(() => closeCompareOverlay());
+  await open('b');
+  await typeface().selectOption('仿宋');
+  await saved();
+  await open('b');
+  assert.equal(await typeface().inputValue(), '仿宋');
+  const summary = root.locator('.summary-strip');
+  const company = summary.getByRole('textbox', { name: '公司名称' });
+  const drawing = summary.getByRole('textbox', { name: '图号', exact: true });
+  await root.locator('[data-compare-tab="parameters"]').click();
+  assert.equal(await company.inputValue(), '');
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    const drawingBox = await drawing.boundingBox(), companyBox = await company.boundingBox();
+    assert.ok(companyBox.y > drawingBox.y && Math.abs(companyBox.x - drawingBox.x) < 2);
+    if (width === 1440) {
+      const materialBox = await summary.getByRole('textbox', { name: '物料编码' }).boundingBox();
+      assert.ok(materialBox.x > drawingBox.x && Math.abs(materialBox.y - drawingBox.y) < 2);
+    }
+  }
+  failSave = true;
+  await company.fill('  甲  公司  ');
+  await company.press('Tab');
+  const retryCompany = summary.getByRole('button', { name: '重试保存' });
+  await retryCompany.waitFor();
+  assert.equal(await company.inputValue(), '甲  公司');
+  failSave = false;
+  await retryCompany.click();
+  await saved();
+  await open('b');
+  await root.locator('[data-compare-tab="parameters"]').click();
+  assert.equal(await company.inputValue(), '甲  公司');
+  conflictField = 'company_name';
+  conflictSave = true;
+  await company.fill('乙公司');
+  await company.press('Tab');
+  const companyConflict = page.locator('.parameter-conflict-dialog');
+  await companyConflict.waitFor();
+  assert.ok((await companyConflict.innerText()).includes('公司名称'));
+  await companyConflict.locator('[data-choice="local"]').click();
+  await saved();
+  assert.equal(reviews.get('b').review.drawing_summary.company_name, '乙公司');
+  assert.equal(await company.inputValue(), '乙公司');
+  await company.fill('');
+  await company.press('Tab');
+  await saved();
+  assert.equal(reviews.get('b').review.drawing_summary.company_name, '');
+  await open('b');
+  await root.locator('[data-compare-tab="parameters"]').click();
+  assert.equal(await company.inputValue(), '');
 
   assert.deepEqual(errors, []);
   console.log('PASS: real-name defaults, native controls, save/reopen, failed-save guard/retry, polling focus, frozen versions, navigation/readiness, retained exports, save/network failure recovery, desktop/mobile and late-operation isolation; mock APIs only.');

@@ -5,6 +5,8 @@
 - 图纸文件探测：区分扫描 PDF、矢量 PDF、图片、CAD 文件
 - 多来源识别结果融合：OCR / 几何分析 / 可选 VLM / 人工确认
 - 弹簧参数标准化：线径、外径、自由长度、圈数、旋向、载荷点等
+- 审图工作台可在「显示单位」切换公制和英制，默认公制。参数、载荷和公差按当前单位录入，保存、设计校核、客户确认单及新 SolidWorks 请求使用公制。技术要求可展开查看原文。外径需要核实原图标注及两侧尺寸界线，已核实标注但类型不明确时可在现有卡片中核对。
+- 工作台工程数值显示最多三位小数，末尾省略零。进入编辑时可查看完整值，切换显示单位不改写数据。切换受阻时，「显示单位」下方会列出有问题的字段和原因，页面留在当前位置。
 - [公差反推报价精度](docs/accuracy-inference.md)：首次自动选级，人工改选后保持选择，沿用现有公差标准化流程。
 - [三径联动与图号编辑](docs/diameter-linkage-and-drawing-number.md)：固定线径双向联动三径，在摘要直接纠正或补填客户图号。
 - 直径类型核对仅处理原图候选，历史计算误报自动过滤；卡片右上角 × 可忽略候选改为手填，保存重开有效，原参数确认和生图校验保留。见[直径核对说明](docs/diameter-linkage-and-drawing-number.md)。
@@ -134,7 +136,7 @@ docker compose logs -f mock-solidworks
 
 真实对接设置 `SOLIDWORKS_GENERATION_URL=http://192.168.31.200:5000/solidworks/command` 和 `SOLIDWORKS_REQUEST_TIMEOUT_SECONDS=10` 后，用户点击“生成图纸”时服务端会分配唯一、固定十位的正数 `TaskId`，冻结当前参数，并立即 `POST` 到 SolidWorks。相同幂等键的网络重试只返回原任务，不会分配或发送第二个 TaskId；修改参数或失败后点击“重新生图”会创建新的 TaskId。任何连接异常、超时或非 2xx 受理响应都会把本次任务置为 `failed`，错误码为 `solidworks_submit_failed`。
 
-发送给 SolidWorks 的数据以 `TaskId` 和 `models` 为根；`modelId` 固定为整型 `1`，`materialCode` 使用摘要中人工填写的物料编码快照，未填写时为 `null`。`modelParameters` 保存建模尺寸、圈数和端部状态，不并紧时省略有效圈数。`extraProperties.技术要求` 按现有规则合并已确认有效的旋向、圈数、端部、压并高度、载荷点及原图／人工要求；纯材料条目不再写入技术要求，材料和粗糙度在标题栏传递。技术要求区顶部的成图预览显示这份最终文字。`extraProperties` 另提供可用的 `P'`（N/mm）、`C`、`τ_b`（MPa），缺项独立省略。完整JSON、可选对称公差及标题栏字段见[SW命令格式](docs/solidworks-command.md)；计算依据与请求冻结在任务中，历史任务及原参数重试保持原请求。
+发送给 SolidWorks 的数据在顶层发送 `TaskId`、`companyName` 和 `models`，公司名称取自图号下方的可选输入，缺省为空字符串；`modelId` 固定为整型 `1`，`materialCode` 使用摘要中人工填写的物料编码快照，未填写时为 `null`。`modelParameters` 保存建模尺寸、圈数和端部状态，不并紧时省略有效圈数。`technicalRequirements.技术要求` 按现有规则合并已确认有效的旋向、圈数、端部、压并高度、载荷点及原图／人工要求；纯材料条目不再写入技术要求，材料和粗糙度在标题栏传递。技术要求区顶部的成图预览显示这份最终文字。`extraProperties` 另提供可用的 `P'`（N/mm）、`C`、`τb`（MPa）和 `L`（mm），缺项独立省略。生图字体可选宋体、黑体或仿宋。完整JSON、可选对称公差及标题栏字段见[SW命令格式](docs/solidworks-command.md)；计算依据与请求冻结在任务中，历史任务及原参数重试保持原请求。
 
 SolidWorks 通过 `POST /api/solidworks/status` 回调 `generating_3d`、`generating_2d`、`generating_3d_error`、`generating_2d_error` 或 `completed` 状态；旧 `failed` 状态暂时保留兼容，新接入不再使用。完成状态必须附带：
 
@@ -169,7 +171,7 @@ SolidWorks 通过 `POST /api/solidworks/status` 回调 `generating_3d`、`genera
 
 状态回调在联调阶段不使用应用层鉴权，**只能对可信内网开放**。Docker Nginx 会按 `SOLIDWORKS_CALLBACK_ALLOWED_CIDR` 限制来源；默认示例为 `192.168.31.0/24`。如果直接部署 API，请在防火墙或反向代理配置同样的来源限制，绝不能将此接口暴露到公网。
 
-`spring_generation_parameters/v2` 是当前圆柱螺旋压缩弹簧的内部冻结参数包。`generation_parameters.spring_parameters` 固定包含 `wire_diameter`、`mean_diameter`、`free_length`、`total_coils`、`active_coils`、`handedness`、`end_grinding`、`end_coils_closed` 八个必填建模字段，并可选包含已人工确认的 `material` 和 `flattening`（是否制扁，整数0/1）；SolidWorks 使用中径与线径计算外径、内径，并使用材料值设置三维模型材料和二维图材料标注。材料缺失或待确认时任务仍可创建，但参数包会省略该字段并提示警告。中文技术要求同时提供结构化 `technical_requirements` 和内部 `technical_requirements_text`；最终成图文字以 `solidworks_preview.extraProperties.技术要求` 为准。中径缺失时优先由已确认的外径或内径与线径计算，无法计算时补入 23 mm 默认候选值并保持待人工确认；旋向没有默认值。Mock Worker 仍使用 `mock_solidworks_compression_v2` 能力，通过兼容 Worker API 运行。
+`spring_generation_parameters/v2` 是当前圆柱螺旋压缩弹簧的内部冻结参数包。`generation_parameters.spring_parameters` 固定包含 `wire_diameter`、`mean_diameter`、`free_length`、`total_coils`、`active_coils`、`handedness`、`end_grinding`、`end_coils_closed` 八个必填建模字段，并可选包含已人工确认的 `material` 和 `flattening`（是否制扁，整数0/1）；SolidWorks 使用中径与线径计算外径、内径，并使用材料值设置三维模型材料和二维图材料标注。材料缺失或待确认时任务仍可创建，但参数包会省略该字段并提示警告。中文技术要求同时提供结构化 `technical_requirements` 和内部 `technical_requirements_text`；最终成图文字以 `solidworks_preview.technicalRequirements.技术要求` 为准。中径缺失时优先由已确认的外径或内径与线径计算，无法计算时补入 23 mm 默认候选值并保持待人工确认；旋向没有默认值。Mock Worker 仍使用 `mock_solidworks_compression_v2` 能力，通过兼容 Worker API 运行。
 
 标准化是可选的审图辅助功能，不是创建生图任务的必备条件。八个建模字段、中文技术要求均已人工确认且参数合理性检查不存在阻断问题时，可以按当前参数直接生图；未选择标准、标准尚未确认、建议未处理或标准化结果过期只会产生 `ready_with_warnings` 提示。直接生图与标准化后生图均使用相同的 `generation_job.parameter_package` 冻结参数结构，未标准化时 `standard_context` 保持空值。
 

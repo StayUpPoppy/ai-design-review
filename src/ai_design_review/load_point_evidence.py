@@ -46,8 +46,8 @@ def axis_aligned_lines(found):
             lines.append(values)
     return lines
 
-NUM = r"[+-]?\d+(?:\.\d+)?"
-UNIT = r"(?:kN|kgf|N|牛顿|牛)"
+NUM = r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)"
+UNIT = r"(?:kN|kgf?|lbf|lbs?|N|牛顿|牛)"
 FORCE = re.compile(rf"(?<![A-Za-z0-9_])(?P<label>[A-Za-z0-9_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]{{0,23}}(?:\s*\d+)?)\s*(?:[=＝:：]\s*|\s+)(?P<force>{NUM})(?![\d.])\s*(?P<unit>{UNIT})?\s*(?:(?P<pm>±|\+\s*/\s*-|士)\s*(?P<sym>{NUM})|(?P<up>\+\s*\d+(?:\.\d+)?)\s*(?P<up_unit>{UNIT})?\s*/\s*(?P<down>-\s*\d+(?:\.\d+)?)|(?P<single>[+-]\s*\d+(?:\.\d+)?))?\s*(?P<tail>%|{UNIT})?", re.I)
 FREE = re.compile(rf"(?:[LH]\s*[0o₀]|自由(?:高度|长度))\s*[=＝:：]?\s*({NUM})(?![\d.])", re.I)
 
@@ -120,12 +120,15 @@ def extract_force_annotations(text: str, declared_unit: str | None = None) -> li
     text = unicodedata.normalize("NFKC", text).replace("＋", "+").replace("−", "-")
     for match in FORCE.finditer(text):
         remainder=text[match.end():]
-        if re.match(r"\s*(?:/|·)\s*(?:mm|cm|m)(?![A-Za-z])",remainder,re.I):continue
+        if re.match(r"\s*(?:/|·|per\b)\s*(?:mm|cm|m|in\b|inches\b)(?![A-Za-z])",remainder,re.I):continue
         attached_unit = bool(re.match(r"[A-Za-z]",remainder) and not text[match.end()-1].isspace())
         if attached_unit and not any(match[k] is not None for k in ("sym","up","single")):
             continue
         unit = match["unit"] or (match["tail"] if match["tail"] != "%" else None) or declared_unit
         if not unit:
+            continue
+        if unit.lower() in {"kg", "lb", "lbs"} and not declared_unit and not re.search(
+                r"载荷|负荷|力值|荷重|\b(?:load|force)\b|^[FPW]\d*$", match["label"], re.I):
             continue
         force = number(match["force"])
         if force is None or force < 0:
@@ -137,7 +140,7 @@ def extract_force_annotations(text: str, declared_unit: str | None = None) -> li
         upper = number(re.sub(r"\s+", "", match["up"] or match["single"] or ""))
         lower = number(re.sub(r"\s+", "", match["down"] or ""))
         symmetric = number(match["sym"])
-        factors={"n":1.,"kn":1000.,"kgf":9.80665,"牛顿":1.,"牛":1.}
+        from .load_units import FORCE_UNITS as factors
         factor=factors.get((match["tail"] or unit).lower(),1.)/factors.get(unit.lower(),1.) if match["tail"]!="%" else 1.
         upper_factor=factors.get((match["up_unit"] or match["tail"] or unit).lower(),1.)/factors.get(unit.lower(),1.)
         malformed_suffix = (symmetric is not None or upper is not None) and (
@@ -235,7 +238,7 @@ def _load_texts(texts):
 
 def _requirement_force(text):
     normalized=unicodedata.normalize("NFKC",text)
-    pattern=rf"(?:载荷|负荷|力值)\s*(?:[=:]|为|為)?\s*({NUM}\s*{UNIT})(?![A-Za-z/·])"
+    pattern=rf"(?:载荷|负荷|力值|\bload\b|\bforce\b)\s*(?:[=:]|为|為)?\s*({NUM}\s*{UNIT})(?![A-Za-z/·]|\s+per\b)"
     matches=list(re.finditer(pattern,normalized,re.I))
     if len(matches)!=1:
         return None
@@ -732,7 +735,7 @@ def _load_ocr_targets(loads,recovered):
     return missing
 
 
-def ground_job_candidates(job_dir,candidates,raw_payloads, *, warnings=None):
+def ground_job_candidates(job_dir,candidates,raw_payloads, *, warnings=None, drawing_units=None):
     sources=sorted((Path(job_dir)/"inputs").glob("*"))
     source=next((p for p in sources if p.suffix.lower() in {".pdf",".png",".jpg",".jpeg",".webp",".bmp",".tif",".tiff"}),None)
     if not source:return candidates
@@ -761,6 +764,9 @@ def ground_job_candidates(job_dir,candidates,raw_payloads, *, warnings=None):
         def recover(pages):
             return _merge_original_points(pdf_points,original_points(source,pages=pages,hints=hints))
         pages=raster_pages(Path(job_dir),review,raw_payloads=raw_payloads,warnings=warnings,diameter_geometry=verify_diameters)
+        from .engineering_units import apply_drawing_units
+        scoped = apply_drawing_units(candidates, raw_payloads, pages)
+        diameter_requests = diameter_ocr_requests(scoped) if verify_diameters else []
         recovered=recover(pages)
         load_ocr_pages=_load_ocr_targets(loads,recovered)
         if diameter_requests or load_ocr_pages or not pitch_known or not (loads or recovered):
@@ -782,6 +788,7 @@ def ground_job_candidates(job_dir,candidates,raw_payloads, *, warnings=None):
                     vector["diameter_raster"] = (mask, scale / ratio)
                     vector["source_document_id"] = raster["source_document_id"]
                 evidence_pages.append(vector)
+        candidates = apply_drawing_units(candidates, raw_payloads, evidence_pages, drawing_units=drawing_units)
         if verify_diameters:
             candidates = resolve_diameter_roles(candidates, evidence_pages)
         from .pitch_evidence import pitch_from_pages

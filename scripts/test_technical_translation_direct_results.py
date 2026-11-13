@@ -50,10 +50,10 @@ def run():
     assert all(note["need_human_review"] is False for note in notes), "Reusing accepted translations must preserve existing confirmations"
     package = build_generation_parameter_package(review)
     command = build_solidworks_command("1000000088", package, review)
-    text = command["models"][0]["extraProperties"]["技术要求"]
+    text = command["models"][0]["technicalRequirements"]["技术要求"]
     for fragment in ["Cu/Ni15/Ag3", "Ls=3.59", "Di", "FN 942010", "LABS", "Hub", "F2=17 mm", "Spring must pass"]:
         assert fragment in text, (fragment, text)
-    assert text == package["solidworks_preview"]["extraProperties"]["技术要求"]
+    assert text == package["solidworks_preview"]["technicalRequirements"]["技术要求"]
     frozen = deepcopy(package)
     notes[0]["content"] = "later edit"
     assert build_solidworks_command("1000000088", frozen, review) == command

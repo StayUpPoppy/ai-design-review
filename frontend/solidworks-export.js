@@ -1,6 +1,8 @@
 /* SolidWorks projection; shared fixtures verify parity with solidworks.py. */
 (() => {
-  const calculatedProperties = { "P'": "theoretical_spring_rate", C: "spring_index", "τ_b": "solid_stress" };
+  const calculatedProperties = { "P'": "theoretical_spring_rate", C: "spring_index", "τb": "solid_stress", L: "wire_length" };
+  const toleranceFields = [["外径", "outer_diameter"], ["内径", "inner_diameter"], ["自由高度", "free_length"], ["中径", "mean_diameter"]];
+  const diameterFields = new Set(["outer_diameter", "inner_diameter", "mean_diameter"]);
   const lengthUnits = { mm: 1, "毫米": 1, cm: 10, m: 1000, in: 25.4, inch: 25.4, "英寸": 25.4 };
   const forceUnits = { n: 1, "牛": 1, kn: 1000, kgf: 9.80665 };
   const number = (v) => ["number", "string"].includes(typeof v) && String(v).trim() && Number.isFinite(Number(v)) ? Number(v) : null;
@@ -40,8 +42,8 @@
   }
   function toleranceIssues(review) {
     const issues = [], parameters = review.spring_parameters || {};
-    for (const [label, field] of [["外径", "outer_diameter"], ["自由高度", "free_length"], ["中径", "mean_diameter"]]) {
-      if (review.diameter_linkage?.status === "invalid" && ["outer_diameter", "mean_diameter"].includes(field)) continue;
+    for (const [label, field] of toleranceFields) {
+      if (review.diameter_linkage?.status === "invalid" && diameterFields.has(field)) continue;
       const confirmed = confirmedOptionalMm(parameters, field);
       if (!confirmed) continue;
       const upper = strictNumber(confirmed.item.tolerance_upper), lower = strictNumber(confirmed.item.tolerance_lower);
@@ -55,8 +57,8 @@
     const issues = toleranceIssues(review);
     if (issues.length) throw new Error(issues[0].reason);
     const parameters = review.spring_parameters || {}, tolerances = {};
-    for (const [label, field] of [["外径", "outer_diameter"], ["自由高度", "free_length"], ["中径", "mean_diameter"]]) {
-      if (review.diameter_linkage?.status === "invalid" && ["outer_diameter", "mean_diameter"].includes(field)) continue;
+    for (const [label, field] of toleranceFields) {
+      if (review.diameter_linkage?.status === "invalid" && diameterFields.has(field)) continue;
       const confirmed = confirmedOptionalMm(parameters, field);
       if (!confirmed) continue;
       const upper = strictNumber(confirmed.item.tolerance_upper), lower = strictNumber(confirmed.item.tolerance_lower);
@@ -364,7 +366,8 @@
     packageData.derived_parameters ||= {};
     packageData.derived_parameters.solidworks_design_checks = structuredClone({ version: checks.version, material_catalog_version: checks.material_catalog_version, material_properties: checks.material_properties,
       metrics: Object.fromEntries([...Object.values(calculatedProperties), "unit_mass"].map((key) => [key, checks.metrics[key]])) });
-    const extra = { "技术要求": technicalText(packageData, review, catalog) };
+    const technicalRequirements = { "技术要求": technicalText(packageData, review, catalog) };
+    const extra = {};
     for (const [key, metric] of Object.entries(calculatedProperties)) {
       const result = checks.metrics[metric], value = number(result?.value);
       if (["calculated", "estimated"].includes(result?.status) && value != null) extra[key] = rounded(value);
@@ -378,8 +381,16 @@
     const perpendicularity = confirmedOptionalMm(review.spring_parameters || {}, "perpendicularity", true);
     if (perpendicularity) titleBlock["垂直度A"] = perpendicularity.value;
     const roughness = confirmedRoughness(review);
-    if (roughness != null) titleBlock["表面粗糙度"] = roughness.value;
-    const modelParameters = Object.fromEntries([["线径", "wire_diameter"], ["中径", "mean_diameter"], ["自由高度", "free_length"], ["圈数", "total_coils"], ["有效圈数n", "active_coils"], ["是否磨平", "end_grinding"], ["是否并紧", "end_coils_closed"]].map(([label, field]) => [label, parameterValue(parameters[field], ["total_coils", "active_coils"].includes(field))]));
+    if (roughness != null) titleBlock["表面粗糙度Ra"] = roughness.value;
+    const modelParameters = {
+      "线径": parameterValue(parameters.wire_diameter, true),
+      "中径": parameterValue(parameters.mean_diameter, true),
+      "自由高度": parameterValue(parameters.free_length, true),
+      "圈数": parameterValue(parameters.total_coils, true),
+      "有效圈数n": parameterValue(parameters.active_coils, true),
+      "是否磨平": parameterValue(parameters.end_grinding),
+      "是否并紧": parameterValue(parameters.end_coils_closed),
+    };
     if (modelParameters["是否并紧"] === 0) delete modelParameters["有效圈数n"];
     const flattening = parameters.flattening;
     if (flattening?.confirmation_source === "human_confirmed" && Number.isInteger(flattening.value) && [0, 1].includes(flattening.value)) modelParameters["是否制扁"] = flattening.value;
@@ -390,7 +401,8 @@
       ...(Object.hasOwn(packageData.source || {}, "material_code") ? {materialCode: packageData.source.material_code || null} : {}),
       modelParameters,
       ...(Object.keys(tolerances).length ? { modelParametersTolerance: tolerances } : {}),
-      customProperties: { "旋向": handedness(parameterValue(parameters.handedness)) }, extraProperties: extra, titleBlockProperties: titleBlock,
+      customProperties: { "旋向": handedness(parameterValue(parameters.handedness)) },
+      technicalRequirements, extraProperties: extra, titleBlockProperties: titleBlock,
     };
   }
   function exportLoadPoint(point) {

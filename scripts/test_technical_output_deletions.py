@@ -110,7 +110,7 @@ def shared_cases():
     changed = deepcopy(base)
     changed["technical_output_deletions"] = [deletion(entry) for entry in initial["entries"]]
     command = build_solidworks_command("1000000001", frozen, changed)
-    assert command["models"][0]["extraProperties"]["技术要求"] == frozen["solidworks_preview"]["extraProperties"]["技术要求"]
+    assert command["models"][0]["technicalRequirements"]["技术要求"] == frozen["solidworks_preview"]["technicalRequirements"]["技术要求"]
     return cases
 
 

@@ -39,25 +39,34 @@ def model_load_relation(candidate):
     height = millimeters(relation.get("value"), relation.get("unit"))
     force = number(point.get("force"))
     force_unit = str(units.get("force_unit") or "").strip()
+    from .engineering_units import factor
     page = candidate.get("page", 1)
     if (relation.get("kind") != "absolute_height" or height is None or height <= 0
-            or force is None or force < 0 or force_unit.lower() not in {"n", "kn", "kgf", "牛顿", "牛"}
+            or force is None or force < 0 or factor("force", force_unit) is None
             or relation.get("page", page) != page):
         return None
     if point.get("height") is not None and millimeters(point["height"], units.get("height_unit")) != height:
         return None
     evidence = unicodedata.normalize("NFKC", str(relation.get("evidence") or ""))
-    if not re.search(r"标注|尺寸线|高度|工作长度|height|dimension|[HL]\s*\d*\s*=", evidence, re.I):
+    if not re.search(r"标注|尺寸线|高度|工作长度|height|dimension|[HL]\s*\d*\s*=|(?:@|\bat\b|compressed)\s*\d", evidence, re.I):
         return None
-    if re.search(r"未标注|未明确|估算|计算值|推测|可能|inferred|estimated",evidence,re.I):
+    if re.search(r"未标注|未明确|估算|计算值|推测|可能|\b(?:inferred|estimated|calculated|derived|computed)\b", evidence, re.I):
         return None
-    force_marks = list(re.finditer(r"(?<![\d.])([+-]?\d+(?:\.\d+)?)\s*(kN|kgf|N|牛顿|牛)(?![A-Za-z]|\s*[/·])", evidence, re.I))
-    if not any(number(mark[1]) == force and mark[2].casefold() == force_unit.casefold() for mark in force_marks):
+    from .engineering_units import DECIMAL, converted
+    force_pattern = rf"(?<![\d.])({DECIMAL})\s*(kN|kgf?|lbf|lbs?|N|牛顿|牛)(?![A-Za-z]|\s*[/·]|\s+per\b)"
+    source = unicodedata.normalize("NFKC", str(candidate.get("evidence") or ""))
+    force_marks = [(m[1], m[2]) for m in re.finditer(force_pattern, f"{source}\n{evidence}", re.I)]
+    for match in re.finditer(rf"({DECIMAL})\s*(kgf?|lbf|lbs?|N)\s+MIN\s+TO\s+({DECIMAL})\s+MAX\b", source, re.I):
+        force_marks.append((match[3], match[2]))
+    normalized_force = force * float(factor("force", force_unit))
+    if not any(abs(value - normalized_force) <= max(1e-8, normalized_force * .00005)
+               for raw, unit in force_marks if (value := converted(raw, factor("force", unit))) is not None):
         return None
     height_evidence = re.sub(r"(?<![A-Za-z0-9_])[A-Za-z]+\d+(?=\s*[=:])", "", evidence)
-    height_evidence = re.sub(r"(?<![\d.])[+-]?\d+(?:\.\d+)?\s*(?:kN|kgf|N|牛顿|牛)(?![A-Za-z])", "", height_evidence, flags=re.I)
-    if not any(number(m[0]) == number(relation.get("value"))
-               for m in re.finditer(r"(?<![\d.])\d+(?:\.\d+)?(?![\d.])", height_evidence)):
+    height_evidence = re.sub(force_pattern, "", height_evidence, flags=re.I)
+    values = [number(m[0]) for m in re.finditer(rf"(?<![\d.]){DECIMAL}(?![\d.])", height_evidence)]
+    physical_matches = [millimeters(m[1], m[2]) for m in re.finditer(rf"({DECIMAL})\s*(mm|inches|inch|in)(?![A-Za-z])", height_evidence, re.I)]
+    if number(relation.get("value")) not in values and not any(v is not None and abs(v-height) < 1e-6 for v in physical_matches):
         return None
     result = normalize_relation(relation)
     result.update(page=page, verification_method=MODEL_PROVISIONAL)

@@ -93,7 +93,7 @@ def run():
             note["need_human_review"] = False
         package = build_generation_parameter_package(review)
         command = build_solidworks_command("1000000055", package, review)
-        text = command["models"][0]["extraProperties"]["技术要求"]
+        text = command["models"][0]["technicalRequirements"]["技术要求"]
         assert "保载" in text and "Ц15.hr" in text and not text.startswith("技术要求\n")
         assert all(f"{index}." in text for index in range(1,6))
         for edited in [ {"source": ["human_edited"]}, {"content": "人工补充 " + PAIRS[0][0]}, {"type": "other"}, {"translation_input_snapshot": None} ]:

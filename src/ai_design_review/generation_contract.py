@@ -142,7 +142,7 @@ def generation_parameter_state(parameters: dict[str, Any], field: str) -> str:
         return "missing"
     if field == "flattening":
         return "invalid" if flattening.invalid_reason(item) else "confirmed" if flattening.confirmed(item) else "pending"
-    if item.get("need_human_review"):
+    if item.get("need_human_review") or item.get("unit_pending"):
         return "pending"
     try:
         normalize_generation_value(field, item.get("value"))
@@ -168,7 +168,7 @@ def normalize_generation_value(field: str, value: Any) -> float | int | str:
         number = _finite_number(value, field)
         if number <= 0:
             raise ValueError(f"{field} must be greater than zero")
-        return round(number, 3)
+        return int(number) if number.is_integer() else number
     if field in {"total_coils", "active_coils"}:
         number = _finite_number(value, field)
         if number <= 0:
@@ -227,7 +227,7 @@ def export_generation_parameters(parameters: dict[str, Any]) -> dict[str, dict[s
     exported: dict[str, dict[str, Any]] = {}
     for field in COMPRESSION_GENERATION_EXPORT_FIELDS:
         item = generation_source_item(parameters, field)
-        if item is None or item.get("need_human_review"):
+        if item is None or item.get("need_human_review") or item.get("unit_pending"):
             continue
         if field == "flattening" and not flattening.confirmed(item):
             continue
@@ -255,7 +255,7 @@ def validate_generation_parameters(parameters: dict[str, Any]) -> list[dict[str,
     normalized: dict[str, float | int | str] = {}
     for field in COMPRESSION_GENERATION_INPUT_FIELDS:
         item = generation_source_item(parameters, field)
-        if item is None or item.get("need_human_review"):
+        if item is None or item.get("need_human_review") or item.get("unit_pending"):
             continue
         try:
             normalized[field] = normalize_generation_value(field, item.get("value"))
@@ -285,12 +285,13 @@ def _raw_parameter_item(parameters: dict[str, Any], field: str) -> dict[str, Any
     item = parameters.get(field)
     if not isinstance(item, dict) or item.get("value") in (None, ""):
         return None
-    return item
+    from .engineering_units import metric_item
+    return metric_item(item, field)
 
 
 def _derived_mean_diameter_item(parameters: dict[str, Any]) -> dict[str, Any] | None:
     wire = _raw_parameter_item(parameters, "wire_diameter")
-    if wire is None:
+    if wire is None or wire.get("unit_pending"):
         return None
     try:
         wire_value = _finite_number(wire.get("value"), "wire_diameter")
@@ -302,14 +303,14 @@ def _derived_mean_diameter_item(parameters: dict[str, Any]) -> dict[str, Any] | 
         ("inner_diameter", lambda diameter: diameter + wire_value),
     ):
         diameter = _raw_parameter_item(parameters, diameter_field)
-        if diameter is None:
+        if diameter is None or diameter.get("unit_pending"):
             continue
         try:
             diameter_value = _finite_number(diameter.get("value"), diameter_field)
         except ValueError:
             continue
         return {
-            "value": round(operation(diameter_value), 3),
+            "value": operation(diameter_value),
             "unit": "mm",
             "source": ["derived", f"{diameter_field}_and_wire_diameter"],
             "source_fields": [diameter_field, "wire_diameter"],

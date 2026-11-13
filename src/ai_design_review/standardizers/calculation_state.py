@@ -51,6 +51,8 @@ def parameter_current(parameters: dict[str, Any], field: str, path: tuple[str, .
     item = parameters.get(field)
     if not isinstance(item, dict):
         return True
+    if item.get("unit_pending"):
+        return False
     if unadopted_protocol_diameter(item, field):
         return False
     if field == "active_coils" and "solidworks_protocol_default" in sources(item) and item.get("need_human_review") is not False:

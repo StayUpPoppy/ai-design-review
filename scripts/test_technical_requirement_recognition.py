@@ -89,7 +89,7 @@ def main():
     assert build_generation_parameter_package(numbered)["generation_parameters"]["technical_requirements_text"] == "1.其他要求：未注尺寸以3D为准", "legacy source numbering must not produce a second output number"
     frozen = copy.deepcopy(package)
     package["generation_parameters"]["technical_requirements_text"] = "技术要求\n" + text
-    exported_text = build_solidworks_command("1000000001", package, ready)["models"][0]["extraProperties"]["技术要求"]
+    exported_text = build_solidworks_command("1000000001", package, ready)["models"][0]["technicalRequirements"]["技术要求"]
     assert exported_text.count("未注尺寸以3D为准") == 1
     assert not exported_text.startswith("技术要求\n")
     assert package["generation_parameters"]["technical_requirements_text"].startswith("技术要求\n"), "sending must not rewrite frozen package"

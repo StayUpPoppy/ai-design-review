@@ -71,7 +71,7 @@ def run():
             assert client.patch("/api/reviews/legacy", json={"review": draft, "expected_revision": 1, "events": []}).status_code == 409
             final = client.get("/api/reviews/legacy").json()
             assert final["spring_parameters"][FIELD]["value"] == 6.3
-            assert build_generation_parameter_package(final)["solidworks_preview"]["titleBlockProperties"]["表面粗糙度"] == 6.3
+            assert build_generation_parameter_package(final)["solidworks_preview"]["titleBlockProperties"]["表面粗糙度Ra"] == 6.3
             for n, protection in enumerate(({"source": ["human_roughness_reference"]}, {"source": ["human_confirmed"], "need_human_review": False}, {"need_human_review": False}, {"need_human_review": None})):
                 fixture(api.API_RUN_ROOT, repo, f"protected-{n}", protection=protection)
                 read = client.get(f"/api/reviews/protected-{n}").json()["spring_parameters"][FIELD]
@@ -126,12 +126,12 @@ def run():
             annotations = client.get("/api/reviews/numeric-only/annotations").json()
             ra = next(a for a in annotations["annotations"] if a["field"] == FIELD)
             assert ra["original_value"] == 6.3 and not ra["locations"]
-            assert "表面粗糙度" not in build_generation_parameter_package(draft)["solidworks_preview"]["titleBlockProperties"]
+            assert "表面粗糙度Ra" not in build_generation_parameter_package(draft)["solidworks_preview"]["titleBlockProperties"]
             value.update(need_human_review=False, source=["human_confirmed"])
             assert client.patch("/api/reviews/numeric-only", json={"review": draft, "expected_revision": 2, "events": []}).status_code == 200
             reopened = client.get("/api/reviews/numeric-only").json()
             assert reopened["spring_parameters"][FIELD]["recognition_state"] == "needs_location"
-            assert build_generation_parameter_package(reopened)["solidworks_preview"]["titleBlockProperties"]["表面粗糙度"] == 6.3
+            assert build_generation_parameter_package(reopened)["solidworks_preview"]["titleBlockProperties"]["表面粗糙度Ra"] == 6.3
             assert client.get("/api/reviews/not-owned").status_code == 404
     print("PASS: roughness legacy GET drafts, revisioned saving/audit, manual race protection, PDF proof and SW parity")
 

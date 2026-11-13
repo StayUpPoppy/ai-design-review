@@ -51,7 +51,7 @@ from .io_utils import project_path, read_json, write_json
 from .generation_contract import apply_generation_defaults
 from .generation_persistence import FinalGenerationAlreadySelectedError, GenerationStore, SolidWorksTaskCancelledError
 from .generation_readiness import assess_generation_readiness, build_generation_parameter_package
-from .generation_settings import normalize_generation_settings
+from .generation_settings import normalize_company_name, normalize_generation_settings
 from .generation_schemas import (
     GenerationArtifactListResponse,
     GenerationArtifactResponse,
@@ -119,6 +119,7 @@ from .multi_spec import MultiSpecError
 from . import multi_spec_store, pdf_page_store
 from .accuracy_inference import refresh_accuracy_inference
 from .drawing_annotations import (
+    project_annotation_diagnostics,
     AnnotationConflictError, annotation_file_lock, apply_annotation_patch,
     atomic_annotation_write, build_annotations, page_sort_key,
 )
@@ -1454,8 +1455,12 @@ async def run_recognition_execution(
         LOGGER.exception("PDF dimension evidence recovery failed for %s", job_id)
     candidates = await run_in_threadpool(verify_job_candidates, job_dir, candidates, raw_payloads,
                                          lambda path: _artifact_url(job_id, path))
+    drawing_units = {}
     if classify_spring_type(candidates, uploaded_file_info)["spring_type"] == "compression_spring":
-        candidates = await run_in_threadpool(ground_job_candidates, job_dir, candidates, raw_payloads, warnings=warnings)
+        candidates = await run_in_threadpool(ground_job_candidates, job_dir, candidates, raw_payloads, warnings=warnings, drawing_units=drawing_units)
+    else:
+        from .engineering_units import apply_drawing_units
+        candidates = apply_drawing_units(candidates, raw_payloads, drawing_units=drawing_units)
     rules = read_json(project_path("config", "factory_rules.json"))
     review = DrawingReviewWorkflow(rules).run(str(drawing_path), candidates, run_standardization=False, verify_diameter_roles=True)
     apply_generation_defaults(review)
@@ -1467,6 +1472,9 @@ async def run_recognition_execution(
         translation_results = await run_in_threadpool(prepare_review_translations, review, allow_remote=False)
     else:
         translation_results = await run_in_threadpool(prepare_review_translations, review)
+    from .engineering_units import metric_requirements, page_length_units
+    review["drawing_length_units"] = drawing_units or page_length_units(raw_payloads)
+    metric_requirements(review)
     for translated in translation_results:
         if translated["translation_status"] == "not_required":
             continue
@@ -1502,7 +1510,9 @@ async def run_recognition_execution(
         except Exception:
             LOGGER.exception("Original annotation localization failed for %s", job_id)
             warnings.append("关键参数定位未完成，审图和生图不受影响，可在原图中人工标注。")
-    review.setdefault("drawing_summary", {}).pop("material_code", None)
+    summary = review.setdefault("drawing_summary", {})
+    summary.pop("material_code", None)
+    summary.pop("company_name", None)
     from .review_loading import VERSION as LOCAL_VERIFICATION_VERSION
     review['local_verification'] = {'version':LOCAL_VERIFICATION_VERSION}
     _report_recognition_progress(progress_callback, "saving_result", 95)
@@ -2244,6 +2254,8 @@ def get_review(job_id: str, metadata_only: bool = False, identity: IdentityConte
         if stored: review['loading_metadata'] = review_loading.metadata(REVIEW_PERSISTENCE, stored)
     from .drawing_annotations import preview_manifest
     review['preview_pages'] = preview_manifest(job_dir, lambda p: _artifact_url(job_id, p))
+    if isinstance(review.get("drawing_annotations"), dict):
+        review["drawing_annotations"] = project_annotation_diagnostics(review["drawing_annotations"], review)
     if revision is not None:
         review["review_revision"] = revision
     review["image_url"] = _review_preview_url(job_id)
@@ -2367,11 +2379,12 @@ async def translate_technical_requirements(job_id: str, payload: dict[str, Any] 
     return {"job_id": job_id, "based_on_revision": revision, "requirements": translated}
 
 
-def _load_drawing_annotations(job_id: str, identity: IdentityContext) -> dict[str, Any]:
+def _load_drawing_annotations(job_id: str, identity: IdentityContext, *, review=None) -> dict[str, Any]:
     from .drawing_annotations import annotation_source, preview_manifest
     from . import review_loading
     job_dir = _job_dir(job_id)
-    review, _ = _load_persisted_review(job_id, job_dir / 'review.json', identity)
+    if review is None:
+        review, _ = _load_persisted_review(job_id, job_dir / 'review.json', identity)
     if REVIEW_PERSISTENCE.configured:
         stored = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id)
         review_loading.enqueue(REVIEW_PERSISTENCE, stored, identity)
@@ -2380,8 +2393,8 @@ def _load_drawing_annotations(job_id: str, identity: IdentityContext) -> dict[st
         current = read_json(job_dir / 'annotations.json') if (job_dir / 'annotations.json').is_file() else review.get('drawing_annotations')
     if not isinstance(current, dict):
         return annotation_source(job_dir,lambda p:_artifact_url(job_id,p))[0]
-    current['pages'] = preview_manifest(job_dir,lambda p:_artifact_url(job_id,p))
-    return current
+    current = {**current, "pages": preview_manifest(job_dir, lambda p: _artifact_url(job_id, p))}
+    return project_annotation_diagnostics(current, review)
 
 
 @app.get("/api/reviews/{job_id}/annotations", tags=["审图管理"], summary="获取原图关键参数气泡标注")
@@ -2397,19 +2410,20 @@ def get_drawing_annotations(job_id: str, identity: IdentityContext = Depends(req
 @app.patch("/api/reviews/{job_id}/annotations", tags=["审图管理"], summary="独立保存原图标注位置")
 def save_drawing_annotations(job_id: str, body: dict[str, Any] = Body(...), identity: IdentityContext = Depends(require_identity)) -> dict[str, Any]:
     try:
-        _load_drawing_annotations(job_id, identity)
+        job_dir = _job_dir(job_id)
+        review, _ = _load_persisted_review(job_id, job_dir / "review.json", identity)
         if set(body) - {"source_document_id", "expected_annotation_revision", "changes"}:
             raise ValueError("只允许提交标注位置修改。")
         if REVIEW_PERSISTENCE.configured:
-            return REVIEW_PERSISTENCE.save_drawing_annotations(job_id, owner_user_id=identity.user_id, patch=body)
-        job_dir = _job_dir(job_id)
-        with annotation_file_lock(job_dir):
-            path = job_dir / "annotations.json"
-            result = apply_annotation_patch(read_json(path), body)
-            atomic_annotation_write(path, result)
-            return result
+            result = REVIEW_PERSISTENCE.save_drawing_annotations(job_id, owner_user_id=identity.user_id, patch=body)
+        else:
+            with annotation_file_lock(job_dir):
+                path = job_dir / "annotations.json"
+                result = apply_annotation_patch(read_json(path), body)
+                atomic_annotation_write(path, result)
+        return project_annotation_diagnostics(result, review)
     except AnnotationConflictError as exc:
-        raise HTTPException(status_code=409, detail={"message": str(exc), "annotations": exc.current}) from exc
+        raise HTTPException(status_code=409, detail={"message": str(exc), "annotations": project_annotation_diagnostics(exc.current, review)}) from exc
     except ReviewAccessError as exc:
         raise HTTPException(status_code=404, detail="Review not found.") from exc
     except ValueError as exc:
@@ -2425,9 +2439,10 @@ def relocalize_drawing_annotations(job_id: str, body: dict[str, Any] = Body(...)
     try:
         if set(body) != {"source_document_id", "expected_annotation_revision"}:
             raise ValueError("补定位仅接受原图标识和预期标注修订号。")
-        current = _load_drawing_annotations(job_id, identity)
-        validate_annotation_revision(current, body)
         job_dir = _job_dir(job_id)
+        review, _ = _load_persisted_review(job_id, job_dir / "review.json", identity)
+        current = _load_drawing_annotations(job_id, identity, review=review)
+        validate_annotation_revision(current, body)
         with annotation_file_lock(job_dir):
             review, review_revision = _load_persisted_review(job_id, job_dir / "review.json", identity)
             latest = review.get("drawing_annotations") if REVIEW_PERSISTENCE.configured else read_json(job_dir / "annotations.json")
@@ -2440,15 +2455,15 @@ def relocalize_drawing_annotations(job_id: str, body: dict[str, Any] = Body(...)
             rebuilt["roughness_evidence_signature"] = refreshed["roughness_evidence_signature"]
             if REVIEW_PERSISTENCE.configured:
                 result = REVIEW_PERSISTENCE.save_drawing_annotations(job_id, owner_user_id=identity.user_id, initial=rebuilt, relocalize=body)
-                return {**result, "roughness_update": {"based_on_revision": review_revision, "parameter": review.get("spring_parameters", {}).get("surface_roughness_ra")}}
+                return {**project_annotation_diagnostics(result, review), "roughness_update": {"based_on_revision": review_revision, "parameter": review.get("spring_parameters", {}).get("surface_roughness_ra")}}
             path = job_dir / "annotations.json"
             current = read_json(path)
             validate_annotation_revision(current, body)
             result = merge_annotation_upgrade(current, rebuilt, force=True)
             atomic_annotation_write(path, result)
-            return {**result, "roughness_update": {"based_on_revision": review_revision, "parameter": review.get("spring_parameters", {}).get("surface_roughness_ra")}}
+            return {**project_annotation_diagnostics(result, review), "roughness_update": {"based_on_revision": review_revision, "parameter": review.get("spring_parameters", {}).get("surface_roughness_ra")}}
     except AnnotationConflictError as exc:
-        raise HTTPException(status_code=409, detail={"message": str(exc), "annotations": exc.current}) from exc
+        raise HTTPException(status_code=409, detail={"message": str(exc), "annotations": project_annotation_diagnostics(exc.current, review)}) from exc
     except ReviewAccessError as exc:
         raise HTTPException(status_code=404, detail="Review not found.") from exc
     except ValueError as exc:
@@ -2513,6 +2528,42 @@ def _create_review_persistence(
         raise _persistence_http_error(exc) from exc
 
 
+def _project_saved_engineering_units(review, review_path):
+    from .engineering_units import apply_drawing_units, factor, FIELDS, metric_review, page_length_units
+    parameters = review.get("spring_parameters") or {}
+    before = deepcopy(parameters)
+    original_notes = deepcopy(review.get("technical_requirements") or [])
+    if "drawing_length_units" not in review:
+        cache = review_path.parent / "candidates.json"
+        if cache.is_file():
+            try:
+                payloads = read_json(cache).get("raw_payloads") or {}
+                annotation_cache = cache.with_name("annotation_ocr_v3.json")
+                if annotation_cache.is_file():
+                    payloads["saved_annotation_ocr"] = {"texts": read_json(annotation_cache).get("blocks") or []}
+                review["drawing_length_units"] = page_length_units(payloads)
+                from .standardizers.calculation_state import human_override, sources
+                dimensions = [{**item, "field": field} for field, item in parameters.items()
+                              if isinstance(item, dict) and FIELDS.get(field) == "length" and item.get("value") not in (None, "")
+                              and not human_override(item) and "formula_calculation" not in sources(item)]
+                for updated in apply_drawing_units(dimensions, payloads):
+                    field = updated["field"]
+                    old = parameters[field]
+                    scale = factor("length", old.get("unit"))
+                    if updated.get("unit_pending") or old.get("unit") != updated.get("unit") and scale is not None:
+                        parameters[field] = {**old, "unit_pending": True, "need_human_review": True}
+                    elif not old.get("unit") and updated.get("unit"):
+                        parameters[field] = {**old, "unit": updated["unit"]}
+            except (OSError, ValueError):
+                LOGGER.warning("Could not read original unit evidence for %s", review_path.parent.name)
+    metric_review(review)
+    adjustments = {field: value for field, value in before.items() if value != parameters.get(field)}
+    if original_notes != (review.get("technical_requirements") or []):
+        adjustments["technical_requirements"] = original_notes
+    if adjustments:
+        review["engineering_unit_adjustments"] = adjustments
+
+
 def _load_persisted_review(
     job_id: str,
     review_path: Path,
@@ -2534,6 +2585,7 @@ def _load_persisted_review(
         ensure_flattening(review)
         if not recover:
             reconcile_saved_load_duplicates(review)
+            _project_saved_engineering_units(review, review_path)
             return review, stored["revision"]
         if stored.get("record_kind") == "variant" and not review.get("page_origin"):
             try: multi_spec_store.materialize(REVIEW_PERSISTENCE, job_id, identity.user_id, API_RUN_ROOT)
@@ -2558,6 +2610,7 @@ def _load_persisted_review(
     ensure_flattening(review)
     if not recover:
         reconcile_saved_load_duplicates(review)
+        _project_saved_engineering_units(review, review_path)
         return review, None
     ensure_compression_material(review)
     ensure_surface_roughness_parameter(review)
@@ -2678,6 +2731,10 @@ def _save_review_persistence(
     if events and all(event.get("event_type") == "diameter_role_ignored" for event in events):
         return _save_diameter_ignores(job_id, previous, current_revision, review_path=review_path,
             expected_revision=expected_revision, events=events, identity=identity)
+    from .engineering_units import metric_review
+    review.pop("engineering_unit_adjustments", None)
+    review["drawing_length_units"] = previous.get("drawing_length_units") or {}
+    metric_review(review)
     from .flattening import prepare_save as prepare_flattening_save
     try:
         prepare_flattening_save(review, events, previous=previous)
@@ -2808,6 +2865,12 @@ def _save_review_persistence(
             summary["material_code"] = normalize_material_code(summary["material_code"]) or ""
         except ValueError as exc:
             raise HTTPException(status_code=422, detail={"code": "material_code_invalid", "message": str(exc)}) from exc
+    previous_summary = previous.get("drawing_summary") or {}
+    if "company_name" in summary or "company_name" in previous_summary:
+        try:
+            summary["company_name"] = normalize_company_name(summary.get("company_name", previous_summary.get("company_name")))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail={"code": "company_name_invalid", "message": str(exc)}) from exc
     before_accuracy = deepcopy((review.get("spring_parameters") or {}).get("accuracy_grade"))
     if refresh_accuracy_inference(review, previous=previous) and not any(e.get("target_field") == "accuracy_grade" for e in events or []):
         events = [*(events or []), {"client_event_id": f"accuracy_{uuid.uuid4().hex}", "event_type": "accuracy_grade_inferred",
@@ -2840,6 +2903,11 @@ def _save_review_persistence(
         event = dict(raw_event)
         event["actor"] = identity.as_audit_actor()
         audit_events.append(event)
+    for field, original in (previous.get("engineering_unit_adjustments") or {}).items():
+        normalized = review.get("technical_requirements") if field == "technical_requirements" else review.get("spring_parameters", {}).get(field)
+        audit_events.append({"event_type": "engineering_units_normalized", "target_field": field,
+                             "source": "original_unit_conversion", "before_state": original,
+                             "after_state": normalized, "actor": identity.as_audit_actor()})
     adjustment = (review.get("spring_parameters", {}).get("surface_roughness_ra") or {}).get("roughness_verification_adjustment")
     if adjustment and not adjustment.get("audit_recorded"):
         adjustment["audit_recorded"] = True
@@ -2926,7 +2994,7 @@ def _save_review_persistence(
             **group_state(review),
             "accuracy_grade": (review.get("spring_parameters") or {}).get("accuracy_grade"),
             "accuracy_inference": review.get("accuracy_inference"),
-            "annotations": review.get("drawing_annotations"),
+            "annotations": project_annotation_diagnostics(review["drawing_annotations"], review) if review.get("drawing_annotations") else None,
         }
     elif ignore_events:
         result["diameter_role_update"] = {"candidates": public_candidates(review), "candidates_only": True}
@@ -3125,6 +3193,8 @@ def _persist_multi_spec_source(job_id, payload, file_info, identity, image_url, 
         return existing
     directory = _job_dir(job_id)
     review = source_review(payload["parsed"], payload["multi_spec"])
+    from .engineering_units import page_length_units
+    review["drawing_length_units"] = page_length_units(raw_payloads or {})
     from .diameter_evidence import VERSION as DIAMETER_ROLE_VERSION
     review["diameter_role_verification"] = DIAMETER_ROLE_VERSION
     recovery = payload.get("local_recovery")

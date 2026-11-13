@@ -105,7 +105,7 @@ assert.equal(packageData.generation_parameters.spring_parameters.end_coils_close
 assert.equal(packageData.solidworks_preview.modelParameters["有效圈数n"], 10);
 assert.equal(packageData.solidworks_preview.modelParameters["是否磨平"], 1);
 assert.equal(packageData.solidworks_preview.modelParameters["工作高度H1"], undefined);
-assert.ok(packageData.solidworks_preview.extraProperties["技术要求"].includes("H1 = 25 mm"));
+assert.ok(packageData.solidworks_preview.technicalRequirements["技术要求"].includes("H1 = 25 mm"));
 assert.equal(packageData.solidworks_preview.modelParameters["工作高度H2"], undefined);
 assert.equal(packageData.solidworks_preview.TaskId, undefined);
 assert.equal(packageData.generation_parameters.spring_parameters.material.value, "SUS304 raw");

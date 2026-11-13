@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .dimension_text import dimension_text, dimension_number, numeric_identity, safe_glyph_run
+from .engineering_units import FIELDS as UNIT_FIELDS, METRIC, annotation_text_units, converted, factor, unit_key
 
 FIELDS = (
     "material", "standard_no", "accuracy_grade", "wire_diameter", "outer_diameter",
@@ -526,6 +527,8 @@ def locate_fields(review: dict[str, Any], candidates: list[dict[str, Any]], bloc
                             "original_value": value, "evidence": evidence, "evidence_pages": sorted(pages or {(original or {}).get("page") or 1}), "locations": locations,
                             "status": "located" if locations else "empty" if empty else "unlocated",
                             "reason": "" if locations else reason}
+        if original and original.get("unit") and not original.get("unit_pending"):
+            annotation["original_unit"] = original["unit"]
         observation = (param.get("diameter_role_evidence") or {}).get("observation")
         if role_checked and observation and not scoped:
             set_diameter_location(annotation, param, observation)
@@ -546,6 +549,9 @@ def set_diameter_location(annotation, param, observation):
          "anchor": anchor, "bubble": {"x": min(.98, box["x"] + box["width"] + .025), "y": max(.02, box["y"] - .025)},
          "source": observation.get("source") or "local_ocr", "evidence": observation["text"]}
     ])
+    annotation.pop("original_unit", None)
+    if observation.get("unit"):
+        annotation["original_unit"] = observation["unit"]
 
 
 def roughness_annotation(param, candidates, blocks):
@@ -578,6 +584,7 @@ def roughness_annotation(param, candidates, blocks):
     value = accepted[0]["value"] if accepted and not conflict else None
     return {"annotation_id": "surface_roughness_ra", "field": "surface_roughness_ra", "number": 12, "label": LABELS[11],
             "original_value": value, "evidence": " | ".join(dict.fromkeys(c.get("evidence", "") for c in accepted)),
+            **({"original_unit": accepted[0].get("unit") or "μm"} if value is not None else {}),
             "evidence_pages": sorted({l["page"] for l in locations}) or [1], "locations": locations,
             "status": "located" if locations else "unlocated" if claims else "empty",
             "reason": "" if locations else "粗糙度位置或数值待核对，可重新补定位或人工定位。" if claims else "未识别到粗糙度标注。",
@@ -641,35 +648,111 @@ def recover_pdf_dimension_candidates(source: Path, candidates: list[dict[str, An
     return current
 
 
-def _annotation_diagnostics(review: dict[str, Any], annotations: list[dict[str, Any]], states: dict[str, Any]) -> list[dict[str, Any]]:
+def _measurement_unit(review, item, param, value, kind):
+    locations = item.get("locations") or []
+    pages = {location["page"] for location in locations if location.get("source") in AUTOMATIC_SOURCES}
+    pages = pages or set(item.get("evidence_pages") or [])
+    # Moving an existing bubble keeps its original evidence and text box.
+    direct = set().union(*(annotation_text_units(location.get("evidence"), value, kind) for location in locations
+                          if location.get("source") in AUTOMATIC_SOURCES or location.get("bbox")))
+    if not direct:
+        direct = annotation_text_units(item.get("evidence"), value, kind)
+    if direct:
+        return min(direct) if len({factor(kind, unit) for unit in direct}) == 1 else None
+
+    observation = (param.get("diameter_role_evidence") or {}).get("observation") or {}
+    source = param.get("engineering_source") or {}
+    saved = set()
+    for reading in (observation, source):
+        unit = reading.get("unit")
+        scale = factor(kind, unit)
+        if (value is not None and scale is not None and converted(reading.get("value"), scale) == converted(value, scale)
+                and (not pages or reading.get("page") in pages or reading.get("page") is None and len(pages) == 1)):
+            saved.add(unit_key(unit))
+    if saved:
+        return min(saved) if len({factor(kind, unit) for unit in saved}) == 1 else None
+    original_unit = item.get("original_unit")
+    scope = None
+    if kind == "length" and pages:
+        page_units = review.get("drawing_length_units") or {}
+        units = {unit_key(page_units.get(str(page), page_units.get(page))) for page in pages}
+        scales = {factor(kind, unit) for unit in units} - {None}
+        if "conflict" in units or len(scales) > 1:
+            return None
+        if len(units) == 1 and scales:
+            scope = next(iter(units))
+    if factor(kind, original_unit) is not None:
+        return original_unit
+    if kind == "roughness" and item.get("verification_version"):
+        return "μm"
+    return scope
+
+
+def _annotation_comparison(review, item):
+    field = item["field"]
+    param = (review.get("spring_parameters") or {}).get(field) or {}
+    value = item.get("original_value")
+    kind = UNIT_FIELDS.get(field)
+    if kind in {"length", "roughness"} and value not in (None, ""):
+        nominal = converted(value, factor(kind, METRIC[kind]))
+        unit = _measurement_unit(review, item, param, nominal, kind) if nominal is not None else None
+        return {"field": field, "evidence_value": value, "evidence_unit": unit,
+                "evidence_base_value": converted(value, factor(kind, unit)), "quantity": kind}
+    return {"field": field, "evidence_value": value,
+            **({"evidence_unit": "圈"} if field in {"total_coils", "active_coils"} else {})}
+
+
+def _annotation_diagnostics(review: dict[str, Any], annotations: list[dict[str, Any]], states: dict[str, Any], comparisons=None) -> list[dict[str, Any]]:
     diagnostics = []
     params = review.get("spring_parameters") or {}
-    for item in annotations:
+    comparisons = comparisons if comparisons is not None else [_annotation_comparison(review, item) for item in annotations]
+    for item, comparison in zip(annotations, comparisons):
         field = item["field"]
-        current = (params.get(field) or {}).get("value")
+        parameter = params.get(field) or {}
+        current = parameter.get("value")
         value = item["original_value"]
         if item["status"] == "empty" and current in (None, ""):
             continue
-        mismatch = value is not None and current not in (None, "") and not _value_matches(value, str(current), field)
+        quantity = comparison.get("quantity")
+        base = comparison.get("evidence_base_value")
+        current_unit = parameter.get("unit")
+        current_base = converted(current, factor(quantity, current_unit)) if quantity else None
+        has_values = value not in (None, "") and current not in (None, "")
+        unit_pending = bool(quantity and has_values and (base is None or current_base is None or parameter.get("unit_pending")))
+        mismatch = False
+        if has_values and not unit_pending:
+            mismatch = (not math.isclose(base, current_base, rel_tol=1e-12, abs_tol=1e-9) if quantity
+                        else not _value_matches(value, str(current), field))
         role_conflict = False
-        if field == "outer_diameter" and value is not None:
-            try:
-                inner = float((params.get("inner_diameter") or {})["value"])
-                wire = float((params.get("wire_diameter") or {})["value"])
-                # Only compare independent drawing values, not dimensions
-                # previously completed from this same outer diameter.
-                independent = all(not any("formula" in s for s in (params[f].get("source") or [])) for f in ("inner_diameter", "wire_diameter"))
-                role_conflict = independent and abs(float(value) - inner - 2 * wire) > .0001
-            except (KeyError, TypeError, ValueError):
-                pass
-        if mismatch or role_conflict or not item["locations"]:
-            reason = f"原图证据值 {value} 与当前参数 {current} 不一致，请核对后修改并重新确认。" if mismatch else "图中直径标注与内径、线径关系不一致，请核对尺寸角色；参数未自动修改。" if role_conflict else item["reason"]
-            diagnostics.append({"field": field, "evidence_value": value, "current_value": current,
+        if field == "outer_diameter" and base is not None:
+            from .standardizers.calculation_state import sources
+            inner, wire = (params.get(key) or {} for key in ("inner_diameter", "wire_diameter"))
+            independent = all(not p.get("unit_pending") and not any("formula" in s or s == "derived" for s in sources(p)) for p in (inner, wire))
+            inner_base, wire_base = (converted(p.get("value"), factor("length", p.get("unit"))) for p in (inner, wire))
+            role_conflict = independent and inner_base is not None and wire_base is not None and abs(base - inner_base - 2 * wire_base) > .0001
+        if mismatch or unit_pending or role_conflict or not item["locations"]:
+            kind = "value_mismatch" if mismatch else "unit_pending" if unit_pending else "role_conflict" if role_conflict else "unlocated"
+            reason = {
+                "value_mismatch": "原图数值与当前参数不一致，请核对。",
+                "unit_pending": "原图单位待核对。" if base is None else "当前参数单位待核对。",
+                "role_conflict": "图中直径标注与内径、线径关系不一致，请核对尺寸角色。",
+                "unlocated": item["reason"],
+            }[kind]
+            diagnostics.append({**comparison, "current_value": current, "current_unit": current_unit,
                                 "evidence": item["evidence"], "pages": item.get("evidence_pages", []),
-                                "kind": "value_mismatch" if mismatch else "role_conflict" if role_conflict else "unlocated",
+                                "kind": kind,
                                 "reason": reason, "locations": [{"page": l["page"], "bbox": l["bbox"], "evidence": l["evidence"], "source": l["source"]} for l in item["locations"]],
                                 "localization_status": "located" if item["locations"] else states.get(field, "not_run")})
     return diagnostics
+
+
+def project_annotation_diagnostics(document, review):
+    """Refresh the read view without changing annotation coordinates or revisions."""
+    annotations = document.get("annotations") or []
+    states = {d["field"]: d.get("localization_status", "not_run") for d in document.get("diagnostics", [])}
+    comparisons = [_annotation_comparison(review, item) for item in annotations]
+    return {**document, "value_comparisons": [comparison for comparison in comparisons if comparison.get("quantity")],
+            "diagnostics": _annotation_diagnostics(review, annotations, states, comparisons)}
 
 
 def _local_ocr_blocks(job_dir: Path, pages: list[dict[str, Any]], document_id: str,

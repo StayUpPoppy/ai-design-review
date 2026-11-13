@@ -65,8 +65,8 @@ try{
   assert.ok(!(await row('point1').locator('[data-role="height-relation-note"]').innerText()).includes('待确认'));
   const exported=await page.evaluate(()=>makeGenerationParameterPackage());
   assert.equal(exported.generation_parameters.load_points.length,2);
-  assert.ok(exported.solidworks_preview.extraProperties['技术要求'].includes('P2：高度 95.44 mm'));
-  assert.ok(exported.solidworks_preview.extraProperties['技术要求'].includes('±221.96'));
+  assert.ok(exported.solidworks_preview.technicalRequirements['技术要求'].includes('P2：高度 95.44 mm'));
+  assert.ok(exported.solidworks_preview.technicalRequirements['技术要求'].includes('±221.96'));
   const frozen=structuredClone(exported);
   await h0().fill('140');
   assert.equal(await height('point1').inputValue(),'132.42');assert.equal(await height('point2').inputValue(),'102.09');
@@ -109,6 +109,7 @@ try{
   if(!process.env.SKIP_UI_QA_SCREENSHOTS)for(const width of [1440,1100,390]){await page.setViewportSize({width,height:width<500?1200:1000});await row('point1').scrollIntoViewIfNeeded();assert.equal(await row('point1').evaluate(e=>e.scrollWidth>e.clientWidth+2),false);await page.screenshot({path:`outputs/load-height-qa/load-${width}.png`});}
   for (const [index,c] of graphCases.entries()) {
     await page.evaluate(()=>{globalThis.oldParameterInput=document.querySelector('[data-compare-panel="parameters"] [data-field="free_length"] [data-role="value"]');});
+    await h0().blur();
     await open('graph'+index);
     const currentOrder=await page.evaluate(()=>({job:state.lastJob.job_id,review:JSON.stringify(state.review.spring_parameters.load_points)}));
     await page.evaluate(()=>{oldParameterInput.value='999';oldParameterInput.dispatchEvent(new Event('input',{bubbles:true}));oldParameterInput.dispatchEvent(new Event('change',{bubbles:true}));});
@@ -125,8 +126,8 @@ try{
     }
     const result=await page.evaluate(()=>makeGenerationParameterPackage());
     assert.deepEqual(Object.fromEntries(result.generation_parameters.load_points.map(p=>[p.label,p.height.value])),c.expected);
-    if(c.name==='main')assert.ok(result.solidworks_preview.extraProperties['技术要求'].includes('±150'));
-    if(c.name==='return')assert.ok(!result.solidworks_preview.extraProperties['技术要求'].includes('±'));
+    if(c.name==='main')assert.ok(result.solidworks_preview.technicalRequirements['技术要求'].includes('±150'));
+    if(c.name==='return')assert.ok(!result.solidworks_preview.technicalRequirements['技术要求'].includes('±'));
     await h0().fill('205');await h0().dispatchEvent('change');await flush();
     for(const p of points)assert.equal(await height(p.load_point_id).inputValue(),String(c.expected[p.label]),'Direct heights must not be subtracted from H0');
   }

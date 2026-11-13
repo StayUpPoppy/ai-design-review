@@ -138,6 +138,7 @@ def _merge_field(field: str, ordered: list[dict[str, Any]]) -> dict[str, Any]:
         "position": best.get("position"),
         "suggested_region": best.get("suggested_region", ""),
         "need_human_review": _needs_human_review(best, ordered),
+        **{key: best[key] for key in ("engineering_source", "unit_pending") if key in best},
     }
     for key in (*NORMALIZATION_KEYS, *TRANSLATION_KEYS, "surface_mapping", "raw_content", "standard_content", "diameter_role_evidence"):
         if key in best:

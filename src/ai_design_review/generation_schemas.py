@@ -124,7 +124,7 @@ class GenerationParametersV1(BaseModel):
     technical_requirements: list[GenerationTechnicalRequirementV1] = Field(default_factory=list, description="写入二维图固定区域的中文技术要求。")
     technical_requirements_text: str = Field(
         default="",
-        description="已确认原图技术要求按页面顺序汇总的内部文本；每行格式为“序号.中文类型：内容”。最终SW专用排序、合并及材料过滤结果读取solidworks_preview.extraProperties.技术要求。",
+        description="已确认原图技术要求按页面顺序汇总的内部文本；最终SW正文读取solidworks_preview.technicalRequirements.技术要求，旧包使用extraProperties.技术要求。",
         examples=["1.表面处理：表面镀锌。\n2.盐雾试验：96小时。"],
     )
 
@@ -136,6 +136,7 @@ class GenerationExportPolicyV1(BaseModel):
 
 class GenerationSourceV1(BaseModel):
     material_code: str | None = Field(default=None, max_length=256, description="人工填写的物料编码快照，空值传SW materialCode:null；保留前导零及内部空格。")
+    company_name: str | None = Field(default=None, max_length=512, exclude_if=lambda value: value is None, description="已保存的公司名称快照，传入SW请求顶层companyName，空值为字符串。")
     drawing_no: str | None = Field(default=None, description="原图纸编号；新建任务以字符串写入标题栏客户图号，仅去除首尾空白，保留前导零等内容。")
     drawing_name: str | None = Field(default=None, description="创建参数包时冻结的已保存图纸名称（可编辑，最多512字符，仅去首尾空白）；空值时SW模型名称回退到弹簧类型。")
     spring_type: str | None = Field(default=None, description="审图识别的弹簧类型代码。")
@@ -225,7 +226,7 @@ class GenerationExportPolicyV2(BaseModel):
 class GenerationSettings(BaseModel):
     drawing_model: Literal["X型", "Y型"] = Field(description="图纸版式：X型为横版，Y型为竖版。")
     username: str = Field(min_length=1, max_length=256, description="本次图纸署名，来自用户输入；不改变登录身份。")
-    typeface: Literal["宋体", "黑体"] | None = Field(default=None, exclude_if=lambda value: value is None, description="图纸字体；新建参数包缺省宋体，旧冻结设置缺少时不补写。")
+    typeface: Literal["宋体", "黑体", "仿宋"] | None = Field(default=None, exclude_if=lambda value: value is None, description="图纸字体；新建参数包缺省宋体，旧冻结设置缺少时不补写。")
 
 
 SolidWorksToleranceNumber = Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]
@@ -238,23 +239,27 @@ class SolidWorksPreviewV2(BaseModel):
 
     DrawingModel: Literal["X型", "Y型"] | None = Field(default=None, exclude_if=lambda value: value is None, description="X型横版、Y型竖版；旧冻结预览可缺少。")
     Username: str | None = Field(default=None, exclude_if=lambda value: value is None, description="本次输入的生图人姓名；旧冻结预览可缺少。")
-    typeface: Literal["宋体", "黑体"] | None = Field(default=None, exclude_if=lambda value: value is None, description="本次图纸字体，与Username同级；旧冻结预览可缺少且不补写。")
+    typeface: Literal["宋体", "黑体", "仿宋"] | None = Field(default=None, exclude_if=lambda value: value is None, description="本次图纸字体，与Username同级；旧冻结预览可缺少且不补写。")
 
     modelParameters: dict[str, int | float | str | None] = Field(
         description="SolidWorks 建模字段：线径、中径、自由高度、圈数、是否磨平、是否并紧；是否并紧为0时省略有效圈数n，否则保留该键。内部有效圈数及确认规则不变；不含 TaskId。"
     )
-    modelParametersTolerance: dict[Literal["外径", "自由高度", "中径"], SolidWorksToleranceValue] | None = Field(
+    modelParametersTolerance: dict[Literal["外径", "内径", "自由高度", "中径"], SolidWorksToleranceValue] | None = Field(
         default=None, exclude_if=lambda value: value is None,
-        description="可选已确认有效公差，按外径、自由高度、中径顺序输出mm幅值。对称公差为非负数字，不对称或单边为[上偏差绝对值,下偏差绝对值]两个有限非负数字；同方向偏差阻止新建SW任务。缺值、待确认、非法及失效值省略，0有效，小公差不截断。历史冻结请求及重试保持原样。",
-        examples=[{"外径": 1.5, "自由高度": 0.5, "中径": 0.2}],
+        description="已确认有效的外径、内径、自由高度及中径公差，以mm输出。对称公差为非负数字，不对称或单边为[上偏差绝对值,下偏差绝对值]。同方向偏差阻止新建SW任务。缺值、待确认、非法及失效值省略，0有效，小公差不截断。",
+        examples=[{"外径": 1.5, "内径": 0.01, "自由高度": 0.5, "中径": [0.1, 0.2]}],
     )
     customProperties: dict[str, str | None] = Field(default_factory=dict, description="旋向等模型属性，旋向仍传左旋/右旋；技术要求首项另写左/右。旧预览可省略。")
-    extraProperties: dict[str, int | float | str] = Field(default_factory=dict, description="技术要求多行文本（前三项依次为已确认有效的旋向左/右、总圈数与有效圈数合并行、端部状态；仅并紧且磨平时输出两端并紧并磨平，磨面角≥270°；不新增审图编辑条目；不并紧时合并圈数行省略有效圈数，其余状态使用有效圈数名称，原图和人工圈数要求保留；独立纯材料句不输出，材料仍在标题栏；其余要求沿原顺序连续编号）及可用的 P'（N/mm）、C、τ_b（MPa）；缺项省略键名。")
+    technicalRequirements: dict[Literal["技术要求"], str] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+        description="成图技术要求的连续编号正文；全部删除时为{\"技术要求\": \"\"}。历史包可在extraProperties中保留原正文。",
+    )
+    extraProperties: dict[str, int | float | str] = Field(default_factory=dict, description="可用的 P'（N/mm）、C、τb（MPa）、L（mm）。缺项省略键名，历史包可保留旧键及技术要求正文。")
     titleBlockProperties: dict[str, int | float | str] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
         description="标题栏属性按材料、重量、客户图号、垂直度A、表面粗糙度顺序输出：已确认材料纯牌号、单件重量（数字，kg，最多八位小数）、参数包source.drawing_no中的客户图号（字符串，仅去首尾空白）及已确认有效的表面粗糙度Ra（数字，μm）。图号缺失或为空时独立省略，不增加生图拦截。垂直度A读取当前已确认有效的高级参数垂直度，输出有限非负mm数字，0有效；缺值、冲突、待确认、非法或失效时省略，不依赖客户图号。粗糙度对应独立句不再输出到技术要求；其它部位及附加条件保留。各项缺失时省略键；新预览都缺失时为空对象，旧预览可省略此字段或客户图号，已冻结请求及重试保持原样。",
-        examples=[{"材料": "SUS304", "重量": 0.00642403, "客户图号": "YD4765020178", "垂直度A": 0.01, "表面粗糙度": 12.5}],
+        examples=[{"材料": "SUS304", "重量": 0.00642403, "客户图号": "YD4765020178", "垂直度A": 0.01, "表面粗糙度Ra": 12.5}],
     )
 
 
@@ -290,7 +295,14 @@ class GenerationParameterPackageV2(GenerationParameterPackageV1):
                 "technical_requirements_text": "1.其他要求：两端磨平，表面镀锌。",
             },
             "derived_parameters": {},
-            "solidworks_preview": {"modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10.5, "有效圈数n": 8.25, "是否磨平": 1, "是否并紧": 1}, "modelParametersTolerance": {"外径": 1.5, "自由高度": 0.5, "中径": 0.2}, "customProperties": {"旋向": "右旋"}, "extraProperties": {"技术要求": "1.旋向：右。\n2.总圈数：10.5，有效圈数：8.25。\n3.两端并紧并磨平，磨面角≥270°。", "C": 7.6667}, "titleBlockProperties": {"材料": "65Mn", "客户图号": "SPRING-001", "垂直度A": 0.01}},
+            "solidworks_preview": {
+                "modelParameters": {"线径": 3, "中径": 23, "自由高度": 45, "圈数": 10.5, "有效圈数n": 8.25, "是否磨平": 1, "是否并紧": 1},
+                "modelParametersTolerance": {"外径": 1.5, "内径": 0.01, "自由高度": 0.5, "中径": [0.1, 0.2]},
+                "customProperties": {"旋向": "右旋"},
+                "technicalRequirements": {"技术要求": "1.旋向：右。\n2.总圈数：10.5，有效圈数：8.25。\n3.两端并紧并磨平，磨面角≥270°。"},
+                "extraProperties": {"C": 7.6667},
+                "titleBlockProperties": {"材料": "65Mn", "客户图号": "SPRING-001", "垂直度A": 0.01, "表面粗糙度Ra": 12.5},
+            },
         }]},
     )
 

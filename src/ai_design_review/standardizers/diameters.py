@@ -149,7 +149,11 @@ def _param_value(parameters: dict[str, Any], field: str) -> Any:
     if uses_unadopted_diameter_default(parameters, field):
         return None
     item = parameters.get(field)
-    return item.get("value") if isinstance(item, dict) else item
+    if not isinstance(item, dict):
+        return item
+    from ..engineering_units import metric_item
+    metric = metric_item(item, field)
+    return None if metric.get("unit_pending") else metric.get("value")
 
 
 def _number(value: Any) -> float | None:

@@ -20,7 +20,7 @@ from ai_design_review.solidworks import build_solidworks_command
 
 def shared_cases():
     cases = []
-    for font in [None, "宋体", "黑体"]:
+    for font in [None, "宋体", "黑体", "仿宋"]:
         review = ready_review()
         review["generation_settings"] = {"drawing_model": "Y型", "username": "阿拉伯特"}
         if font is not None:
@@ -92,12 +92,19 @@ def main():
                     os.environ["AI_REVIEW_MOCK_REAL_NAME"] = original_name
                 review = ready_review()
                 before_parameters = deepcopy(review["spring_parameters"])
-                review["generation_settings"] = {"drawing_model": "Y型", "username": " 阿拉伯特 ", "typeface": "黑体"}
+                review["generation_settings"] = {"drawing_model": "Y型", "username": " 阿拉伯特 ", "typeface": "仿宋"}
+                review["drawing_summary"]["company_name"] = "  甲  公司  "
                 saved = client.patch(endpoint, json={"review": review, "expected_revision": 1})
                 assert saved.status_code == 200, saved.text
                 revision = saved.json()["review_revision"]
                 reopened = client.get(endpoint).json()
-                assert reopened["generation_settings"] == {"drawing_model": "Y型", "username": "阿拉伯特", "typeface": "黑体"}
+                assert reopened["generation_settings"] == {"drawing_model": "Y型", "username": "阿拉伯特", "typeface": "仿宋"}
+                assert reopened["drawing_summary"]["company_name"] == "甲  公司"
+                for invalid_name in (42, "甲" * 513):
+                    invalid = deepcopy(review)
+                    invalid["drawing_summary"]["company_name"] = invalid_name
+                    rejected = client.patch(endpoint, json={"review": invalid, "expected_revision": revision})
+                    assert rejected.status_code == 422 and rejected.json()["detail"]["code"] == "company_name_invalid"
                 for key, parameter in before_parameters.items():
                     if isinstance(parameter, dict) and "need_human_review" in parameter:
                         assert reopened["spring_parameters"][key]["need_human_review"] == parameter["need_human_review"], key
@@ -108,7 +115,10 @@ def main():
                 assert second_job["generation_settings"] == reopened["generation_settings"]
                 model = submissions[-1]["models"][0]
                 assert (model["DrawingModel"], model["Username"]) == ("Y型", "阿拉伯特")
-                assert model["typeface"] == "黑体"
+                assert model["typeface"] == "仿宋"
+                assert list(submissions[-1])[:2] == ["TaskId", "companyName"]
+                assert submissions[-1]["companyName"] == "甲  公司" and "companyName" not in model
+                assert client.get(endpoint + "/generation-package").json()["parameter_package"]["source"]["company_name"] == "甲  公司"
                 assert list(model).index("typeface") == list(model).index("Username") + 1
                 assert "typeface" not in model["modelParameters"] and "typeface" not in model["titleBlockProperties"]
                 assert "Username" not in model["modelParameters"] and "DrawingModel" not in model["titleBlockProperties"]
@@ -123,6 +133,7 @@ def main():
                     assert record.parameter_package["generation_settings"] == package["generation_settings"]
                     assert record.owner_username == OWNER["username"]
                 assert frozen["execution_options"]["solidworks_payload"]["models"][0]["Username"] == OWNER["real_name"]
+                assert frozen["execution_options"]["solidworks_payload"]["companyName"] == ""
                 assert frozen["parameter_hash"] != second_job["parameter_hash"]
                 # A font-only change uses a different hash and cannot reuse the old key.
                 review["generation_settings"]["typeface"] = "宋体"
@@ -134,7 +145,14 @@ def main():
                 assert third.status_code == 202, third.text
                 assert third.json()["generation_job"]["parameter_hash"] != second_job["parameter_hash"]
                 assert submissions[-1]["models"][0]["typeface"] == "宋体"
-                assert GenerationStore(repository).get_job(second_job["generation_id"], owner_user_id=OWNER["user_id"])["generation_settings"]["typeface"] == "黑体"
+                assert GenerationStore(repository).get_job(second_job["generation_id"], owner_user_id=OWNER["user_id"])["generation_settings"]["typeface"] == "仿宋"
+                review["drawing_summary"]["company_name"] = ""
+                cleared = client.patch(endpoint, json={"review": review, "expected_revision": revision})
+                assert cleared.status_code == 200, cleared.text
+                revision = cleared.json()["review_revision"]
+                assert client.get(endpoint).json()["drawing_summary"]["company_name"] == ""
+                assert client.get(endpoint + "/generation-package").json()["parameter_package"]["source"]["company_name"] == ""
+                assert GenerationStore(repository).get_job(second_job["generation_id"], owner_user_id=OWNER["user_id"])["execution_options"]["solidworks_payload"]["companyName"] == "甲  公司"
                 review["generation_settings"]["username"] = ""
                 saved = client.patch(endpoint, json={"review": review, "expected_revision": revision})
                 assert saved.status_code == 200, saved.text

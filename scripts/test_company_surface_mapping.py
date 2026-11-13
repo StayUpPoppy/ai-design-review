@@ -92,16 +92,16 @@ def main():
     for v in review["technical_requirements"]: v["need_human_review"] = False
     package = build_generation_parameter_package(review)
     GenerationParameterPackageV2.model_validate(package)
-    text = package["solidworks_preview"]["extraProperties"]["技术要求"]
+    text = package["solidworks_preview"]["technicalRequirements"]["技术要求"]
     assert text.count(CHINESE) == 1 and "Fe/Ep" not in text and "268mm" in text and "保持6h" in text, text
     frozen = deepcopy(package)
     legacy = deepcopy(package); legacy["generation_parameters"]["technical_requirements"] = []
     legacy["generation_parameters"]["technical_requirements_text"] = RAW + "\n消除应力退火"
-    assert "Fe/Ep" not in build_solidworks_preview(legacy, review)["extraProperties"]["技术要求"]
+    assert "Fe/Ep" not in build_solidworks_preview(legacy, review)["technicalRequirements"]["技术要求"]
     previous = deepcopy(review); review["technical_requirements"][0]["surface_mapping"]["catalog_ids"] = [company_id("电镀-镀白锌")]
     synchronize_surface_review(review, previous)
     assert review["technical_requirements"][0]["need_human_review"] is True
-    assert build_solidworks_command("1000000001", frozen, review)["models"][0]["extraProperties"]["技术要求"] == text
+    assert build_solidworks_command("1000000001", frozen, review)["models"][0]["technicalRequirements"]["技术要求"] == text
     # Inspect the actual outgoing model request while replacing the transport.
     import httpx
     calls = []

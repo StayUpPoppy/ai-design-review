@@ -98,12 +98,12 @@ try {
     assert.equal(await row.locator('[data-action="adopt-roughness-reference"]').count(), 2);
     assert.equal(await action("customize").count(), 0);
     assert.equal(await input.inputValue(), "");
-    assert.equal((await preview()).titleBlockProperties["表面粗糙度"], undefined);
+    assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], undefined);
     await action("adopt", value).click();
-    assert.equal((await preview()).titleBlockProperties["表面粗糙度"], undefined);
+    assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], undefined);
     await row.locator('[data-role="confirm"]').click();
     assert.equal(await flush(), true);
-    assert.equal((await preview()).titleBlockProperties["表面粗糙度"], value);
+    assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], value);
   }
   for (const extra of [{ value: 6.3 }, { value: 0 }, { value: -1 }, { roughness_conflict: true, roughness_candidates: [{ value: 6.3 }, { value: 12.5 }] }, { derived_value_stale: true }]) {
     await reset(extra);
@@ -117,7 +117,7 @@ try {
   assert.equal(await input.inputValue(), "12.5");
   assert.equal(await input.evaluate((el) => document.activeElement === el), true);
   assert.ok((await row.textContent()).includes("人工采用项目参考"));
-  assert.equal((await preview()).titleBlockProperties["表面粗糙度"], undefined);
+  assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], undefined);
   assert.equal(await page.evaluate(() => state.review.spring_parameters.surface_roughness_ra.need_human_review), true);
   assert.equal(await page.evaluate(() => state.review.spring_parameters.surface_roughness_ra.confirmation_snapshot), undefined);
   assert.equal(await panel.locator('[data-kind="technical"]').count(), technicalCount);
@@ -127,27 +127,27 @@ try {
   assert.equal(saved.spring_parameters.surface_roughness_ra.surface_location, "两端面");
   await row.locator('[data-role="confirm"]').click();
   assert.equal(await flush(), true);
-  assert.equal((await preview()).titleBlockProperties["表面粗糙度"], 12.5);
-  assert.ok(!(await preview()).extraProperties["技术要求"].includes("粗糙度"));
+  assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], 12.5);
+  assert.ok(!(await preview()).technicalRequirements["技术要求"].includes("粗糙度"));
   await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
-  assert.equal((await preview()).titleBlockProperties["表面粗糙度"], 12.5);
+  assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], 12.5);
   await input.fill("6.3");
   await row.locator('[data-role="confirm"]').click();
   assert.equal(await flush(), true);
-  assert.equal((await preview()).titleBlockProperties["表面粗糙度"], 6.3);
+  assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], 6.3);
   assert.ok((await row.textContent()).includes("人工填写"));
   assert.ok(!saved.spring_parameters.surface_roughness_ra.source.includes("human_roughness_reference"));
   await input.fill(""); await input.blur();
   assert.equal(await flush(), true);
   assert.equal(await action("show").count(), 1);
-  assert.equal((await preview()).titleBlockProperties["表面粗糙度"], undefined);
+  assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], undefined);
   await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
   assert.equal(await input.inputValue(), ""); assert.equal(await action("show").count(), 1);
   await action("show").click(); await input.click();
   assert.equal(await input.evaluate((el) => document.activeElement === el), true);
   await input.fill("3.2"); await row.locator('[data-role="confirm"]').click();
   assert.equal(await flush(), true);
-  assert.equal((await preview()).titleBlockProperties["表面粗糙度"], 3.2);
+  assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], 3.2);
   await reset();
   failNextPatch = true;
   await action("dismiss").click();
@@ -160,13 +160,13 @@ try {
   assert.equal(saved.spring_parameters.surface_roughness_ra.roughness_reference_dismissed, true);
   await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
   assert.equal(await action("show").count(), 1); assert.equal(await action("adopt").count(), 0);
-  assert.equal((await preview()).titleBlockProperties["表面粗糙度"], undefined);
+  assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], undefined);
   await action("show").click(); await action("adopt").click();
   assert.equal(await flush(), true);
   assert.equal(await page.evaluate(() => buildSafeConfirmationPlan(state.review).items.some((item) => item.field === "surface_roughness_ra")), true);
   await panel.locator('[data-action="confirm-all-review-items"]').click();
   assert.equal(await flush(), true);
-  assert.equal((await preview()).titleBlockProperties["表面粗糙度"], 12.5);
+  assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], 12.5);
   assert.ok((await row.textContent()).includes("已确认"));
   await input.fill(""); await input.blur(); assert.equal(await flush(), true);
   await action("show").click();
@@ -202,7 +202,7 @@ try {
     assert.equal(await flush(), true);
     assert.equal(saved.spring_parameters.surface_roughness_ra.value, 12.5);
     assert.equal(saved.spring_parameters.surface_roughness_ra.need_human_review, true);
-    assert.equal((await preview()).titleBlockProperties["表面粗糙度"], undefined);
+    assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], undefined);
     assert.deepEqual(fs.readFileSync(process.env.ROUGHNESS_LEGACY_REVIEW), original, "Offline acceptance never changes the real order file");
     await reset();
   }
@@ -237,13 +237,13 @@ try {
     await page.evaluate(() => renderCompareOverlay());
     assert.equal(await details.getAttribute('open'), "", "Rerender preserves disclosure state in the page session");
     assert.ok((await details.textContent()).includes(longEvidence));
-    assert.equal((await preview()).titleBlockProperties['表面粗糙度'], undefined);
+    assert.equal((await preview()).titleBlockProperties['表面粗糙度Ra'], undefined);
     assert.equal(await row.locator('[data-role="roughness-candidate"]').count(), 0, "Unverified values have no quick adoption");
     await input.fill('12.5'); await input.blur();
     await row.locator('[data-role="confirm"]').click(); assert.equal(await flush(), true);
-    assert.equal((await preview()).titleBlockProperties['表面粗糙度'], 12.5);
+    assert.equal((await preview()).titleBlockProperties['表面粗糙度Ra'], 12.5);
     await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
-    assert.equal((await preview()).titleBlockProperties['表面粗糙度'], 12.5);
+    assert.equal((await preview()).titleBlockProperties['表面粗糙度Ra'], 12.5);
     assert.equal(await details.getAttribute('open'), null, "Reload starts with the original evidence collapsed");
     assert.equal(saved.spring_parameters.surface_roughness_ra.evidence, longEvidence);
   }
@@ -274,7 +274,7 @@ try {
     assert.ok((await evidence.innerText()).includes("疑似 Ra 3.2"));
     await input.fill('3.2'); await input.blur(); await row.locator('[data-role="confirm"]').click();
     assert.equal(await flush(), true);
-    assert.equal((await preview()).titleBlockProperties['表面粗糙度'], 3.2, "Manual input remains confirmable");
+    assert.equal((await preview()).titleBlockProperties['表面粗糙度Ra'], 3.2, "Manual input remains confirmable");
   }
   const positiveFixture = `${pairedFixture}/v3_review.json`;
   if (fs.existsSync(positiveFixture)) {
@@ -287,14 +287,14 @@ try {
     await page.waitForFunction(() => DrawingAnnotations.entry()?.document?.pages?.length && document.querySelectorAll('.annotation-bubble[data-annotation-id="surface_roughness_ra"]').length === 2);
     assert.equal(await input.inputValue(), "12.5");
     assert.equal(await action("adopt").count(), 0);
-    assert.equal((await preview()).titleBlockProperties["表面粗糙度"], undefined);
+    assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], undefined);
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1100 }); await row.scrollIntoViewIfNeeded();
       assert.equal(await row.evaluate((el) => el.scrollWidth > el.clientWidth + 2), false);
       if (!process.env.SKIP_UI_QA_SCREENSHOTS) await page.screenshot({ path: `outputs/roughness-reference-qa/restored-${width}.png` });
     }
     await row.locator('[data-role="confirm"]').click(); assert.equal(await flush(), true);
-    assert.equal((await preview()).titleBlockProperties["表面粗糙度"], 12.5);
+    assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], 12.5);
     const valueOnly = { ...positive, need_human_review: true, value_verified: true, recognition_state: "needs_location", position: null,
       roughness_candidates: positive.roughness_candidates.map((c) => ({ ...c, evidence_status: "unverified", verification_method: "needs_location", recognition_state: "needs_location", independent_evidence: [], position: null })) };
     for (const a of annotationDocument.annotations) if (a.field === "surface_roughness_ra") { a.locations = []; a.status = "unlocated"; a.reason = "数值已核实，位置待核对"; }
@@ -305,7 +305,7 @@ try {
     assert.equal(await action("adopt").count(), 0);
     assert.equal(await page.locator('.annotation-bubble[data-annotation-id="surface_roughness_ra"]').count(), 0);
     await row.locator('[data-role="confirm"]').click(); assert.equal(await flush(), true);
-    assert.equal((await preview()).titleBlockProperties["表面粗糙度"], 12.5, "Position ambiguity does not block a confirmed verified scalar");
+    assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], 12.5, "Position ambiguity does not block a confirmed verified scalar");
     await page.setViewportSize({ width: 1440, height: 1100 });
     await page.locator('.annotation-unlocated summary').click();
     await page.locator('[data-annotation-place="surface_roughness_ra"]').last().click();
@@ -317,7 +317,7 @@ try {
     assert.equal(annotationDocument.annotations.find((a) => a.field === "surface_roughness_ra").locations[0].source, "manual");
     await page.reload(); await reopen();
     await page.waitForFunction(() => document.querySelectorAll('.annotation-bubble[data-annotation-id="surface_roughness_ra"]').length === 1);
-    assert.equal((await preview()).titleBlockProperties["表面粗糙度"], 12.5);
+    assert.equal((await preview()).titleBlockProperties["表面粗糙度Ra"], 12.5);
     annotationDocument = structuredClone(pairedAnnotations);
     const pending = { ...positive, value: null, need_human_review: true, recognition_state: "failed",
       roughness_candidates: positive.roughness_candidates.map((c) => ({ ...c, evidence_status: "unverified", recognition_state: "failed", independent_evidence: [] })) };

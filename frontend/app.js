@@ -172,28 +172,33 @@ function toleranceTarget(kind, target) {
     const creation = kind === "load-height-create" ? loadPointCreateDraft() : null;
     const point = kind === "load-height" ? params.load_points?.find(item => item.load_point_id === target) : null;
     if (!point && (!creation || creation.id !== target)) return null;
-    const source = point || creation;
-    const unit = point?.height_unit || "mm";
-    const value = point ? readLoadHeightTolerance(point) : ToleranceValues.parse(creation.heightToleranceText, { unit });
-    const input = point?.height_tolerance_input_draft || (creation && !value.ok ? creation.heightToleranceText : "");
+    const source = point ? engineeringPoint(point) : creation;
+    const unit = point ? source.height_unit || "mm" : engineeringUnit("mm");
+    const text = creation ? loadPointDraftView(creation, "heightToleranceText") : "";
+    const value = point ? readLoadHeightTolerance(source) : ToleranceValues.parse(text, { unit });
+    const input = point?.height_tolerance_input_draft || (creation && !value.ok ? text : "");
     const item = { tolerance_upper: value.upper, tolerance_lower: value.lower, tolerance_input_draft: input };
     return { item, point, creation, pending: point?.height_tolerance_status === "uncertain", liveNominal: Boolean(creation),
-      nominal: source.height, unit, label: `${point?.height_label || source.label || "新增载荷"}高度`, quantity: "高度" };
+      nominal: point ? source.height : loadPointDraftView(creation, "height"), unit, label: `${point?.height_label || source.label || "新增载荷"}高度`, quantity: "高度" };
   }
   if (kind === "load-create") {
     const creation = loadPointCreateDraft();
     if (!creation || creation.id !== target) return null;
-    const value = ToleranceValues.parse(creation.toleranceText, { load: true, unit: "N" });
+    const unit = engineeringUnit("N");
+    const text = loadPointDraftView(creation, "toleranceText");
+    const value = ToleranceValues.parse(text, { load: true, unit });
     const item = value.ok ? { load_tolerance_upper: value.upper, load_tolerance_lower: value.lower, load_tolerance_percent: value.percent }
-      : { tolerance_input_draft: creation.toleranceText };
-    return { item, creation, liveNominal: true, nominal: creation.force, unit: "N", label: `${creation.label || "新增载荷"} 力值` };
+      : { tolerance_input_draft: text };
+    return { item, creation, liveNominal: true, nominal: loadPointDraftView(creation, "force"), unit, label: `${creation.label || "新增载荷"} 力值` };
   }
   if (kind === "load") {
     const item = params.load_points?.find(point => String(point.load_point_id || point.label) === target);
-    return item ? { item, nominal: item.force, unit: item.force_unit || "N", label: `${item.label} 力值` } : null;
+    const display = item && engineeringPoint(item);
+    return item ? { item: display, canonical: item, nominal: display.force, unit: display.force_unit || "N", label: `${item.label} 力值` } : null;
   }
   const item = params[target];
-  return item ? { item, nominal: item.value, unit: item.unit || getFieldMeta(target, state.review).unit || "", label: getFieldMeta(target, state.review).label || FIELD_LABELS[target] || target } : null;
+  const display = item && engineeringItem(item, getFieldMeta(target, state.review).unit);
+  return item ? { item: display, canonical: item, nominal: display.value, unit: display.unit || "", label: getFieldMeta(target, state.review).label || FIELD_LABELS[target] || target } : null;
 }
 
 function getToleranceEditor() {
@@ -216,23 +221,24 @@ function toleranceEditingAllowed() { return getToleranceEditor()?.guard() ?? tru
 function commitToleranceEditor(draft, resolved, value) {
   if (draft.kind === "load-height-create") {
     if (loadPointCreateDraft()?.id !== draft.target) return false;
-    resolved.creation.heightToleranceText = ToleranceValues.format(value);
+    updateLoadPointDraft(resolved.creation, "heightToleranceText", ToleranceValues.format(value));
     resolved.creation.error = "";
     return true;
   }
   if (draft.kind === "load-create") {
     if (loadPointCreateDraft()?.id !== draft.target) return false;
-    resolved.creation.toleranceText = ToleranceValues.format(value);
+    updateLoadPointDraft(resolved.creation, "toleranceText", ToleranceValues.format(value));
     resolved.creation.error = "";
     return true;
   }
   const height = draft.kind === "load-height";
-  const item = height ? resolved.point : resolved.item;
+  const item = height ? resolved.point : resolved.canonical || resolved.item;
   const load = height || draft.kind === "load";
   if (height) {
     value = scaleLoadHeightTolerance(value, LoadHeightRelations.unitFactor(resolved.unit));
     if (!value.ok) { updateLatestReviewMessage(value.error); return false; }
   }
+  else value = globalThis.EngineeringUnits?.tolerance(value, engineeringScale(draft.kind === "load" ? item.force_unit || "N" : item.unit)) || value;
   const field = load ? loadPointField(item, state.review.spring_parameters.load_points.indexOf(item)) : draft.target;
   const before = load ? loadPointAuditState(item) : parameterAuditState(item);
   rememberConfirmedSnapshot(item);
@@ -1739,7 +1745,7 @@ async function flushReviewPersistence(options = {}) {
     if (options.throwOnError) throw new Error("请先保存或取消当前公差编辑。");
     return false;
   }
-  document.querySelectorAll('[data-role="drawing-no"], [data-role="drawing-name"], [data-role="material-code"]').forEach((input) => input.commitDrawingNo?.());
+  document.querySelectorAll(".drawing-summary-editor input").forEach((input) => input.commitDrawingNo?.());
   const summaryError = drawingSummaryValidationError(state.review);
   if (summaryError) {
     if (options.throwOnError) throw new Error(summaryError);
@@ -1985,7 +1991,7 @@ async function reconcileParameterRevisionConflict(jobId, inFlightEvents) {
   ]));
   const technicalId = (field) => field?.startsWith("technical_requirements.") ? field.slice("technical_requirements.".length) : null;
   const settingKey = (field) => ["generation_settings.drawing_model", "generation_settings.typeface", "generation_settings.username"].includes(field) ? field.split(".")[1] : null;
-  const summaryKey = (field) => ["drawing_summary.drawing_no", "drawing_summary.drawing_name", "drawing_summary.material_code"].includes(field) ? field.split(".")[1] : null;
+  const summaryKey = (field) => ["drawing_summary.drawing_no", "drawing_summary.drawing_name", "drawing_summary.material_code", "drawing_summary.company_name"].includes(field) ? field.split(".")[1] : null;
   const diameterCandidateId = field => field?.startsWith("diameter_role_candidates.") ? field.slice("diameter_role_candidates.".length) : null;
   const fieldItem = (review, field) => field === "standard_selection" ? review.standard_selection : field === "diameter_linkage" ? diameterRoleGroupState(review) : summaryKey(field) ? { value: review.drawing_summary?.[summaryKey(field)] ?? "" } : settingKey(field) ? { value: review.generation_settings?.[settingKey(field)] ?? null } : loadId(field)
     ? review.spring_parameters?.load_points?.find((item) => item.load_point_id === loadId(field))
@@ -3371,6 +3377,7 @@ function cachedReviewMetadata(review, revision) {
 }
 function sameReviewMetadata(a,b){ return ["review_revision","annotation_revision","source_document_id","preview_version"].every(key=>a?.[key]===b?.[key]); }
 function showLoadedReview(jobId, payload, item, cached, scope, controller, round, sourceRound) {
+  if (!state.compareOpen || state.lastJob?.job_id !== jobId) DrawingAnnotations.resetDiagnostics(jobId);
   resetGenerationState();state.lastJob={job_id:jobId,review_revision:payload.review_revision??item?.revision??null,persistence:{mode:"postgresql"}};
   state.compareTab=cached?.tab||"workbench";state.reviewPersistenceFailedFields={};state.reviewDraftFields.clear();
   setReview(normalizeReview(structuredClone(payload)), toBackendAssetUrl(payload.image_url||item?.image_url),{readOnlySnapshot:true});
@@ -3429,7 +3436,7 @@ async function openPersistedReview(jobId, options = {}) {
     if(!payload){const response=await apiFetch(`/api/reviews/${encodeURIComponent(jobId)}`);payload=await response.json();
       if(!current())return;if(!response.ok)throw Error(typeof payload.detail==='string'?payload.detail:"无法恢复审图记录");
       if(payload.record_kind==='source'){reviewSync.locked=false;reviewLoadingStatus();await multiSpecUI.open(jobId,round);return;}
-      DrawingAnnotations.release(jobId);
+      DrawingAnnotations.release(jobId, { keepDiagnostics: state.compareOpen && state.lastJob?.job_id === jobId });
       showLoadedReview(jobId,payload,item,cached,scope,controller,round,sourceRound);
     }
     if(!current())return;
@@ -3823,6 +3830,12 @@ function renderSummaryHtml(review) {
         <span data-role="drawing-no-save-status" role="status"></span>
         <button type="button" class="secondary-action" data-role="retry-drawing-no-save" hidden>重试保存</button>
       </label>
+      <label class="metric drawing-summary-editor">
+        <span>公司名称</span>
+        <input type="text" data-role="company-name" aria-label="公司名称" placeholder="请输入公司名称（可选）" value="${escapeHtml(String(info.company_name ?? ""))}">
+        <span data-role="company-name-save-status" role="status"></span>
+        <button type="button" class="secondary-action" data-role="retry-company-name-save" hidden>重试保存</button>
+      </label>
       <label class="metric drawing-summary-editor material-code-editor">
         <span>物料编码</span>
         <input type="text" data-role="material-code" aria-label="物料编码" placeholder="请输入物料编码（可选）" value="${escapeHtml(String(info.material_code ?? ""))}">
@@ -3834,10 +3847,10 @@ function renderSummaryHtml(review) {
 }
 
 function bindDrawingNoEditor(root, review, messageId) {
-  root.querySelectorAll('[data-role="drawing-no"], [data-role="drawing-name"], [data-role="material-code"]').forEach((input) => {
+  root.querySelectorAll(".drawing-summary-editor input").forEach((input) => {
     if (input.commitDrawingNo) return;
     const role = input.dataset.role;
-    const key = role === "drawing-name" ? "drawing_name" : role === "material-code" ? "material_code" : "drawing_no";
+    const key = role.replaceAll("-", "_");
     const field = `drawing_summary.${key}`;
     const node = input.closest(".drawing-summary-editor");
     const status = node.querySelector(`[data-role="${role}-save-status"]`);
@@ -3875,7 +3888,7 @@ function bindDrawingNoEditor(root, review, messageId) {
 }
 
 function drawingSummaryValidationError(review, key = null) {
-  for (const [field, label, limit] of [["drawing_name", "图纸名称", 512], ["material_code", "物料编码", 256]]) {
+  for (const [field, label, limit] of [["drawing_name", "图纸名称", 512], ["material_code", "物料编码", 256], ["company_name", "公司名称", 512]]) {
     if (key && key !== field) continue;
     if (Array.from(String(review?.drawing_summary?.[field] ?? "").trim()).length > limit) return `${label}最长${limit}字符，请缩短后重试`;
   }
@@ -3887,7 +3900,7 @@ function syncDrawingNoControls() {
   document.querySelectorAll(".drawing-summary-editor").forEach((node) => {
     const input = node.querySelector("input");
     const role = input.dataset.role;
-    const key = role === "drawing-name" ? "drawing_name" : role === "material-code" ? "material_code" : "drawing_no";
+    const key = role.replaceAll("-", "_");
     const persistence = parameterPersistenceState(`drawing_summary.${key}`);
     const error = drawingSummaryValidationError(state.review, key);
     if (input !== document.activeElement) input.value = String(state.review.drawing_summary?.[key] ?? "");
@@ -4996,6 +5009,178 @@ function confirmationSheetProvisionalDefault(params, field, path = []) {
   return usesSystemDefaultCandidate(item);
 }
 
+let engineeringDisplay = { navigation: -1, mode: "metric" };
+
+function engineeringMode(review = state.review) {
+  return review === state.review && engineeringDisplay.navigation === state.reviewNavigationSerial
+    && engineeringDisplay.job === state.lastJob?.job_id ? engineeringDisplay.mode : "metric";
+}
+
+function engineeringUnit(unit) { return globalThis.EngineeringUnits?.displayUnit(unit, engineeringMode()) || unit; }
+function engineeringScale(unit) { return globalThis.EngineeringUnits?.scale(unit, engineeringMode()) || 1; }
+function engineeringItem(item, unit) { return globalThis.EngineeringUnits?.item(item, engineeringMode(), unit) || item; }
+function engineeringPoint(point, review) {
+  const view = point.unit_pending ? { ...point, unit_pending: false } : point;
+  for (const field of point.unit_pending_fields || []) {
+    if (field === "height") Object.assign(view, { height: "", height_unit: "mm" });
+    if (field === "force") Object.assign(view, { force: "", force_unit: "N", load_tolerance_upper: null, load_tolerance_lower: null });
+  }
+  return globalThis.EngineeringUnits?.point(view, engineeringMode(review)) || view;
+}
+function engineeringInput(value, unit) { return globalThis.EngineeringUnits?.fromDisplay(value, unit, engineeringMode()) ?? value; }
+function engineeringText(text, mode = engineeringMode(), options) { return globalThis.EngineeringUnits?.text(text, mode, options) ?? text; }
+function displayEngineeringText(text, mode = engineeringMode()) { return engineeringText(text, mode, { display: true }); }
+function formatEngineeringNumber(value) { return globalThis.EngineeringUnits?.format(value) ?? String(value ?? ""); }
+function formatEngineeringTolerance(value) {
+  // Choose the notation using the exact bounds, so asymmetric tolerances
+  // do not become symmetric just because the displayed magnitudes coincide.
+  return ToleranceValues.format(value).replace(/[+-]?\d+(?:\.\d+)?(?:e[+-]?\d+)?/gi, token => {
+    const rounded = formatEngineeringNumber(token);
+    return token.startsWith("+") && rounded !== "0" ? `+${rounded}` : rounded;
+  });
+}
+
+const loadDraftTolerance = { heightToleranceText: "mm", toleranceText: "N" };
+
+function loadPointDraftView(draft, field, rounded = false) {
+  if (!draft) return "";
+  const value = draft[field];
+  if (draft.invalidFields?.[field] || !value) return value;
+  const units = globalThis.EngineeringUnits;
+  const toleranceUnit = loadDraftTolerance[field];
+  if (toleranceUnit) {
+    const tolerance = ToleranceValues.parse(value, { load: toleranceUnit === "N", unit: toleranceUnit });
+    if (!tolerance.ok) return value;
+    const projected = units.tolerance(tolerance, 1 / engineeringScale(toleranceUnit));
+    return rounded ? formatEngineeringTolerance(projected) : ToleranceValues.format(projected);
+  }
+  const projected = units.toDisplay(value, field === "height" ? "mm" : "N", engineeringMode());
+  return rounded ? formatEngineeringNumber(projected) : String(projected);
+}
+
+function updateLoadPointDraft(draft, field, text) {
+  (draft.invalidFields ||= {})[field] = false;
+  const unit = loadDraftTolerance[field];
+  if (unit) {
+    const parsed = ToleranceValues.parse(text, { load: unit === "N", unit: engineeringUnit(unit) });
+    if (parsed.ok) {
+      draft[field] = ToleranceValues.format(globalThis.EngineeringUnits.tolerance(parsed, engineeringScale(unit)));
+      return "";
+    }
+    draft.invalidFields[field] = true;
+    draft[field] = text;
+    return parsed.error;
+  }
+  const number = ToleranceValues.number(text);
+  draft.invalidFields[field] = Boolean(text.trim()) && number == null;
+  draft[field] = number == null ? text : String(engineeringInput(number, field === "height" ? "mm" : "N"));
+  return draft.invalidFields[field] ? "请输入数字。" : "";
+}
+
+function bindEngineeringInputPrecision(input, exact, display) {
+  if (!input) return;
+  input.addEventListener("focus", () => {
+    if (!input.readOnly && input.value === String(display()) && input.value !== String(exact())) {
+      input.value = exact();
+      input.select();
+    }
+  });
+  input.addEventListener("blur", () => {
+    if (!input.validity.badInput) input.value = display();
+  });
+}
+
+let engineeringNoticeOwner = null;
+
+function engineeringSwitchProblems(root, review) {
+  const problems = [];
+  const units = globalThis.EngineeringUnits;
+  const isInvalidNumber = input => input && (input.validity.badInput || input.value.trim() && ToleranceValues.number(input.value) == null);
+  const parameters = review.spring_parameters || {};
+  for (const row of root.querySelectorAll('[data-kind="param"][data-field]')) {
+    const field = row.dataset.field, param = parameters[field];
+    const meta = getFieldMeta(field, review);
+    const name = meta.label || FIELD_LABELS[field] || field;
+    const input = row.querySelector('input[data-role="value"]');
+    const unit = param?.unit || meta.unit;
+    if (units.displayUnit(unit, "imperial") !== unit && isInvalidNumber(input)) {
+      problems.push(`${name}应为 ${unit} 数值${input.value.trim() ? `，当前为 ${input.value.trim()}` : ""}。`);
+    }
+    if (param?.tolerance_input_draft) problems.push(`${name}公差格式有误。`);
+  }
+  for (const row of root.querySelectorAll('[data-kind="load_point"][data-load-point-id]')) {
+    const point = parameters.load_points?.find(item => String(item.load_point_id) === row.dataset.loadPointId);
+    const name = `载荷 ${point?.label || "未编号"}`;
+    if (isInvalidNumber(row.querySelector('[data-role="height"]'))) problems.push(`${name} 的高度请输入数字。`);
+    if (isInvalidNumber(row.querySelector('[data-role="force"]'))) problems.push(`${name} 的力值请输入数字。`);
+    if (point?.height_tolerance_input_draft) problems.push(`${name} 的高度公差格式有误。`);
+    if (point?.tolerance_input_draft) problems.push(`${name} 的力值公差格式有误。`);
+  }
+  const creation = loadPointCreateDraft(review);
+  if (creation) {
+    for (const [field, label] of [["height", "高度"], ["force", "力值"]]) {
+      const value = creation[field];
+      if (String(value ?? "").trim() && ToleranceValues.number(value) == null) problems.push(`新增载荷的${label}请输入数字。`);
+    }
+    if (creation.invalidFields?.heightToleranceText || !ToleranceValues.parse(creation.heightToleranceText, { unit: "mm" }).ok) problems.push("新增载荷的高度公差格式有误。");
+    if (creation.invalidFields?.toleranceText || !ToleranceValues.parse(creation.toleranceText, { load: true, unit: "N" }).ok) problems.push("新增载荷的力值公差格式有误。");
+  }
+  const editor = getToleranceEditor();
+  if (editor?.dirty()) {
+    const draft = editor.current();
+    const label = toleranceTarget(draft.kind, draft.target)?.label || "当前参数";
+    const error = editor.result(draft).error;
+    problems.push(error ? `${label}公差格式有误，请修正或取消编辑。` : `${label}公差尚未保存，请保存或取消编辑。`);
+  }
+  return [...new Set(problems)];
+}
+
+function syncEngineeringSwitchNotice(root, review, problems) {
+  if (!engineeringNoticeOwner || engineeringNoticeOwner.review !== review || engineeringNoticeOwner.navigation !== state.reviewNavigationSerial) return;
+  const notice = root.querySelector('[data-role="engineering-display-notice"]');
+  if (!notice) return;
+  problems ??= engineeringSwitchProblems(root, review);
+  if (JSON.stringify(problems) === JSON.stringify([...notice.children].map(line => line.textContent))) return;
+  notice.replaceChildren(...problems.map(problem => {
+    const line = document.createElement("div");
+    line.textContent = problem;
+    return line;
+  }));
+}
+
+function changeEngineeringDisplay(select, root, review) {
+  const oldMode = engineeringMode(review), nextMode = select.value;
+  const units = globalThis.EngineeringUnits;
+  if (!units || nextMode === oldMode || review !== state.review) return;
+  const problems = engineeringSwitchProblems(root, review);
+  if (problems.length) {
+    select.value = oldMode;
+    engineeringNoticeOwner = { review, navigation: state.reviewNavigationSerial };
+    syncEngineeringSwitchNotice(root, review, problems);
+    return;
+  }
+  engineeringNoticeOwner = null;
+  const technicalForm = root.querySelector('[data-kind="technical_requirement_create"]:not([hidden])');
+  const technicalDraft = technicalForm && {
+    type: technicalForm.querySelector('[data-role="new-technical-type"]').value,
+    content: technicalForm.engineeringContent || "",
+  };
+  engineeringDisplay = { navigation: state.reviewNavigationSerial, job: state.lastJob?.job_id, mode: nextMode };
+  refreshReviewSurfaces();
+  const activeRoot = state.compareOpen ? compareOverlay : document;
+  if (technicalDraft) {
+    const form = activeRoot.querySelector('[data-kind="technical_requirement_create"]');
+    if (form) {
+      form.hidden = false;
+      form.querySelector('[data-role="new-technical-type"]').value = technicalDraft.type;
+      form.engineeringContent = technicalDraft.content;
+      form.querySelector('[data-role="new-technical-content"]').value = displayEngineeringText(technicalDraft.content, nextMode);
+    }
+  }
+  const selector = '[data-role="engineering-unit-display"]';
+  activeRoot.querySelector(selector)?.focus({ preventScroll: true });
+}
+
 function renderParameterTableHtml(review) {
   prepareCompressionDesignChecks(review);
   const params = review.spring_parameters || {};
@@ -5012,14 +5197,21 @@ function renderParameterTableHtml(review) {
   const loadPointRows = (params.load_points || []).map((point, index) => loadPointRowHtml(point, index, review));
   const totalRows = parameterRows.length + loadPointRows.length;
   return `
-    <section class="review-block">
-      <div class="block-head">
-        <h2>结构化尺寸数据</h2>
-        <div class="parameter-bulk-actions">
+    <section class="review-block parameter-review-section">
+      <h2 class="parameter-section-title">结构化尺寸数据</h2>
+      <div class="parameter-toolbar">
+        <div class="parameter-toolbar-units">
+          <label class="engineering-unit-display">显示单位 <select data-role="engineering-unit-display" aria-label="显示单位">
+            <option value="metric"${engineeringMode(review) === "metric" ? " selected" : ""}>公制</option>
+            <option value="imperial"${engineeringMode(review) === "imperial" ? " selected" : ""}>英制</option>
+          </select></label>
           <span>${totalRows} 项</span>
+        </div>
+        <div class="parameter-bulk-actions">
           ${isCompressionSpringReview(review) ? '<button type="button" data-action="preview-confirmation-sheet">预览确认单</button>' : ""}
           <button type="button" data-action="confirm-all-review-items" ${confirmationPlan.items.length ? "" : "disabled"}>全部确认可确认项${confirmationPlan.items.length ? ` · ${confirmationPlan.items.length}` : ""}</button>
         </div>
+        <div data-role="engineering-display-notice" class="engineering-display-notice" role="status" aria-live="polite"></div>
       </div>
       ${renderDiameterRoleChoices(review)}
       <div class="data-table parameter-data-table">
@@ -5058,24 +5250,25 @@ function diameterRoleGroupState(review) {
 }
 
 function renderDiameterRoleChoices(review) {
-  return pendingDiameterRoles(review).map((item) => {
+  return pendingDiameterRoles(review).map((original) => {
+    const item = engineeringItem(original, "mm");
     const entry = [...state.pendingReviewAuditEvents, ...(state.reviewPersistenceInFlightEvents || [])]
       .find((event) => ["diameter_role_selected", "diameter_role_ignored"].includes(event.event_type) && event.metadata?.candidate_id === item.candidate_id);
     const failure = entry && state.reviewPersistenceFailedFields[entry.target_field];
     const tolerance = [item.tolerance_upper, item.tolerance_lower].some((v) => v != null)
-      ? ` · 公差 ${item.tolerance_upper ?? "—"}/${item.tolerance_lower ?? "—"}` : "";
+      ? ` · 公差 ${item.tolerance_upper == null ? "—" : formatEngineeringNumber(item.tolerance_upper)}/${item.tolerance_lower == null ? "—" : formatEngineeringNumber(item.tolerance_lower)}` : "";
     return `<div class="reasonableness-suggestion-section diameter-role-candidate" data-diameter-candidate-id="${escapeHtml(item.candidate_id)}">
       <div class="diameter-role-candidate-head">
-      <strong>直径类型待核对 · ${escapeHtml(item.value)} ${escapeHtml(item.unit || "mm")}${escapeHtml(tolerance)}</strong>
+      <strong>${item.unit_pending ? "直径单位待核对" : "直径类型待核对"} · ${escapeHtml(formatEngineeringNumber(item.value))} ${escapeHtml(item.unit || "mm")}${escapeHtml(tolerance)}</strong>
       <button type="button" class="diameter-role-dismiss" data-action="ignore-diameter-role" data-candidate-id="${escapeHtml(item.candidate_id)}"
         title="忽略此候选，改为手动填写" aria-label="忽略此候选，改为手动填写" ${entry ? "disabled" : ""}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18"/></svg>
       </button>
       </div>
-      <p>${escapeHtml(item.reason || "请根据原图核对直径类型。")} ${escapeHtml(DiameterRoleCandidates.excerpt(item))}</p>
+      <p>${escapeHtml(item.unit_pending ? "请先核实原图单位，再按当前显示单位手填。" : item.reason || "请根据原图核对直径类型。")} ${escapeHtml(DiameterRoleCandidates.excerpt(original))}</p>
       <div class="parameter-bulk-actions">
         ${["inner_diameter", "mean_diameter", "outer_diameter"].map((field) => `<button type="button" data-action="select-diameter-role"
-          data-candidate-id="${escapeHtml(item.candidate_id)}" data-field="${field}" ${entry ? "disabled" : ""}>${FIELD_LABELS[field]}</button>`).join("")}
+          data-candidate-id="${escapeHtml(item.candidate_id)}" data-field="${field}" ${entry || item.unit_pending ? "disabled" : ""}>${FIELD_LABELS[field]}</button>`).join("")}
         <button type="button" data-action="retry-diameter-role" hidden>重试保存</button>
       </div>
       <small role="status" data-role="diameter-role-status">${escapeHtml(failure || (entry ? entry.event_type === "diameter_role_ignored" ? "正在关闭…" : "正在保存选择…" : ""))}</small>
@@ -5357,7 +5550,7 @@ function refreshLoadHeightRelations(review) {
       const messageId = row.closest("[data-message-id]")?.dataset.messageId;
       if (row.dataset.loadPointId !== point.load_point_id || messageId && messageId !== state.activeReviewMessageId) return;
       const input = row.querySelector('[data-role="height"]');
-      if (input && document.activeElement !== input) input.value = point.height ?? "";
+      if (input && document.activeElement !== input) input.value = formatEngineeringNumber(engineeringPoint(point, review).height);
       syncConfirmationControl(row, point, { kind: "load_point", field: loadPointField(point), review });
       const note = row.querySelector('[data-role="height-relation-note"]');
       if (note) note.textContent = loadHeightRelationNote(point);
@@ -5385,14 +5578,15 @@ function loadHeightRelationDetails(point) {
   if (!relation && !candidate) return "";
   const r = relation || candidate.original?.height_relation || {};
   const inputs = r.last_inputs || {};
-  const origin = [inputs.free_length_mm != null ? `自由高度：${inputs.free_length_mm} mm` : "", inputs.base_height_mm != null ? `参考点高度：${inputs.base_height_mm} mm` : "", inputs.dimension_mm != null ? `原始尺寸：${inputs.dimension_mm} mm` : "", inputs.reference_only ? "换算包含原图参考尺寸，需核对" : ""].filter(Boolean).join("；");
+  const origin = displayEngineeringText([inputs.free_length_mm != null ? `自由高度：${inputs.free_length_mm} mm` : "", inputs.base_height_mm != null ? `参考点高度：${inputs.base_height_mm} mm` : "", inputs.dimension_mm != null ? `原始尺寸：${inputs.dimension_mm} mm` : "", inputs.reference_only ? "换算包含原图参考尺寸，需核对" : ""].filter(Boolean).join("；"));
   const proposed = candidate?.original;
-  const proposedTolerance = proposed ? ToleranceValues.format(readLoadHeightTolerance(proposed)) : "";
-  const proposal = proposed?.height != null ? `原图候选高度 ${proposed.height}${proposedTolerance ? ` ${proposedTolerance}` : ""} mm` : "";
-  const graphicDifference = r.geometry_candidate ? `图形另有高度候选 ${r.geometry_candidate.value} mm，保留当前已核实结果，请核对` : "";
+  const projected = proposed && engineeringPoint(proposed);
+  const proposedTolerance = projected ? formatEngineeringTolerance(readLoadHeightTolerance(projected)) : "";
+  const proposal = projected?.height != null ? `原图候选高度 ${formatEngineeringNumber(projected.height)}${proposedTolerance ? ` ${proposedTolerance}` : ""} ${projected.height_unit || "mm"}` : "";
+  const graphicDifference = r.geometry_candidate ? displayEngineeringText(`图形另有高度候选 ${r.geometry_candidate.value} mm，保留当前已核实结果，请核对`) : "";
   const graphicBasis = r.geometry_evidence ? (r.verification_method === "dimension_leader" ? "已按引出线落点、载荷竖线及尺寸端点核实" : "已按共同基准、载荷位置及尺寸端点核实") : "";
-  const lines = [...new Set([r.mode === "manual" ? "当前高度为人工填写，原换算依据仅供追溯" : "", r.evidence, graphicBasis, graphicDifference, r.formula, origin,
-    r.secant_rate != null ? `尺寸链与载荷对应刚度：${r.secant_rate} N/mm` : "", r.check_warning, candidate?.reason,
+  const lines = [...new Set([r.mode === "manual" ? "当前高度为人工填写，原换算依据仅供追溯" : "", r.evidence, graphicBasis, graphicDifference, displayEngineeringText(r.formula || ""), origin,
+    r.secant_rate != null ? displayEngineeringText(`尺寸链与载荷对应刚度：${r.secant_rate} N/mm`) : "", displayEngineeringText(r.check_warning || ""), candidate?.reason,
     proposed?.evidence, proposed?.height_relation?.evidence, proposal].filter(Boolean))];
   return `<details class="load-height-evidence"><summary>查看高度依据</summary>${lines.map(text => `<div>${escapeHtml(text)}</div>`).join("")}</details>`;
 }
@@ -5409,14 +5603,16 @@ function recordSupportCoilAdjustment(review) {
 }
 
 function compressionDesignResultText(metric, result) {
+  if (result) result = engineeringItem(result, compressionDesignUnitText(metric, result, true));
   if (!Number.isFinite(result?.value)) return "--";
-  const value = metric === "unit_mass" ? String(Number(result.value.toFixed(8))) : formatCompactNumber(result.value);
+  const value = formatEngineeringNumber(result.value);
   return `${metric === "reference_solid_height_limit" ? "≤ " : ""}${value}`;
 }
 
-function compressionDesignUnitText(metric, result) {
+function compressionDesignUnitText(metric, result, canonical = false) {
   const units = { theoretical_spring_rate: "N/mm", solid_stress: "MPa", work_stress: "MPa", unit_mass: "kg", helix_angle: "°", wire_length: "mm", reference_solid_height_limit: "mm", nominal_solid_height: "mm", solid_height_used: "mm" };
-  return result?.unit || units[metric] || "—";
+  const unit = result?.unit || units[metric] || "—";
+  return canonical ? unit : engineeringUnit(unit);
 }
 
 function compressionDesignBasisText(metric, result) {
@@ -5429,9 +5625,9 @@ function compressionDesignBasisText(metric, result) {
 function compressionDesignReasonText(result) {
   let text = !Number.isFinite(result?.value) ? result?.reason || "等待计算参数" : [result.basis, result.formula].filter(Boolean).join(" · ");
   if (Number.isFinite(result?.value) && Object.prototype.hasOwnProperty.call(result, "height_source") && Object.prototype.hasOwnProperty.call(result, "force_n")) {
-    text = `${result.basis}${result.force_n != null ? ` · Pb=${formatCompactNumber(result.force_n)} N` : ""}${result.inputs?.solid_height_mm != null ? ` · Hb=${formatCompactNumber(result.inputs.solid_height_mm)} mm` : ""}${result.force_n != null ? ` · ${result.formula}` : ""}`;
+    text = `${result.basis}${result.force_n != null ? ` · Pb=${result.force_n} N` : ""}${result.inputs?.solid_height_mm != null ? ` · Hb=${result.inputs.solid_height_mm} mm` : ""}${result.force_n != null ? ` · ${result.formula}` : ""}`;
   }
-  return text.replace(/\b[a-z]+(?:_[a-z]+)*\b/g, (field) => FIELD_LABELS[field] || field);
+  return displayEngineeringText(text.replace(/\b[a-z]+(?:_[a-z]+)*\b/g, (field) => FIELD_LABELS[field] || field));
 }
 
 function compressionDesignResultHtml(label, metric, result, options = {}) {
@@ -5454,19 +5650,19 @@ function compressionWorkStressHtml(checks) {
 
 function compressionSolidLoadText(result) {
   if (!Number.isFinite(result?.value) || !Number.isFinite(result?.force_n)) return "";
-  let text = `压并应力依据：${result.status === "estimated" ? "估算载荷" : "已有压并载荷"} Pb = ${formatCompactNumber(result.force_n)} N`;
+  let text = `压并应力依据：${result.status === "estimated" ? "估算载荷" : "已有压并载荷"} Pb = ${result.force_n} N`;
   if (result.status === "estimated" && Number.isFinite(result.inputs?.solid_height_mm)) {
     const source = { manual: "人工输入高度", drawing: "图纸标注高度", book_nominal: "书页名义高度", open_nominal: "不并紧名义高度" }[result.height_source] || "高度来源待核对";
-    text += ` · Hb = ${formatCompactNumber(result.inputs.solid_height_mm)} mm（${source}）`;
+    text += ` · Hb = ${result.inputs.solid_height_mm} mm（${source}）`;
   }
-  return text;
+  return displayEngineeringText(text);
 }
 
 function compressionCalculationDetailsHtml(checks, formulasOpen = false) {
   const properties = checks?.material_properties;
   const material = properties ? `材料：${properties.display_name}；G=${properties.shear_modulus_mpa} MPa；ρ=${properties.density_g_cm3 ?? "--"} g/cm³` : "材料属性待加载或待选择";
   const rows = [["曲度系数 K", "curvature_factor"], ["螺旋角 α", "helix_angle"], ["展开长度 L", "wire_length"], ["压并高度上限参考（含公差）", "reference_solid_height_limit"], ["名义压并高度", "nominal_solid_height"], ["应力采用的压并高度", "solid_height_used"]];
-  return `<p class="compression-design-material">${escapeHtml(material)}</p>
+  return `<p class="compression-design-material">${escapeHtml(displayEngineeringText(material))}</p>
     <table class="compression-design-table compression-design-secondary" aria-label="计算依据参数">
       <colgroup><col class="design-col-label"><col class="design-col-value"><col class="design-col-unit"></colgroup>
       <thead><tr><th scope="col">参数</th><th scope="col">数值</th><th scope="col">单位</th></tr></thead>
@@ -5491,7 +5687,7 @@ function compressionDesignFormulasHtml(checks) {
     if (metric === "wire_length") inputs.helix_angle = checks?.metrics.helix_angle?.value ?? null;
     ["model_version", "model_id", "notes", "load_points"].forEach((field) => delete inputs[field]);
     return `<section class="compression-formula-item"><h4>${escapeHtml(label)}</h4><p class="compression-formula-expression">${escapeHtml(result?.formula || "公式待确定")}</p>
-      <p>依据：${escapeHtml(result?.basis || "等待计算参数")}</p>${!Number.isFinite(result?.value) ? `<p>原因：${escapeHtml(compressionDesignReasonText(result))}</p>` : ""}
+      <p>依据：${escapeHtml(displayEngineeringText(result?.basis || "等待计算参数"))}</p>${!Number.isFinite(result?.value) ? `<p>原因：${escapeHtml(compressionDesignReasonText(result))}</p>` : ""}
       <dl>${Object.entries(inputs).map(([field, value]) => compressionDesignInputHtml(field, value, inputs)).join("") || "<dt>输入参数</dt><dd>待补充</dd>"}</dl></section>`;
   }).join("");
 }
@@ -5499,10 +5695,13 @@ function compressionDesignFormulasHtml(checks) {
 function compressionDesignInputHtml(field, value, inputs) {
   const labels = { G: "剪切模量 G", rho: "密度 ρ", force_n: "载荷 P", curvature_factor: "曲度系数 K", free_length_mm: "自由高度 H₀", theoretical_spring_rate: "理论刚度 P′", solid_height_mm: "压并高度 Hb", test_height: "载荷点高度", test_height_unit: "载荷点高度单位", dmax: "最大线径 dmax", wire_length: "展开长度 L", spring_index: "旋绕比 C", helix_angle: "螺旋角 α", wire_diameter_mm: "名义线径 d", wire_tolerance_upper_mm: "线径上偏差", max_wire_diameter_mm: "最大线径 dmax", end_mode: "端面磨削方式", a: "端部系数 a", pitch_type: "节距形式" };
   const units = { wire_diameter: "mm", mean_diameter: "mm", free_length: "mm", pitch: "mm", solid_height: "mm", total_coils: "圈", active_coils: "圈", support_coils: "圈（单端）", G: "MPa", rho: "g/cm³", force_n: "N", free_length_mm: "mm", solid_height_mm: "mm", theoretical_spring_rate: "N/mm", dmax: "mm", wire_length: "mm", helix_angle: "°", test_height: inputs.test_height_unit || "mm", wire_diameter_mm: "mm", wire_tolerance_upper_mm: "mm", max_wire_diameter_mm: "mm" };
+  if (field === "test_height_unit") value = engineeringUnit(value);
   if (field === "end_mode") value = { ground: "两端磨削", not_ground: "两端不磨削" }[value] || value;
   if (field === "pitch_type") value = { constant: "等节距", variable: "变节距" }[value] || value;
   const label = labels[field] || FIELD_LABELS[field] || field;
-  const text = value == null ? "--" : typeof value === "number" ? Number.isFinite(value) ? `${formatCompactNumber(value)}${units[field] ? ` ${units[field]}` : ""}` : "--" : typeof value === "object" ? JSON.stringify(value) : String(value);
+  const unit = units[field];
+  const projected = unit ? engineeringItem({ value, unit }) : { value };
+  const text = value == null ? "--" : typeof value === "number" ? Number.isFinite(value) ? `${formatEngineeringNumber(projected.value)}${unit ? ` ${projected.unit}` : ""}` : "--" : typeof value === "object" ? JSON.stringify(value) : String(value);
   return `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(text)}</dd>`;
 }
 
@@ -5549,7 +5748,7 @@ function syncDependentFormulaParameterRows(root, review, editedField) {
     if (!param) return;
     if (field !== editedField && isFormulaCalculatedParameter(param)) {
       const input = row.querySelector('[data-role="value"]');
-      if (input && (typeof document === "undefined" || input !== document.activeElement)) input.value = String(param.value ?? "");
+      if (input && (typeof document === "undefined" || input !== document.activeElement)) input.value = formatFieldInput(engineeringItem(param));
     }
     syncFormulaParameterPresentation(row, field, param);
     syncBubbleValue(field, param.value);
@@ -5572,10 +5771,11 @@ function formulaCandidateHtml(param) {
     const notice=param?.pitch_evidence_warning || param?.formula_check_warning || param?.support_coils_notice;
     return notice ? `<small>${escapeHtml(notice)}</small>` : "";
   }
-  const candidate = param.formula_recalculation_candidate;
+  const rawCandidate = param.formula_recalculation_candidate;
+  const candidate = rawCandidate && engineeringItem(rawCandidate, param.unit);
   const value = candidate?.value, waiting = param.support_coils_waiting_confirmation;
   const reason = param.support_coils_conflict || (waiting ? param.formula_calculation_reason : candidate?.reason || param.formula_calculation_reason) || "计算依据已变化，请核对";
-  return `<small>${param.support_coils_conflict ? "圈数关系需核对" : "原确认值已失效"}：${escapeHtml(reason)}</small>${Number.isFinite(value) && value > 0 ? `<span>新候选值：${escapeHtml(formatCompactNumber(value))} ${escapeHtml(candidate.unit === "turns" ? "圈" : candidate.unit || "")} <button type="button" data-role="apply-formula-candidate" ${waiting ? "disabled" : ""}>${waiting ? "等待圈数确认" : "应用新候选值"}</button>（应用后需重新确认）</span>` : ""}`;
+  return `<small>${param.support_coils_conflict ? "圈数关系需核对" : "原确认值已失效"}：${escapeHtml(displayEngineeringText(reason))}</small>${Number.isFinite(value) && value > 0 ? `<span>新候选值：${escapeHtml(formatEngineeringNumber(value))} ${escapeHtml(candidate.unit === "turns" ? "圈" : candidate.unit || "")} <button type="button" data-role="apply-formula-candidate" ${waiting ? "disabled" : ""}>${waiting ? "等待圈数确认" : "应用新候选值"}</button>（应用后需重新确认）</span>` : ""}`;
 }
 
 function syncFormulaParameterPresentation(row, field, param) {
@@ -5640,7 +5840,7 @@ function refreshCompressionDesignChecks(root, review) {
     Object.entries(metrics).forEach(([metric, item]) => {
       const value = container.querySelector(`[data-role="design-check-value"][data-metric="${metric}"]`);
       const basis = container.querySelector(`[data-role="design-check-basis"][data-metric="${metric}"]`);
-      if (value) value.textContent = item.value == null ? "--" : formatCompactNumber(item.value);
+      if (value) value.textContent = item.value == null ? "--" : formatEngineeringNumber(item.value);
       if (basis) {
         basis.textContent = item.value == null && item.missing.length
           ? `待补充：${item.missing.map((field) => targetFieldLabel(field)).join("、")}`
@@ -5780,10 +5980,15 @@ function parameterUnitLabelHtml(label) {
 }
 
 function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)) {
+  const canonical = param;
+  const pendingUnit = param.unit_pending;
+  param = engineeringItem(pendingUnit ? { ...param, unit_pending: false, value: "", unit: meta.unit || "mm",
+    tolerance_upper: null, tolerance_lower: null } : param, meta.unit);
   const defaultCandidateNotice = field === "flattening" ? "" : pendingDefaultCandidateNotice(param);
   let label = meta.label || FIELD_LABELS[field] || field;
   const requiredMark = meta.required ? " *" : "";
   const badges = [];
+  if (pendingUnit) badges.push(`原图单位待核对 · ${canonical.value ?? ""} ${canonical.unit ?? ""}，请核实后手填`);
   const sources = sourceValues(param.source);
   if (param.default_source === "company_default" && field !== "accuracy_grade") {
     badges.push("公司默认 / 待确认");
@@ -5810,7 +6015,7 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
       badges.push(param.formula_recommendation_stale
         ? "公式参考待更新"
         : (param.need_human_review ? "公式参考 / 待确认" : "公式参考已确认"));
-      if (param.value != null) badges.push(`Hb ≤ ${formatCompactNumber(Number(param.value))} ${param.unit || "mm"}`);
+      if (param.value != null) badges.push(`Hb ≤ ${formatEngineeringNumber(param.value)} ${param.unit || "mm"}`);
     } else if (sources.some((source) => source.startsWith("human") || source === "manual")) {
       badges.push("人工值");
     } else if (param.value != null && param.value !== "") {
@@ -5847,14 +6052,14 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
       </label>
       ${withoutTolerance ? "" : `<div class="data-input-cell data-secondary">
         <span class="parameter-field-label" aria-hidden="true">公差</span>
-        <div class="tolerance-input-control"><input data-role="tolerance" aria-label="${escapeHtml(displayLabel.text)}公差" title="${escapeHtml(formatTolerance(param) || '可输入 ±0.1、+0.1/-0.2，或点击编辑公差')}" value="${escapeHtml(formatTolerance(param))}"${getToleranceEditor()?.matching("parameter", field) ? " readonly" : ""}>
+        <div class="tolerance-input-control"><input data-role="tolerance" aria-label="${escapeHtml(displayLabel.text)}公差" title="${escapeHtml(formatTolerance(param) || '可输入 ±0.1、+0.1/-0.2，或点击编辑公差')}" value="${escapeHtml(formatTolerance(param, true))}"${getToleranceEditor()?.matching("parameter", field) ? " readonly" : ""}>
         ${supportsToleranceEditor(field, param, meta) ? getToleranceEditor()?.button("parameter", field, label) || "" : ""}</div>
       </div>`}
-      ${confirmationButtonHtml(param, { kind: "parameter", field, review: state.review })}
+      ${confirmationButtonHtml(canonical, { kind: "parameter", field, review: state.review })}
       ${roughnessCandidates}
       ${field === "surface_roughness_ra" && isCompressionSpringReview(state.review) ? `<div class="roughness-reference" data-role="roughness-reference" role="group" aria-label="粗糙度常规参考">${surfaceRoughnessReferenceHtml(param)}</div>` : ""}
       ${materialNotes}
-      <div class="parameter-formula-candidate" data-role="formula-candidate">${["active_coils", "support_coils", "pitch", "solid_height"].includes(field) || param.diameter_linkage_managed ? formulaCandidateHtml(param) : ""}</div>
+      <div class="parameter-formula-candidate" data-role="formula-candidate">${["active_coils", "support_coils", "pitch", "solid_height"].includes(field) || param.diameter_linkage_managed ? formulaCandidateHtml(canonical) : ""}</div>
       ${withoutTolerance ? "" : getToleranceEditor()?.html("parameter", field) || ""}
     </div>
   `;
@@ -5920,7 +6125,7 @@ function bindSurfaceRoughnessReference(row, param, review, messageId, root) {
     if (!(adopting ? SurfaceRoughnessReference.adopt(param, referenceValue) : action === "dismiss-roughness-reference" && SurfaceRoughnessReference.dismiss(param))) return;
     row.dataset.roughnessReferenceExpanded = "false";
     markParamEdited(param, "surface_roughness_ra");
-    input.value = formatFieldInput(param);
+    input.value = formatFieldInput(engineeringItem(param));
     queueReviewAuditEvent({ event_type: "parameter_value_updated", target_field: "surface_roughness_ra",
       before_state: before, after_state: parameterAuditState(param),
       reason: adopting ? "人工采用粗糙度常规参考值，仍待确认" : "选择不添加粗糙度",
@@ -5984,8 +6189,10 @@ function loadHeightToleranceControl({ kind, target, role, unit, label, value, er
 }
 
 function loadPointRowHtml(point, index, review = state.review) {
+  const canonical = point;
+  point = engineeringPoint(point, review);
   const label = point.label || `F${index + 1}`;
-  const tolerance = loadPointToleranceDisplay(point, label, review);
+  const tolerance = loadPointToleranceDisplay(point, label, review, true);
   const diagnostic = standardizationReport(review).diagnostics.find(item => item.target_field === `load_points.${label}.force`);
   const reasonablenessSeverity = reasonablenessSeverityForField(review, `load_points.${label}`);
   const heightLabel = parameterUnitLabel("height", "高度", { unit: point.height_unit }, { unit: "mm" });
@@ -6009,15 +6216,17 @@ function loadPointRowHtml(point, index, review = state.review) {
       </div>
       <label class="data-input-cell data-primary">
         <span class="load-point-field-label">${point.height_label ? `${escapeHtml(point.height_label)} · ` : ""}${parameterUnitLabelHtml(heightLabel)}</span>
-        <input data-role="height" aria-label="${escapeHtml(`${point.height_label || label}${heightLabel.text}`)}" value="${escapeHtml(point.height ?? "")}">
+        <input data-role="height" aria-label="${escapeHtml(`${point.height_label || label}${heightLabel.text}`)}" value="${escapeHtml(formatEngineeringNumber(point.height))}">
         <small data-role="height-relation-note">${escapeHtml(point.height_relation ? loadHeightRelationNote(point) : "")}</small>
+        ${canonical.unit_pending_fields?.includes("height") ? '<small>原图高度单位待核对，请核实后手填。</small>' : ""}
       </label>
       ${loadHeightToleranceControl({ kind: "load-height", target, role: "height-tolerance", unit: heightLabel.unit,
-        label, value: point.height_tolerance_input_draft ?? ToleranceValues.format(heightTolerance), error: loadHeightToleranceError(point) })}
+        label, value: point.height_tolerance_input_draft ?? formatEngineeringTolerance(heightTolerance), error: loadHeightToleranceError(point) })}
       <label class="data-input-cell data-secondary">
         <span class="load-point-field-label">${point.height_label ? `${escapeHtml(label)} · ` : ""}${parameterUnitLabelHtml(forceLabel)}</span>
-        <input data-role="force" aria-label="${escapeHtml(`${label}${forceLabel.text}`)}" value="${escapeHtml(point.force ?? "")}">
-        ${point.load_force_conflict ? `<small data-role="force-conflict-note">${escapeHtml(`力值待核对${point.force_alternatives?.length ? `（${point.force_alternatives.join(" / ")} ${forceLabel.unit}）` : ""}`)}</small>` : ""}
+        <input data-role="force" aria-label="${escapeHtml(`${label}${forceLabel.text}`)}" value="${escapeHtml(formatEngineeringNumber(point.force))}">
+        ${point.load_force_conflict ? `<small data-role="force-conflict-note">${escapeHtml(`力值待核对${point.force_alternatives?.length ? `（${point.force_alternatives.map(formatEngineeringNumber).join(" / ")} ${forceLabel.unit}）` : ""}`)}</small>` : ""}
+        ${canonical.unit_pending_fields?.includes("force") ? '<small>原图力值单位待核对，请核实后手填。</small>' : ""}
       </label>
       <div class="data-input-cell data-tertiary load-point-tolerance">
         <span class="load-point-field-label">力值公差</span>
@@ -6026,7 +6235,7 @@ function loadPointRowHtml(point, index, review = state.review) {
         <span data-load-standardization-status>${loadStandardizationDiagnosticHtml(diagnostic)}</span>
       </div>
       <div class="load-point-actions">
-        ${confirmationButtonHtml(point, { kind: "load_point", field: `load_points.${label}`, review })}
+        ${confirmationButtonHtml(canonical, { kind: "load_point", field: `load_points.${label}`, review })}
         <button type="button" class="secondary-action load-point-delete-button" data-role="delete-load-point">删除</button>
       </div>
       ${getToleranceEditor()?.html("load-height", target) || ""}
@@ -6038,6 +6247,7 @@ function loadPointRowHtml(point, index, review = state.review) {
 function renderLoadPointSectionHtml(review, rows) {
   ensureLoadPointIds(review);
   const creation = loadPointCreateDraft(review);
+  const heightUnit = engineeringUnit("mm"), forceUnit = engineeringUnit("N");
   const points = review.spring_parameters?.load_points || [];
   const confirmed = points.filter((point) => isValidLoadPoint(point) && point.need_human_review === false).length;
   const undo = state.loadPointUndo?.review === review ? state.loadPointUndo : null;
@@ -6058,11 +6268,11 @@ function renderLoadPointSectionHtml(review, rows) {
       ` : ""}
       <form class="load-point-create" data-kind="load_point_create" data-create-draft-id="${escapeHtml(creation?.id || "")}"${creation?.candidateId ? ` data-candidate-id="${escapeHtml(creation.candidateId)}"` : ""}${creation ? "" : " hidden"}>
         <label class="load-create-label"><span class="load-point-field-label">编号</span><input data-role="new-load-label" placeholder="例如：F1" value="${escapeHtml(creation?.label || "")}"></label>
-        <label class="data-primary"><span class="load-point-field-label">${parameterUnitLabelHtml(parameterUnitLabel("height", "高度", {}, { unit: "mm" }))}</span><input data-role="new-load-height" inputmode="decimal" placeholder="例如：25" value="${escapeHtml(creation?.height ?? "")}"></label>
-        ${loadHeightToleranceControl({ kind: "load-height-create", target: creation?.id, role: "new-load-height-tolerance", unit: "mm",
-          label: "新增载荷", value: creation?.heightToleranceText || "", optional: true })}
-        <label class="data-secondary"><span class="load-point-field-label">${parameterUnitLabelHtml(parameterUnitLabel("force", "力值", {}, { unit: "N" }))}</span><input data-role="new-load-force" inputmode="decimal" placeholder="可留空，仅估算应力" value="${escapeHtml(creation?.force ?? "")}"></label>
-        <div class="load-point-create-tolerance"><span class="load-point-field-label">力值公差（可选）</span><div class="tolerance-input-control"><input data-role="new-load-tolerance" placeholder="±6 或 +6/-6" aria-label="公差（可选，绝对值单位 N，百分比单位 %）" value="${escapeHtml(creation?.toleranceText || "")}"${creation && getToleranceEditor()?.matching("load-create", creation.id) ? " readonly" : ""}>${creation ? getToleranceEditor()?.button("load-create", creation.id, "新增载荷力值") || "" : ""}</div></div>
+        <label class="data-primary"><span class="load-point-field-label">${parameterUnitLabelHtml(parameterUnitLabel("height", "高度", {}, { unit: heightUnit }))}</span><input data-role="new-load-height" inputmode="decimal" value="${escapeHtml(loadPointDraftView(creation, "height", true))}"></label>
+        ${loadHeightToleranceControl({ kind: "load-height-create", target: creation?.id, role: "new-load-height-tolerance", unit: heightUnit,
+          label: "新增载荷", value: loadPointDraftView(creation, "heightToleranceText", true), optional: true })}
+        <label class="data-secondary"><span class="load-point-field-label">${parameterUnitLabelHtml(parameterUnitLabel("force", "力值", {}, { unit: forceUnit }))}</span><input data-role="new-load-force" inputmode="decimal" placeholder="可留空，仅估算应力" value="${escapeHtml(loadPointDraftView(creation, "force", true))}"></label>
+        <div class="load-point-create-tolerance"><span class="load-point-field-label">力值公差（可选）</span><div class="tolerance-input-control"><input data-role="new-load-tolerance" placeholder="±6 或 +6/-6" aria-label="公差（可选，绝对值单位 ${forceUnit}，百分比单位 %）" value="${escapeHtml(loadPointDraftView(creation, "toleranceText", true))}"${creation && getToleranceEditor()?.matching("load-create", creation.id) ? " readonly" : ""}>${creation ? getToleranceEditor()?.button("load-create", creation.id, "新增载荷力值") || "" : ""}</div></div>
         ${creation ? getToleranceEditor()?.html("load-create", creation.id) || "" : ""}
         ${creation ? getToleranceEditor()?.html("load-height-create", creation.id) || "" : ""}
         <small data-role="load-point-create-error" aria-live="polite">${escapeHtml(creation?.error || "")}</small>
@@ -6090,7 +6300,7 @@ function renderLoadPointDiagnosticsHtml(review) {
     const status = { excluded: "已排除", promoted: "已加入", dismissed: "已忽略" }[item.status] || "待核对";
     return `<div class="load-candidate" data-candidate-id="${escapeHtml(item.candidate_id)}">
       <strong>${escapeHtml(point.label || "未编号候选")} · ${status}</strong>
-      <p>高度：${escapeHtml(String(point.height ?? "--"))} ${escapeHtml(unit("height_unit"))}；力值：${escapeHtml(String(point.force ?? "--"))} ${escapeHtml(unit("force_unit"))}</p>
+      <p>高度：${escapeHtml(formatEngineeringNumber(point.height ?? "--"))} ${escapeHtml(unit("height_unit"))}；力值：${escapeHtml(formatEngineeringNumber(point.force ?? "--"))} ${escapeHtml(unit("force_unit"))}</p>
       <p>${escapeHtml(item.reason || "请核对原图依据")}</p>
       <p class="load-candidate-evidence">第 ${escapeHtml(String(item.page || 1))} 页 · ${escapeHtml(source || "缺少可见标注原文")}</p>
       ${item.status === "pending" ? '<div class="load-candidate-actions"><button type="button" class="secondary-action" data-action="promote-load-candidate">核对后加入</button><button type="button" class="secondary-action" data-action="dismiss-load-candidate">忽略</button></div>' : ""}
@@ -6100,16 +6310,18 @@ function renderLoadPointDiagnosticsHtml(review) {
     ${history.length ? `<details class="load-candidate-section load-candidate-history"><summary>载荷识别说明（${history.length}）</summary>${history.map(entry).join("")}</details>` : ""}`;
 }
 
-function loadPointToleranceDisplay(point, label, review) {
+function loadPointToleranceDisplay(point, label, review, rounded = false) {
   const suggestion = findLoadPointToleranceSuggestion(review, label);
   const unit = point.force_unit || "N";
-  const suggested = suggestion ? formatLoadPointAbsoluteTolerance(suggestion.suggested_tolerance_upper, suggestion.suggested_tolerance_lower, unit) : "";
+  const canonicalUnit = review?.spring_parameters?.load_points?.find(item => item.load_point_id === point.load_point_id)?.force_unit || "N";
+  const projected = offset => globalThis.EngineeringUnits?.toDisplay(offset, canonicalUnit, engineeringMode(review)) ?? offset;
+  const suggested = suggestion ? formatLoadPointAbsoluteTolerance(projected(suggestion.suggested_tolerance_upper), projected(suggestion.suggested_tolerance_lower), unit, rounded) : "";
   const current = ToleranceValues.read(point, true), absolute = current.upper != null || current.lower != null;
-  const value = absolute ? formatLoadPointAbsoluteTolerance(current.upper, current.lower, unit) : ToleranceValues.format(current);
+  const value = absolute ? formatLoadPointAbsoluteTolerance(current.upper, current.lower, unit, rounded) : (rounded ? formatEngineeringTolerance(current) : ToleranceValues.format(current));
   const original = point.drawing_force_tolerance_percent ?? point.drawing_load_tolerance_percent;
   const reference = original ?? (absolute ? point.load_tolerance_percent ?? point.force_tolerance_percent : null);
   const notes = [suggested && suggested !== value ? `标准建议 ${suggested}` : "",
-    reference != null ? `${original != null ? "图纸原公差" : "百分比参考"} ±${reference}%` : ""];
+    reference != null ? `${original != null ? "图纸原公差" : "百分比参考"} ±${rounded ? formatEngineeringNumber(reference) : reference}%` : ""];
   return { value, placeholder: value ? "" : suggested ? `建议 ${suggested}` : "", title: point.tolerance_basis || suggestion?.basis || "", note: notes.filter(Boolean).join("；") };
 }
 
@@ -6122,8 +6334,9 @@ function findLoadPointToleranceSuggestion(review, label) {
   }) || null;
 }
 
-function formatLoadPointAbsoluteTolerance(upper, lower, unit = "N") {
+function formatLoadPointAbsoluteTolerance(upper, lower, unit = "N", rounded = false) {
   if (upper == null && lower == null) return "";
+  if (rounded) return `${formatEngineeringTolerance({ upper, lower })}${unit}`;
   if (upper != null && lower != null && Number(upper) >= 0 && Number(upper) === -Number(lower)) {
     return `±${Number(upper)}${unit}`;
   }
@@ -6166,6 +6379,7 @@ function confirmationControlState(item, options = {}) {
   const kind = options.kind || "parameter";
   const field = options.field || "";
   const review = options.review || state.review;
+  if (item?.unit_pending) return { state: "invalid", label: "单位待核对", disabled: true, reason: "请核对原图单位后重新填写。" };
   if (kind === "parameter" && item?.diameter_linkage_error) {
     if (parameterPersistenceState(field) === "failed") return { state: "save_failed", label: "保存失败·重试保存", disabled: false, reason: "本地草稿仍保留，请重试保存。" };
     return { state: "invalid", label: "原值已失效", disabled: true, reason: item.diameter_linkage_error };
@@ -6308,18 +6522,18 @@ function renderDerivedParametersHtml(review) {
     : "";
   const rows = Object.entries(derived)
     .filter(([, value]) => value && typeof value === "object" && !Array.isArray(value))
-    .map(([field, item]) => `
+    .map(([field, original]) => { const item = engineeringItem(original); return `
       <div class="derived-row">
         <strong>${escapeHtml(FIELD_LABELS[field] || item.field || field)}</strong>
-        <span>${escapeHtml(formatStandardValue(item.value, item.unit))}</span>
+        <span>${escapeHtml(formatStandardValue(item.value == null ? item.value : formatEngineeringNumber(item.value), item.unit))}</span>
         <small>${escapeHtml(item.formula || "")}</small>
       </div>
-    `).join("");
+    `; }).join("");
   const loadDeflections = Array.isArray(derived.load_point_deflections) ? derived.load_point_deflections : [];
   const loadRows = loadDeflections.map((item) => `
     <div class="derived-row">
       <strong>${escapeHtml(item.label || "载荷测试点")}</strong>
-      <span>${escapeHtml(formatStandardValue(item.deflection, item.deflection_unit))}</span>
+      <span>${escapeHtml(displayEngineeringText(formatStandardValue(item.deflection, item.deflection_unit)))}</span>
       <small>${escapeHtml(item.formula || "")}</small>
     </div>
   `).join("");
@@ -6421,7 +6635,7 @@ function renderGenerationSettingsHtml(review) {
     <strong>生图设置</strong>
     <div class="generation-settings-fields">
       <label>图纸版式<select data-generation-setting="drawing_model" ${state.generationBusy ? "disabled" : ""}><option value="X型" ${settings.drawing_model === "X型" ? "selected" : ""}>横版</option><option value="Y型" ${settings.drawing_model === "Y型" ? "selected" : ""}>竖版</option></select></label>
-      <label>图纸字体<select data-generation-setting="typeface" ${state.generationBusy ? "disabled" : ""}><option value="宋体" ${settings.typeface === "宋体" ? "selected" : ""}>宋体</option><option value="黑体" ${settings.typeface === "黑体" ? "selected" : ""}>黑体</option></select></label>
+      <label>图纸字体<select data-generation-setting="typeface" ${state.generationBusy ? "disabled" : ""}>${GenerationSettings.typefaces.map(font => `<option value="${font}" ${settings.typeface === font ? "selected" : ""}>${font}</option>`).join("")}</select></label>
       <label>生图人姓名<input type="text" autocomplete="name" maxlength="256" data-generation-setting="username" value="${escapeHtml(settings.username)}" ${state.generationBusy ? "disabled" : ""} aria-invalid="${Boolean(error)}" placeholder="请输入姓名"></label>
     </div>
     <p class="generation-settings-error" role="status" ${error ? "" : "hidden"}>${escapeHtml(error)}</p>
@@ -6728,7 +6942,7 @@ function generationContractState(parameters, field) {
   const item = generationSourceParameter(parameters, field);
   if (!item) return "missing";
   if (field === "flattening") return Flattening.invalidReason(item) ? "invalid" : Flattening.confirmed(item) ? "confirmed" : "pending";
-  if (item.need_human_review) return "pending";
+  if (item.need_human_review || item.unit_pending) return "pending";
   try {
     generationContractValue(field, item.value);
     return "confirmed";
@@ -6917,7 +7131,7 @@ function assessGenerationReadiness(review) {
 
 function generationParameterState(param) {
   if (!param || typeof param !== "object" || param.value == null || param.value === "") return "missing";
-  return param.need_human_review ? "pending" : "confirmed";
+  return param.need_human_review || param.unit_pending ? "pending" : "confirmed";
 }
 
 function generationIssue(field, reason, label = null) {
@@ -8332,6 +8546,7 @@ function bindLoadPointRename(row, point, review, messageId, root, changed) {
 }
 
 function isValidLoadPoint(point, { checkHeightTolerance = true } = {}) {
+  if (point?.unit_pending) return false;
   if (point?.height == null || point.height === "" || point?.force == null || point.force === "" || point.load_force_conflict || point.load_relation_conflict || point.load_height_conflict || point.force_tolerance_status === "uncertain") return false;
   const height = Number(point?.height);
   const force = Number(point?.force);
@@ -8598,7 +8813,10 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
   });
   root.querySelectorAll('.requirement-row[data-kind="technical"]').forEach((row) => {
     const contentInput = row.querySelector('[data-role="content"]');
-    const initialContent = contentInput.value;
+    const representative = () => review.technical_requirements.find(item => item.requirement_id === row.dataset.requirementId);
+    const canonicalContent = () => TechnicalRequirementEquivalence.format(representative());
+    let editingBaseline = canonicalContent();
+    bindEngineeringInputPrecision(contentInput, () => engineeringText(canonicalContent()), () => displayEngineeringText(canonicalContent()));
     let beforeStates = null;
     const beginEdit = () => {
       if (beforeStates) return;
@@ -8610,7 +8828,10 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
     };
     const applyDraft = (value, changedField) => {
       // Prefix cleanup is a projection, not an edit to an unchanged legacy note.
-      if (!beforeStates && changedField === "content" && value === initialContent) return false;
+      if (!beforeStates && changedField === "content") {
+        editingBaseline = canonicalContent();
+        if ([engineeringText(editingBaseline), displayEngineeringText(editingBaseline)].includes(value)) return false;
+      }
       activateReviewContext(messageId); beginEdit();
       for (const { item, index } of technicalRowMembers(row, review, true)) {
         const previousType = item.type;
@@ -8620,7 +8841,7 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
           item.content = TechnicalRequirementEquivalence.unlabel(item);
           item.type = normalizeTechnicalRequirementType(value);
         }
-        else item.content = value.trim();
+        else item.content = engineeringText(value.trim(), engineeringMode(review), { original: editingBaseline });
         if (item.type === "surface") {
           if (typeof CompanySurfaceMapping !== "undefined" && state.surfaceCatalog.status === "ready") CompanySurfaceMapping.edited(item);
           applyManualSurfaceNormalization(item, "人工统一编辑当前技术要求");
@@ -8648,6 +8869,7 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
       if (!beforeStates && !applyDraft(event.target.value, "content")) return;
       commitEdit("content", event);
     });
+    contentInput.addEventListener("blur", () => { contentInput.value = displayEngineeringText(canonicalContent()); });
     row.querySelector('[data-role="type"]')?.addEventListener("change", (event) => {
       if (!beforeStates && technicalRowMembers(row, review).every(({ item }) => normalizeTechnicalRequirementType(item.type) === event.target.value)) return;
       applyDraft(event.target.value, "type"); commitEdit("type", event);
@@ -8662,7 +8884,7 @@ function bindTechnicalRequirementGroups(root, review, messageId) {
         applyManualSurfaceNormalization(item, "人工选择公司表面处理类型");
         markTechnicalRequirementEdited(item, technicalRequirementField(item, index), technicalRequirementConfirmationKey(item, index), "surface_mapping");
       }
-      contentInput.value = TechnicalRequirementEquivalence.format(technicalRowMembers(row, review, true)[0].item);
+      contentInput.value = displayEngineeringText(TechnicalRequirementEquivalence.format(technicalRowMembers(row, review, true)[0].item));
       syncSurfaceCompanyControls(row, review); syncTechnicalGroupControl(row, review);
       commitEdit("surface_mapping", event);
     });
@@ -8951,7 +9173,7 @@ function renderRequirementsHtml(review) {
                 </label>
                 ${surfaceCompanyControlsHtml(item)}
                 <label>中文技术要求
-                  <textarea data-role="content">${escapeHtml(TechnicalRequirementEquivalence.format(item))}</textarea>
+                  <textarea data-role="content">${escapeHtml(displayEngineeringText(TechnicalRequirementEquivalence.format(item), engineeringMode(review)))}</textarea>
                 </label>
                 <small class="technical-automatic-hint" data-role="technical-automatic-duplicate" role="status" hidden></small>
                 <small class="technical-group-reason" data-role="technical-group-reason" role="status"${control.disabled && control.state !== "confirmed" ? "" : " hidden"}>${escapeHtml(control.disabled && control.state !== "confirmed" ? control.reason : "")}</small>
@@ -9104,6 +9326,7 @@ function targetFieldLabel(targetField) {
   if (targetField === "drawing_summary.drawing_no") return "图号";
   if (targetField === "drawing_summary.drawing_name") return "图纸名称";
   if (targetField === "drawing_summary.material_code") return "物料编码";
+  if (targetField === "drawing_summary.company_name") return "公司名称";
   const text = String(targetField || "");
   const loadTarget = parseLoadPointTarget(text);
   if (loadTarget) return `载荷测试点 ${loadTarget.label} ${loadTarget.field === "height" ? "高度" : "力值"}`;
@@ -9164,26 +9387,25 @@ function bindLoadPointCreateForm(root, review, messageId, editorIsCurrent) {
     if (!current()) return;
     clearLoadPointCreateDraft(); refreshReviewSurfaces();
   });
-  const heightToleranceError = draft => {
-    const value = ToleranceValues.parse(draft.heightToleranceText, { unit: "mm" });
-    return value.ok ? "" : `高度公差：${value.error}`;
-  };
   for (const [field, role] of Object.entries(fields)) {
     const input = form.querySelector(`[data-role="${role}"]`);
+    if (field !== "label") {
+      bindEngineeringInputPrecision(input, () => loadPointDraftView(loadPointCreateDraft(), field),
+        () => loadPointDraftView(loadPointCreateDraft(), field, true));
+    }
     const update = () => {
       if (!current()) return;
-      const draft = loadPointCreateDraft(); draft[field] = input.value;
-      const forceTolerance = ToleranceValues.parse(draft.toleranceText, { load: true, unit: "N" });
-      error(heightToleranceError(draft) || forceTolerance.error || "");
+      const draft = loadPointCreateDraft();
+      if (field === "label") draft.label = input.value;
+      else error(updateLoadPointDraft(draft, field, input.value));
       getToleranceEditor()?.sync(root);
     };
-    input.addEventListener("input", update); input.addEventListener("change", update);
+    input.addEventListener("input", update);
   }
   form.addEventListener("submit", event => {
     event.preventDefault();
     if (!current() || state.busy || !toleranceEditingAllowed()) return;
     const draft = loadPointCreateDraft();
-    for (const [field, role] of Object.entries(fields)) draft[field] = form.querySelector(`[data-role="${role}"]`).value;
     const candidate = draft.candidateId ? (review.load_point_diagnostics || []).find(item => item.candidate_id === draft.candidateId) : null;
     if (draft.candidateId && candidate?.status !== "pending") { error("该候选已处理，请取消当前新增草稿后重新核对。"); return; }
     ensureLoadPointIds(review);
@@ -9194,8 +9416,8 @@ function bindLoadPointCreateForm(root, review, messageId, editorIsCurrent) {
     if (!label) { error("请填写唯一的测试点编号，例如 F1。"); return; }
     if (isDuplicateLoadPointLabel(review, label)) { error(`测试点编号“${label}”已经存在。`); return; }
     if (!Number.isFinite(height) || height <= 0 || force != null && (!Number.isFinite(force) || force < 0)) { error("高度必须大于 0，力值不能为负数。"); return; }
-    if (!tolerance.ok) { error(tolerance.error); return; }
-    if (!heightTolerance.ok) { error(`高度公差：${heightTolerance.error}`); return; }
+    if (!tolerance.ok || draft.invalidFields?.toleranceText) { error(tolerance.error || "力值公差格式有误。"); return; }
+    if (!heightTolerance.ok || draft.invalidFields?.heightToleranceText) { error(heightTolerance.error || "高度公差格式有误。"); return; }
     const point = {
       load_point_id: createLoadPointId(review), label, height, height_unit: "mm", force, force_unit: "N",
       source: ["human_added"], evidence: "人工新增载荷测试点", confidence: 1, need_human_review: true,
@@ -9229,10 +9451,20 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   const context = getReviewContext(messageId) || activeReviewContext();
   const review = context?.review || state.review;
   if (!review) return;
+  root.querySelector('[data-role="engineering-unit-display"]')?.addEventListener("change", event => {
+    changeEngineeringDisplay(event.target, root, review);
+  });
   const toleranceOwnerJob = state.lastJob?.job_id, toleranceOwnerScope = historyRecognitionScope();
   const editorIsCurrent = () => state.review === review && state.lastJob?.job_id === toleranceOwnerJob && historyRecognitionScope() === toleranceOwnerScope;
   getToleranceEditor()?.bind(root, { current: editorIsCurrent,
     activate: () => activateReviewContext(messageId) });
+  const parameterSection = root.querySelector('.parameter-review-section');
+  if (parameterSection) {
+    const update = () => { if (editorIsCurrent()) syncEngineeringSwitchNotice(root, review); };
+    parameterSection.addEventListener("input", update);
+    parameterSection.addEventListener("change", update);
+    update();
+  }
   bindDiameterRoleChoices(root, review, messageId);
   root.querySelectorAll('[data-action="preview-confirmation-sheet"]').forEach(button => button.addEventListener("click", () => {
     activateReviewContext(messageId);
@@ -9300,7 +9532,20 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       if (field === "material" && isCompressionSpringReview(review)) {
         if (!applyMaterialSelection(param, event.target.value)) return;
       } else {
-        param.value = parseValue(event.target.value, param.value);
+        const baseUnit = param.unit_pending ? fieldMeta.unit : param.unit || fieldMeta.unit;
+        const text = event.target.value.trim();
+        const parsed = globalThis.EngineeringUnits?.scale(baseUnit, "imperial") !== 1
+          ? ToleranceValues.number(text) ?? text : parseValue(text, param.value);
+        const next = typeof parsed === "number" ? engineeringInput(parsed, baseUnit) : parsed;
+        if (param.unit_pending && typeof next === "number" && Number.isFinite(next)) {
+          delete param.unit_pending;
+          param.unit = baseUnit;
+          param.tolerance_upper = null;
+          param.tolerance_lower = null;
+          const tolerance = row.querySelector('[data-role="tolerance"]');
+          if (tolerance) tolerance.value = "";
+        }
+        param.value = next;
         if (field === "solid_height") {
           param.value_kind = "input_height";
           param.source = sourceValues(param.source).filter((source) => source !== "reference_limit_applied");
@@ -9356,7 +9601,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       invalidateReasonablenessSuggestions(field);
       invalidateStandardizationResults(field);
       markDependentFormulaParametersPending(field);
-      valueInput.value = String(param.value ?? "");
+      valueInput.value = formatFieldInput(engineeringItem(param, fieldMeta.unit));
       syncDependentFormulaParameterRows(root, review, null);
       refreshCompressionDesignChecks(root, review);
       queueReviewAuditEvent({ event_type: "parameter_value_updated", target_field: field, before_state: before, after_state: parameterAuditState(param), metadata: { source: "formula_candidate_applied" } });
@@ -9370,6 +9615,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         selectAccuracyGrade(root, review, event.target.value, messageId);
         return;
       }
+      if (!valueBeforeState && valueInput.matches("input") && [String(displayValue().value ?? ""), formatFieldInput(displayValue())].includes(valueInput.value)) return;
       if (!valueBeforeState) applyValueDraft(event);
       const afterState = parameterAuditState(param);
       if (diameterBeforeState) {
@@ -9396,7 +9642,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         const candidate = param.roughness_candidates?.[Number(button.dataset.candidateIndex)];
         const value = Number(candidate?.value);
         if (!Number.isFinite(value) || value <= 0 || !["direct", "needs_location"].includes(globalThis.SurfaceRoughnessReference?.candidateEvidence(candidate)[0])) return;
-        valueInput.value = formatCompactNumber(value);
+        valueInput.value = String(engineeringItem({ value, unit: "μm" }).value);
         valueInput.dispatchEvent(new Event("input", { bubbles: true }));
         param.surface_location = candidate?.location || null;
         delete param.roughness_conflict;
@@ -9407,13 +9653,15 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       });
     });
     const toleranceInput = row.querySelector('[data-role="tolerance"]');
+    const displayValue = () => engineeringItem(param.unit_pending ? { ...param, value: "", unit_pending: false, unit: fieldMeta.unit, tolerance_upper: null, tolerance_lower: null } : param, fieldMeta.unit);
+    if (valueInput.matches("input")) bindEngineeringInputPrecision(valueInput, () => displayValue().value ?? "", () => formatFieldInput(displayValue()));
     let toleranceBeforeState = null;
     const applyToleranceDraft = (event) => {
       if (!editorIsCurrent()) return;
       activateReviewContext(messageId);
       toleranceBeforeState ||= parameterAuditState(param);
       rememberConfirmedSnapshot(param);
-      applyTolerance(param, event.target.value);
+      applyTolerance(param, event.target.value, param.unit || fieldMeta.unit);
       applyEditedConfirmationState(param, field, { accuracyPart: "tolerance" });
       syncDependentFormulaParameterRows(root, review, field);
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
@@ -9423,6 +9671,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     toleranceInput?.addEventListener("input", applyToleranceDraft);
     toleranceInput?.addEventListener("change", (event) => {
       if (!editorIsCurrent()) return;
+      if (!toleranceBeforeState && [formatTolerance(displayValue()), formatTolerance(displayValue(), true)].includes(toleranceInput.value)) return;
       if (!toleranceBeforeState) applyToleranceDraft(event);
       const afterState = parameterAuditState(param);
       if (JSON.stringify(toleranceBeforeState) !== JSON.stringify(afterState)) {
@@ -9440,6 +9689,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       }
       refreshBulkConfirmationFollowupAfterLocalChange(messageId);
     });
+    bindEngineeringInputPrecision(toleranceInput, () => formatTolerance(displayValue()), () => formatTolerance(displayValue(), true));
     row.querySelector('[data-role="confirm"]').addEventListener("click", () => {
       activateReviewContext(messageId);
       const control = confirmationControlState(param, { kind: "parameter", field, review });
@@ -9519,7 +9769,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       }
       const original = candidate.original_candidate || {}, point = original.value || {};
       const lengthUnits = { mm: 1, "毫米": 1, cm: 10, m: 1000, in: 25.4, inch: 25.4, "英寸": 25.4 };
-      const forceUnits = { n: 1, "牛": 1, kn: 1000, kgf: 9.80665 };
+      const forceUnits = { n: 1, "牛": 1, kn: 1000, kg: 9.80665, kgf: 9.80665, lb: 4.4482216152605, lbs: 4.4482216152605, lbf: 4.4482216152605 };
       const convert = (raw, unit, units) => {
         const factor = units[String(unit || "").trim().toLowerCase()];
         return raw !== null && raw !== undefined && raw !== "" && factor !== undefined && Number.isFinite(Number(raw) * factor) ? Number(raw) * factor : "";
@@ -9537,8 +9787,8 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         label: String(point.label || ""), height: String(height), force: String(force),
         heightLabel: String(point.height_label || ""),
         heightToleranceText: ToleranceValues.format(ToleranceValues.validate(point.height_tolerance_upper, point.height_tolerance_lower)),
-        toleranceText: loadPointToleranceDisplay(tolerancePoint, point.label || "", review).value,
-        error: (point.height != null && height === "" || point.force != null && force === "") ? "候选单位缺失或不支持，请核对后按 mm/N 填写。" : "",
+        toleranceText: ToleranceValues.format(ToleranceValues.read(tolerancePoint, true)),
+        error: (point.height != null && height === "" || point.force != null && force === "") ? "候选单位缺失或不支持，请核对后按当前单位填写。" : "",
       });
       refreshReviewSurfaces();
       focusLoadPointCreateDraft();
@@ -9585,7 +9835,17 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     const confirmationField = loadPointConfirmationKey(point, pointIndex);
     const editorJobId = state.lastJob?.job_id, editorScope = historyRecognitionScope();
     const editorIsCurrent = () => state.review === review && state.lastJob?.job_id === editorJobId && historyRecognitionScope() === editorScope;
+    const pointInput = (role, rounded = false) => {
+      const display = engineeringPoint(point, review);
+      if (role === "height-tolerance") {
+        const tolerance = readLoadHeightTolerance(display);
+        return display.height_tolerance_input_draft ?? (rounded ? formatEngineeringTolerance(tolerance) : ToleranceValues.format(tolerance));
+      }
+      if (role === "load-tolerance") return display.tolerance_input_draft || loadPointToleranceDisplay(display, display.label, review, rounded).value;
+      return rounded ? formatEngineeringNumber(display[role]) : String(display[role] ?? "");
+    };
     const bindLoadPointDraft = (input, applyValue, eventType, toleranceKind = "") => {
+      const role = input.dataset.role;
       let beforeState = null;
       const applyDraft = (event) => {
         if (!editorIsCurrent()) return;
@@ -9602,6 +9862,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       input.addEventListener("input", applyDraft);
       input.addEventListener("change", (event) => {
         if (!editorIsCurrent()) return;
+        if (!beforeState && [pointInput(role), pointInput(role, true)].includes(input.value)) return;
         if (!beforeState) applyDraft(event);
         const afterState = loadPointAuditState(point);
         if (JSON.stringify(beforeState) !== JSON.stringify(afterState)) {
@@ -9612,13 +9873,25 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
         beforeState = null;
         refreshBulkConfirmationFollowupAfterLocalChange(messageId);
       });
+      bindEngineeringInputPrecision(input, () => pointInput(role), () => pointInput(role, true));
+    };
+    const editMeasuredValue = (field, event, defaultUnit) => {
+      const pending = point.unit_pending_fields?.includes(field);
+      const unitKey = `${field}_unit`, unit = pending ? defaultUnit : point[unitKey] || defaultUnit;
+      const text = event.target.value.trim(), number = ToleranceValues.number(text);
+      point[field] = number == null ? text : engineeringInput(number, unit);
+      if (pending && Number.isFinite(point[field])) {
+        point[unitKey] = defaultUnit;
+        point.unit_pending_fields = point.unit_pending_fields.filter(key => key !== field);
+        if (!point.unit_pending_fields.length) { delete point.unit_pending; delete point.unit_pending_fields; }
+      }
     };
     bindLoadPointDraft(controls.height, (event) => {
-      point.height = parseValue(event.target.value, point.height);
+      editMeasuredValue("height", event, "mm");
       globalThis.LoadHeightRelations?.manual(point);
     }, "load_point_value_updated");
     bindLoadPointDraft(controls.force, (event) => {
-      point.force = parseValue(event.target.value, point.force);
+      editMeasuredValue("force", event, "N");
       if (point.load_force_conflict && typeof point.force === "number" && Number.isFinite(point.force) && point.force >= 0) {
         delete point.load_force_conflict;
         delete point.force_alternatives;
@@ -9627,7 +9900,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     }, "load_point_value_updated");
     bindLoadPointRename(row, point, review, messageId, root, () => { pointField = loadPointField(point, pointIndex); });
     bindLoadPointDraft(controls["height-tolerance"], event => {
-      const unit = point.height_unit || "mm";
+      const unit = engineeringPoint(point, review).height_unit || "mm";
       const input = event.target.value.trim();
       const value = scaleLoadHeightTolerance(ToleranceValues.parse(input, { unit }), LoadHeightRelations.unitFactor(unit));
       if (value.ok) applyLoadHeightTolerance(point, value);
@@ -9981,6 +10254,16 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
 
   globalThis.window?.TechnicalRequirementRecovery?.bind(root, () => activateReviewContext(messageId));
   const createRequirementForm = root.querySelector('[data-kind="technical_requirement_create"]');
+  const newRequirementContent = createRequirementForm?.querySelector('[data-role="new-technical-content"]');
+  if (newRequirementContent) {
+    let baseline;
+    newRequirementContent.addEventListener("focus", () => { baseline = createRequirementForm.engineeringContent || ""; });
+    newRequirementContent.addEventListener("input", () => {
+      createRequirementForm.engineeringContent = engineeringText(newRequirementContent.value, engineeringMode(review), { original: baseline ?? "" });
+    });
+    bindEngineeringInputPrecision(newRequirementContent, () => engineeringText(createRequirementForm.engineeringContent),
+      () => displayEngineeringText(createRequirementForm.engineeringContent));
+  }
   root.querySelector('[data-action="show-technical-requirement-create"]')?.addEventListener("click", () => {
     if (!createRequirementForm) return;
     createRequirementForm.hidden = false;
@@ -9988,6 +10271,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
   });
   createRequirementForm?.querySelector('[data-action="cancel-technical-requirement-create"]')?.addEventListener("click", () => {
     createRequirementForm.reset();
+    delete createRequirementForm.engineeringContent;
     createRequirementForm.hidden = true;
     const error = createRequirementForm.querySelector('[data-role="technical-requirement-create-error"]');
     if (error) error.textContent = "";
@@ -9997,7 +10281,7 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
     activateReviewContext(messageId);
     ensureTechnicalRequirementIds(review);
     const type = normalizeTechnicalRequirementType(createRequirementForm.querySelector('[data-role="new-technical-type"]')?.value);
-    const content = String(createRequirementForm.querySelector('[data-role="new-technical-content"]')?.value || "").trim();
+    const content = String(createRequirementForm.engineeringContent || "").trim();
     const error = createRequirementForm.querySelector('[data-role="technical-requirement-create-error"]');
     if (!content) {
       if (error) error.textContent = "请先填写技术要求内容。";
@@ -10939,7 +11223,10 @@ function updateLatestReviewMessage(title = "已更新结构化尺寸数据，请
 function openCompareOverlay(messageId = state.activeReviewMessageId) {
   if (messageId) activateReviewContext(messageId);
   if (!state.review) return;
-  if (!state.compareOpen) resetCompareRotation();
+  if (!state.compareOpen) {
+    DrawingAnnotations.resetDiagnostics();
+    resetCompareRotation();
+  }
   state.compareOpen = true;
   state.compareView.initialized = false;
   document.body.classList.add("compare-open");
@@ -11288,6 +11575,7 @@ function safeConfirmableReviewItems(review) {
 }
 
 function bulkParameterInvalidReason(field, param) {
+  if (param?.unit_pending) return "原图单位待核对";
   if (field === "flattening") return Flattening.invalidReason(param);
   if (param?.diameter_role_conflict) return "多条原图直径尺寸不一致，请核对后单独确认";
   if (param?.derived_value_stale || param?.formula_recommendation_stale) return "公式结果已过期，请应用新候选值后确认";
@@ -12823,6 +13111,7 @@ if (typeof DrawingAnnotations !== "undefined") {
     getJobId: () => state.lastJob?.job_id,
     isCompression: () => isCompressionSpringReview(state.review),
     getParameter: (field) => state.review?.spring_parameters?.[field],
+    displayParameter: (field, parameter) => parameter && engineeringItem(parameter, getFieldMeta(field, state.review).unit),
     fieldLabel: (field) => FIELD_LABELS[field] || field,
     fetch: (...args) => apiFetch(...args),
     assetUrl: toBackendAssetUrl,
@@ -12991,7 +13280,7 @@ function configureTechnicalRequirementRecovery() {
   });
 }
 
-function technicalRequirementBlocksExport(item) { return Boolean((typeof CompanySurfaceMapping !== "undefined" && CompanySurfaceMapping.reason(item)) || technicalTranslationService()?.blocksExport(item)); }
+function technicalRequirementBlocksExport(item) { return Boolean(item?.unit_pending || (typeof CompanySurfaceMapping !== "undefined" && CompanySurfaceMapping.reason(item)) || technicalTranslationService()?.blocksExport(item)); }
 
 function scheduleTechnicalRequirementTranslation() {
   const service = technicalTranslationService();
@@ -14452,6 +14741,7 @@ function invalidateStandardizationResults(field) {
 
 function syncBubbleValue(field, value) {
   (state.review.balloons || []).filter((item) => item.field === field).forEach((bubble) => { bubble.value = String(value ?? ""); });
+  if (state.compareOpen) DrawingAnnotations.refreshDiagnostics(compareOverlay);
 }
 
 function makeExportReview() {
@@ -14518,6 +14808,7 @@ function makeGenerationParameterPackage(review = state.review, options = {}) {
       drawing_no: summary.drawing_no || null,
       drawing_name: String(summary.drawing_name ?? "").trim() || null,
       material_code: String(summary.material_code ?? "").trim() || null,
+      company_name: String(summary.company_name ?? "").trim(),
       spring_type: currentSpringType(review),
       spring_type_label: summary.spring_type_label || SPRING_TYPE_LABELS[currentSpringType(review)] || null,
     },
@@ -14649,12 +14940,15 @@ function blankParam(unit = null) {
 }
 
 function formatFieldInput(param) {
-  return param.value ?? "";
+  return formatEngineeringNumber(param.value);
 }
 
-function formatTolerance(param) {
+function formatTolerance(param, rounded = false) {
   if (param.tolerance_input_draft) return String(param.tolerance_input_draft);
-  if (typeof ToleranceValues !== "undefined") return ToleranceValues.format(ToleranceValues.read(param));
+  if (typeof ToleranceValues !== "undefined") {
+    const tolerance = ToleranceValues.read(param);
+    return rounded ? formatEngineeringTolerance(tolerance) : ToleranceValues.format(tolerance);
+  }
   const upper = param.tolerance_upper;
   const lower = param.tolerance_lower;
   if (upper == null && lower == null) return "";
@@ -14662,14 +14956,15 @@ function formatTolerance(param) {
   return `${upper ?? ""}/${lower ?? ""}`;
 }
 
-function applyTolerance(param, value) {
+function applyTolerance(param, value, baseUnit = param.unit || "") {
   if (typeof ToleranceValues !== "undefined") {
-    const result = ToleranceValues.parse(value, { unit: param.unit || "" });
+    let result = ToleranceValues.parse(value, { unit: engineeringUnit(baseUnit) });
     if (!result.ok) {
       param.tolerance_input_draft = String(value ?? "");
       param.tolerance_upper = null; param.tolerance_lower = null;
       return false;
     }
+    result = globalThis.EngineeringUnits?.tolerance(result, engineeringScale(baseUnit)) || result;
     delete param.tolerance_input_draft;
     param.tolerance_upper = result.upper; param.tolerance_lower = result.lower;
     return true;
@@ -14729,9 +15024,10 @@ function applyManualLoadTolerance(point, value) {
 
 function applyLoadPointTolerance(point, value) {
   const text = String(value ?? "").trim().replace(/^建议\s*/, "");
-  const parsed = ToleranceValues.parse(text, { load: true, unit: point.force_unit || "N" });
+  const baseUnit = point.force_unit || "N";
+  const parsed = ToleranceValues.parse(text, { load: true, unit: engineeringUnit(baseUnit) });
   if (!parsed.ok) { point.tolerance_input_draft = text; return false; }
-  applyManualLoadTolerance(point, parsed);
+  applyManualLoadTolerance(point, globalThis.EngineeringUnits?.tolerance(parsed, engineeringScale(baseUnit)) || parsed);
   return true;
 }
 

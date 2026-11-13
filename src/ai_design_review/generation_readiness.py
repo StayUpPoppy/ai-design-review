@@ -12,6 +12,7 @@ from .generation_contract import (
     apply_generation_defaults,
     export_generation_parameters,
     generation_parameter_state,
+    generation_source_item,
     validate_generation_parameters,
 )
 from .spring_templates import FIELD_LABELS
@@ -19,7 +20,7 @@ from .spring_feasibility import assess_parameter_reasonableness
 from .surface_roughness import confirmed_surface_roughness_requirement, ensure_surface_roughness_parameter
 from .solidworks import build_solidworks_preview, solidworks_tolerance_issues
 from .technical_output_deletions import refresh_technical_output_deletions
-from .generation_settings import resolve_generation_settings
+from .generation_settings import normalize_company_name, resolve_generation_settings
 from .standardizers.design_checks import FORCE_UNITS, LENGTH_UNITS
 from .load_height_relations import refresh_load_heights
 from .load_points import (
@@ -39,6 +40,8 @@ from .technical_translation import translation_blocks_export
 
 def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
     """Check whether confirmed review data can be safely handed to a drawing generator."""
+    from .engineering_units import metric_review
+    metric_review(review)
     refresh_load_heights(review)
     refresh_technical_output_deletions(review)
     spring_type = str((review.get("drawing_summary") or {}).get("spring_type") or "unknown_spring")
@@ -82,7 +85,9 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
         if state == "missing":
             missing.append(_field_issue(field, "缺少重新生图所需的核心参数。"))
         elif state == "pending":
-            pending.append(_field_issue(field, "参数已有值，但仍需人工确认。"))
+            item = generation_source_item(parameters, field)
+            reason = "原图单位尚待核对，请核实后重新填写。" if (item or {}).get("unit_pending") else "参数已有值，但仍需人工确认。"
+            pending.append(_field_issue(field, reason))
         elif state == "invalid":
             continue
         else:
@@ -129,10 +134,12 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
 
 def build_generation_parameter_package(review: dict[str, Any], *, identity: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build a compact drawing package from the fields the reviewer has confirmed."""
-
+    from .engineering_units import metric_review
     ensure_surface_roughness_parameter(review)
     apply_generation_defaults(review)
     ensure_load_point_ids(review)
+    review = deepcopy(review)
+    metric_review(review)
     refresh_load_heights(review)
     refresh_technical_output_deletions(review)
     parameters = review.get("spring_parameters") or {}
@@ -172,6 +179,7 @@ def build_generation_parameter_package(review: dict[str, Any], *, identity: dict
             "drawing_no": summary.get("drawing_no"),
             "drawing_name": summary.get("drawing_name"),
             "material_code": normalize_material_code(summary.get("material_code")),
+            "company_name": normalize_company_name(summary.get("company_name")),
             "spring_type": summary.get("spring_type"),
             "spring_type_label": summary.get("spring_type_label"),
         },
@@ -296,6 +304,7 @@ def _technical_requirement_is_confirmed(item: Any) -> bool:
         isinstance(item, dict)
         and bool(str(item.get("content") or "").strip())
         and item.get("need_human_review") is False
+        and not item.get("unit_pending")
         and not translation_blocks_export(item)
     )
 

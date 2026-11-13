@@ -107,6 +107,9 @@ class DrawingReviewWorkflow:
         spring_template = template_for(spring_type)
         spring_parameters = self._build_spring_parameters(fused["fields"], fused["load_points"], spring_type)
         technical_requirements = self._build_technical_requirements(fused["fields"], fused["technical_requirements"])
+        from .engineering_units import metric_item, metric_review
+        metric_review({"spring_parameters": spring_parameters}, requirements=False)
+        pending_diameters = [metric_item(item, "outer_diameter") for item in pending_diameters]
         if spring_type == "compression_spring":
             _normalize_recognized_compression_material(spring_parameters, candidates, technical_requirements)
             normalize_compression_end_conditions(spring_parameters)
@@ -364,6 +367,7 @@ class DrawingReviewWorkflow:
             result.update({key: item[key] for key in ("raw_value", "flattening_conflict", "flattening_unverified") if key in item})
         if "diameter_role_evidence" in item:
             result["diameter_role_evidence"] = item["diameter_role_evidence"]
+        result.update({key: item[key] for key in ("engineering_source", "unit_pending") if key in item})
         if item.get("diameter_role_conflict"):
             result["diameter_role_conflict"] = True
         if field == "surface_roughness_ra":
@@ -394,7 +398,7 @@ class DrawingReviewWorkflow:
             "load_tolerance_percent": value.get("load_tolerance_percent"),
             **{key: value[key] for key in (*HEIGHT_FIELDS, "height_relation", "height_calculation", "load_role", "force_tolerance_status",
                                           "force_evidence_verified", "load_force_conflict", "force_alternatives",
-                                          "load_relation_conflict", "load_height_conflict") if key in value},
+                                          "load_relation_conflict", "load_height_conflict", "engineering_source", "unit_pending", "unit_pending_fields") if key in value},
             "test_height_type": value.get("test_height_type", ""),
             "reference_only": value.get("reference_only", False),
             "source": item.get("source", []),

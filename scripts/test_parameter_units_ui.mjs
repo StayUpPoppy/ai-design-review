@@ -30,15 +30,30 @@ const context = {
   formatTolerance: (param) => param.tolerance_upper == null ? "" : `±${param.tolerance_upper}`,
   confirmationButtonHtml: (param) => `<button class="confirm-button${param.need_human_review ? "" : " confirmed"}">${param.need_human_review ? "确认" : "已确认"}</button>`,
   loadPointToleranceDisplay: (point) => ({ value: point.display_tolerance || "", placeholder: "", title: point.tolerance_basis || "", note: "" }),
+  loadHeightToleranceError: () => "",
+  readLoadHeightTolerance: () => ({}),
+  ToleranceValues: { format: () => "" },
   ensureLoadPointIds: () => {},
   isValidLoadPoint: () => true,
   loadPointTableHeadHtml: () => "",
   escapeHtml: (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"),
 };
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(new URL("../frontend/engineering-units.js", import.meta.url), "utf8"), context);
+vm.runInContext(block("let engineeringDisplay", "function changeEngineeringDisplay"), context);
 vm.runInContext(block("function parameterDisplayUnit", "function surfaceRoughnessCandidatesHtml"), context);
 vm.runInContext(block("function parameterValueControlHtml", "function normalizeHandednessValue"), context);
-vm.runInContext(block("function loadPointRowHtml", "function loadPointToleranceDisplay"), context);
+vm.runInContext(block("function loadHeightToleranceControl", "function loadPointToleranceDisplay"), context);
+
+const units = context.EngineeringUnits;
+assert.equal(units.format(38.9128), "38.913");
+assert.equal(units.format(1.500), "1.5");
+assert.equal(units.format(-.0002), "0");
+assert.equal(units.text("高度 0.001-0.002 mm，偏差 +0.381/-0.127 mm", "imperial", { display: true }), "高度 0-0 in，偏差 +0.015/-0.005 in");
+const exactNote = "载荷 13.47931149424–16.45841997646 N，行程 34.92501 mm，图号 1B5585，按 GB/T 1239.2-2009";
+const imperialNote = units.text(exactNote, "imperial");
+assert.equal(units.text(`复核${imperialNote}`, "imperial", { original: exactNote }), `复核${exactNote}`);
+assert.equal(units.text(exactNote, "metric", { display: true }), "载荷 13.479–16.458 N，行程 34.925 mm，图号 1B5585，按 GB/T 1239.2-2009");
 
 const fixtures = [
   ["wire_diameter", "线径", { value: 1.8, unit: "mm" }, { unit: "mm", required: true }, "线径（mm）"],
@@ -98,7 +113,7 @@ for (const point of [
 const section = context.renderLoadPointSectionHtml(context.state.review, []);
 assert.ok(section.includes('高度<span class="parameter-label-unit">（mm）</span>'));
 assert.ok(section.includes('力值<span class="parameter-label-unit">（N）</span>'));
-assert.ok(section.includes("绝对公差单位与力值一致；百分比公差使用 %。"));
+assert.ok(section.includes("高度公差单位与高度一致。力值公差可填偏差或百分比。"));
 assert.match(styles, /\.data-row\[data-kind="param"\] \.data-label strong\s*\{[^}]*white-space: normal;/);
 assert.match(styles, /\.parameter-label-unit\s*\{[^}]*white-space: nowrap;/);
 console.log("PASS: parameter/load-point units, qualifiers, accessible labels, escaping and read-only rendering");

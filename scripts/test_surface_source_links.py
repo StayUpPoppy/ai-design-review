@@ -40,8 +40,8 @@ def main():
     raw = deepcopy(review["technical_requirements"][-1])
     assert not any(v.get("requirement_id") == "surface-ocr" for v in assess_generation_readiness(review)["pending_fields"])
     package = build_generation_parameter_package(review)
-    assert "Fe/Ep" not in package["solidworks_preview"]["extraProperties"]["技术要求"]
-    assert package["solidworks_preview"]["extraProperties"]["技术要求"].count(CHINESE) == 1
+    assert "Fe/Ep" not in package["solidworks_preview"]["technicalRequirements"]["技术要求"]
+    assert package["solidworks_preview"]["technicalRequirements"]["技术要求"].count(CHINESE) == 1
     assert review["technical_requirements"][-1] == raw and raw["need_human_review"]
     frozen = deepcopy(package)
     review["technical_requirements"][0]["surface_mapping"]["catalog_ids"] = [company_id("电镀-镀白锌")]
@@ -52,7 +52,7 @@ def main():
             if mutation == "empty": item["content"] = ""
             if mutation == "choice_conflict": item["surface_mapping"]["catalog_ids"] = [company_id("电镀-镀白锌")]
         check(v, ["surface-ocr"])
-        assert "Fe/Ep" not in build_generation_parameter_package(v)["solidworks_preview"]["extraProperties"]["技术要求"]
+        assert "Fe/Ep" not in build_generation_parameter_package(v)["solidworks_preview"]["technicalRequirements"]["技术要求"]
     for mutation in ("page", "scope", "thickness", "case", "additional", "manual", "position", "ambiguous", "unconverted"):
         v = source_review_fixture(); source = v["technical_requirements"][-1]
         if mutation == "page": source["page"] = 2
@@ -70,7 +70,7 @@ def main():
         assert "surface-ocr" not in surface_source_links(v)["suppressed_ids"]
         if mutation == "position":
             for item in v["technical_requirements"]: item["need_human_review"] = False
-            assert "Fe/Ep" in build_generation_parameter_package(v)["solidworks_preview"]["extraProperties"]["技术要求"], "Position conflicts are independent, not globally hidden by text"
+            assert "Fe/Ep" in build_generation_parameter_package(v)["solidworks_preview"]["technicalRequirements"]["技术要求"], "Position conflicts are independent, not globally hidden by text"
     for box in ({}, None, source_review_fixture()["technical_requirements"][-1]["position"]):
         v = source_review_fixture()
         for root in v["technical_requirements"][:2]: root["position"] = box

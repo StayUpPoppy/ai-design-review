@@ -4,6 +4,15 @@ from __future__ import annotations
 from typing import Any
 
 
+def normalize_company_name(value: Any) -> str:
+    if value is not None and not isinstance(value, str):
+        raise ValueError("公司名称必须为文本")
+    name = (value or "").strip()
+    if len(name) > 512:
+        raise ValueError("公司名称最长512字符，请缩短后重试")
+    return name
+
+
 def normalize_generation_settings(
     settings: Any, *, default_username: str = "", allow_blank: bool = False
 ) -> dict[str, str]:
@@ -13,8 +22,8 @@ def normalize_generation_settings(
     if drawing_model not in ("X型", "Y型"):
         raise ValueError("图纸版式只能选择横版或竖版。")
     typeface = settings.get("typeface", "宋体")
-    if typeface not in ("宋体", "黑体"):
-        raise ValueError("图纸字体只能选择宋体或黑体。")
+    if typeface not in ("宋体", "黑体", "仿宋"):
+        raise ValueError("图纸字体只能选择宋体、黑体或仿宋。")
     username = settings.get("username", default_username)
     if not isinstance(username, str):
         raise ValueError("生图人姓名必须是文本。")

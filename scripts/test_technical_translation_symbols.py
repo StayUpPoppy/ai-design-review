@@ -126,7 +126,7 @@ def run():
         package = build_generation_parameter_package(review)
         frozen = deepcopy(package)
         command = build_solidworks_command("1000000066", package, review)
-        assert "sh = 0.85 mm" in command["models"][0]["extraProperties"]["技术要求"]
+        assert "sh = 0.85 mm" in command["models"][0]["technicalRequirements"]["技术要求"]
         note["content"] = "后续修改 sh=1 mm"
         assert build_solidworks_command("1000000066", frozen, review) == command
 

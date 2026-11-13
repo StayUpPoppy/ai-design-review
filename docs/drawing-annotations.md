@@ -57,7 +57,9 @@ PDF 同一文字行内的拆分数字使用与 OCR 匹配、去重相同的解�
 
 新增 `POST /api/reviews/{job_id}/annotations/relocalize`，仅提交 `source_document_id` 和 `expected_annotation_revision`。操作沿用订单权限及独立标注版本，只重试缺项/失败任务，保留已有可靠位置。版本变化（包括 OCR 执行期间发生的人工修改）返回409和最新标注；失败保留原位置并允许用户重试。补定位过程中浏览器暂停位置编辑，先完成待保存位置；切换订单后旧响应不重绘新订单。
 
-响应可选 `diagnostics` 包含字段、`evidence_value`、`current_value`、原文、页码/证据坐标、原因及 `localization_status`（`not_run`、`failed`、`completed_unmatched`、`located`）。证据与当前参数不一致时直接显示差异，现有参数、确认记录和计算结果不自动更新。独立内径/线径与图中直径存在关系冲突时显示角色核对提示。原始候选及冻结 SW 请求保留。新上传 PDF 在融合前可采用完整名义尺寸及独立公差证据，旧记录读取不会因此改值。
+响应可选 `diagnostics` 包含字段、原图与当前数值及单位、原文、页码、证据坐标、原因和定位状态。读取已有标注时优先采用该标注的单位，其次采用适用的同页单位依据，统一换算后按完整精度比较。比如 `0.072 in` 与 `1.8288 mm` 无需核对。无法确定原图单位时提示「原图单位待核对」。该比较直接复用保存的证据，不重新识别、补定位或改写参数、确认记录及坐标。
+
+原图底部的「原图数值核对 · N 项」可用鼠标或键盘展开。零项隐藏入口，每次打开工作台默认折叠。工作台内换页、缩放及切换显示单位时保留展开状态。展开后可查看差异两侧的数值与单位，以及直径关系冲突等核对原因。
 
 本地真实验收命令：`python scripts/test_drawing_annotations_v3.py --real` 和 `node scripts/test_drawing_annotations_browser.mjs --v3`。五份图纸、识别结果、缓存和截图保存在 Git 忽略的 `outputs/annotation-v3-qa/`；不调用云端模型或真实 SW。
 

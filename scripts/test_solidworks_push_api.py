@@ -136,7 +136,7 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
     assert model["modelParameters"]["是否并紧"] is None
     assert set(model["modelParameters"]) == {"线径", "中径", "自由高度", "圈数", "有效圈数n", "是否磨平", "是否并紧"}
     assert "P'" not in model["extraProperties"]
-    assert "Hb =" not in model["extraProperties"]["技术要求"]
+    assert "Hb =" not in model["technicalRequirements"]["技术要求"]
     assert model["customProperties"] == {"旋向": "右旋"}
     assert model["titleBlockProperties"] == {}
 
@@ -155,7 +155,7 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
         },
         {"spring_parameters": {"solid_height": {"value": 35, "need_human_review": False, "value_kind": "input_height"}}},
     )
-    assert "Hb = 35 mm" in confirmed["models"][0]["extraProperties"]["技术要求"]
+    assert "Hb = 35 mm" in confirmed["models"][0]["technicalRequirements"]["技术要求"]
 
     legacy_package = {
         "source": {"drawing_name": "压缩弹簧"},
@@ -166,10 +166,10 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
         },
     }
     review = {"spring_parameters": {}}
-    legacy_text = build_solidworks_command("1000000002", legacy_package, review)["models"][0]["extraProperties"]["技术要求"]
+    legacy_text = build_solidworks_command("1000000002", legacy_package, review)["models"][0]["technicalRequirements"]["技术要求"]
     assert legacy_text == "1.端圈并紧磨平。"
     legacy_package["generation_parameters"]["technical_requirements_text"] = "技术要求\n" + legacy_text
-    assert build_solidworks_command("1000000003", legacy_package, review)["models"][0]["extraProperties"]["技术要求"] == legacy_text
+    assert build_solidworks_command("1000000003", legacy_package, review)["models"][0]["technicalRequirements"]["技术要求"] == legacy_text
 
 
 def main() -> None:
@@ -235,13 +235,13 @@ def main() -> None:
                 assert exported.status_code == 200, exported.text
                 assert exported.json()["parameter_package"]["solidworks_preview"]["modelParameters"] == model["modelParameters"]
                 assert (
-                    exported.json()["parameter_package"]["solidworks_preview"]["extraProperties"]["技术要求"]
-                    == model["extraProperties"]["技术要求"]
+                    exported.json()["parameter_package"]["solidworks_preview"]["technicalRequirements"]["技术要求"]
+                    == model["technicalRequirements"]["技术要求"]
                 )
                 assert model["customProperties"] == {"旋向": "左旋"}
                 extra = model["extraProperties"]
-                assert list(extra) == ["技术要求", "P'", "C", "τ_b"]
-                notes = extra["技术要求"]
+                assert list(extra) == ["P'", "C", "τb", "L"]
+                notes = model["technicalRequirements"]["技术要求"]
                 assert notes.count("表面喷丸处理") == 1 and notes.count("300℃/20min") == 1
                 assert "热处理：热处理要求" not in notes
                 assert notes.startswith("1.旋向：左。\n2.总圈数：9，有效圈数：7。\n3.两端并紧并磨平，磨面角≥270°。\n4.")
@@ -253,12 +253,12 @@ def main() -> None:
                 for expected in ("Hb = 25 mm", "Fb = 2300 N", "H1 = 38 mm", "F1 = 2000 N", "H2 = 43 mm", "F2 = 2100 N", "表面喷丸处理"):
                     assert expected in notes, notes
                 assert isinstance(extra["P'"], (int, float)) and extra["C"] == round(29 / 3, 4)
-                assert extra["τ_b"] > 0
+                assert extra["τb"] > 0
                 title = model["titleBlockProperties"]
                 assert title["材料"] == "60Si2Mn" and isinstance(title["重量"], (int, float))
-                assert title["表面粗糙度"] == 12.5
+                assert title["表面粗糙度Ra"] == 12.5
                 assert title["客户图号"] == "SW-PUSH-001"
-                assert list(title) == ["材料", "重量", "客户图号", "表面粗糙度"]
+                assert list(title) == ["材料", "重量", "客户图号", "表面粗糙度Ra"]
                 with repository._session() as session:
                     stored_package = session.get(GenerationJobRecord, job["generation_id"]).parameter_package
                     mass = stored_package["derived_parameters"]["solidworks_design_checks"]["metrics"]["unit_mass"]
@@ -287,9 +287,9 @@ def main() -> None:
                 assert order2_created.status_code == 202, order2_created.text
                 order2_job = order2_created.json()["generation_job"]
                 order2_payload = submissions[-1]["payload"]
-                order2_notes = order2_payload["models"][0]["extraProperties"]["技术要求"]
+                order2_notes = order2_payload["models"][0]["technicalRequirements"]["技术要求"]
                 assert len(order2_notes.splitlines()) == 12, order2_notes
-                assert order2_payload["models"][0]["titleBlockProperties"]["表面粗糙度"] == 12.5
+                assert order2_payload["models"][0]["titleBlockProperties"]["表面粗糙度Ra"] == 12.5
                 assert order2_payload["models"][0]["titleBlockProperties"]["客户图号"] == "YD4765020178"
                 assert "粗糙度" not in order2_notes
                 assert order2_payload["models"][0]["titleBlockProperties"] == order2_preview.json()["parameter_package"]["solidworks_preview"]["titleBlockProperties"]
@@ -297,7 +297,7 @@ def main() -> None:
                 assert len(repository.get_review("order2-technical-dedup", owner_user_id=OWNER["user_id"])["review"]["technical_requirements"]) == 9
                 with repository._session() as session:
                     order2_frozen = session.get(GenerationJobRecord, order2_job["generation_id"]).parameter_package
-                    assert order2_frozen["solidworks_preview"]["extraProperties"]["技术要求"] == order2_notes
+                    assert order2_frozen["solidworks_preview"]["technicalRequirements"]["技术要求"] == order2_notes
                 submission_count = len(submissions)
                 order2_retry = client.post("/api/reviews/order2-technical-dedup/generation-jobs", json=create_request("order2-dedup-r1"))
                 assert order2_retry.status_code == 200 and len(submissions) == submission_count
@@ -340,17 +340,17 @@ def main() -> None:
                     payload = deepcopy(submissions[-1]["payload"])
                     model = payload["models"][0]
                     assert model["extraProperties"] == preview_response.json()["parameter_package"]["solidworks_preview"]["extraProperties"]
-                    assert len(model["extraProperties"]["技术要求"].splitlines()) == expected_count
+                    assert len(model["technicalRequirements"]["技术要求"].splitlines()) == expected_count
                     assert repository.get_review(review_id, owner_user_id=OWNER["user_id"])["review"]["technical_requirements"] == originals
                     with repository._session() as session:
-                        frozen_notes = session.get(GenerationJobRecord, new_job["generation_id"]).parameter_package["solidworks_preview"]["extraProperties"]["技术要求"]
-                        assert frozen_notes == model["extraProperties"]["技术要求"]
+                        frozen_notes = session.get(GenerationJobRecord, new_job["generation_id"]).parameter_package["solidworks_preview"]["technicalRequirements"]["技术要求"]
+                        assert frozen_notes == model["technicalRequirements"]["技术要求"]
                     before_retry = len(submissions)
                     retried = client.post(f"/api/reviews/{review_id}/generation-jobs", json=create_request(review_id))
                     assert retried.status_code == 200 and len(submissions) == before_retry
                     assert retried.json()["generation_job"]["execution_options"]["solidworks_payload"] == payload
                     if review_id == "roughness-reference":
-                        assert model["titleBlockProperties"]["表面粗糙度"] == 12.5
+                        assert model["titleBlockProperties"]["表面粗糙度Ra"] == 12.5
                         assert "roughness_reference_dismissed" not in json.dumps(payload)
                         declined = deepcopy(sample)
                         declined["spring_parameters"]["surface_roughness_ra"].update(value=None, need_human_review=True, source=["human_edited"], roughness_reference_dismissed=True)
@@ -358,7 +358,7 @@ def main() -> None:
                         assert changed.status_code == 200, changed.text
                         current_preview = client.get(f"/api/reviews/{review_id}/generation-package")
                         assert current_preview.status_code == 200, current_preview.text
-                        assert "表面粗糙度" not in current_preview.json()["parameter_package"]["solidworks_preview"]["titleBlockProperties"]
+                        assert "表面粗糙度Ra" not in current_preview.json()["parameter_package"]["solidworks_preview"]["titleBlockProperties"]
                         assert client.get(f"/api/generation-jobs/{new_job['generation_id']}").json()["generation_job"]["execution_options"]["solidworks_payload"] == payload
 
                 progress = {"TaskId": task_id, "status": "generating_3d", "progress": 35, "message": "正在生成三维图"}
@@ -756,7 +756,7 @@ def main() -> None:
                     assert open_model["modelParameters"]["是否并紧"] == 0
                     assert "有效圈数n" not in open_model["modelParameters"]
                     assert list(open_model["modelParameters"]) == ["线径", "中径", "自由高度", "圈数", "是否磨平", "是否并紧"]
-                    open_notes = open_model["extraProperties"]["技术要求"]
+                    open_notes = open_model["technicalRequirements"]["技术要求"]
                     expected_end_note = "两端不并紧，端面磨平。" if grinding else "两端不并紧，不磨平。"
                     assert open_notes.splitlines()[2] == "3." + expected_end_note and "磨面角≥270°" not in open_notes
                     assert "工作圈数：" not in open_notes and "有效圈数：" not in open_notes

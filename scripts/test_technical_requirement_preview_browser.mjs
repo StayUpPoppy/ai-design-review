@@ -51,7 +51,7 @@ try {
         if(holdPackage){holdPackage=false;await new Promise(resolve=>{releasePackage=resolve;});}
         if(failPackage){failPackage=false;return route.fulfill({status:503,contentType:"application/json",body:'{"detail":"模拟核对失败"}'});}
         const parameterPackage=await page.evaluate(review=>makeGenerationParameterPackage(review),review);
-        if(text!==null) parameterPackage.solidworks_preview.extraProperties["技术要求"]=text;
+        if(text!==null) parameterPackage.solidworks_preview.technicalRequirements["技术要求"]=text;
         body={review_id:id,review_revision:wrongRevision ? revision-1 : revision,parameter_package:parameterPackage,
           ...(text===null ? {technical_requirements_projection:await page.evaluate(review=>technicalOutputPreviewModel(review),review)} : {})};
       }else if(action==="generation-readiness") body={review_id:id,review_revision:order.revision,generation_readiness:{status:order.readinessStatus || "ready",warnings:[],missing_fields:[],pending_fields:[],confirmed_core_count:8,core_field_count:8}};
@@ -273,10 +273,10 @@ try {
   await explicit.locator('[data-role="confirm"]').click();await flush();await checked();
   assert.ok((await shown()).includes("总圈数：4.5"),"A newly added original record is not blocked by the old automatic choice");
   const beforeAll=await invariants();
-  const beforeModel=await page.evaluate(()=>{const p=makeGenerationParameterPackage().solidworks_preview;delete p.extraProperties["技术要求"];return p;});
+  const beforeModel=await page.evaluate(()=>{const p=makeGenerationParameterPackage().solidworks_preview;delete p.technicalRequirements["技术要求"];return p;});
   while(await preview.locator("li").count()){await preview.locator('[data-role="delete-technical-output"]').first().click();await flush();await checked();}
   assert.equal(await shown(),"");assert.equal(await expected(),"");assert.equal(await invariants(),beforeAll);
-  assert.deepEqual(await page.evaluate(()=>{const p=makeGenerationParameterPackage().solidworks_preview;delete p.extraProperties["技术要求"];return p;}),beforeModel,"All other SW properties remain unchanged");
+  assert.deepEqual(await page.evaluate(()=>{const p=makeGenerationParameterPackage().solidworks_preview;delete p.technicalRequirements["技术要求"];return p;}),beforeModel,"All other SW properties remain unchanged");
   await page.reload();await page.waitForFunction(()=>state.identityReady);await open();await checked();assert.equal(await shown(),"");
 
   await resetDeleteFixture();failPatch=true;

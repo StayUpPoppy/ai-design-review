@@ -51,7 +51,8 @@
         const response = await options.request(`/api/reviews/${encodeURIComponent(context.jobId)}/generation-package`, { signal: AbortSignal.timeout(15000) });
         const payload = await response.json();
         if (!current(record, context)) { if (cache.get(key) === entry) cache.delete(key); return; }
-        const text = payload.parameter_package?.solidworks_preview?.extraProperties?.["技术要求"];
+        const preview = payload.parameter_package?.solidworks_preview;
+        const text = preview?.technicalRequirements?.["技术要求"] ?? preview?.extraProperties?.["技术要求"];
         if (!response.ok || payload.review_id !== context.jobId || payload.review_revision !== context.revision || typeof text !== "string") throw new Error("preview unavailable");
         entry.status = "ready"; entry.text = text;
         const projection = payload.technical_requirements_projection;

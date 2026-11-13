@@ -149,6 +149,13 @@ def child_review(source, candidate, source_id, *, evidence=None):
     for value in candidates:
         value["structured_specification"] = True
         if value.get("field") in local or value.get("field") == "load_point": value["page"] = candidate["page"]
+    from .engineering_units import apply_drawing_units, metric_requirements
+    drawing_units = source.get("drawing_length_units") or {}
+    page_unit = drawing_units.get(str(candidate["page"]), drawing_units.get(candidate["page"]))
+    source_context = candidate.get("source_context") or {}
+    unit_text = source_context.get("unit_evidence") or (f"UNITS: {page_unit}" if page_unit in {"mm", "in"} else "")
+    if unit_text:
+        candidates = apply_drawing_units(candidates, {"specification": {"texts": [{"text": unit_text, "page": candidate["page"]}]}})
     from .diameter_evidence import VERSION as DIAMETER_ROLE_VERSION, resolve_specification_diameters
     if source.get("diameter_role_verification") == DIAMETER_ROLE_VERSION:
         scoped_regions = [item["region"] for item in (evidence or {}).get("variants", {}).values() if item.get("region")]
@@ -160,6 +167,8 @@ def child_review(source, candidate, source_id, *, evidence=None):
                   "common_regions": common_regions}
         candidates = resolve_specification_diameters(candidates, origin, local, (evidence or {}).get("diameter_blocks", []))
     review = DrawingReviewWorkflow(read_json(project_path("config", "factory_rules.json"))).run(None, candidates, run_standardization=False)
+    review["drawing_length_units"] = drawing_units
+    metric_requirements(review)
     # Every recognised input remains pending, independent from the source or siblings.
     for item in review.get("spring_parameters", {}).values():
         if isinstance(item, dict) and item.get("value") is not None and "formula_calculation" not in (item.get("source") or []): item["need_human_review"] = True
