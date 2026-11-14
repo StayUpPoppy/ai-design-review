@@ -56,6 +56,13 @@ const root = page.locator('.compare-overlay');
 const row = () => root.locator('.requirement-row[data-requirement-id="surface-one"]');
 const body = () => row().locator('[data-role="content"]');
 const select = () => row().locator('[data-role="surface-company-select"]').first();
+const trigger = () => row().locator('[data-role="surface-company-trigger"]');
+const picker = () => page.getByRole('dialog', { name: '选择公司表面处理' });
+const search = () => picker().getByRole('combobox');
+async function choose(name) {
+  await trigger().click();
+  await picker().getByRole('option', { name, exact: true }).click();
+}
 const confirm = () => row().locator('[data-role="confirm"]');
 async function open(job) { await page.evaluate(async (job) => { await openPersistedReview(job); renderCompareOverlay(); }, job); await root.waitFor(); await root.locator('[data-compare-tab="parameters"]').click(); await row().waitFor(); }
 async function saved() { assert.equal(await page.evaluate(() => Promise.race([flushReviewPersistence(), new Promise((_, reject) => setTimeout(() => reject(new Error(JSON.stringify({ saving: state.reviewPersistenceSaving, pending: state.pendingReviewAuditEvents, failed: state.reviewPersistenceFailedFields, conflicts: state.reviewPersistenceConflictFields }))), 15000))])), true); await page.waitForFunction(() => !state.reviewPersistenceSaving && !state.pendingReviewAuditEvents.length); }
@@ -77,12 +84,20 @@ try {
   assert.equal(await root.locator('.requirement-row[data-requirement-id="surface-ocr"]').count(), 0);
   assert.match(await row().locator('[data-role="technical-group-sources"] summary').innerText(), /3 条原始记录/);
   assert.equal(await page.evaluate(() => state.review.technical_requirements.find((v) => v.requirement_id === 'surface-ocr').need_human_review), true);
-  await row().locator('[data-role="surface-company-search"]').fill('彩锌');
-  assert.equal(await select().locator('option').evaluateAll((options) => options.filter((o) => o.value && !o.hidden).length), 1);
-  await row().locator('[data-role="surface-company-search"]').fill('');
-  await select().focus(); await select().selectOption(id('电镀-镀白锌')); await saved();
+  assert.equal(await row().locator('input[type=search]').count(), 0);
+  await trigger().press('ArrowDown');
+  assert.equal(await search().evaluate(el => document.activeElement === el), true);
+  await search().fill('彩锌');
+  assert.equal(await picker().getByRole('option').count(), 1);
+  await search().fill('无此公司处理');
+  assert.match(await picker().innerText(), /未找到匹配/);
+  await search().press('Escape');
+  assert.equal(await picker().count(), 0);
+  assert.equal(models.get('a').revision, 1, 'Searching must never save the review');
+  await trigger().click();
+  await search().fill('白锌'); await search().press('Enter'); await saved();
   assert.match(await body().inputValue(), /电镀-镀白锌/); assert.match(await body().inputValue(), /除氢/);
-  assert.equal(await select().evaluate((el) => document.activeElement === el), true);
+  assert.equal(await trigger().evaluate((el) => document.activeElement === el), true);
   assert.equal((await surfaces()).every((v) => v.need_human_review && v.surface_mapping.catalog_ids[0] === id('电镀-镀白锌')), true);
   await edit('表面处理：' + fixture.chinese); assert.equal(await select().inputValue(), id('电镀-镀彩锌'));
   console.log('PASS linked edits');
@@ -94,13 +109,13 @@ try {
   await root.locator('[data-action="confirm-all-review-items"]').click(); await saved();
   assert.equal((await surfaces()).every((v) => v.need_human_review), true);
   assert.equal(await page.evaluate(() => state.review.technical_requirements.filter((v) => !v.surface_mapping && v.requirement_id !== 'surface-ocr').every((v) => v.need_human_review === false)), true);
-  const beforeClear = await body().inputValue(); await select().selectOption(''); await saved();
+  const beforeClear = await body().inputValue(); await choose('未指定公司类型'); await saved();
   assert.equal(await body().inputValue(), beforeClear); assert.equal(await select().inputValue(), ''); assert.equal(await confirm().isEnabled(), true);
   await edit('表面处理：' + fixture.chinese); assert.equal(await select().inputValue(), '', 'Explicit none must remain empty');
   await confirm().click(); await saved();
   assert.equal((await surfaces()).every((v) => v.need_human_review === false && v.surface_mapping.selection_mode === 'none'), true);
   console.log('PASS conflicts, bulk and explicit none');
-  await select().selectOption(id('电镀-镀彩锌')); await saved();
+  await choose('电镀-镀彩锌'); await saved();
   assert.equal((await surfaces()).every((v) => v.need_human_review), true);
   failSave = true; await body().fill('表面处理：' + fixture.chinese + ' 保持清洁。'); await body().press('Tab');
   await page.waitForFunction(() => state.reviewPersistenceFailedFields['technical_requirements.surface-one']);
@@ -133,11 +148,14 @@ try {
   await edit('表面处理：清洗后上油，保持清洁。');
   assert.equal(await select().inputValue(), id('清洗'));
   assert.equal((await surfaces()).every((v) => v.surface_mapping.catalog_ids.length === 1), true);
-  await select().selectOption(id('发黑')); await saved(); assert.match(await body().inputValue(), /发黑后上油/);
+  await choose('发黑'); await saved(); assert.match(await body().inputValue(), /发黑后上油/);
   await edit('表面处理：' + fixture.chinese + ' 人工确认工艺。'); await confirm().click(); await saved();
   await row().scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(output, 'desktop.png') });
   await page.setViewportSize({ width: 390, height: 1600 }); await row().scrollIntoViewIfNeeded();
-  assert.equal(await select().isVisible(), true); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  assert.equal(await trigger().isVisible(), true); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await trigger().click();
+  assert.equal(await picker().evaluate(el => { const b = el.getBoundingClientRect(); return b.left >= 0 && b.right <= innerWidth; }), true);
+  await search().press('Escape');
   await page.screenshot({ path: path.join(output, 'mobile.png') });
   // Clearing the body keeps the source evidence and excludes the row from SW.
   await edit(''); assert.equal(await confirm().isDisabled(), true);
@@ -152,6 +170,51 @@ try {
   releaseSave(); await page.waitForFunction(() => !state.reviewPersistenceSaving);
   assert.equal(await page.evaluate(() => state.lastJob.review_revision), 99);
   assert.equal(await page.evaluate(() => state.review.technical_requirements[0].content), fixture.chinese);
+  const pendingSurface = (id, content, readings) => ({ requirement_id: id, type: 'surface', content, original_content: content,
+    need_human_review: true, source: ['qwen_vision'], surface_mapping: { catalog_ids: [], selection_mode: 'auto',
+      conversion_status: 'needs_input', verification: { status: 'uncertain', readings: readings.map(text => ({ text })) } } });
+  models.get('b').review.technical_requirements = [
+    pendingSurface('shot-review', '表面处理：抛丸。', ['5. 抛丸。', '5. 混丸。']),
+    pendingSurface('paint-review', '表面处理：涂清漆。', ['6. 涂漆。', '6. 涂清漆。']),
+    pendingSurface('zinc-review', '表面处理：表面处理 镀锌五彩', ['镀锌五彩']),
+    pendingSurface('conflict-review', '喷丸。', ['5. 抛丸。', '5. 喷丸。']),
+    pendingSurface('heading-review', '表面处理：表面处理', []),
+    pendingSurface('keep-review', '局部涂清漆。', ['局部涂清漆。']),
+  ];
+  models.get('b').revision++;
+  await page.reload();
+  await page.waitForFunction(() => state.identityReady && state.recentReviews.length === 2);
+  await page.evaluate(async () => { await openPersistedReview('b'); renderCompareOverlay(); });
+  await root.locator('[data-compare-tab="parameters"]').click();
+  const surface = name => root.locator(`.requirement-row[data-requirement-id="${name}-review"]`);
+  assert.equal(await surface('zinc').locator('[data-role=content]').inputValue(), '表面处理：镀锌五彩');
+  assert.equal(await surface('shot').locator('[data-role=confirm]').textContent(), '核对后确认');
+  assert.equal(await surface('heading').locator('[data-role=confirm]').isDisabled(), true);
+  assert.equal(await root.getByText(/含\s*\d+\s*条表面处理待核对/).count(), 0);
+  await surface('keep').locator('[data-role=surface-company-trigger]').click();
+  await picker().getByRole('option', { name: '未指定公司类型', exact: true }).click();
+  await saved();
+  assert.equal(models.get('b').review.technical_requirements[5].surface_mapping.selection_mode, 'none');
+  await surface('paint').locator('[data-role=surface-company-trigger]').click();
+  await picker().getByRole('option', { name: '油漆-清漆', exact: true }).click();
+  await saved();
+  assert.equal(await surface('paint').locator('[data-role=content]').inputValue(), '表面处理：油漆-清漆。');
+  await root.locator('[data-action="confirm-all-review-items"]').click(); await saved();
+  assert.equal(models.get('b').review.technical_requirements[0].need_human_review, false);
+  assert.equal(models.get('b').review.technical_requirements[2].content, '电镀-镀彩锌');
+  assert.equal(models.get('b').review.technical_requirements[5].content, '局部涂清漆。');
+  assert.equal(models.get('b').review.technical_requirements[3].need_human_review, true);
+  assert.match(await surface('conflict').locator('summary').textContent(), /原图读数有冲突/);
+  await surface('conflict').locator('[data-role=confirm]').click(); await saved();
+  assert.equal(models.get('b').review.technical_requirements[3].need_human_review, false);
+  assert.equal(models.get('b').review.technical_requirements[3].surface_mapping.verification.readings.length, 2);
+  assert.equal(models.get('b').review.technical_requirements[4].need_human_review, true);
+  const reviewedPackage = await page.evaluate(() => makeGenerationParameterPackage());
+  const reviewedOutput = reviewedPackage.solidworks_preview.technicalRequirements['技术要求'];
+  assert.match(reviewedOutput, /表面处理：电镀-镀彩锌/, JSON.stringify(reviewedPackage.generation_parameters.technical_requirements));
+  assert.match(reviewedOutput, /表面处理：抛丸/);
+  assert.match(reviewedOutput, /表面处理：喷丸/);
+  assert.doesNotMatch(reviewedOutput, /表面处理：表面处理/);
   assert.equal(requests.some((v) => /translate|recognition.*retry/.test(v)), false, 'No model calls from local editing');
   assert.deepEqual(errors, []);
   console.log('Company surface browser: catalog retry/search, linked grouped edits, conflicts, explicit none, single/bulk confirmation, save/retry/CAS, delete/undo, reopen, Chinese SW text, focus and responsive layout passed');

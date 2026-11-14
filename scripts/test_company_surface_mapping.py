@@ -9,6 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ai_design_review.surface_catalog import load_surface_catalog, names_in_content, mapping_reason, accept_recognized_surface, synchronize_surface_review
+from ai_design_review.surface_evidence import reconcile_surface_notes
 from ai_design_review.engines.qwen_vision_adapter import qwen_payload_to_candidates, QwenVisionEngine
 from ai_design_review.fusion import fuse_candidates
 from ai_design_review.generation_readiness import build_generation_parameter_package
@@ -22,6 +23,79 @@ CHINESE = "电镀-镀彩锌，镀层厚度≥15 μm，彩虹铬酸盐处理2级C
 
 
 def company_id(name): return next(v["id"] for v in load_surface_catalog()["items"] if v["name"] == name)
+
+
+def verify_surface_evidence():
+    from PIL import Image
+    from ai_design_review import surface_evidence
+    from ai_design_review.technical_requirement_recognition import collect_technical_requirements
+
+    first = {"x": .1, "y": .3, "width": .25, "height": .04}
+    second = {**first, "y": .45}
+    third = {**first, "y": .55}
+
+    def candidate(text, position, page=1):
+        return {"field": "process_requirement", "source": "qwen_vision", "recognition_channel": "technical_requirements",
+                "value": text, "original_content": text, "page": page, "position": position}
+
+    def line(text, position, source="ocr", page=1):
+        return {"text": text, "position": position, "source": source, "page": page}
+
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        source = root / "sheet.png"
+        Image.new("RGB", (800, 600), "white").save(source)
+        original = [candidate("4.喷丸。", first), candidate("5.涂漆，厚度8–12 μm，内侧不得涂覆。", second),
+                    candidate("6.锌铝涂层，厚度8–12 μm", third)]
+        lines = [line("4.批丸。", first), line("5.涂清漆，厚度8–12 μm，内侧不得涂覆。", second),
+                 line("6.锌铝涂层，厚度8–12 μm", third),
+                 line("4.发蓝。", first, page=2)]
+        engine = QwenVisionEngine(api_key="offline-test")
+        with patch.object(surface_evidence, "_cached_lines", return_value=lines), \
+             patch.object(surface_evidence, "_readings", return_value=[]), \
+             patch.object(engine, "read_surface_lines", return_value={"1": "4.抛丸。"}) as request:
+            params = {"source": source, "job_dir": root, "images": [source], "raw_payloads": {}, "engine": engine}
+            checked, _ = reconcile_surface_notes(original, None, **params)
+            assert request.call_count == 1 and set(request.call_args.args[0]) == {"1"}
+            assert checked == reconcile_surface_notes(original, None, **params)[0] and request.call_count == 1
+        notes = collect_technical_requirements(checked)
+        assert [n["content"] for n in notes] == ["抛丸。", "油漆-清漆，厚度8–12 μm，内侧不得涂覆。", "锌铝涂层，厚度8–12 μm"]
+        assert [n["surface_mapping"]["catalog_ids"] for n in notes] == [[company_id("抛丸")], [company_id("油漆-清漆")], []]
+        assert all(n["type"] == "surface" and n["need_human_review"] and not mapping_reason(n) for n in notes)
+        assert original[0]["value"] == "4.喷丸。"
+        assert len(notes[0]["surface_mapping"]["verification"]["readings"]) == 3
+
+        unresolved = root / "unresolved"
+        unresolved.mkdir()
+        with patch.object(surface_evidence, "_cached_lines", return_value=lines[:1]), \
+             patch.object(surface_evidence, "_readings", return_value=[]), \
+             patch.object(engine, "read_surface_lines", return_value={"1": "4.混丸。"}) as request:
+            failed, _ = reconcile_surface_notes(original[:1], None, **{**params, "job_dir": unresolved})
+            assert request.call_count == 1
+        reason = mapping_reason(failed[0])
+        assert "原文待核对" in reason and failed[0]["surface_mapping"]["catalog_ids"] == []
+        assert (unresolved / failed[0]["surface_mapping"]["verification"]["crop_path"]).is_file()
+
+        scope = {"x": 0, "y": 0, "width": .8, "height": .8}
+        multi = {"common": {}, "variants": [
+            {"page": page, "region": scope, "technical_requirements": [
+                {"type": "process", "original_content": "4.喷丸。", "content": "喷丸。", "position": first}]}
+            for page in (1, 2)]}
+        with patch.object(surface_evidence, "_cached_lines", return_value=[line("4.抛丸。", first, "pdf_text"), lines[-1]]), \
+             patch.object(surface_evidence, "_readings", return_value=[]):
+            _, checked_multi = reconcile_surface_notes([], multi, **{**params, "images": [source, source], "engine": None})
+        first_note, second_note = (v["technical_requirements"][0] for v in checked_multi["variants"])
+        assert first_note["content"] == "抛丸。" and first_note["page"] == 1
+        assert second_note["page"] == 2 and "原文待核对" in mapping_reason(second_note)
+        assert multi["variants"][0]["technical_requirements"][0]["content"] == "喷丸。"
+
+        plating = candidate("7." + RAW, first)
+        with patch.object(surface_evidence, "_cached_lines", return_value=[line("7." + RAW, first, "pdf_text")]), \
+             patch.object(engine, "read_surface_lines") as request:
+            result, _ = reconcile_surface_notes([plating], None, **params)
+            request.assert_not_called()
+        assert "15 μm" in result[0]["value"] and "除氢" in result[0]["value"]
+        assert result[0]["surface_mapping"]["catalog_ids"] == [company_id("电镀-镀彩锌")]
 
 
 def recognized():
@@ -52,6 +126,8 @@ def source_review_fixture():
 
 
 def main():
+    if "--json" not in sys.argv:
+        verify_surface_evidence()
     catalog = load_surface_catalog(); assert len(catalog["items"]) == 49
     assert "电镀-镀锌" not in [v["name"] for v in catalog["items"]]
     for v in catalog["items"]: assert names_in_content(v["name"]) == [v["id"]]
@@ -112,7 +188,9 @@ def main():
         calls.append(data)
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]}, request=httpx.Request("POST", "https://mock.test"))
     with tempfile.TemporaryDirectory() as tmp:
-        image = Path(tmp) / "sample.png"; image.write_bytes(b"local-mock-image")
+        from PIL import Image
+        image = Path(tmp) / "sample.png"
+        Image.new("RGB", (16, 16), "white").save(image)
         with patch("ai_design_review.engines.qwen_vision_adapter._post_qwen_request", side_effect=fake):
             result = QwenVisionEngine(api_key="offline-test").extract_with_raw(image)
             assert result["candidates"]

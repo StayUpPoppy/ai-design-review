@@ -55,10 +55,6 @@ async function assertWideParameterInputs(page) {
     assert.ok(Math.abs(layout.action.left - reference.action.left) < 1, `${field}: confirmation remains aligned`);
     assert.ok(layout.value.right < layout.action.left, `${field}: input does not crowd the action`);
   }
-  for (const field of ["handedness", "end_type", "end_grinding"]) {
-    const row = panel.locator(`[data-kind="param"][data-field="${field}"]`);
-    assert.equal(await row.evaluate((element) => element.classList.contains("parameter-wide-input")), false, `${field}: not included in this change`);
-  }
 }
 
 async function assertCompactMaterialRow(page) {
@@ -148,7 +144,7 @@ try {
     const options = await materialSelect(page).locator("option").evaluateAll((items) => items.map((item) => ({ value: item.value, text: item.textContent, disabled: item.disabled })));
     assert.deepEqual(options.filter((item) => item.value).map((item) => item.value), catalogFixture.items.map((item) => item.display_name));
     assert.match(options.find((item) => item.value === "").text, /请选择材料/);
-    assert.equal(options.length, 104, "All 103 company materials and one placeholder");
+    assert.equal(options.length, 109, "All 108 company materials and one placeholder");
     for (const entry of catalogFixture.items.filter(item => Number(item.id) <= 15)) assert.doesNotMatch(entry.display_name, /[\u3400-\u9fff]/);
     assert.equal(await materialRow(page).locator(".parameter-label-unit").count(), 0);
     const before = await page.evaluate(() => JSON.stringify(state.review));
@@ -159,7 +155,7 @@ try {
 
     await materialTrigger(page).click();
     assert.equal(await materialSearch(page).evaluate(element => element === document.activeElement), true);
-    assert.equal(await page.locator(".material-picker-panel").getByRole("option").count(), 104);
+    assert.equal(await page.locator(".material-picker-panel").getByRole("option").count(), 109);
     await materialSearch(page).fill("sUs-304");
     assert.equal(await page.locator(".material-picker-panel").getByRole("option", { name: "SUS304", exact: true }).count(), 1);
     await materialSearch(page).fill("琴钢丝");
@@ -402,16 +398,18 @@ try {
   await materialSearch(newMaterialPage).press("Tab");
   assert.equal(await newMaterialPage.locator(".material-picker-panel").count(), 0, "Tab dismisses without committing a filter");
   assert.deepEqual(await materialState(newMaterialPage), beforeSwitch);
-  await pickMaterial(newMaterialPage, "60Si2MnA");
+  await materialTrigger(newMaterialPage).click();
+  await materialSearch(newMaterialPage).fill("ASTM A313 302 SST");
+  await newMaterialPage.getByRole("option", { name: "ASTM A313 Type 302", exact: true }).click();
   await flush(newMaterialPage);
-  assert.equal((await materialState(newMaterialPage)).material_id, "86");
+  assert.equal((await materialState(newMaterialPage)).material_id, catalogFixture.items.find(item => item.display_name === "ASTM A313 Type 302").id);
   const checks = await newMaterialPage.evaluate(() => CompressionDesignChecks.calculate(state.review.spring_parameters, {}, state.materialCatalog));
-  assert.equal(checks.material_properties.shear_modulus_mpa, 78500);
-  assert.equal(checks.material_properties.density_g_cm3, 7.85);
+  assert.equal(checks.material_properties.shear_modulus_mpa, 68950);
+  assert.equal(checks.material_properties.density_g_cm3, 7.92);
   await materialRow(newMaterialPage).locator('[data-role="confirm"]').click();
   await flush(newMaterialPage);
   await openReview(newMaterialPage);
-  assert.equal((await materialState(newMaterialPage)).value, "60Si2MnA");
+  assert.equal((await materialState(newMaterialPage)).value, "ASTM A313 Type 302");
   assert.equal((await materialState(newMaterialPage)).need_human_review, false);
   await newMaterialPage.close();
 

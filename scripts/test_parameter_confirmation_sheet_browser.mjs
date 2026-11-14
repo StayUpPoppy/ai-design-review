@@ -129,7 +129,8 @@ try {
     review.spring_parameters=Object.fromEntries(Object.entries(values).map(([field,value])=>[field,{value,source:['qwen_vision'],need_human_review:true,unit:field.includes('diameter')||field==='free_length'?'mm':field.includes('coils')?'turns':''}]));
     Object.assign(review.spring_parameters.mean_diameter,{source:['formula_calculation'],source_fields:['outer_diameter','wire_diameter'],default_source:'legacy-default'});
     review.spring_parameters.load_points=[{load_point_id:'production-f1',label:'F1',height:32,force:0,height_unit:'mm',force_unit:'N',source:['qwen_vision'],need_human_review:true}];
-    review.technical_requirements=[{requirement_id:'original-tech',type:'other',content:'两端并紧并磨平，Ra12.5，不制扁。',need_human_review:true}];
+    review.technical_requirements=[{requirement_id:'original-tech',type:'other',content:'两端并紧并磨平，Ra12.5，不制扁。',need_human_review:true},
+      {requirement_id:'surface-tech',type:'surface',content:'表面处理：表面处理\n镀锌五彩',need_human_review:true}];
     review.conflicts=[];review.parameter_reasonableness={issues:[]};review.parameter_reasonableness_stale=false;
     window.detachedSheetReview=review;
     return buildConfirmationSheetSnapshot({review,identity:state.identity,revision:1,jobId:'a'});
@@ -137,6 +138,7 @@ try {
   assert.equal(healthy.sections.find(section=>section.id==='parameters').rows.length,9);
   assert.equal(healthy.sections.find(section=>section.id==='issues').rows.length,0,'valid pending values and real derived values need no internal confirmation for this report');
   assert.match(healthy.sections.find(section=>section.id==='requirements').rows[0].content,/Ra12.5，不制扁/);
+  assert.equal(healthy.sections.find(section=>section.id==='requirements').rows[1].content,'表面处理：镀锌五彩');
   assert.equal(healthy.sections.find(section=>section.id==='loads').rows[0].height,'32 mm');
   const tolerancedHeight=await page.evaluate(async()=>{
     const review=structuredClone(window.detachedSheetReview), point=review.spring_parameters.load_points[0];

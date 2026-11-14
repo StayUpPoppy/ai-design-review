@@ -57,6 +57,59 @@ def main():
                 assert old["technical_requirements"][0]["content"] == RAW
                 assert old["technical_requirements"][0]["need_human_review"] is False
                 assert "surface_mapping" not in old["technical_requirements"][0]
+                check_review = review_fixture()
+                check_review["technical_requirements"] = [
+                    {"requirement_id": key, "type": "surface", "content": text, "original_content": text,
+                     "need_human_review": True, "surface_mapping": {
+                         "catalog_ids": [], "selection_mode": "auto", "conversion_status": "needs_input",
+                         "verification": {"status": "uncertain", "readings": [{"text": reading} for reading in readings]}
+                     }}
+                    for key, text, readings in [
+                        ("shot", "表面处理：抛丸。", ["5. 抛丸。", "5. 混丸。"]),
+                        ("paint", "涂清漆。", ["6. 涂漆。", "6. 涂清漆。"]),
+                        ("zinc", "表面处理：表面处理 镀锌五彩", ["镀锌五彩"]),
+                        ("conflict", "喷丸。", ["5. 抛丸。", "5. 喷丸。"]),
+                        ("heading", "表面处理：表面处理", []),
+                    ]
+                ]
+                repo.create_review("surface-check", check_review, owner=OWNER)
+                check_path = "/api/reviews/surface-check"
+                check = client.get(check_path).json()
+                assert [row["content"] for row in check["technical_requirements"]] == [row["content"] for row in check_review["technical_requirements"]]
+                stale = deepcopy(check)
+                conflict_note = stale["technical_requirements"][3]
+                conflict_note["need_human_review"] = False
+                conflict_note.pop("surface_mapping")
+                bulk_conflict = {"event_type": "safe_fields_confirmed", "metadata": {"fields": ["technical_requirements.conflict"]}}
+                rejected = client.patch(check_path, json={"review": stale, "expected_revision": check["review_revision"], "events": [bulk_conflict]})
+                assert rejected.status_code == 422 and "读数有冲突" in rejected.json()["detail"]["message"], rejected.text
+                for row in check["technical_requirements"][:3]:
+                    row["need_human_review"] = False
+                ids = ["technical_requirements." + row["requirement_id"] for row in check["technical_requirements"][:3]]
+                bulk = {"event_type": "safe_fields_confirmed", "metadata": {"fields": ids}}
+                saved = client.patch(check_path, json={"review": check, "expected_revision": check["review_revision"], "events": [bulk]})
+                assert saved.status_code == 200, saved.text
+                check = client.get(check_path).json()
+                assert [row["content"] for row in check["technical_requirements"][:3]] == ["抛丸。", "油漆-清漆。", "电镀-镀彩锌"]
+                assert check["technical_requirements"][2]["original_content"] == "表面处理：表面处理 镀锌五彩"
+                assert check["technical_requirements"][3]["need_human_review"] is True
+                check["technical_requirements"][3]["need_human_review"] = False
+                single = {"event_type": "technical_requirement_confirmed", "metadata": {"requirement_id": "conflict"}}
+                saved = client.patch(check_path, json={"review": check, "expected_revision": check["review_revision"], "events": [single]})
+                assert saved.status_code == 200, saved.text
+                check = client.get(check_path).json()
+                assert check["technical_requirements"][3]["need_human_review"] is False
+                assert len(check["technical_requirements"][3]["surface_mapping"]["verification"]["readings"]) == 2
+                assert check["technical_requirements"][3]["surface_mapping"]["catalog_ids"] == []
+                reviewed = client.get(check_path + "/generation-package").json()["parameter_package"]
+                reviewed_text = reviewed["solidworks_preview"]["technicalRequirements"]["技术要求"]
+                for term in ("抛丸", "油漆-清漆", "电镀-镀彩锌", "喷丸"):
+                    assert reviewed_text.count("表面处理：" + term) == 1, reviewed_text
+                assert "表面处理：表面处理" not in reviewed_text
+                check["technical_requirements"][4]["need_human_review"] = False
+                single = {"event_type": "technical_requirement_confirmed", "metadata": {"requirement_id": "heading"}}
+                rejected = client.patch(check_path, json={"review": check, "expected_revision": check["review_revision"], "events": [single]})
+                assert rejected.status_code == 422 and "正文残缺" in rejected.json()["detail"]["message"], rejected.text
                 endpoint = "/api/reviews/surface"
                 current = client.get(endpoint).json()
                 initial = build_generation_parameter_package(current)

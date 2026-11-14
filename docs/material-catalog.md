@@ -2,11 +2,11 @@
 
 配置 `DATABASE_URL` 时，压缩弹簧材料以 PostgreSQL 的 `spring_materials` 表为准；未配置时，本地模式读取 `config/compression_material_catalog.json`。下拉、识别匹配、材料修改校验、刚度、重量、设计校核和 SolidWorks 参数准备共用同一个目录入口。其他弹簧类型沿用现有流程。
 
-本阶段提供数据库表、一次性初始化命令和可搜索的材料下拉，不提供材料管理页面、材料写入 API 或后续 Excel 更新工具。
+材料下拉支持搜索。数据库材料可使用初始化命令按代码追加，材料数据随镜像发布。
 
 ## 数据和参数
 
-初始化数据包含去重后的 103 条材料，来源为《审图材料标准表.xlsx》。JSON 随镜像发布，记录源文件 SHA-256；每条材料保留来源名称、Excel 行号和排序。服务器不需要原始 Excel 或桌面路径。
+初始化数据包含 108 条材料，来源为《审图材料标准表.xlsx》。JSON 记录源文件 SHA-256，每条材料保留来源名称、Excel 行号和排序。第 132–136 号依次为 `60Si2CrVAT`、`ASTM A229`、`GB/T 4357-2022-DH`、`ASTM A313 Type 302`、`ASTM A401`。`ASTM A313 302 SST` 可匹配第 135 号，`SWP-B` 仍匹配第 1 号 `SWPB`。
 
 | 参数 | 单位 | 是否必填 |
 | --- | --- | --- |
@@ -59,11 +59,21 @@ docker compose ps
 
 首次无业务数据时可以跳过备份，仍须先迁移、初始化，再启动 API 和 Worker。首次启动前端执行 `docker compose up -d web`。
 
-初始化命令验证全部数据后，用单个事务写入：空表导入；完全相同的重复执行不写入也不改变更新时间；已有内容不同时列出新增、额外和内容不同的材料代码，以非零状态退出。它不是覆盖更新命令，不要为解决差异清空材料表。PostgreSQL 导入期间锁定材料表，防止并发初始化。
+初始化命令用单个事务导入空表。已有数据与整份目录一致时直接返回；存在差异时列出代码并退出。
+
+已有部署添加第 132–136 号材料时，在同步代码后运行：
+
+```bash
+docker compose build api worker
+docker compose run --rm --no-deps api python -m ai_design_review.material_catalog_seed --append 132 133 134 135 136
+docker compose up -d --no-deps api worker
+```
+
+追加模式检查指定代码和现有材料的牌号及别名。相同记录会跳过，发现冲突时整批回滚。PostgreSQL 导入期间锁定材料表。原数据库结构适用，重启后刷新浏览器即可从材料下拉搜索新牌号。
 
 沿用 `postgres_data` 持久化卷。重建 API、Worker 不删除材料数据，不使用 `docker compose down -v` 更新。web 挂载前端目录，同步文件和缓存版本后刷新浏览器即可。
 
-检查容器日志；使用正常用户身份访问材料接口，确认 103 条启用材料；选择 `60Si2MnA`，核对 G=78500 MPa、ρ=7.85。应用回退使用旧镜像和对应前端，保留材料表和数据，不执行删除材料表的数据库降级。
+检查容器日志并使用正常用户身份访问材料接口。标准目录有 108 条启用材料。可选择 `ASTM A313 Type 302`，核对 G=68950 MPa、ρ=7.92 g/cm³。应用回退使用旧镜像和对应前端，保留材料表和数据。
 
 ## 验证入口
 
@@ -77,7 +87,7 @@ node scripts/test_material_catalog_ui.mjs
 node scripts/test_material_catalog_browser.mjs
 ```
 
-数据库脚本使用临时 SQLite，验证新迁移、初始化命令、冲突、回滚、缺失数据、快照、API/Worker 启动、103 条匹配、计算及冻结生成。浏览器脚本使用模拟订单/API，验证搜索、键盘、输入法、确认、保存重试、切换订单和桌面/窄屏布局，不调用付费模型。`UNIT_TEST_BROWSER_CHANNEL=msedge` 可使用已安装 Edge；`MATERIAL_TEST_SCREENSHOTS=0` 关闭重复截图。
+数据库脚本使用临时 SQLite，验证迁移、初始化、按代码追加、冲突回滚、快照、API/Worker 启动、材料匹配、计算及冻结生成。浏览器脚本使用模拟订单/API 验证搜索、键盘、输入法、确认、保存重试、切换订单和桌面/窄屏布局。`UNIT_TEST_BROWSER_CHANNEL=msedge` 可使用已安装 Edge，`MATERIAL_TEST_SCREENSHOTS=0` 可关闭截图。
 
 ### 本次验证记录（2026-11-08）
 

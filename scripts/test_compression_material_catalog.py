@@ -27,7 +27,11 @@ from ai_design_review.standardizers.stiffness import calculate_compression_sprin
 
 def main() -> None:
     catalog = load_material_catalog()
-    assert len(catalog["items"]) == 103
+    assert len(catalog["items"]) == 108
+    assert match_material_catalog("SWP-B")["id"] == "1"
+    assert match_material_catalog("材料：60Si2CrVAT 弹簧钢丝")["id"] == "132"
+    assert match_material_catalog("材料：60Si2CrVA 弹簧钢丝")["id"] == "35"
+    assert match_material_catalog("MATERIAL: ASTM A313 302 SST")["id"] == "135"
     for entry in catalog["items"]:
         for value in [entry["display_name"], entry["standard_value"], *entry["aliases"]]:
             assert match_material_catalog(value)["id"] == entry["id"], value

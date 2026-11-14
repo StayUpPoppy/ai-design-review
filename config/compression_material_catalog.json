@@ -1,12 +1,12 @@
 {
-  "version": "company-materials/sha256:2d8751e2ea365d893e9430cb33abf46c42f8ca2c07dfaf1a905e5273eefae780",
+  "version": "company-materials/sha256:6c95c407f9a6148b896b8bf6d4a84097da581ffad9fe4f38678efadcb1a62915",
   "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
   "description": "公司压缩弹簧材料目录；材料属性为表内固定参考值，不作温度、线径或热处理修正。",
   "source_workbook": {
     "filename": "审图材料标准表.xlsx",
-    "sha256": "648e982e8ce15d399e2a0c22133518a8da93ec83cf7531a7fd19087a32ac49c9",
+    "sha256": "607868f8f7e6d84bedcb1d1c2c6818d5b5913016c121ba62dff67d09c602aeb5",
     "worksheet": "sheet1.xml",
-    "data_rows": 103
+    "data_rows": 108
   },
   "items": [
     {
@@ -2008,6 +2008,101 @@
       "source_display_name": "310S",
       "source_row": 104,
       "sort_order": 102,
+      "enabled": true
+    },
+    {
+      "id": "132",
+      "display_name": "60Si2CrVAT",
+      "standard_value": "60Si2CrVAT",
+      "aliases": [
+        "60Si2CrVAT"
+      ],
+      "tensile_strength_mpa": 1900.0,
+      "shear_modulus_mpa": 78600.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "60Si2CrVAT",
+      "source_row": 105,
+      "sort_order": 103,
+      "enabled": true
+    },
+    {
+      "id": "133",
+      "display_name": "ASTM A229",
+      "standard_value": "ASTM A229",
+      "aliases": [
+        "ASTM A229"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 79300.0,
+      "elastic_modulus_mpa": 206800.0,
+      "density_g_cm3": 7.86,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "ASTM A229",
+      "source_row": 106,
+      "sort_order": 104,
+      "enabled": true
+    },
+    {
+      "id": "134",
+      "display_name": "GB/T 4357-2022-DH",
+      "standard_value": "GB/T 4357-2022-DH",
+      "aliases": [
+        "GB/T 4357‑2022‑DH"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 81500.0,
+      "elastic_modulus_mpa": 206000.0,
+      "density_g_cm3": 7.85,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "GB/T 4357‑2022‑DH",
+      "source_row": 107,
+      "sort_order": 105,
+      "enabled": true
+    },
+    {
+      "id": "135",
+      "display_name": "ASTM A313 Type 302",
+      "standard_value": "ASTM A313 Type 302",
+      "aliases": [
+        "ASTM A313 302 SST"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 68950.0,
+      "elastic_modulus_mpa": 193000.0,
+      "density_g_cm3": 7.92,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "ASTM A313 302 SST",
+      "source_row": 108,
+      "sort_order": 106,
+      "enabled": true
+    },
+    {
+      "id": "136",
+      "display_name": "ASTM A401",
+      "standard_value": "ASTM A401",
+      "aliases": [
+        "ASTM A401"
+      ],
+      "tensile_strength_mpa": null,
+      "shear_modulus_mpa": 79300.0,
+      "elastic_modulus_mpa": 206800.0,
+      "density_g_cm3": 7.86,
+      "allowable_shear_stress_mpa": null,
+      "allowable_stress_coefficient": 0.4,
+      "source": "公司材料表固定参考值（审图材料标准表.xlsx）",
+      "source_display_name": "ASTM A401",
+      "source_row": 109,
+      "sort_order": 107,
       "enabled": true
     }
   ]

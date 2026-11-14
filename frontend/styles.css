@@ -999,8 +999,8 @@ button:disabled {
 
 .surface-company-controls { display: grid; gap: 6px; min-width: 0; }
 .surface-company-controls[hidden] { display: none; }
-.surface-company-controls input, .surface-company-controls select { width: 100%; min-width: 0; }
-.surface-company-choices { display: grid; gap: 6px; }
+.surface-evidence-crop { display: block; max-width: 100%; height: auto; }
+.confirm-button.surface_review { color: var(--primary); border-color: #b8c8ec; }
 .surface-company-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .surface-company-actions[hidden] { display: none; }
 .surface-company-controls small:empty { display: none; }

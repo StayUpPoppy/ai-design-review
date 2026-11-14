@@ -1,15 +1,24 @@
-/* Search is presentation-only. The existing select owns parameter edits. */
+/* Shared searchable catalog popup. The select owns edits and persistence. */
 (() => {
   const bindings = new WeakMap();
   let active = null, serial = 0;
   const key = value => String(value ?? "").normalize("NFKC").toUpperCase().replace(/[\s\-‐‑‒–—_]+/g, "");
   const visible = element => element?.isConnected && element.getClientRects().length > 0;
+  const material = {
+    trigger: "[data-material-trigger]", fallback: "请选择材料", dialog: "选择材料",
+    search: "搜索材料名称、牌号或别名", options: "材料选项", empty: "未找到匹配材料",
+    selectedLabel: select => select.value,
+    terms: (option, items) => {
+      const item = items.find(entry => entry.display_name === option.value);
+      return item && [item.display_name, item.standard_value, ...(item.aliases || [])];
+    },
+  };
 
   function sync(select, items) {
     const binding = bindings.get(select);
     if (!binding) return;
     if (items) binding.items = items;
-    const label = select.value || "请选择材料";
+    const label = binding.settings.selectedLabel(select) || binding.settings.fallback;
     binding.trigger.querySelector("[data-material-label]").textContent = label;
     binding.trigger.title = select.title || label;
     binding.trigger.disabled = select.disabled;
@@ -76,10 +85,10 @@
   function filter() {
     if (!current()) return;
     const { search, list, binding } = active, query = key(search.value);
-    active.results = [...binding.select.options].filter(option => !option.disabled && (!option.value || binding.items.some(item => item.display_name === option.value)))
+    active.results = [...binding.select.options].filter(option => !option.disabled)
       .filter(option => {
-        const item = binding.items.find(entry => entry.display_name === option.value);
-        return !query || item && [item.display_name, item.standard_value, ...(item.aliases || [])].some(value => key(value).includes(query));
+        const terms = binding.settings.terms(option, binding.items);
+        return option.value ? Boolean(terms && (!query || terms.some(value => key(value).includes(query)))) : !query;
       });
     list.replaceChildren();
     for (const [index, option] of active.results.entries()) {
@@ -96,7 +105,7 @@
       const empty = document.createElement("div");
       empty.className = "material-picker-empty";
       empty.setAttribute("role", "status");
-      empty.textContent = "未找到匹配材料";
+      empty.textContent = binding.settings.empty;
       list.appendChild(empty);
     }
     const selectedIndex = active.results.findIndex(option => option.value === binding.select.value);
@@ -110,7 +119,7 @@
     if (!option) return;
     const value = option.value;
     close(true);
-    if (binding.select.value === value || !binding.isCurrent()) return;
+    if (!binding.isCurrent() || (binding.select.value === value && !binding.settings.allowSameSelection?.(value))) return;
     binding.select.value = value;
     binding.select.dispatchEvent(new Event("input", { bubbles: true }));
     binding.select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -125,10 +134,10 @@
     panel.className = "material-picker-panel";
     panel.id = `material-picker-${++serial}`;
     panel.setAttribute("role", "dialog");
-    panel.setAttribute("aria-label", "选择材料");
+    panel.setAttribute("aria-label", binding.settings.dialog);
     search.className = "material-picker-search";
     search.type = "search";
-    search.placeholder = "搜索材料名称、牌号或别名";
+    search.placeholder = binding.settings.search;
     search.setAttribute("aria-label", search.placeholder);
     search.setAttribute("role", "combobox");
     search.setAttribute("aria-autocomplete", "list");
@@ -137,7 +146,7 @@
     list.className = "material-picker-list";
     list.id = `${panel.id}-list`;
     list.setAttribute("role", "listbox");
-    list.setAttribute("aria-label", "材料选项");
+    list.setAttribute("aria-label", binding.settings.options);
     search.setAttribute("aria-controls", list.id);
     const header = document.createElement("div");
     header.className = "material-picker-search-header";
@@ -186,12 +195,12 @@
     search.focus({ preventScroll: true });
   }
 
-  function bind(select, { items, isCurrent }) {
-    const trigger = select.parentElement.querySelector("[data-material-trigger]");
+  function bind(select, { items = [], isCurrent, settings = material }) {
+    const trigger = select.parentElement.querySelector(settings.trigger);
     if (!trigger) return;
     let binding = bindings.get(select);
     if (!binding) {
-      binding = { select, trigger, items, isCurrent };
+      binding = { select, trigger, items, isCurrent, settings };
       bindings.set(select, binding);
       trigger.addEventListener("click", () => open(binding));
       trigger.addEventListener("keydown", event => {

@@ -30,6 +30,8 @@ from ai_design_review.review_persistence import Base, SpringMaterialRecord
 from ai_design_review.standardizers.design_checks import calculate_design_checks
 from ai_design_review.standardizers.stiffness import calculate_compression_spring_rate
 
+ADDED_GRADES = {"60Si2CrVAT", "ASTM A229", "GB/T 4357-2022-DH", "ASTM A313 Type 302", "ASTM A401"}
+
 
 class MaterialDatabaseTests(unittest.TestCase):
     def setUp(self):
@@ -55,7 +57,7 @@ class MaterialDatabaseTests(unittest.TestCase):
     def test_import_restart_noop_and_source(self):
         self.assertEqual(seed_material_catalog(self.engine, self.seed)["status"], "imported")
         first = load_material_catalog()
-        self.assertEqual(len(first["items"]), 103)
+        self.assertEqual(len(first["items"]), 108)
         self.assertEqual(first["version"], self.seed["version"])
         with Session(self.engine) as session:
             original_time = session.get(SpringMaterialRecord, "1").updated_at
@@ -109,6 +111,45 @@ class MaterialDatabaseTests(unittest.TestCase):
         load_material_catalog.cache_clear()
         self.assertEqual(load_material_catalog(), before)
 
+    def test_append_selected_codes_and_repeat(self):
+        original = {**self.seed, "items": [item for item in self.seed["items"] if item["display_name"] not in ADDED_GRADES]}
+        added_ids = [item["id"] for item in self.seed["items"] if item["display_name"] in ADDED_GRADES]
+        seed_material_catalog(self.engine, original)
+        self.assertEqual(self.count(), 103)
+        with Session(self.engine) as session:
+            original_time = session.get(SpringMaterialRecord, "1").updated_at
+        environment = {**os.environ, "PYTHONPATH": str(ROOT / "src"), "PYTHONIOENCODING": "utf-8"}
+        command = [sys.executable, "-m", "ai_design_review.material_catalog_seed", "--append", *added_ids]
+        for expected in ("已追加 5 条", "内容一致"):
+            result = subprocess.run(command, cwd=ROOT, env=environment, capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(expected, result.stdout)
+        self.assertEqual(self.count(), 108)
+        with Session(self.engine) as session:
+            self.assertEqual(session.get(SpringMaterialRecord, "1").updated_at, original_time)
+        self.assertEqual(load_material_catalog()["version"], self.seed["version"])
+        self.assertEqual(seed_material_catalog(self.engine, self.seed)["status"], "unchanged")
+
+    def test_append_conflict_does_not_add_any_row(self):
+        original = {**self.seed, "items": [item for item in self.seed["items"] if item["display_name"] not in ADDED_GRADES]}
+        added_ids = [item["id"] for item in self.seed["items"] if item["display_name"] in ADDED_GRADES]
+        seed_material_catalog(self.engine, original)
+        with self.assertRaisesRegex(ValueError, "缺少材料代码"):
+            seed_material_catalog(self.engine, self.seed, append_ids=[*added_ids, "unknown"])
+        with Session(self.engine) as session, session.begin():
+            current = session.get(SpringMaterialRecord, "1")
+            current.aliases = [*current.aliases, "ASTM A401"]
+        with self.assertRaisesRegex(ValueError, "与其他材料重复"):
+            seed_material_catalog(self.engine, self.seed, append_ids=added_ids)
+        self.assertEqual(self.count(), 103)
+        with Session(self.engine) as session, session.begin():
+            current = session.get(SpringMaterialRecord, "1")
+            current.aliases = original["items"][0]["aliases"]
+            current.shear_modulus_mpa += 1
+        with self.assertRaisesRegex(MaterialCatalogError, "内容不同"):
+            seed_material_catalog(self.engine, self.seed, append_ids=["1", *added_ids])
+        self.assertEqual(self.count(), 103)
+
     def test_database_failure_rolls_back_every_row(self):
         def fail_insert(connection, cursor, statement, parameters, context, executemany):
             if statement.lstrip().upper().startswith("INSERT INTO SPRING_MATERIALS"):
@@ -147,7 +188,7 @@ class MaterialDatabaseTests(unittest.TestCase):
             with self.assertRaises(MaterialCatalogError):
                 load_material_catalog()
         with patch.dict(os.environ, {"DATABASE_URL": ""}):
-            self.assertEqual(len(load_material_catalog()["items"]), 103)
+            self.assertEqual(len(load_material_catalog()["items"]), 108)
         SpringMaterialRecord.__table__.create(self.engine)
         seed_material_catalog(self.engine, self.seed)
         with Session(self.engine) as session, session.begin():
@@ -231,7 +272,7 @@ class MaterialDatabaseTests(unittest.TestCase):
                     response = client.get("/api/material-catalog")
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.json(), load_material_catalog())
-                    self.assertEqual(len(response.json()["items"]), 103)
+                    self.assertEqual(len(response.json()["items"]), 108)
                 stopped = Event()
                 stopped.set()
                 with patch.object(recognition_worker, "REVIEW_PERSISTENCE", store), \

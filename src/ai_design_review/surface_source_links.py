@@ -8,13 +8,13 @@ import re
 import unicodedata
 from typing import Any
 
-from .technical_requirements import technical_requirement_equivalence_key
+from .technical_requirements import surface_requirement_body, technical_requirement_equivalence_key
 
 
 def surface_source_key(value: Any) -> str:
     text = unicodedata.normalize("NFKC", str(value or "")).strip()
     text = re.sub(r"^\d+\s*[.、)]\s*(?=[^\d\s])", "", text)
-    text = re.sub(r"^(?:表面处理|表面處理|表面要求)\s*[:：]\s*", "", text)
+    text = re.sub(r"^表面要求\s*[:：]\s*", "", surface_requirement_body(text))
     return re.sub(r"\s+", " ", text).strip().rstrip(";；。").rstrip()
 
 
@@ -110,6 +110,6 @@ def surface_output_source_keys(review: dict) -> set[tuple[str, str]]:
     notes = [v for v in review.get("technical_requirements") or [] if isinstance(v, dict)]
     keys = {(key, _scope(root)) for root in notes if _converted(root) for key in _original_keys(root)}
     for item in notes:
-        if item.get("requirement_id") not in suppressed and not _converted(item):
+        if item.get("requirement_id") not in suppressed:
             keys.discard((surface_source_key(item.get("content")), _scope(item)))
     return keys

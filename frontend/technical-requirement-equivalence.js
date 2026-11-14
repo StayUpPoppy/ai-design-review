@@ -5,7 +5,10 @@
   const aliases = { surface_requirement: "surface", surface_treatment: "surface", roughness: "surface_roughness", surface_finish: "surface_roughness", "表面粗糙度": "surface_roughness", hardness_requirement: "hardness", heat: "heat_treatment", "heat-treatment": "heat_treatment", salt: "salt_spray", salt_spray_test: "salt_spray", environment: "environmental", environmental_requirement: "environmental", life: "lifetime", process_requirement: "process" };
   const hardnessScale = "(?:HBW|HRC|HRA|HRB|HV|HB)", numberToken = String.raw`[+\-]?[0-9]+(?:\.[0-9]+)?`;
   const prefixLabels = Object.keys(prefixes).sort((a, b) => b.length - a.length);
+  const surfaceHeading = /^表面(?:处理|處理)(?:要求)?(?:\s*[:：]\s*|\s*[；;]\s*|\s*[。.]+$|\s+(?!\s*(?:前|后|後|完成后|完成後|时|時|过程中|過程中|应|應|不得|须|須))|$)/;
   function leadingLabel(text) {
+    const heading = text.match(surfaceHeading);
+    if (heading) return { end: heading[0].length, kind: "surface" };
     for (const label of prefixLabels) {
       if (!text.startsWith(label)) continue;
       const rest = text.slice(label.length).replace(/[！-～]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
@@ -21,6 +24,12 @@
   }
   function outputContent(item) {
     return String(item?.content || "").trim().replace(/^\s*[0-9０-９]+\s*[.．、)）]\s*(?=[^0-9０-９\s])/, "");
+  }
+
+  function surfaceBody(value) {
+    let text = outputContent({ content: value }), match;
+    while ((match = text.match(surfaceHeading))) text = text.slice(match[0].length).trim();
+    return text;
   }
 
   function body(value) {
@@ -84,8 +93,10 @@
     return aliases[normalized] || (labels[normalized] ? normalized : "other");
   }
   function key(item) {
-    const [text, prefixKind] = body(outputContent(item).replace(/(?:\s*(?:\r\n?|\n)\s*)+/g, "；").replace(/[\t ]+/g, " ").replace(/；{2,}/g, "；"));
-    const kind = prefixKind || type(item?.type);
+    const raw = outputContent(item);
+    const surfacePrefix = leadingLabel(raw)?.kind === "surface";
+    const [text, prefixKind] = body((surfacePrefix ? surfaceBody(raw) : raw).replace(/(?:\s*(?:\r\n?|\n)\s*)+/g, "；").replace(/[\t ]+/g, " ").replace(/；{2,}/g, "；"));
+    const kind = surfacePrefix ? "surface" : prefixKind || type(item?.type);
     const comparisonKind = kind === "process" ? "other" : kind;
     return [comparisonKind, engineeringComparison(text, comparisonKind), comparison(item?.application_scope)];
   }
@@ -93,9 +104,12 @@
     return Boolean(String(left?.content || "").trim()) && JSON.stringify(key(left)) === JSON.stringify(key(right));
   }
   function format(item) {
-    let text = outputContent(item).replace(/(?:\s*(?:\r\n?|\n)\s*)+/g, "；").replace(/[\t ]+/g, " ").replace(/；{2,}/g, "；").trim();
+    let text = outputContent(item);
+    const surfacePrefix = leadingLabel(text)?.kind === "surface";
+    if (surfacePrefix) text = surfaceBody(text);
+    text = text.replace(/(?:\s*(?:\r\n?|\n)\s*)+/g, "；").replace(/[\t ]+/g, " ").replace(/；{2,}/g, "；").trim();
     if (!text) return "";
-    const [, prefixKind] = body(text), kind = prefixKind || type(item?.type);
+    const [, prefixKind] = body(text), kind = surfacePrefix ? "surface" : prefixKind || type(item?.type);
     text = text.replace(/^\d+\s*[.．、)]\s*(?=[^\d\s])/, "");
     let match;
     while ((match = leadingLabel(text))) text = text.slice(match.end).trim();
@@ -138,5 +152,5 @@
     }
     return result.sort((left, right) => left.representative.index - right.representative.index);
   }
-  globalThis.TechnicalRequirementEquivalence = { normalize, body, comparison, key, equivalent, format, formatText, outputContent, groups, unlabel };
+  globalThis.TechnicalRequirementEquivalence = { normalize, body, comparison, key, equivalent, format, formatText, outputContent, groups, unlabel, surfaceBody };
 })();

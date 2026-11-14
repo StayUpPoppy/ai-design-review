@@ -1179,6 +1179,7 @@ async def run_recognition_execution(
     progress_callback: Callable[[str, int], None] | None = None,
     qwen_replay: dict[str, Any] | None = None,
     page_origin: dict[str, Any] | None = None,
+    surface_evidence_version: str | None = None,
 ) -> dict[str, Any]:
     if identity is None:
         raise RuntimeError("Recognition execution requires an identity context.")
@@ -1425,6 +1426,22 @@ async def run_recognition_execution(
         failure = raw_payloads.get("qwen_vision_failure") or {}
         reason = "Qwen请求超时" if "Timeout" in failure.get("error_type", "") else "未取得完整的多规格识别结果"
         raise MultiSpecError(f"检测到多规格图纸（{conflict['reason']}），但{reason}。已停止单规格OCR兜底，避免混合参数；请重试或拆分文件。")
+    from .surface_catalog import SURFACE_EVIDENCE_VERSION
+    surface_checked = False
+    if surface_evidence_version == SURFACE_EVIDENCE_VERSION:
+        from .surface_evidence import reconcile_surface_notes
+        try:
+            candidates, checked_multi = await run_in_threadpool(
+                reconcile_surface_notes, candidates, multi, source=drawing_path, job_dir=job_dir, images=images,
+                raw_payloads=raw_payloads, engine=QwenVisionEngine() if use_qwen and qwen_replay is None else None,
+            )
+            if checked_multi is not None:
+                multi = checked_multi
+                multi_payload = {**multi_payload, "multi_spec": multi}
+            surface_checked = True
+        except Exception:
+            LOGGER.exception("Surface-treatment evidence check failed for %s", job_id)
+            warnings.append("表面处理原文复核失败，请核对原图。")
     if multi:
         persisted = REVIEW_PERSISTENCE.get_review(job_id, owner_user_id=identity.user_id) if REVIEW_PERSISTENCE.configured else None
         if page_origin or (persisted and persisted["review"].get("page_origin")):
@@ -1493,6 +1510,7 @@ async def run_recognition_execution(
 
     candidates_payload = {
         "job_id": job_id,
+        **({"surface_evidence_version": surface_evidence_version} if surface_checked else {}),
         "sources": candidate_sources,
         "candidates": candidates,
         "dimension_evidence": raw_payloads.get("geometry", {}).get("dimension_evidence", []),
@@ -1610,6 +1628,8 @@ async def create_review(
         "use_paddleocr": use_paddleocr,
         "use_sample_ocr": use_sample_ocr,
     }
+    from .surface_catalog import SURFACE_EVIDENCE_VERSION
+    options["surface_evidence_version"] = SURFACE_EVIDENCE_VERSION
     if candidate_json is not None and candidate_json.filename:
         candidate_path = incoming_dir / f"candidate_{_safe_filename(candidate_json.filename)}"
         await _save_upload(candidate_json, candidate_path)
@@ -2311,12 +2331,19 @@ def preview_technical_requirement_recovery(job_id: str, payload: dict[str, Any] 
         raise HTTPException(status_code=409, detail="审图版本已变化，请保存或刷新当前内容后重新预览。")
     candidates: list[dict[str, Any]] = []
     source = "none"
-    for filename in ("qwen_vision_raw.json", "candidates.json"):
+    # New jobs save grounded notes with the same occurrence keys as the
+    # original reply. Use them when offering missing notes back to the user.
+    from .surface_catalog import SURFACE_EVIDENCE_VERSION
+    from .page_images import read_json as read_cached_json
+    stored_candidates = read_cached_json(job_dir / "candidates.json")
+    grounded = isinstance(stored_candidates, dict) and stored_candidates.get("surface_evidence_version") == SURFACE_EVIDENCE_VERSION
+    filenames = ("candidates.json", "qwen_vision_raw.json") if grounded else ("qwen_vision_raw.json", "candidates.json")
+    for filename in filenames:
         file_path = job_dir / filename
         if not file_path.exists():
             continue
         try:
-            saved = read_json(file_path)
+            saved = stored_candidates if filename == "candidates.json" else read_json(file_path)
             if filename == "qwen_vision_raw.json" and isinstance(saved, dict) and isinstance(saved.get("parsed"), dict):
                 candidates = qwen_payload_to_candidates(saved["parsed"])
                 source = "qwen_vision_raw"
@@ -2825,12 +2852,40 @@ def _save_review_persistence(
         raise HTTPException(status_code=422, detail="不能更改审图记录的来源关系。")
     from .surface_catalog import synchronize_surface_review
     confirmed_surface_ids = {e.get("metadata", {}).get("requirement_id") for e in events or [] if e.get("event_type") == "technical_requirement_confirmed" and isinstance(e.get("metadata"), dict)}
+    surface_modes = {item_id: "single" for item_id in confirmed_surface_ids if isinstance(item_id, str)}
     for event in events or []:
         if event.get("event_type") == "safe_fields_confirmed":
-            confirmed_surface_ids.update(str(field).split(".", 1)[1] for field in (event.get("metadata") or {}).get("fields", []) if str(field).startswith("technical_requirements."))
+            fields = {str(field).split(".", 1)[1] for field in (event.get("metadata") or {}).get("fields", []) if str(field).startswith("technical_requirements.")}
+            confirmed_surface_ids.update(fields)
+            surface_modes.update(dict.fromkeys(fields, "batch"))
         if event.get("event_type") == "parameter_change_proposal_applied":
             confirmed_surface_ids.update(change.get("requirement_id") for change in (event.get("metadata") or {}).get("technical_requirement_changes", []) if isinstance(change, dict) and (change.get("after") or {}).get("need_human_review") is False)
-    synchronize_surface_review(review, previous, confirmed_ids=confirmed_surface_ids)
+    if surface_modes and current_revision is not None and revision != current_revision:
+        raise HTTPException(status_code=409, detail={"message": "当前审查数据已更新，请刷新后重试。", "current_revision": current_revision})
+    try:
+        synchronize_surface_review(review, previous, confirmed_ids=confirmed_surface_ids, confirmation_modes=surface_modes)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "surface_confirmation_invalid", "message": str(exc)}) from exc
+    surface_snapshots = {
+        item["requirement_id"]: {"requirement_id": item["requirement_id"], "content": item["content"],
+                                 "catalog_ids": item["surface_mapping"]["catalog_ids"]}
+        for item in review.get("technical_requirements", [])
+        if item.get("type") == "surface" and item.get("requirement_id") in surface_modes
+        and item.get("need_human_review") is False and item.get("surface_mapping")
+    }
+    for event in events:
+        metadata = event.get("metadata") or {}
+        if event.get("event_type") == "technical_requirement_confirmed" and (snapshot := surface_snapshots.get(metadata.get("requirement_id"))):
+            metadata["surface_review"] = {**snapshot, "mode": "single"}
+            if isinstance(event.get("after_state"), dict):
+                event["after_state"]["content"] = snapshot["content"]
+                if isinstance(event["after_state"].get("surface_mapping"), dict):
+                    event["after_state"]["surface_mapping"]["catalog_ids"] = snapshot["catalog_ids"]
+        if event.get("event_type") == "safe_fields_confirmed":
+            ids = [str(field).split(".", 1)[1] for field in metadata.get("fields", []) if str(field).startswith("technical_requirements.")]
+            metadata["surface_reviews"] = [{**surface_snapshots[item_id], "mode": "batch"} for item_id in ids if item_id in surface_snapshots]
+        if metadata:
+            event["metadata"] = metadata
     from .surface_source_links import bind_surface_sources
     bind_surface_sources(review)
     previous_sources = {v.get("requirement_id"): (v.get("surface_mapping") or {}).get("source_requirement_ids", []) for v in previous.get("technical_requirements") or [] if isinstance(v, dict)}
@@ -3296,6 +3351,7 @@ async def run_recognition_job_record(
             progress_callback=progress_callback,
             qwen_replay=qwen_replay,
             page_origin=options.get("page_origin"),
+            surface_evidence_version=options.get("surface_evidence_version"),
         )
     finally:
         for upload in uploads:

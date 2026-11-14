@@ -43,11 +43,14 @@ _PREFIX_TYPES = {
     "工艺要求": "process", "工艺": "process", "其他要求": "other", "其他": "other",
 }
 _HARDNESS_SCALE = r"(?:HBW|HRC|HRA|HRB|HV|HB)"
+_SURFACE_HEADING = re.compile(r"^表面(?:处理|處理)(?:要求)?(?:\s*[:：]\s*|\s*[；;]\s*|\s*[。.]+$|\s+(?!\s*(?:前|后|後|完成后|完成後|时|時|过程中|過程中|应|應|不得|须|須))|$)")
 _NUMBER = r"[+\-]?[0-9]+(?:\.[0-9]+)?"
 
 
 def _leading_label(text: str) -> tuple[int, str] | None:
-    """A label must end at a colon, a number, or an explicit hardness expression."""
+    """Recognize presentation headings at the beginning of a note."""
+    if match := _SURFACE_HEADING.match(text):
+        return match.end(), "surface"
     for label in sorted(_PREFIX_TYPES, key=len, reverse=True):
         if not text.startswith(label):
             continue
@@ -59,6 +62,15 @@ def _leading_label(text: str) -> tuple[int, str] | None:
         if boundary is not None:
             return len(label) + boundary.end(), _PREFIX_TYPES[label]
     return None
+
+
+def surface_requirement_body(value: Any) -> str:
+    """Remove a printed row number and repeated leading surface headings."""
+    text = str(value or "").strip()
+    text = re.sub(r"^[0-9０-９]+\s*[.．、)）]\s*(?=[^0-9０-９\s])", "", text)
+    while match := _SURFACE_HEADING.match(text):
+        text = text[match.end():].strip()
+    return text
 
 
 def normalize_technical_text(value: Any) -> str:
@@ -159,19 +171,25 @@ def _engineering_comparison_text(value: Any, kind: str) -> str:
 
 
 def technical_requirement_equivalence_key(item: dict[str, Any]) -> tuple[str, str, str]:
-    body, prefix_kind = technical_requirement_body(_single_line_technical_requirement_content(technical_requirement_output_content(item)))
-    kind = prefix_kind or normalize_technical_requirement_type(item.get("type"), default="other") or "other"
+    raw = technical_requirement_output_content(item)
+    label = _leading_label(raw)
+    has_surface_prefix = bool(label and label[1] == "surface")
+    body, prefix_kind = technical_requirement_body(_single_line_technical_requirement_content(surface_requirement_body(raw) if has_surface_prefix else raw))
+    kind = "surface" if has_surface_prefix else prefix_kind or normalize_technical_requirement_type(item.get("type"), default="other") or "other"
     if kind == "process":
         kind = "other"
     return kind, _engineering_comparison_text(body, kind), _comparison_text(item.get("application_scope"))
 
 
 def format_technical_requirement(item: dict[str, Any]) -> str:
-    content = _single_line_technical_requirement_content(technical_requirement_output_content(item))
+    raw = technical_requirement_output_content(item)
+    label = _leading_label(raw)
+    has_surface_prefix = bool(label and label[1] == "surface")
+    content = _single_line_technical_requirement_content(surface_requirement_body(raw) if has_surface_prefix else raw)
     if not content:
         return ""
     _, prefix_kind = technical_requirement_body(content)
-    kind = prefix_kind or normalize_technical_requirement_type(item.get("type"), default="other") or "other"
+    kind = "surface" if has_surface_prefix else prefix_kind or normalize_technical_requirement_type(item.get("type"), default="other") or "other"
     # Preserve the user's punctuation and units; normalization is for comparison.
     text = re.sub(r"^\d+\s*[.．、)]\s*(?=[^\d\s])", "", content)
     while match := _leading_label(text):
