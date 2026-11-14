@@ -198,7 +198,7 @@ function toleranceTarget(kind, target) {
   }
   const item = params[target];
   const display = item && engineeringItem(item, getFieldMeta(target, state.review).unit);
-  return item ? { item: display, canonical: item, nominal: display.value, unit: display.unit || "", label: getFieldMeta(target, state.review).label || FIELD_LABELS[target] || target } : null;
+  return item ? { item: display, canonical: item, pending: item.diameter_tolerance_pending, nominal: display.value, unit: display.unit || "", label: getFieldMeta(target, state.review).label || FIELD_LABELS[target] || target } : null;
 }
 
 function getToleranceEditor() {
@@ -252,6 +252,7 @@ function commitToleranceEditor(draft, resolved, value) {
   } else {
     item.tolerance_upper = value.upper; item.tolerance_lower = value.lower;
     delete item.tolerance_input_draft;
+    delete item.diameter_tolerance_pending;
     applyEditedConfirmationState(item, field, { accuracyPart: "tolerance" });
   }
   queueReviewAuditEvent({ event_type: load ? "load_point_tolerance_updated" : "parameter_tolerance_updated", target_field: field,
@@ -1659,6 +1660,7 @@ function parameterAuditState(param) {
     tolerance_upper: param?.tolerance_upper ?? null,
     tolerance_lower: param?.tolerance_lower ?? null,
     tolerance_input_draft: param?.tolerance_input_draft ?? null,
+    ...(param?.diameter_tolerance_pending ? { diameter_tolerance_pending: true } : {}),
     need_human_review: Boolean(param?.need_human_review),
     source: sourceValues(param?.source),
     default_source: param?.default_source ?? null,
@@ -6043,6 +6045,7 @@ function parameterRowHtml(field, param, meta = getFieldMeta(field, state.review)
         ${field === "spring_rate" && param.formula_material_catalog_stale ? `<small class="parameter-formula-reference-note">${escapeHtml(param.formula_calculation_reason || "公司材料表剪切模量已更新，请核对最新刚度建议。")}</small>` : ""}
         ${param.recognition_role_notice ? `<small class="parameter-default-candidate-note">${escapeHtml(param.recognition_role_notice)}</small>` : ""}
         ${param.diameter_role_conflict && param.need_human_review ? '<small class="parameter-default-candidate-note">多条原图直径尺寸不一致，请核对后单独确认。</small>' : ""}
+        <small class="parameter-default-candidate-note" data-role="diameter-tolerance-pending"${param.diameter_tolerance_pending ? "" : " hidden"}>公差待核对，请填写原图偏差或在公差编辑器中清除。</small>
         ${defaultCandidateNotice ? `<small class="parameter-default-candidate-note">${escapeHtml(defaultCandidateNotice)}</small>` : ""}
         ${badges.length || accuracyGradeStatus ? `<div class="parameter-badges">${accuracyGradeStatus ? `<span class="accuracy-grade-source ${accuracyGradeStatusClass(param)}" data-accuracy-grade-source>${escapeHtml(accuracyGradeStatus)}</span>` : ""}${badges.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       </div>
@@ -6944,7 +6947,7 @@ function generationContractState(parameters, field) {
   const item = generationSourceParameter(parameters, field);
   if (!item) return "missing";
   if (field === "flattening") return Flattening.invalidReason(item) ? "invalid" : Flattening.confirmed(item) ? "confirmed" : "pending";
-  if (item.need_human_review || item.unit_pending) return "pending";
+  if (item.need_human_review || item.unit_pending || item.diameter_tolerance_pending) return "pending";
   try {
     generationContractValue(field, item.value);
     return "confirmed";
@@ -9695,7 +9698,11 @@ function bindReviewEditors(root, messageId = state.activeReviewMessageId) {
       activateReviewContext(messageId);
       toleranceBeforeState ||= parameterAuditState(param);
       rememberConfirmedSnapshot(param);
-      applyTolerance(param, event.target.value, param.unit || fieldMeta.unit);
+      if (applyTolerance(param, event.target.value, param.unit || fieldMeta.unit) && event.target.value.trim()) {
+        delete param.diameter_tolerance_pending;
+      }
+      const pendingNotice = row.querySelector('[data-role="diameter-tolerance-pending"]');
+      if (pendingNotice) pendingNotice.hidden = !param.diameter_tolerance_pending;
       applyEditedConfirmationState(param, field, { accuracyPart: "tolerance" });
       syncDependentFormulaParameterRows(root, review, field);
       syncConfirmationControl(row, param, { kind: "parameter", field, review });
@@ -11607,6 +11614,7 @@ function safeConfirmableReviewItems(review) {
 
 function bulkParameterInvalidReason(field, param) {
   if (param?.unit_pending) return "原图单位待核对";
+  if (param?.diameter_tolerance_pending) return "公差待核对，请填写或清除公差";
   if (field === "flattening") return Flattening.invalidReason(param);
   if (param?.diameter_role_conflict) return "多条原图直径尺寸不一致，请核对后单独确认";
   if (param?.derived_value_stale || param?.formula_recommendation_stale) return "公式结果已过期，请应用新候选值后确认";
@@ -11627,6 +11635,7 @@ function parameterConfirmationInvalidReason(field, param) {
   const value = param?.value;
   if (value == null || String(value).trim() === "") return "请先填写参数值";
   if (param?.tolerance_input_draft) return "公差格式应为 ±0.05 或 +0.1/-0.1";
+  if (param?.diameter_tolerance_pending) return "公差待核对，请填写原图偏差或在公差编辑器中清除";
   if (supplementInputMode(field) === "decimal") {
     if (!isFiniteReviewNumber(value)) return "请输入有效数字";
     if (["total_coils", "active_coils"].includes(field)) {

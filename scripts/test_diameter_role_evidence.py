@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from ai_design_review.diameter_evidence import CANDIDATE, INFERENCE, PENDING, pending_roles, resolve_diameter_roles, select_role
+from ai_design_review.diameter_recovery import recover_diameters, validate_tolerance_resolution
 from ai_design_review.generation_readiness import assess_generation_readiness
 from ai_design_review.workflow import DrawingReviewWorkflow
 
@@ -30,6 +31,52 @@ def drawing(start=120, end=280, *, rotated=False):
 
 
 class DiameterRoleTests(unittest.TestCase):
+    def test_positioned_outer_table_preserves_rows_and_existing_card(self):
+        model = candidate(value=68, evidence="OUTSIDE DIAMETER D2 68 mm", field="outer_diameter")
+        page = {"page": 1, "width": 800, "height": 600, "lines": [], "texts": [
+            {"text": "OUTSIDE DIAMETER", "bbox": [400, 100, 490, 112]},
+            {"text": "D₂", "bbox": [510, 100, 530, 112]},
+            {"text": "68", "bbox": [540, 100, 562, 112]},
+            {"text": "mm", "bbox": [580, 100, 605, 112]},
+            {"text": "65", "bbox": [540, 116, 562, 128]},
+        ]}
+        accepted, = recover_diameters([model], [], [page])
+        self.assertEqual((accepted["field"], accepted["value"], accepted["unit"]), ("outer_diameter", 68, "mm"))
+        self.assertEqual(recover_diameters([model], [accepted], [page]), [accepted])
+        card = {**accepted, "field": CANDIDATE, "source": "qwen_vision", "candidate_id": "keep"}
+        self.assertEqual(recover_diameters([model], [card], [page]), [card])
+        model["value"] = 65
+        self.assertEqual(recover_diameters([model], [], [page]), [])
+
+    def test_suffix_and_offsets_are_verified_separately(self):
+        model = candidate(value=1.547, field="outer_diameter", unit="in", evidence="Ø1.547 +0/-0.03 O.D.")
+        page = {"page": 1, "width": 595, "height": 871, "lines": [
+            [345, 273, 424, 273], [345, 255, 345, 281], [410, 255, 410, 281]],
+            "texts": [{"text": "GO INTO A 1.547 DIA RING GAGE", "bbox": [15, 190, 195, 202]},
+                      {"text": "1.547 ±0.03 0.D.", "bbox": [425, 262, 565, 284]}]}
+        accepted, = recover_diameters([model], [], [page])
+        self.assertEqual(accepted["field"], "outer_diameter")
+        self.assertTrue(accepted["diameter_tolerance_pending"])
+        self.assertIsNone(accepted["tolerance_upper"])
+        anchor = accepted["position"]
+        page["texts"].extend({"text": value, "bbox": [500, 263, 517, 273], "diameter_crop_origin": anchor, "diameter_crop_slot": slot}
+                             for slot, value in [("upper", "+0"), ("lower", "-0.03")])
+        verified, = recover_diameters([model], [], [page])
+        self.assertEqual((verified["tolerance_upper"], verified["tolerance_lower"]), (0, -.03))
+        self.assertNotIn("diameter_tolerance_pending", verified)
+        page["texts"][1]["text"] = "1.547"
+        unresolved, = recover_diameters([model], [], [page])
+        self.assertEqual(pending_roles({PENDING: [unresolved]}), [unresolved])
+        page["texts"] = page["texts"][:1]
+        self.assertEqual(recover_diameters([model], [], [page]), [])
+
+    def test_tolerance_requires_an_explicit_edit(self):
+        previous = {"spring_parameters": {"outer_diameter": {"value": 39.2938, "diameter_tolerance_pending": True}}}
+        current = {"spring_parameters": {"outer_diameter": {"value": 39.2938}}}
+        with self.assertRaises(ValueError):
+            validate_tolerance_resolution(current, previous, [])
+        validate_tolerance_resolution(current, previous, [{"event_type": "parameter_tolerance_updated", "target_field": "outer_diameter"}])
+
     def test_inner_mean_outer_and_rotation(self):
         for field, endpoints in (("inner_diameter", (120, 280)), ("mean_diameter", (100, 300)), ("outer_diameter", (80, 320))):
             for rotated in (False, True):

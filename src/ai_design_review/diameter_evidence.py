@@ -16,7 +16,7 @@ CANDIDATE = "diameter_role_candidate"
 PENDING = "diameter_role_candidates"
 INFERENCE = "diameter_model_inference"
 VERSION = "diameter-role/v3"
-ROLE_STATE_VERSION = "diameter-candidates/v2"
+ROLE_STATE_VERSION = "diameter-candidates/v4"
 REASON = "直径类型待核对。请选择内径、中径或外径。"
 LABELS = {
     "inner_diameter": r"内径|內徑|内直径|inner\s+diameter|inside\s+diameter|\bI\.?D\.?",
@@ -110,7 +110,7 @@ def _stacked_tolerance(text, page, axis, dimension, value, content):
     split = {}
     position = _original_box(text, page)
     for other in page["texts"]:
-        if other is text:
+        if other is text or other.get("diameter_crop_slot"):
             continue
         a, b = other["bbox"][axis], other["bbox"][axis + 2]
         c, d = other["bbox"][1 - axis], other["bbox"][3 - axis]
@@ -548,6 +548,8 @@ def _observations(candidate, pages, region):
             continue
         prior = _box(candidate, page)
         for text in page["texts"]:
+            if text.get("diameter_crop_slot"):
+                continue
             content = _text(text["text"])
             box = _original_box(text, page)
             if not _in_region(box, region):
@@ -922,6 +924,7 @@ def original_observation(item):
             and isinstance(position,dict) and all(isinstance(position.get(k),(int,float)) for k in ("x","y","width","height"))
             and position["width"]>0 and position["height"]>0):
         if (observation.get("roles") or observation.get("geometry") or _diameter_number(_text(observation.get("text")),value)
+                or observation.get("method") == "diameter_callout" and observation.get("callout_verified") is True
                 or observation.get("dimensions") and _diameter_number(_text(observation.get("normalized_text")),value)):
             return observation
     return None
@@ -953,7 +956,7 @@ def public_roles(review):
         review[PENDING]=public_candidates(review)
 
 
-def reconcile_diameter_review(review, job_dir):
+def reconcile_diameter_review(review, job_dir, *, allow_callout_ocr=False):
     """Recheck old, unhandled candidates with cached original evidence in the worker."""
     saved=review.get(PENDING) or []
     pending=[item for item in saved if not item.get("selected_field") and not item.get("ignored")]
@@ -972,8 +975,10 @@ def reconcile_diameter_review(review, job_dir):
     job_dir=Path(job_dir)
     cached_payloads = _read_json(job_dir/"candidates.json").get("raw_payloads") or {}
     payload=_read_json(job_dir/"qwen_vision_raw.json").get("parsed") or {}
-    outer = parameters.get("outer_diameter") or {}
-    if not pending and (not page_length_units(cached_payloads) or outer.get("value") not in (None, "") or human_override(outer)):
+    protected_fields = {field for field in DIAMETERS if human_override(parameters.get(field) or {}) or (parameters.get(field) or {}).get("need_human_review") is False
+                 or (parameters.get(field) or {}).get("value") not in (None, "") and
+                 "formula_calculation" not in ((parameters.get(field) or {}).get("source") or [])}
+    if not pending and len(protected_fields) == len(DIAMETERS):
         return
     raw=[c for c in qwen_payload_to_candidates(payload) if c.get("field") in {*DIAMETERS,"wire_diameter","surface_roughness_ra"}]
     seeds=[*raw]
@@ -982,7 +987,12 @@ def reconcile_diameter_review(review, job_dir):
         if field not in DIAMETERS:
             field="outer_diameter"
         seeds.append({**item, **{k: v for k, v in (item.get("engineering_source") or {}).items() if k in {"value", "unit", "tolerance_upper", "tolerance_lower"}}, "field":field})
+    from .diameter_recovery import attach_callout_blocks, is_explicit_callout, recover_diameters
+    if not pending and not any(c.get("field") in DIAMETERS and c["field"] not in protected_fields and
+                               (page_length_units(cached_payloads) or is_explicit_callout(c)) for c in seeds):
+        return
     pages=raster_pages(job_dir,review,diameter_geometry=True)
+    raster = list(pages)
     source=next((p for p in (job_dir/"inputs").glob("*.pdf")),None)
     if source:
         stat=source.stat()
@@ -990,7 +1000,21 @@ def reconcile_diameter_review(review, job_dir):
                                  max([p["page"] for p in pages],default=1))]
     if not pages:
         return
-    resolved=resolve_diameter_roles(apply_drawing_units(seeds, cached_payloads, pages),pages,region=region)
+    scoped = apply_drawing_units(seeds, cached_payloads, pages)
+    baseline = resolve_diameter_roles(scoped,pages,region=region)
+    preserved = [item for item in saved if item.get("selected_field") or item.get("ignored") or original_observation(item)]
+    resolved = recover_diameters(scoped, [*baseline, *preserved], pages, region=region, protected=protected_fields)
+    if allow_callout_ocr:
+        from .annotation_ocr import diameter_callout_blocks
+        from .load_point_evidence import _verification_warning
+        try:
+            eligible = [item for item in scoped if item["field"] not in protected_fields]
+            if blocks := diameter_callout_blocks(job_dir, raster, eligible, [*baseline, *preserved], region=region):
+                attach_callout_blocks(raster, blocks)
+                resolved = recover_diameters(scoped, [*baseline, *preserved], pages, region=region, protected=protected_fields)
+        except Exception as error:
+            _verification_warning("diameter callout", error)
+    resolved = [item for item in resolved if item not in preserved]
     processed=[item for item in saved if item.get("selected_field") or item.get("ignored")]
     retained=list(saved)
     changed=False
@@ -1008,6 +1032,8 @@ def reconcile_diameter_review(review, job_dir):
             continue
         item = metric_item(item, "outer_diameter")
         previous=next((p for p in retained if not p.get("selected_field") and not p.get("ignored") and same_mark(item,p)),None)
+        if previous and original_observation(previous):
+            continue
         if field==CANDIDATE:
             if previous:
                 retained[retained.index(previous)]={**item,"candidate_id":previous["candidate_id"]}
@@ -1020,12 +1046,12 @@ def reconcile_diameter_review(review, job_dir):
         sources=current.get("source") or []
         sources=[sources] if isinstance(sources,str) else sources
         protected=current.get("need_human_review") is False or any(str(s).startswith(("human","manual")) for s in sources)
-        writable=current.get("value") in (None,"") or "formula_calculation" in sources or same_mark(current,item)
+        writable=(current.get("value") in (None,"") or "formula_calculation" in sources) and field not in protected_fields
         if writable and not protected:
-            parameters[field]={k:deepcopy(item[k]) for k in ("value","unit","page","position","evidence","confidence","tolerance_upper","tolerance_lower","diameter_role_evidence","engineering_source","unit_pending") if k in item}
+            parameters[field]={k:deepcopy(item[k]) for k in ("value","unit","page","position","evidence","confidence","tolerance_upper","tolerance_lower","diameter_role_evidence","engineering_source","unit_pending","diameter_tolerance_pending") if k in item}
             parameters[field].update(source=[SOURCE],need_human_review=True,status="need_review")
             changed=True
-        if previous and previous in retained and (writable and not protected or same_mark(current,item)):
+        if previous and previous in retained and not original_observation(previous) and (writable and not protected or same_mark(current,item)):
             retained.remove(previous)
     review[PENDING]=retained
     if changed:
@@ -1115,6 +1141,8 @@ def select_role(review, candidate_id, field):
             **({"engineering_source": deepcopy(candidate["engineering_source"])} if candidate.get("engineering_source") else {}),
             "source": [SOURCE, "human_diameter_role"], "need_human_review": True,
             "status": "need_review", "confidence": .99}
+    if candidate.get("diameter_tolerance_pending"):
+        item["diameter_tolerance_pending"] = True
     for key in ("default_source", "formula_calculation_kind", "formula_dependencies", "diameter_linkage_managed",
                 "formula_recommendation_stale", "derived_value_stale", "diameter_linkage_error"):
         item.pop(key, None)

@@ -12,7 +12,7 @@ from sqlalchemy import select
 from .review_persistence import ReviewRecord, RecognitionJobRecord, _apply_summary
 from .page_images import read_json, write_json, fingerprint
 
-VERSION='review-local/v4-engineering-units'
+VERSION='review-local/v5-diameter-recovery'
 KIND='local_verification'
 
 

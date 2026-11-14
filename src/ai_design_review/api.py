@@ -2627,7 +2627,7 @@ def _load_persisted_review(
         ensure_technical_requirement_ids(review)
         reconcile_load_points(review, review_path.parent, merge_saved_duplicates=False)
         from .diameter_evidence import reconcile_diameter_review
-        reconcile_diameter_review(review, review_path.parent)
+        reconcile_diameter_review(review, review_path.parent, allow_callout_ocr=True)
         _prepare_review_reasonableness(review, stored["revision"])
         return review, stored["revision"]
     if not _local_job_owned(review_path.parent, identity.user_id) or not review_path.exists():
@@ -2647,7 +2647,7 @@ def _load_persisted_review(
     ensure_technical_requirement_ids(review)
     reconcile_load_points(review, review_path.parent)
     from .diameter_evidence import reconcile_diameter_review
-    reconcile_diameter_review(review, review_path.parent)
+    reconcile_diameter_review(review, review_path.parent, allow_callout_ocr=True)
     _prepare_review_reasonableness(review, None)
     return review, None
 
@@ -2806,6 +2806,11 @@ def _save_review_persistence(
     revision = _expected_review_revision(expected_revision)
     if (role_events or ignore_events) and current_revision is not None and revision != current_revision:
         raise HTTPException(status_code=409, detail={"message": "当前审查数据已更新，请刷新后重试。", "current_revision": current_revision})
+    from .diameter_recovery import validate_tolerance_resolution
+    try:
+        validate_tolerance_resolution(review, previous, events)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if DIAMETER_ROLE_CANDIDATES in previous:
         review[DIAMETER_ROLE_CANDIDATES] = deepcopy(previous[DIAMETER_ROLE_CANDIDATES])
     else:

@@ -32,7 +32,7 @@
   function confirmedOptionalMm(parameters, field, allowZero = false) {
     const item = parameters[field];
     if (!item || typeof item !== "object" || item.need_human_review !== false) return null;
-    if (["tolerance_input_draft", "derived_value_stale", "formula_recommendation_stale", "diameter_linkage_error", "conflict", "value_conflict", "tolerance_conflict"].some(key => item[key]) || !current(parameters, field)) return null;
+    if (["tolerance_input_draft", "diameter_tolerance_pending", "derived_value_stale", "formula_recommendation_stale", "diameter_linkage_error", "conflict", "value_conflict", "tolerance_conflict"].some(key => item[key]) || !current(parameters, field)) return null;
     const snapshot = item.confirmation_snapshot;
     if (snapshot != null && (typeof snapshot !== "object" || Array.isArray(snapshot) || (Object.hasOwn(snapshot, "kind") ? snapshot.kind : "parameter") !== "parameter"
       || ["value", "tolerance_upper", "tolerance_lower"].some(key => JSON.stringify(snapshot[key] ?? null) !== JSON.stringify(item[key] ?? null))

@@ -79,6 +79,11 @@ def local_ocr_blocks(job_dir: Path, pages: list[dict[str, Any]], document_id: st
                                         retry=retry, verification_requests=verification_requests or [])
 
 
+def _empty_ocr_cache(document_id, version):
+    return {"source_document_id": document_id, "algorithm_version": version, "cache_format": 4,
+            "blocks": [], "full": {}, "regions": {}, "handled_fields": {}, "warnings": []}
+
+
 def _local_ocr_blocks_locked(job_dir, pages, document_id, review, candidates, existing, *, retry, verification_requests):
     from .drawing_annotations import ALGORITHM_VERSION, _unique_blocks, atomic_annotation_write, locate_fields, ocr_blocks, page_sort_key
     from .engines.ocr_providers import RapidOcrProvider
@@ -91,7 +96,7 @@ def _local_ocr_blocks_locked(job_dir, pages, document_id, review, candidates, ex
     except (OSError, ValueError):
         cache = {}
     if cache.get("source_document_id") != document_id or cache.get("algorithm_version") != ALGORITHM_VERSION or cache.get("cache_format") != 4:
-        cache = {"source_document_id": document_id, "algorithm_version": ALGORITHM_VERSION, "cache_format": 4, "blocks": [], "full": {}, "regions": {}, "handled_fields": {}, "warnings": []}
+        cache = _empty_ocr_cache(document_id, ALGORITHM_VERSION)
     cache.setdefault("handled_fields", {})
     cache.setdefault("errors", {})
     protected = {a["field"] for a in (review.get("drawing_annotations") or {}).get("annotations", []) if a.get("locations") and
@@ -258,7 +263,9 @@ def _recognize_regions(image, job_dir, folder, number, fields, cache, retry, pro
         transforms.append((bounds, angle, signature, metadata, crop_width, crop_height, margin))
         cache["regions"][signature] = {"page": number, "bounds": list(bounds), "angle": angle, "fields": fields, "status": "failed"}
     if inputs:
-        for raw, transform in zip(provider().recognize(inputs, {}), transforms):
+        engine = provider()
+        recognize = engine.recognize_lines if all(t[3].get("diameter_crop_slot") for t in transforms) else engine.recognize
+        for raw, transform in zip(recognize(inputs, {}), transforms):
             bounds, angle, signature, metadata, crop_width, crop_height, margin = transform
             cache["regions"][signature]["status"] = "completed"
             for block in ocr_blocks({"local": {"raw_pages": [raw]}}, [{"page": raw["page"]}]):
@@ -280,3 +287,48 @@ def _recognize_regions(image, job_dir, folder, number, fields, cache, retry, pro
                 cache["blocks"].append({"page": number, "text": block["text"], "position": position,
                                         "source": "local_ocr", "reading_angle": angle, "region_id": signature, **metadata})
     return len(inputs), failed
+
+
+def diameter_callout_blocks(job_dir, pages, candidates, baseline, *, region=None):
+    """One bounded OCR batch per affected page, using the shared region cache."""
+    from .diameter_recovery import callout_crop_regions
+    from .drawing_annotations import ALGORITHM_VERSION, annotation_file_lock, atomic_annotation_write, page_sort_key
+    from .engines.ocr_providers import RapidOcrProvider
+    from .multi_spec import shared_ocr_dir
+
+    pool = shared_ocr_dir(job_dir)
+    files = {page_sort_key(p)[0]: p for p in (job_dir / "pages").glob("*")
+             if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}}
+    proposals = []
+    for page in pages:
+        source = files.get(page["page"])
+        if not source or page.get("source") == "pdf_text_layer":
+            continue
+        with Image.open(source) as raw:
+            crops = callout_crop_regions(ImageOps.exif_transpose(raw), page, candidates, baseline, region)
+        if crops:
+            proposals.append((page, source, crops))
+    if not proposals:
+        return []
+    with annotation_file_lock(pool, "annotation_ocr.lock"):
+        path = pool / "annotation_ocr_v3.json"
+        try:
+            cache = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            cache = _empty_ocr_cache(proposals[0][0]["source_document_id"], ALGORITHM_VERSION)
+        except (OSError, ValueError):
+            return []
+        folder = pool / "annotation_ocr_pages"
+        folder.mkdir(exist_ok=True)
+        before = len(cache["blocks"])
+        changed = False
+        for page, source, crops in proposals:
+            if page.get("source_document_id") != cache.get("source_document_id"):
+                continue
+            with Image.open(source) as raw:
+                count, _ = _recognize_regions(ImageOps.exif_transpose(raw), pool, folder, page["page"],
+                                              ["outer_diameter"], cache, False, crops, 12, RapidOcrProvider)
+            changed |= bool(count)
+        if changed:
+            atomic_annotation_write(path, cache)
+        return [block for block in cache["blocks"][before:] if block.get("diameter_crop_slot")]

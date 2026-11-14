@@ -188,6 +188,7 @@ class ReviewParameterValue(BaseModel):
     diameter_linkage_managed: bool | None = Field(default=None, description="人工启用三径联动后由统一规则管理，旧公式补全不得覆盖。")
     diameter_linkage_error: str | None = Field(default=None, description="三径联动输入或几何失效原因；保留最后有效的关联值，重新确认前需修正输入。")
     diameter_role_evidence: dict[str, Any] | None = Field(default=None, description="直径原图归类依据。diameter-role/v3兼容简化圈线，observation.geometry可含repeated_coil_arcs方法、中心位置、圆弧及轴向范围；model_derived_candidates仅追溯模型推导，不参与参数计算。")
+    diameter_tolerance_pending: bool | None = Field(default=None, exclude_if=lambda value: value is None, description="直径名义值已核实，原图公差仍待人工填写或明确清除。")
     evidence: str | None = Field(default=None, description="支持该参数值的图纸文字或计算依据。")
     confidence: float | None = Field(default=None, ge=0, le=1, description="识别置信度，范围为 0 至 1。")
     need_human_review: bool | None = Field(default=None, description="是否仍需人工核对。")

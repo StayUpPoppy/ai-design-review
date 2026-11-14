@@ -293,6 +293,8 @@ def apply_drawing_units(candidates, raw_payloads, pages=(), *, drawing_units=Non
     blocks = defaultdict(list)
     for page in pages:
         for item in page["texts"]:
+            if item.get("diameter_crop_slot"):
+                continue
             position = None
             if box := item.get("bbox"):
                 position = {"x": box[0] / page["width"], "y": box[1] / page["height"],

@@ -1,6 +1,6 @@
 /* Read-only provenance filtering, including saved candidates from older rules. */
 (function (root) {
-  const VERSION = "diameter-candidates/v3";
+  const VERSION = "diameter-candidates/v4";
   const number = "(?:\\d+(?:\\.\\d+)?|\\.\\d+)", mark = "[φΦϕøØ⌀]";
   const derivation = /推算|推导|计算|换算|\b(?:derived|calculated|inferred|computed)\b|(?:外径|内径|中径|线径).{0,24}(?:减去|减|加上|乘以|除以)|(?:外径|内径|中径|线径|\bD[oim]?\b|\bd\b)\s*[-+−×*÷/]\s*(?:外径|内径|中径|线径|\bD[oim]?\b|\bd\b)/i;
   const drawing = /图中|图纸|原图|标注|marked|drawing/i;
@@ -41,7 +41,8 @@
       && numeric(item.value) === value && (item.page ?? candidate.page ?? 1) === (candidate.page ?? 1)
       && position && ["x", "y", "width", "height"].every(key => typeof position[key] === "number")
       && position.width > 0 && position.height > 0
-      && (item.roles?.length || item.geometry?.length || marked(item.text) || item.dimensions?.length && marked(item.normalized_text))
+      && (item.roles?.length || item.geometry?.length || marked(item.text) || item.dimensions?.length && marked(item.normalized_text)
+        || item.method === "diameter_callout" && item.callout_verified === true)
       ? item : null;
   }
   function eligible(candidate) {

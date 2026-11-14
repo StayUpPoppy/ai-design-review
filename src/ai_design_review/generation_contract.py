@@ -142,7 +142,7 @@ def generation_parameter_state(parameters: dict[str, Any], field: str) -> str:
         return "missing"
     if field == "flattening":
         return "invalid" if flattening.invalid_reason(item) else "confirmed" if flattening.confirmed(item) else "pending"
-    if item.get("need_human_review") or item.get("unit_pending"):
+    if item.get("need_human_review") or item.get("unit_pending") or item.get("diameter_tolerance_pending"):
         return "pending"
     try:
         normalize_generation_value(field, item.get("value"))

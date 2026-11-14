@@ -367,7 +367,7 @@ class DrawingReviewWorkflow:
             result.update({key: item[key] for key in ("raw_value", "flattening_conflict", "flattening_unverified") if key in item})
         if "diameter_role_evidence" in item:
             result["diameter_role_evidence"] = item["diameter_role_evidence"]
-        result.update({key: item[key] for key in ("engineering_source", "unit_pending") if key in item})
+        result.update({key: item[key] for key in ("engineering_source", "unit_pending", "diameter_tolerance_pending") if key in item})
         if item.get("diameter_role_conflict"):
             result["diameter_role_conflict"] = True
         if field == "surface_roughness_ra":

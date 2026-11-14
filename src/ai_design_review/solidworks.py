@@ -145,7 +145,7 @@ def _confirmed_optional_mm(parameters: dict[str, Any], field: str, *, allow_zero
     item = parameters.get(field)
     if not isinstance(item, dict) or item.get("need_human_review") is not False:
         return None
-    if any(item.get(key) for key in ("tolerance_input_draft", "derived_value_stale", "formula_recommendation_stale",
+    if any(item.get(key) for key in ("tolerance_input_draft", "diameter_tolerance_pending", "derived_value_stale", "formula_recommendation_stale",
                                      "diameter_linkage_error", "conflict", "value_conflict", "tolerance_conflict")):
         return None
     if not parameter_current(parameters, field):

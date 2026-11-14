@@ -348,6 +348,13 @@ class RapidOcrProvider:
         image_paths: list[Path],
         provider_diagnostics: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        return self._recognize(image_paths, provider_diagnostics)
+
+    def recognize_lines(self, image_paths: list[Path], provider_diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
+        """Read already segmented text lines, including very small offsets."""
+        return self._recognize(image_paths, provider_diagnostics, segmented=True)
+
+    def _recognize(self, image_paths, provider_diagnostics, *, segmented=False):
         factory = self.engine_factory
         if factory is None:
             try:
@@ -379,8 +386,13 @@ class RapidOcrProvider:
             provider_diagnostics["pages"].append(page_diag)
             try:
                 with _rapid_engine_lock:
-                    raw = engine(str(image_path))
-                blocks = rapidocr_result_to_text_blocks(raw, page_number)
+                    raw = engine(str(image_path), use_det=False, use_cls=False) if segmented else engine(str(image_path))
+                if segmented:
+                    blocks = [{"text": text, "confidence": float(score), "page": page_number,
+                               "position": {"coordinate_type": "normalized", "origin": "top_left", "x": 0, "y": 0, "width": 1, "height": 1}}
+                              for text, score in zip(raw.txts or (), raw.scores or ()) if text.strip() and score >= .65]
+                else:
+                    blocks = rapidocr_result_to_text_blocks(raw, page_number)
                 page_diag["status"] = "success"
                 page_diag["duration_ms"] = _elapsed_ms(page_started)
                 page_diag["text_block_count"] = len(blocks)

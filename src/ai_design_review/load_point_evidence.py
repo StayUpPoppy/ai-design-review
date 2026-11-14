@@ -358,7 +358,7 @@ def extract_page_points(page: dict[str, Any], *, region=None, document_id="", sc
         x0,y0=region["x"]*page["width"],region["y"]*page["height"]
         x1,y1=x0+region["width"]*page["width"],y0+region["height"]*page["height"]
         page={**page,"lines":[l for l in page["lines"] if all(x0<=x<=x1 and y0<=y<=y1 for x,y in ((l[0],l[1]),(l[2],l[3])))]}
-    texts = _load_texts([t for t in page["texts"] if _inside(t,page,region)])
+    texts = _load_texts([t for t in page["texts"] if not t.get("diameter_crop_slot") and _inside(t,page,region)])
     from .load_table_evidence import FORCE_HEADER, table_height
     records = []
     table_units={m.group(0) for t in texts if FORCE_HEADER.fullmatch(t["text"].strip())
@@ -675,10 +675,11 @@ def raster_pages(job_dir, review, *, raw_payloads=None, allow_ocr=False, warning
             texts=[]
             for block in blocks:
                 if block.get("page")!=page["page"]:continue
+                if block.get("diameter_crop_slot") and not diameter_geometry:continue
                 b=block.get("position") or {}
                 if not all(k in b for k in ("x","y","width","height")):continue
                 texts.append({"text":block["text"],"bbox":[b["x"]*width,b["y"]*height,(b["x"]+b["width"])*width,(b["y"]+b["height"])*height],
-                              **{key: block[key] for key in ("diameter_offset_origin", "diameter_offset_slot") if key in block}})
+                              **{key: block[key] for key in ("diameter_offset_origin", "diameter_offset_slot", "diameter_crop_origin", "diameter_crop_slot") if key in block}})
             scale=min(width,height)/595
             wire_sections = []
             try:
@@ -740,7 +741,8 @@ def ground_job_candidates(job_dir,candidates,raw_payloads, *, warnings=None, dra
     source=next((p for p in sources if p.suffix.lower() in {".pdf",".png",".jpg",".jpeg",".webp",".bmp",".tif",".tiff"}),None)
     if not source:return candidates
     try:
-        from .diameter_evidence import diameter_ocr_requests, resolve_diameter_roles, supported_candidates
+        from .diameter_evidence import INFERENCE, diameter_ocr_requests, resolve_diameter_roles, supported_candidates
+        from .diameter_recovery import attach_callout_blocks, locatable_callout_keys, recover_diameters
         verify_diameters = supported_candidates(candidates)
         pdf_points=original_points(source) if source.suffix.lower()==".pdf" else []
         loads=[c for c in candidates if c.get("field")=="load_point" and isinstance(c.get("value"),dict)]
@@ -760,13 +762,28 @@ def ground_job_candidates(job_dir,candidates,raw_payloads, *, warnings=None, dra
                  if candidate not in aggregate_loads or force_key(candidate) not in specific_forces]
         pitch_known=next((c for c in candidates if c.get("field")=="pitch" and c.get("value") is not None),{})
         review={"drawing_summary":{"spring_type":"compression_spring"},"spring_parameters":{"pitch":pitch_known}}
-        diameter_requests = diameter_ocr_requests(candidates) if verify_diameters else []
         def recover(pages):
             return _merge_original_points(pdf_points,original_points(source,pages=pages,hints=hints))
         pages=raster_pages(Path(job_dir),review,raw_payloads=raw_payloads,warnings=warnings,diameter_geometry=verify_diameters)
+        vectors = []
+        if verify_diameters and source.suffix.lower() == ".pdf":
+            stat = source.stat()
+            limit = max(1, int(os.getenv("QWEN_MAX_PAGES", "3")))
+            vectors = _pdf_pages(str(source), stat.st_size, stat.st_mtime_ns, limit)
         from .engineering_units import apply_drawing_units
-        scoped = apply_drawing_units(candidates, raw_payloads, pages)
+        evidence_pages = _diameter_pages(pages, vectors)
+        scoped = apply_drawing_units(candidates, raw_payloads, evidence_pages, drawing_units=drawing_units)
         diameter_requests = diameter_ocr_requests(scoped) if verify_diameters else []
+        baseline = None
+        if diameter_requests and pages:
+            baseline = resolve_diameter_roles(scoped, evidence_pages)
+            needed = {(c.get("page", 1), c["value"]["value"]) for c in baseline if c.get("field") == INFERENCE}
+            if needed:
+                table_matches = recover_diameters(scoped, baseline, evidence_pages, allow_callouts=False)[len(baseline):]
+                needed.difference_update((c.get("page", 1), c["value"]) for c in table_matches)
+                targeted_pages = {page for page, value in locatable_callout_keys(scoped, pages) & needed}
+                needed = {(page, value) for page, value in needed if page not in targeted_pages}
+            diameter_requests = [r for r in diameter_requests if (r["page"], r["original_value"]) in needed]
         recovered=recover(pages)
         load_ocr_pages=_load_ocr_targets(loads,recovered)
         if diameter_requests or load_ocr_pages or not pitch_known or not (loads or recovered):
@@ -775,22 +792,24 @@ def ground_job_candidates(job_dir,candidates,raw_payloads, *, warnings=None, dra
                                diameter_geometry=verify_diameters,diameter_requests=diameter_requests,
                                load_ocr_pages=load_ocr_pages if loads or recovered else None)
             recovered=recover(pages)
-        evidence_pages = list(pages)
-        if verify_diameters and source.suffix.lower() == ".pdf":
-            stat = source.stat()
-            limit = max(1, int(os.getenv("QWEN_MAX_PAGES", "3")))
-            for vector in _pdf_pages(str(source), stat.st_size, stat.st_mtime_ns, limit):
-                raster = next((p for p in pages if p["page"] == vector["page"]), None)
-                if raster and abs(vector["width"] / vector["height"] - raster["width"] / raster["height"]) < .02:
-                    ratio = vector["height"] / raster["height"]
-                    vector = {**vector, "wire_sections": [[v * ratio for v in section] for section in raster["wire_sections"]]}
-                    mask, scale = raster["diameter_raster"]
-                    vector["diameter_raster"] = (mask, scale / ratio)
-                    vector["source_document_id"] = raster["source_document_id"]
-                evidence_pages.append(vector)
-        candidates = apply_drawing_units(candidates, raw_payloads, evidence_pages, drawing_units=drawing_units)
+            evidence_pages = _diameter_pages(pages, vectors)
+            scoped = apply_drawing_units(candidates, raw_payloads, evidence_pages, drawing_units=drawing_units)
+            baseline = None
+        candidates = scoped
         if verify_diameters:
-            candidates = resolve_diameter_roles(candidates, evidence_pages)
+            from .annotation_ocr import diameter_callout_blocks
+            if baseline is None:
+                baseline = resolve_diameter_roles(candidates, evidence_pages)
+            resolved = recover_diameters(candidates, baseline, evidence_pages)
+            try:
+                requested_pages = {request["page"] for request in diameter_requests}
+                local_pages = [page for page in pages if page["page"] not in requested_pages]
+                if blocks := diameter_callout_blocks(Path(job_dir), local_pages, candidates, baseline):
+                    attach_callout_blocks(pages, blocks)
+                    resolved = recover_diameters(candidates, baseline, evidence_pages)
+            except Exception:
+                LOGGER.warning("Diameter callout OCR failed for %s", job_dir, exc_info=True)
+            candidates = resolved
         from .pitch_evidence import pitch_from_pages
         geometry={c.get("field"):c.get("value") for c in candidates if c.get("field") in {"wire_diameter","free_length"} and isinstance(c.get("value"),(int,float))}
         pitch=pitch_from_pages(pages,wire_diameter=geometry.get("wire_diameter"),free_height=geometry.get("free_length"))
@@ -805,6 +824,20 @@ def ground_job_candidates(job_dir,candidates,raw_payloads, *, warnings=None, dra
                  (*force_key(candidate), str(candidate["value"].get("label") or "").casefold()) in table_keys]
     candidates = [candidate for candidate in candidates if candidate not in redundant]
     return [*candidates,*_point_candidates(recovered)]
+
+
+def _diameter_pages(pages, vectors):
+    merged = list(pages)
+    raster_by_page = {page["page"]: page for page in pages}
+    for vector in vectors:
+        raster = raster_by_page.get(vector["page"])
+        if raster and abs(vector["width"] / vector["height"] - raster["width"] / raster["height"]) < .02:
+            ratio = vector["height"] / raster["height"]
+            mask, scale = raster["diameter_raster"]
+            vector = {**vector, "wire_sections": [[v * ratio for v in section] for section in raster["wire_sections"]],
+                      "diameter_raster": (mask, scale / ratio), "source_document_id": raster["source_document_id"]}
+        merged.append(vector)
+    return merged
 
 
 def _point_candidates(points):

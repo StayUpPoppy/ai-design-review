@@ -79,6 +79,9 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
     pending: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     confirmed_count = 0
+    for field in ("outer_diameter", "inner_diameter", "mean_diameter"):
+        if (parameters.get(field) or {}).get("diameter_tolerance_pending"):
+            pending.append(_field_issue(field, "公差待核对，请对照原图填写或清除公差。"))
 
     for field in COMPRESSION_GENERATION_INPUT_FIELDS:
         state = generation_parameter_state(parameters, field)
@@ -86,8 +89,9 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
             missing.append(_field_issue(field, "缺少重新生图所需的核心参数。"))
         elif state == "pending":
             item = generation_source_item(parameters, field)
-            reason = "原图单位尚待核对，请核实后重新填写。" if (item or {}).get("unit_pending") else "参数已有值，但仍需人工确认。"
-            pending.append(_field_issue(field, reason))
+            if not (item or {}).get("diameter_tolerance_pending"):
+                reason = "原图单位尚待核对，请核实后重新填写。" if (item or {}).get("unit_pending") else "参数已有值，但仍需人工确认。"
+                pending.append(_field_issue(field, reason))
         elif state == "invalid":
             continue
         else:

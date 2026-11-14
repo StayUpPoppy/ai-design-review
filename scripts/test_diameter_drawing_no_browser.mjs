@@ -40,7 +40,13 @@ await page.route('**/api/**', async (route) => {
     const [, id, action] = match, model = models.get(id);
     if (!action) {
       if (request.method() === 'PATCH') {
-        if (holdSave) { holdSave = false; await new Promise((resolve) => { releaseSave = resolve; }); }
+        if (holdSave) {
+          holdSave = false;
+          await new Promise((resolve) => {
+            const timeout = setTimeout(resolve, 10000);
+            releaseSave = () => { clearTimeout(timeout); resolve(); };
+          });
+        }
         if (failSave) return route.fulfill({ status: 503, json: { detail: '模拟保存失败' } });
         if (conflict) { conflict(model); conflict = null; model.revision++; return route.fulfill({ status: 409, json: { detail: '模拟冲突' } }); }
         const input = request.postDataJSON();
@@ -88,6 +94,11 @@ const input = (field) => root.locator(`[data-kind="param"][data-field="${field}"
 const drawing = () => root.locator('[data-role="drawing-no"]:visible');
 async function open(id) { await page.evaluate(async (id) => { await openPersistedReview(id); renderCompareOverlay(); }, id); await root.waitFor(); await root.locator('[data-compare-tab="parameters"]').click(); }
 async function saved() { assert.equal(await page.evaluate(() => flushReviewPersistence()), true); await page.waitForFunction(() => !state.reviewPersistenceSaving && !state.pendingReviewAuditEvents.length); }
+async function waitForHeldSave() {
+  const deadline = Date.now() + 8000;
+  while (!releaseSave && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(typeof releaseSave, 'function', 'Expected the mock save request to be held');
+}
 async function values(expected) { assert.deepEqual(await page.evaluate(() => ['outer_diameter', 'inner_diameter', 'mean_diameter'].map((f) => state.review.spring_parameters[f].value)), expected); }
 try {
   await page.goto(process.env.DIAMETER_FRONTEND_URL || `http://127.0.0.1:${server.address().port}`);
@@ -212,7 +223,7 @@ try {
   assert.equal(await input('outer_diameter').inputValue(), '20');
   // A candidate-only receipt must preserve edits typed while it was saving.
   holdSave = true; releaseSave = null; await close('original-16').click();
-  while (!releaseSave) await new Promise(resolve => setTimeout(resolve, 20));
+  await waitForHeldSave();
   assert.equal(await close('original-16').isDisabled(), true);
   await card('original-16').getByText('正在关闭…', { exact: true }).waitFor();
   assert.equal(await input('outer_diameter').isEnabled(), true);
@@ -244,7 +255,7 @@ try {
   models.get('a').revision++;
   await open('b'); await open('a');
   holdSave = true; releaseSave = null; await close('late-ignore').click();
-  while (!releaseSave) await new Promise(resolve => setTimeout(resolve, 20));
+  await waitForHeldSave();
   await page.evaluate(r => { state.lastJob = { job_id: 'b', review_revision: 99 }; state.review = normalizeReview(r); }, models.get('b').review);
   releaseSave(); await page.waitForFunction(() => !state.reviewPersistenceSaving);
   assert.equal(await page.evaluate(() => state.lastJob.review_revision), 99);
@@ -252,11 +263,33 @@ try {
   await open('a');
   // A late PATCH receipt must not advance the revision of a different order.
   holdSave = true; await drawing().fill('LATE-A'); await drawing().press('Tab');
-  while (!releaseSave) await new Promise((resolve) => setTimeout(resolve, 20));
+  await waitForHeldSave();
   await page.evaluate((r) => { state.lastJob = { job_id: 'b', review_revision: 99 }; state.review = normalizeReview(r); }, models.get('b').review);
   releaseSave(); await page.waitForFunction(() => !state.reviewPersistenceSaving);
   assert.equal(await page.evaluate(() => state.lastJob.review_revision), 99);
   assert.equal(await page.evaluate(() => state.review.drawing_summary.drawing_no), 'OLD-b');
+  const savedOrder = models.get('a');
+  savedOrder.review = review('a');
+  savedOrder.review.spring_parameters.outer_diameter = { value: 39.2938, unit: 'mm', source: ['original_diameter_role'],
+    tolerance_upper: null, tolerance_lower: null, need_human_review: true, diameter_tolerance_pending: true };
+  savedOrder.revision++;
+  await page.reload();
+  await page.waitForFunction(() => state.identityReady && state.recentReviews.length === 2);
+  await open('a');
+  const outer = root.locator('[data-kind="param"][data-field="outer_diameter"]:visible');
+  const pendingNotice = outer.locator('[data-role="diameter-tolerance-pending"]');
+  assert.equal(await input('outer_diameter').inputValue(), '39.294');
+  assert.equal(await pendingNotice.isVisible(), true);
+  assert.equal(await outer.locator('[data-role="confirm"]').isDisabled(), true);
+  assert.match(await page.evaluate(() => bulkParameterInvalidReason('outer_diameter', state.review.spring_parameters.outer_diameter)), /公差待核对/);
+  await outer.locator('[data-tolerance-action="open"]').click();
+  assert.equal(await outer.getByRole('button', { name: '保存公差' }).isDisabled(), true);
+  await outer.getByRole('button', { name: '清除公差' }).click();
+  await outer.getByRole('button', { name: '保存公差' }).click();
+  await saved(); await open('b'); await open('a');
+  assert.equal(await pendingNotice.isVisible(), false);
+  assert.equal(await outer.locator('[data-role="confirm"]').isEnabled(), true);
+  assert.equal(savedOrder.review.spring_parameters.outer_diameter.diameter_tolerance_pending, undefined);
   assert.deepEqual(errors, []);
   console.log('Diameter browser: linkage, provenance, close/retry/reopen, concurrent manual edits/adoption, late receipts, SW preview and desktop/mobile layout passed');
 } finally { await browser.close(); await new Promise((resolve) => server.close(resolve)); }
