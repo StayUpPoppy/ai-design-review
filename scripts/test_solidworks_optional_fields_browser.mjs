@@ -58,7 +58,7 @@ try {
   assert.equal(await page.getByText("不应显示的测试厂名", { exact: true }).count(), 0);
   assert.equal(await page.evaluate(() => state.identity.org_id), "optional-org", "Organization identity is retained for authorization");
   let current = await preview();
-  assert.deepEqual(current.modelParametersTolerance, { "外径": 1.5, "自由高度": .5, "中径": .2 });
+  assert.deepEqual(current.modelParametersTolerance, { "外径": 1.5, "自由高度": .5, "中径": .2, F1: "±10%", F2: "+1N-0.5N" });
   assert.equal(current.titleBlockProperties["垂直度A"], .01);
   const panel = page.locator('.compare-tab-panel[data-compare-panel="parameters"]');
   const length = panel.locator('[data-kind="param"][data-field="free_length"]');
@@ -132,7 +132,7 @@ try {
   assert.equal(point.load_tolerance_upper, .13); assert.equal(point.load_tolerance_lower, -.27);
   assert.equal(point.load_tolerance_percent, null); assert.equal(point.force_tolerance_percent, null);
   await load.locator('[data-role="confirm"]').click();
-  assert.match((await preview()).technicalRequirements['技术要求'], /\+0.13\/-0.27 N/);
+  assert.equal((await preview()).modelParametersTolerance.F1, "+0.13N-0.27N");
   await edit(load); await editor.locator('[data-tolerance-mode="percent"]').click();
   assert.equal(await editor.locator('.tolerance-editor-preview small').first().innerText(), '力值范围（按公差计算）');
   assert.match(await editor.locator('.tolerance-editor-preview small').last().innerText(), /^当前力值：/);
@@ -141,7 +141,7 @@ try {
     const p = state.review.spring_parameters.load_points[0]; return [p.load_tolerance_upper, p.load_tolerance_lower, p.load_tolerance_percent];
   }), [null, null, 7.5]);
   await load.locator('[data-role="confirm"]').click();
-  assert.match((await preview()).technicalRequirements['技术要求'], /±7.5%/);
+  assert.equal((await preview()).modelParametersTolerance.F1, "±7.5%");
   await page.evaluate(() => flushReviewPersistence({ throwOnError: true }));
   failSave = true;
   await edit(length); await upper().fill('0'); await action('save').click();

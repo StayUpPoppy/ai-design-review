@@ -134,7 +134,7 @@ try {
   await row('F10').locator('[data-role="confirm"]').click();await flush();
   assert.deepEqual([(await point('F10')).height_tolerance_lower,(await point('F10')).load_tolerance_percent],[0,5]);
   const exported=await page.evaluate(()=>makeGenerationParameterPackage().generation_parameters.load_points.find(item=>item.label==='F10'));
-  assert.deepEqual(exported.height,{value:20,unit:'mm'});
+  assert.deepEqual(exported.height,{value:20,unit:'mm',tolerance_upper:2,tolerance_lower:0});
   await heightInput.fill('');await heightInput.dispatchEvent('change');await flush();
   assert.equal(Object.hasOwn(await point('F10'),'height_tolerance_upper'),false);
   assert.equal((await point('F10')).load_tolerance_percent,5);
@@ -146,7 +146,7 @@ try {
   await fresh('F11','8');
   await field('height-tolerance').fill('+2/');
   await form.evaluate(f=>f.requestSubmit());
-  assert.match(await form.locator('[data-role="load-point-create-error"]').innerText(),/高度公差/);
+  assert.match(await form.locator('[data-role="load-point-create-error"]').innerText(),/上下偏差/);
   assert.equal(await point('F11'),undefined);
   await field('height-tolerance').fill('');
   for(const invalid of ['+0.1/','-0.2/+0.1','±-1','Infinity/0']){
@@ -196,6 +196,39 @@ try {
   assert.equal((await point('F99')).load_tolerance_lower,-.25);
   assert.equal(await row('F10').locator('[data-role="height-tolerance"]').inputValue(),'');
   assert.equal((await point('F10')).load_tolerance_percent,5);
+  await fresh('F70','100'); await edit(); await mode('percent-pair');
+  await upper().fill('10'); await lower().fill('5');
+  assert.equal(await editor.locator('[data-tolerance-action="save"]').isDisabled(),true);
+  await lower().fill('-5');
+  assert.equal(await editor.locator('[data-tolerance-preview]').innerText(),'95 ～ 110 N');
+  await action('save').click(); await add();
+  p=await point('F70'); assert.deepEqual([p.load_tolerance_percent_upper,p.load_tolerance_percent_lower,p.need_human_review],[10,-5,true]);
+  await panel.locator('[data-action="confirm-all-review-items"]').click(); await flush();
+  assert.equal((await point('F70')).need_human_review,false);
+  assert.equal(await page.evaluate(() => ParameterConfirmationSheet.tolerance(
+    state.review.spring_parameters.load_points.find(point => point.label === 'F70'), true)), '+10% / -5%');
+  await open('b'); await open();
+  assert.equal(await row('F70').locator('[data-role="load-tolerance"]').inputValue(),'+10%/-5%');
+  const unitSelector = panel.locator('[data-role="engineering-unit-display"]');
+  await unitSelector.selectOption('imperial');
+  assert.equal(await unitSelector.inputValue(),'imperial');
+  assert.equal(await row('F70').locator('[data-role="load-tolerance"]').inputValue(),'+10%/-5%');
+  await unitSelector.selectOption('metric');
+  await row('F70').locator('[data-tolerance-action="open"][data-tolerance-kind="load"]').click();
+  assert.equal(await panel.locator('[data-tolerance-mode="percent-pair"]').getAttribute('aria-pressed'),'true');
+  await panel.locator('[data-tolerance-input="upper"]').fill('0');
+  await panel.locator('[data-tolerance-action="save"]').click(); await flush();
+  p=await point('F70'); assert.deepEqual([p.load_tolerance_percent_upper,p.load_tolerance_percent_lower,p.need_human_review],[0,-5,true]);
+  await row('F70').locator('[data-role="confirm"]').click(); await flush();
+  assert.equal(await page.evaluate(()=> makeGenerationParameterPackage().solidworks_preview.modelParametersTolerance.F70),'+0%-5%');
+  await row('F70').locator('[data-role="rename-load-point"]').click();
+  await row('F70').locator('[data-role="height-label"]').fill('H71');
+  await row('F70').locator('[data-role="save-load-label"]').click(); await flush();
+  assert.equal((await point('F70')).height_label,'H71');
+  await row('F70').locator('[data-tolerance-action="open"][data-tolerance-kind="load"]').click();
+  await panel.locator('[data-tolerance-action="clear"]').click();
+  await panel.locator('[data-tolerance-action="save"]').click(); await flush();
+  assert.equal((await point('F70')).load_tolerance_percent_lower,undefined);
   await fresh('FX','20');await edit();await mode('pair');await upper().fill('+0.1');await lower().fill('-0.2');
   fs.mkdirSync('outputs/load-point-create-qa',{recursive:true});
   for(const [name,pane] of [['wide',760],['sidebar',460],['narrow',340]]){

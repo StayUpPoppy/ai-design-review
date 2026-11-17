@@ -10,7 +10,7 @@ from .generation_contract import (
     generation_source_item,
 )
 from .generation_readiness import assess_generation_readiness, build_generation_parameter_package
-from .load_points import canonical_load_point_label, load_point_snapshot, new_load_point_id, normalize_load_point_label
+from .load_points import canonical_load_point_label, clear_load_force_percent_tolerance, load_point_snapshot, new_load_point_id, normalize_load_point_label
 from .spring_templates import FIELD_LABELS
 from .standardizers.compression import calculate_compression_solid_height, derive_compression_parameters
 
@@ -184,6 +184,7 @@ def _apply_action(review: dict[str, Any], action: dict[str, Any]) -> dict[str, A
             after = _action_tolerance(action, before)
             point["load_tolerance_upper"] = after["upper"]
             point["load_tolerance_lower"] = after["lower"]
+            clear_load_force_percent_tolerance(point)
             point["need_human_review"] = False
             return _direct_change(action, target, before, after, point.get("force_unit") or "N")
         before = point.get(field)

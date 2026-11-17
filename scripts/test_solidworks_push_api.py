@@ -155,7 +155,8 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
         },
         {"spring_parameters": {"solid_height": {"value": 35, "need_human_review": False, "value_kind": "input_height"}}},
     )
-    assert "Hb = 35 mm" in confirmed["models"][0]["technicalRequirements"]["技术要求"]
+    assert "Hb = 35 mm" not in confirmed["models"][0]["technicalRequirements"]["技术要求"]
+    assert "modelHeightPoints" not in confirmed["models"][0] and "modelForcePoints" not in confirmed["models"][0]
 
     legacy_package = {
         "source": {"drawing_name": "压缩弹簧"},
@@ -172,13 +173,18 @@ def assert_optional_solidworks_fields_are_explicit_null() -> None:
     assert build_solidworks_command("1000000003", legacy_package, review)["models"][0]["technicalRequirements"]["技术要求"] == legacy_text
 
 
-def main() -> None:
+def main(*, contract_only: bool = False) -> None:
     assert_optional_solidworks_fields_are_explicit_null()
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         repository = ReviewPersistence(f"sqlite+pysqlite:///{root / 'solidworks_push.db'}")
         repository.create_schema_for_testing()
-        repository.create_review("review-solidworks-push", ready_review(), owner=OWNER)
+        review = ready_review()
+        points = review["spring_parameters"]["load_points"]
+        points[1].update(label="P1", height_tolerance_upper=.1, height_tolerance_lower=-.2,
+                         load_tolerance_percent_upper=10, load_tolerance_percent_lower=-5)
+        points[2].update(label="W2", height_label="H9", load_tolerance_upper=10, load_tolerance_lower=0)
+        repository.create_review("review-solidworks-push", review, owner=OWNER)
         original_repository = api.REVIEW_PERSISTENCE
         original_run_root = api.API_RUN_ROOT
         original_post = api._post_solidworks_command
@@ -190,10 +196,17 @@ def main() -> None:
         def accept_command(url: str, payload: dict[str, object], *, timeout_seconds: float) -> None:
             submissions.append({"url": url, "payload": payload, "timeout_seconds": timeout_seconds})
 
+        def accept_http_post(url: str, *, json: dict[str, object], timeout: float) -> object:
+            accept_command(url, json, timeout_seconds=timeout)
+            return api.httpx.Response(200)
+
         api.REVIEW_PERSISTENCE = repository
         api.API_RUN_ROOT = root / "api_runs"
         api.API_RUN_ROOT.mkdir()
         api._post_solidworks_command = accept_command
+        if contract_only:
+            api._post_solidworks_command = original_post
+            api.httpx.post = accept_http_post
         try:
             with TestClient(api.app) as client:
                 preview_runtime = client.get("/api/health").json()["generation_runtime"]["preview_renderer"]
@@ -238,6 +251,11 @@ def main() -> None:
                     exported.json()["parameter_package"]["solidworks_preview"]["technicalRequirements"]["技术要求"]
                     == model["technicalRequirements"]["技术要求"]
                 )
+                assert model["modelHeightPoints"] == {"H1": 38, "H9": 43}
+                assert model["modelForcePoints"] == {"P1": 2000, "W2": 2100}
+                assert model["modelParametersTolerance"] == {"H1": [.1, .2], "P1": "+10%-5%", "W2": "+10N-0N"}
+                for key in ("modelHeightPoints", "modelForcePoints", "modelParametersTolerance"):
+                    assert exported.json()["parameter_package"]["solidworks_preview"][key] == model[key]
                 assert model["customProperties"] == {"旋向": "左旋"}
                 extra = model["extraProperties"]
                 assert list(extra) == ["P'", "C", "τb", "L"]
@@ -250,8 +268,8 @@ def main() -> None:
                 assert repository.get_review("review-solidworks-push", owner_user_id=OWNER["user_id"])["review"]["technical_requirements"][-1]["content"].startswith("其他要求：")
                 assert "粗糙度" not in notes
                 assert "总圈数：9，有效圈数：7。" in notes and "工作圈数：" not in notes
-                for expected in ("Hb = 25 mm", "Fb = 2300 N", "H1 = 38 mm", "F1 = 2000 N", "H2 = 43 mm", "F2 = 2100 N", "表面喷丸处理"):
-                    assert expected in notes, notes
+                assert "表面喷丸处理" in notes
+                assert all(token not in notes for token in ("Hb =", "Fb =", "工作载荷", "载荷点 P1", "载荷点 W2"))
                 assert isinstance(extra["P'"], (int, float)) and extra["C"] == round(29 / 3, 4)
                 assert extra["τb"] > 0
                 title = model["titleBlockProperties"]
@@ -265,6 +283,10 @@ def main() -> None:
                     assert stored_package["solidworks_preview"]["titleBlockProperties"] == title
                 assert title["重量"] == round(mass["value"], 8) and mass["unit"] == "kg"
                 assert exported.json()["parameter_package"]["solidworks_preview"]["titleBlockProperties"] == title
+                if contract_only:
+                    assert job["execution_options"]["solidworks_payload"] == submissions[-1]["payload"]
+                    print("PASS: captured SW POST includes point values and tolerances, excludes Hb/Fb and matches the frozen preview")
+                    return
                 assert "surface_roughness_ra" not in model["modelParameters"]
                 assert job["execution_options"]["solidworks_payload"] == payload
 
@@ -288,7 +310,7 @@ def main() -> None:
                 order2_job = order2_created.json()["generation_job"]
                 order2_payload = submissions[-1]["payload"]
                 order2_notes = order2_payload["models"][0]["technicalRequirements"]["技术要求"]
-                assert len(order2_notes.splitlines()) == 12, order2_notes
+                assert len(order2_notes.splitlines()) == 9, order2_notes
                 assert order2_payload["models"][0]["titleBlockProperties"]["表面粗糙度Ra"] == 12.5
                 assert order2_payload["models"][0]["titleBlockProperties"]["客户图号"] == "YD4765020178"
                 assert "粗糙度" not in order2_notes
@@ -324,9 +346,9 @@ def main() -> None:
                 reference_review = hardness_review()
                 reference_review["spring_parameters"]["surface_roughness_ra"].update(value=12.5, need_human_review=False, source=["human_edited", "human_roughness_reference"], roughness_reference_dismissed=False)
                 for review_id, sample, expected_count in [
-                    ("roughness-reference", reference_review, 7),
-                    ("hardness-eight-dedup", hardness_review(), 7),
-                    ("eight-class-dedup", eight_category_review(pairs()), 14),
+                    ("roughness-reference", reference_review, 5),
+                    ("hardness-eight-dedup", hardness_review(), 5),
+                    ("eight-class-dedup", eight_category_review(pairs()), 11),
                 ]:
                     for requirement in sample["technical_requirements"]:
                         requirement["need_human_review"] = False
@@ -825,4 +847,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(contract_only="--contract-only" in sys.argv)

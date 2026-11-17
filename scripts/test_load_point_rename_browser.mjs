@@ -159,9 +159,10 @@ try {
   const frontendPreview = await page.evaluate(() => makeGenerationParameterPackage().solidworks_preview);
   const backendPreview = JSON.parse(execFileSync(python, ["-c", "import json,sys;sys.path.insert(0,'src');from ai_design_review.generation_readiness import build_generation_parameter_package;sys.stdin.reconfigure(encoding='utf-8');sys.stdout.reconfigure(encoding='utf-8');print(json.dumps(build_generation_parameter_package(json.load(sys.stdin))['solidworks_preview'],ensure_ascii=False))"], { input: JSON.stringify(saved), encoding: "utf8" }));
   assert.equal(frontendPreview.technicalRequirements["技术要求"], backendPreview.technicalRequirements["技术要求"]);
-  assert.match(frontendPreview.technicalRequirements["技术要求"], /F9 = 16 N/);
-  assert.ok(frozenPreview.technicalRequirements["技术要求"].includes("F3 = 16 N"));
-  assert.ok(!frozenPreview.technicalRequirements["技术要求"].includes("F9"));
+  assert.deepEqual(frontendPreview.modelForcePoints, backendPreview.modelForcePoints);
+  assert.equal(frontendPreview.modelForcePoints.F9, 16);
+  assert.equal(frozenPreview.modelForcePoints.F3, 16);
+  assert.equal(frozenPreview.modelForcePoints.F9, undefined);
 
   // Batch visual check at the supported desktop and narrow panel widths.
   const output = "outputs/load-point-rename-qa"; fs.mkdirSync(output, { recursive: true });

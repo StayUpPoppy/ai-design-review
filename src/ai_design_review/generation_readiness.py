@@ -18,7 +18,7 @@ from .generation_contract import (
 from .spring_templates import FIELD_LABELS
 from .spring_feasibility import assess_parameter_reasonableness
 from .surface_roughness import confirmed_surface_roughness_requirement, ensure_surface_roughness_parameter
-from .solidworks import build_solidworks_preview, solidworks_tolerance_issues
+from .solidworks import build_solidworks_preview, solidworks_load_fields, solidworks_tolerance_issues
 from .technical_output_deletions import refresh_technical_output_deletions
 from .generation_settings import normalize_company_name, resolve_generation_settings
 from .standardizers.design_checks import FORCE_UNITS, LENGTH_UNITS
@@ -26,6 +26,7 @@ from .load_height_relations import refresh_load_heights
 from .load_points import (
     canonical_load_point_label,
     ensure_load_point_ids,
+    load_force_tolerance_is_valid,
     load_point_is_complete,
     load_point_is_confirmed,
     normalize_load_point_label,
@@ -316,6 +317,8 @@ def _technical_requirement_is_confirmed(item: Any) -> bool:
 def _append_load_point_state(review: dict[str, Any], pending: list[dict[str, Any]]) -> None:
     parameters = review.get("spring_parameters") or {}
     seen: set[str] = set()
+    exportable: list[dict[str, Any]] = []
+    point_ids: dict[str, str] = {}
     for index, item in enumerate(parameters.get("load_points") or [], start=1):
         if not isinstance(item, dict):
             pending.append(_field_issue(f"load_points.{index}", "载荷测试点格式无效，请删除后重新添加。", label="载荷测试点"))
@@ -332,15 +335,21 @@ def _append_load_point_state(review: dict[str, Any], pending: list[dict[str, Any
             reason = "载荷测试点缺少编号，请补充唯一编号或删除该项。"
         elif not _generation_load_point_is_valid(item):
             reason = f"载荷测试点“{label}”的高度和力值必须完整且有效，并使用支持的 mm/cm/m/in、N/kN/kgf 单位。"
+        elif not load_force_tolerance_is_valid(item):
+            reason = f"载荷测试点“{label}”的力值公差格式有误，请核对。"
         elif not load_point_is_confirmed(item):
             reason = f"载荷测试点“{label}”尚未人工确认。"
         else:
+            exportable.append(_generation_load_point(item))
+            point_ids[field] = str(item.get("load_point_id") or "")
             continue
         issue = _field_issue(field, reason, label=f"载荷测试点 {label or index}")
         point_id = str(item.get("load_point_id") or "").strip()
         if point_id:
             issue["load_point_id"] = point_id
         pending.append(issue)
+    _, issues = solidworks_load_fields(exportable)
+    pending.extend({**issue, "load_point_id": point_ids[issue["field"]]} for issue in issues)
 
 
 def _parameter_state(parameters: dict[str, Any], field: str) -> str:
@@ -454,39 +463,39 @@ def _generation_load_point_is_valid(item: Any) -> bool:
 
 def _generation_load_point(item: dict[str, Any]) -> dict[str, Any]:
     force_factor = FORCE_UNITS[str(item.get("force_unit") or "N").strip().lower()]
+    height_factor = LENGTH_UNITS[str(item.get("height_unit") or "mm").strip().lower()]
     percent = item.get("load_tolerance_percent")
     if percent is None:
         percent = item.get("force_tolerance_percent")
     if item.get("load_tolerance_upper") is not None or item.get("load_tolerance_lower") is not None:
         percent = None
-    def number(value: Any) -> float:
-        rounded = round(float(value), 3)
-        return int(rounded) if rounded.is_integer() else rounded
 
-    def optional_number(value: Any) -> float | int | None:
-        try:
-            candidate = float(value)
-        except (TypeError, ValueError):
+    def number(value: Any, factor: float = 1) -> float | int | None:
+        if value is None:
             return None
-        return (int(candidate) if candidate.is_integer() else candidate) if isfinite(candidate) else None
-
-    def force_tolerance(value: Any) -> float | int | None:
-        try:
-            candidate = float(value)
-        except (TypeError, ValueError, OverflowError):
+        scaled = float(value) * factor
+        if not isfinite(scaled):
             return None
-        scaled = candidate * force_factor
-        return (int(scaled) if scaled.is_integer() else scaled) if isfinite(scaled) else None
+        return int(scaled) if scaled.is_integer() else scaled
 
+    height_label = normalize_load_point_label(item.get("height_label"))
     return {
         "label": normalize_load_point_label(item.get("label")),
-        "height": {"value": number(float(item.get("height")) * LENGTH_UNITS[str(item.get("height_unit") or "mm").strip().lower()]), "unit": "mm"},
+        **({"height_label": height_label} if height_label else {}),
+        **({"load_role": item["load_role"]} if item.get("load_role") in {"solid", "working", "unknown"} else {}),
+        "height": {
+            "value": number(item.get("height"), height_factor), "unit": "mm",
+            **{f"tolerance_{side}": number(item[f"height_tolerance_{side}"])
+               for side in ("upper", "lower") if item.get(f"height_tolerance_{side}") is not None},
+        },
         "force": {
-            "value": number(float(item.get("force")) * FORCE_UNITS[str(item.get("force_unit") or "N").strip().lower()]),
+            "value": number(item.get("force"), force_factor),
             "unit": "N",
-            "tolerance_upper": force_tolerance(item.get("load_tolerance_upper")),
-            "tolerance_lower": force_tolerance(item.get("load_tolerance_lower")),
-            **({"tolerance_percent": optional_number(percent)} if percent is not None else {}),
+            "tolerance_upper": number(item.get("load_tolerance_upper"), force_factor),
+            "tolerance_lower": number(item.get("load_tolerance_lower"), force_factor),
+            **({"tolerance_percent": number(percent)} if percent is not None else {}),
+            **{f"tolerance_percent_{side}": number(item[f"load_tolerance_percent_{side}"])
+               for side in ("upper", "lower") if item.get(f"load_tolerance_percent_{side}") is not None},
         },
         "confirmation_source": "human_confirmed",
     }

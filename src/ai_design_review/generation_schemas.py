@@ -95,6 +95,8 @@ class GenerationLoadHeightV1(BaseModel):
 
     value: float = Field(gt=0, description="指定载荷测试时的弹簧高度；来自原图直接标注或已核实尺寸链换算并经人工确认，不能将压缩量直接当高度；必须大于0。", examples=[25.0])
     unit: Literal["mm"] = Field(description="固定单位 mm。")
+    tolerance_upper: float | None = Field(default=None, exclude_if=lambda value: value is None, description="已确认的高度上偏差，单位 mm。")
+    tolerance_lower: float | None = Field(default=None, exclude_if=lambda value: value is None, description="已确认的高度下偏差，单位 mm。")
 
 
 class GenerationLoadForceV1(BaseModel):
@@ -104,13 +106,17 @@ class GenerationLoadForceV1(BaseModel):
     unit: Literal["N"] = Field(description="固定单位 N。")
     tolerance_upper: float | None = Field(default=None, description="可选载荷上偏差，单位 N。")
     tolerance_lower: float | None = Field(default=None, description="可选载荷下偏差，单位 N。")
-    tolerance_percent: float | None = Field(default=None, exclude_if=lambda value: value is None, description="可选百分比载荷允差，技术要求保留百分比形式。")
+    tolerance_percent: float | None = Field(default=None, exclude_if=lambda value: value is None, description="可选对称力值百分比公差。")
+    tolerance_percent_upper: float | None = Field(default=None, ge=0, allow_inf_nan=False, exclude_if=lambda value: value is None)
+    tolerance_percent_lower: float | None = Field(default=None, le=0, allow_inf_nan=False, exclude_if=lambda value: value is None)
 
 
 class GenerationLoadPointV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     label: str = Field(min_length=1, description="用户确认的唯一载荷测试点编号，例如 F1。", examples=["F1"])
+    height_label: str | None = Field(default=None, exclude_if=lambda value: value is None, description="原图或人工确认的高度编号。")
+    load_role: Literal["working", "solid", "unknown"] | None = Field(default=None, exclude_if=lambda value: value is None)
     height: GenerationLoadHeightV1 = Field(description="测试高度。")
     force: GenerationLoadForceV1 = Field(description="测试力值及可选公差。")
     confirmation_source: Literal["human_confirmed"] = Field(description="整组测试点已经人工确认。")
@@ -231,6 +237,7 @@ class GenerationSettings(BaseModel):
 
 SolidWorksToleranceNumber = Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]
 SolidWorksToleranceValue = SolidWorksToleranceNumber | Annotated[list[SolidWorksToleranceNumber], Field(min_length=2, max_length=2)]
+SolidWorksForceTolerance = Annotated[str, Field(pattern=r"^(?:±\d+(?:\.\d+)?(?:e[+-]?\d+)?[%N]|[+-]\d+(?:\.\d+)?(?:e[+-]?\d+)?N[+-]\d+(?:\.\d+)?(?:e[+-]?\d+)?N|[+-]\d+(?:\.\d+)?(?:e[+-]?\d+)?%[+-]\d+(?:\.\d+)?(?:e[+-]?\d+)?%)$")]
 
 
 class SolidWorksPreviewV2(BaseModel):
@@ -244,11 +251,15 @@ class SolidWorksPreviewV2(BaseModel):
     modelParameters: dict[str, int | float | str | None] = Field(
         description="SolidWorks 建模字段：线径、中径、自由高度、圈数、是否磨平、是否并紧；是否并紧为0时省略有效圈数n，否则保留该键。内部有效圈数及确认规则不变；不含 TaskId。"
     )
-    modelParametersTolerance: dict[Literal["外径", "内径", "自由高度", "中径"], SolidWorksToleranceValue] | None = Field(
+    modelParametersTolerance: dict[str, SolidWorksToleranceValue | SolidWorksForceTolerance] | None = Field(
         default=None, exclude_if=lambda value: value is None,
-        description="已确认有效的外径、内径、自由高度及中径公差，以mm输出。对称公差为非负数字，不对称或单边为[上偏差绝对值,下偏差绝对值]。同方向偏差阻止新建SW任务。缺值、待确认、非法及失效值省略，0有效，小公差不截断。",
-        examples=[{"外径": 1.5, "内径": 0.01, "自由高度": 0.5, "中径": [0.1, 0.2]}],
+        description="以尺寸名称或测点编号为键。长度公差用mm，传非负数字或上下偏差绝对值数组。力值公差传带N或%的字符串，上下偏差直接拼接。",
+        examples=[{"外径": 1.5, "内径": 0.01, "自由高度": 0.5, "中径": [0.1, 0.2], "H1": 0.1, "F1": "+10%-5%"}],
     )
+    modelHeightPoints: dict[str, Annotated[float, Field(gt=0, strict=True, allow_inf_nan=False)]] | None = Field(
+        default=None, exclude_if=lambda value: value is None, description="普通载荷测试点高度编号及名义值，单位 mm。")
+    modelForcePoints: dict[str, SolidWorksToleranceNumber] | None = Field(
+        default=None, exclude_if=lambda value: value is None, description="普通载荷测试点力值编号及名义值，单位 N。")
     customProperties: dict[str, str | None] = Field(default_factory=dict, description="旋向等模型属性，旋向仍传左旋/右旋；技术要求首项另写左/右。旧预览可省略。")
     technicalRequirements: dict[Literal["技术要求"], str] | None = Field(
         default=None, exclude_if=lambda value: value is None,
@@ -261,6 +272,21 @@ class SolidWorksPreviewV2(BaseModel):
         description="标题栏属性按材料、重量、客户图号、垂直度A、表面粗糙度顺序输出：已确认材料纯牌号、单件重量（数字，kg，最多八位小数）、参数包source.drawing_no中的客户图号（字符串，仅去首尾空白）及已确认有效的表面粗糙度Ra（数字，μm）。图号缺失或为空时独立省略，不增加生图拦截。垂直度A读取当前已确认有效的高级参数垂直度，输出有限非负mm数字，0有效；缺值、冲突、待确认、非法或失效时省略，不依赖客户图号。粗糙度对应独立句不再输出到技术要求；其它部位及附加条件保留。各项缺失时省略键；新预览都缺失时为空对象，旧预览可省略此字段或客户图号，已冻结请求及重试保持原样。",
         examples=[{"材料": "SUS304", "重量": 0.00642403, "客户图号": "YD4765020178", "垂直度A": 0.01, "表面粗糙度Ra": 12.5}],
     )
+
+    @model_validator(mode="after")
+    def validate_tolerance_point_keys(self) -> SolidWorksPreviewV2:
+        dimension_keys = {"外径", "内径", "自由高度", "中径"}
+        height_keys = set(self.modelHeightPoints or {})
+        force_keys = set(self.modelForcePoints or {})
+        if height_keys & force_keys or (height_keys | force_keys) & dimension_keys:
+            raise ValueError("SolidWorks 载荷和尺寸编号存在冲突。")
+        for key, value in (self.modelParametersTolerance or {}).items():
+            if isinstance(value, str) and key in force_keys:
+                continue
+            if not isinstance(value, str) and key in dimension_keys | height_keys:
+                continue
+            raise ValueError(f"SolidWorks 公差字段“{key}”与测点或尺寸类型不匹配。")
+        return self
 
 
 class GenerationParameterPackageV2(GenerationParameterPackageV1):

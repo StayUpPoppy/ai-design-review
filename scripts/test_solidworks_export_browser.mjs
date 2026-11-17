@@ -87,7 +87,7 @@ try {
   assert.deepEqual(Object.keys(current.modelParameters), ["线径", "中径", "自由高度", "圈数", "有效圈数n", "是否磨平", "是否并紧"]);
   assert.deepEqual(Object.keys(current.extraProperties), ["P'", "C", "τb", "L"]);
   assert.equal(current.extraProperties.L, 318.3461);
-  assert.ok(current.technicalRequirements["技术要求"].includes("Hb = 6.3 mm"));
+  assert.ok(!current.technicalRequirements["技术要求"].includes("Hb = 6.3 mm"));
   const panel = page.locator('.compare-tab-panel[data-compare-panel="parameters"]');
   assert.ok(current.technicalRequirements["技术要求"].startsWith("1.旋向：右。\n2.总圈数：4，有效圈数：2。\n3.两端并紧并磨平，磨面角≥270°。"));
   const originalRequirements = await page.evaluate(() => structuredClone(state.review.technical_requirements));
@@ -127,7 +127,7 @@ try {
   await input.fill("8"); await input.dispatchEvent("change");
   assert.ok(!(await preview()).technicalRequirements["技术要求"].includes("Hb ="), "Pending human edit is not a released note");
   await row.locator('[data-role="confirm"]').click();
-  assert.ok((await preview()).technicalRequirements["技术要求"].includes("Hb = 8 mm"));
+  assert.ok(!(await preview()).technicalRequirements["技术要求"].includes("Hb = 8 mm"));
   assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
   const before = await preview();
   await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
@@ -181,7 +181,7 @@ try {
   assert.ok(!current.technicalRequirements["技术要求"].includes("Hb ="));
   assert.equal(current.extraProperties["τb"], 451.2669, "Estimated stress remains independent of text confirmation");
   await row.locator('[data-role="confirm"]').click();
-  assert.ok((await preview()).technicalRequirements["技术要求"].includes("Hb = 6.3 mm"));
+  assert.ok(!(await preview()).technicalRequirements["技术要求"].includes("Hb = 6.3 mm"));
   const regression = JSON.parse(execFileSync(process.env.DESIGN_TEST_PYTHON || ".venv/Scripts/python.exe", ["scripts/test_technical_requirement_equivalence.py", "--json"], { encoding: "utf8" }));
   assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
   saved = structuredClone(regression.review); revision++;
@@ -197,9 +197,9 @@ try {
   assert.ok(await panel.locator('[data-kind="technical"][data-requirement-id="techreq_order2_0"]').textContent().then((text) => text.includes("其他识别来源")));
   await duplicateRow.locator('[data-role="confirm"]').click();
   current = await preview();
-  assert.equal(current.technicalRequirements["技术要求"].split("\n").length, 12);
+  assert.equal(current.technicalRequirements["技术要求"].split("\n").length, 9);
   assert.deepEqual(current, regression.package.solidworks_preview, "real confirmation retains the server projection");
-  assert.deepEqual((await panel.locator('.requirement-row[data-kind="technical"] textarea').evaluateAll((inputs) => inputs.map((input) => input.value))).map(swOutputBody), current.technicalRequirements["技术要求"].split("\n").slice(6).map((line) => line.replace(/^\d+\./, "")), "SW removes only its output label from visible confirmed notes");
+  assert.deepEqual((await panel.locator('.requirement-row[data-kind="technical"] textarea').evaluateAll((inputs) => inputs.map((input) => input.value))).map(swOutputBody), current.technicalRequirements["技术要求"].split("\n").slice(3).map((line) => line.replace(/^\d+\./, "")), "SW removes only its output label from visible confirmed notes");
   assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
   await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
   assert.deepEqual(await preview(), current);
@@ -215,7 +215,7 @@ try {
   assert.deepEqual(await heatRow.locator('[data-role="content"]').evaluate((element) => [document.activeElement === element, element.selectionStart, element.selectionEnd]), [true, 5, 9]);
   assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
   await heatRow.locator('[data-role="confirm"]').click();
-  assert.equal((await preview()).technicalRequirements["技术要求"].split("\n").length, 12, "a unified edit changes both records and keeps one output");
+  assert.equal((await preview()).technicalRequirements["技术要求"].split("\n").length, 9, "a unified edit changes both records and keeps one output");
   assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
   assert.ok(saved.change_history.filter((event) => event.event_type === "technical_requirement_updated" && event.metadata?.group_requirement_ids?.length === 2).length >= 2);
   const create = panel.locator('[data-kind="technical_requirement_create"]');
@@ -226,7 +226,7 @@ try {
   const newHeat = panel.locator('.requirement-row[data-kind="technical"]').last();
   assert.equal(await panel.locator('.requirement-row[data-kind="technical"]').count(), 7, "different temperature remains a separate requirement");
   await newHeat.locator('[data-role="confirm"]').click();
-  assert.equal((await preview()).technicalRequirements["技术要求"].split("\n").length, 13);
+  assert.equal((await preview()).technicalRequirements["技术要求"].split("\n").length, 10);
   assert.equal(await page.evaluate(() => flushReviewPersistence({ throwOnError: true })), true);
   await panel.locator('[data-action="show-technical-requirement-create"]').click();
   await create.locator('[data-role="new-technical-type"]').selectOption("heat_treatment");
@@ -304,7 +304,7 @@ try {
   await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
   assert.deepEqual(await preview(), final);
   assert.equal(await panel.locator('.requirement-row[data-kind="technical"]').count(), 6);
-  assert.deepEqual((await panel.locator('.requirement-row[data-kind="technical"] textarea').evaluateAll((inputs) => inputs.map((input) => input.value))).map(swOutputBody), final.technicalRequirements["技术要求"].split("\n").slice(6).map((line) => line.replace(/^\d+\./, "")));
+  assert.deepEqual((await panel.locator('.requirement-row[data-kind="technical"] textarea').evaluateAll((inputs) => inputs.map((input) => input.value))).map(swOutputBody), final.technicalRequirements["技术要求"].split("\n").slice(3).map((line) => line.replace(/^\d+\./, "")));
   assert.equal(await page.evaluate(() => state.review.technical_requirements.find((item) => item.requirement_id === "techreq_order2_7").original_content), regression.review.technical_requirements[7].content, "individual original wording survives unified editing");
   // Hardness screenshot: preserve all three source records, display two rows and export seven notes.
   saved = structuredClone(regression.hardness_review); revision++;
@@ -338,7 +338,7 @@ try {
   }
   assert.equal(saved.technical_requirements.filter((item) => item.need_human_review).length, 0);
   assert.deepEqual(saved.technical_requirements.map((item) => [item.requirement_id, item.original_content, item.evidence]), regression.eight_review.technical_requirements.map((item) => [item.requirement_id, item.original_content, item.evidence]));
-  assert.deepEqual((await panel.locator('.requirement-row[data-kind="technical"] textarea').evaluateAll((inputs) => inputs.map((input) => input.value))).map(swOutputBody), regression.eight_package.solidworks_preview.technicalRequirements["技术要求"].split("\n").slice(6).map((line) => line.replace(/^\d+\./, "")));
+  assert.deepEqual((await panel.locator('.requirement-row[data-kind="technical"] textarea').evaluateAll((inputs) => inputs.map((input) => input.value))).map(swOutputBody), regression.eight_package.solidworks_preview.technicalRequirements["技术要求"].split("\n").slice(3).map((line) => line.replace(/^\d+\./, "")));
   await page.reload(); await reopen(); await page.waitForFunction(() => state.materialCatalog.status === "ready");
   assert.equal(await panel.locator('.requirement-row[data-kind="technical"]').count(), 8);
   assert.equal(await panel.locator('[data-role="technical-group-status"]').filter({ hasText: "部分确认" }).count(), 0);
@@ -408,5 +408,5 @@ try {
     await page.screenshot({path:`outputs/technical-prefix-qa/prefix-${width}.png`});
   }
   assert.deepEqual(errors, []);
-  console.log("PASS: eight classes 16 -> 8, hardness 10 -> 7 SW notes, 9 records -> 6 editable requirements, unified edit/type/confirm, group delete/undo, repeated add, failed save, save race, regroup, source navigation, desktop/mobile and SW preview parity");
+  console.log("PASS: eight classes 16 -> 8, hardness SW dedup, 9 records -> 6 editable requirements, unified edit/type/confirm, group delete/undo, repeated add, failed save, save race, regroup, source navigation, desktop/mobile and SW preview parity");
 } finally { await browser?.close(); await new Promise((resolve) => server.close(resolve)); }

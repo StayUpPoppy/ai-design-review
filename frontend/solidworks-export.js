@@ -9,7 +9,6 @@
   const rounded = (v, digits = 4) => Number(Number(v).toFixed(digits));
   const strictNumber = value => typeof value === "number" && Number.isFinite(value) ? value
     : typeof value === "string" && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value.trim()) ? number(value) : null;
-  const textNumber = (v) => String(rounded(v));
   const parameterValue = (item, preservePrecision = false) => number(item?.value) != null ? (preservePrecision ? Number(item.value) : rounded(item.value, 3)) : typeof item?.value === "string" ? item.value.trim() || null : null;
   const handedness = (value) => ["right", "right_hand", "r", "右旋"].includes(String(value).toLowerCase()) ? "右旋" : ["left", "left_hand", "l", "左旋"].includes(String(value).toLowerCase()) ? "左旋" : null;
   const solidLabel = (label) => ["fb", "pb", "压并载荷", "压并负荷", "压并力"].includes(String(label || "").replace(/[\s_]/g, "").toLowerCase());
@@ -68,6 +67,87 @@
     }
     return tolerances;
   }
+  const pointLabel = value => String(value || "").trim().replace(/\s+/g, " ");
+  const pointKey = value => pointLabel(value).toLowerCase();
+
+  function forceTolerance(force) {
+    let { tolerance_upper: upper, tolerance_lower: lower } = force;
+    let unit = "N";
+    if (upper == null && lower == null) {
+      unit = "%";
+      if (force.tolerance_percent != null) return `±${force.tolerance_percent}%`;
+      ({ tolerance_percent_upper: upper, tolerance_percent_lower: lower } = force);
+    }
+    if (upper == null || lower == null) return null;
+    if (upper >= 0 && upper === -lower) return `±${upper}${unit}`;
+    return `${upper < 0 ? "-" : "+"}${Math.abs(upper)}${unit}${lower > 0 ? "+" : "-"}${Math.abs(lower)}${unit}`;
+  }
+
+  function loadFields(points) {
+    const working = points.filter(point => point.confirmation_source === "human_confirmed"
+      && point.load_role !== "solid" && !solidLabel(point.label) && pointKey(point.height_label) !== "hb");
+    const reserved = new Set(toleranceFields.map(([label]) => label));
+    const forceKeys = new Set(working.map(point => pointKey(point.label)));
+    const names = working.map(point => pointLabel(point.height_label));
+    const occupied = new Set([...reserved, ...forceKeys, ...names.filter(Boolean).map(pointKey)]);
+    working.forEach((point, index) => {
+      const suffix = point.label.match(/[0-9]+$/);
+      const candidate = suffix ? `H${suffix[0]}` : working.length === 1 ? "H" : "";
+      if (!names[index] && candidate && !occupied.has(pointKey(candidate))) {
+        names[index] = candidate;
+        occupied.add(pointKey(candidate));
+      }
+    });
+    let next = 1;
+    names.forEach((name, index) => {
+      if (name) return;
+      while (occupied.has(`h${next}`)) next += 1;
+      names[index] = `H${next}`;
+      occupied.add(`h${next}`);
+    });
+
+    const heights = new Map(), forces = new Map(), tolerances = new Map();
+    const heightKeys = new Map(), seenForces = new Set(), issues = [];
+    working.forEach((point, index) => {
+      const { label, height, force } = point, heightLabel = names[index];
+      const forceKey = pointKey(label), heightKey = pointKey(heightLabel);
+      const issue = reason => issues.push({ field: `load_points.${label}`, label: `载荷测试点 ${label}`, reason });
+      if (seenForces.has(forceKey) || reserved.has(forceKey)) {
+        issue(`力值编号“${label}”重复或与尺寸字段同名，请修改编号。`);
+        return;
+      }
+      seenForces.add(forceKey);
+      if (forceKeys.has(heightKey) || reserved.has(heightKey)) {
+        issue(`高度编号“${heightLabel}”与力值编号或尺寸字段同名，请修改编号。`);
+        return;
+      }
+      const { tolerance_upper: upper, tolerance_lower: lower } = height;
+      let tolerance;
+      if (upper != null && lower != null) {
+        if (upper < 0 || lower > 0) {
+          issue(`高度“${heightLabel}”的上下偏差同方向，SW 幅值数组无法表达，请核对公差。`);
+          return;
+        }
+        tolerance = upper === -lower ? Math.abs(upper) : [Math.abs(upper), Math.abs(lower)];
+      }
+      const existing = heightKeys.get(heightKey);
+      if (existing) {
+        if (heights.get(existing) !== height.value || JSON.stringify(tolerances.get(existing)) !== JSON.stringify(tolerance)) {
+          issue(`高度编号“${heightLabel}”的数值或公差不一致，请核对或修改编号。`);
+          return;
+        }
+      } else {
+        heightKeys.set(heightKey, heightLabel);
+        heights.set(heightLabel, height.value);
+        if (tolerance != null) tolerances.set(heightLabel, tolerance);
+      }
+      forces.set(label, force.value);
+      const forceValue = forceTolerance(force);
+      if (forceValue != null) tolerances.set(label, forceValue);
+    });
+    return { issues, tolerances: Object.fromEntries(tolerances), fields: forces.size
+      ? { modelHeightPoints: Object.fromEntries(heights), modelForcePoints: Object.fromEntries(forces) } : {} };
+  }
   const roughnessUnit = (value) => String(value || "μm").trim().toLowerCase().replace(/µ/g, "μ").replace(/um/g, "μm");
   const roughnessLocation = (value) => {
     const text = String(value || "").replace(/\s+/g, "");
@@ -111,27 +191,6 @@
   function roughnessMatches(item, roughness) {
     const parsed = standaloneRoughness(item);
     return roughness != null && parsed != null && parsed.value === roughness.value && parsed.unit === roughness.unit && parsed.location === roughness.location;
-  }
-  function confirmedSolidHeight(review) {
-    const parameters = review.spring_parameters || {}, item = parameters.solid_height;
-    if (!item || item.need_human_review !== false || !current(parameters, "solid_height") || item.formula_recommendation_stale) return null;
-    const kind = globalThis.CompressionDesignChecks?.solidHeightKind(item);
-    if (!["input_height", "nominal_estimate"].includes(kind)) return null;
-    const value = number(item.value), factor = lengthUnits[String(item.unit || "mm").trim().toLowerCase()];
-    const result = value != null && factor != null ? value * factor : null;
-    const free = parameters.free_length || {}, freeValue = number(free.value), freeFactor = lengthUnits[String(free.unit || "mm").trim().toLowerCase()];
-    if (result != null && freeValue != null && freeFactor != null && result >= freeValue * freeFactor) return null;
-    return result != null && Number.isFinite(result) && result > 0 ? result : null;
-  }
-  function forceText(point) {
-    const force = point.force || {};
-    const text = `${textNumber(force.value)} N`, percent = number(force.tolerance_percent);
-    const upper = number(force.tolerance_upper), lower = number(force.tolerance_lower);
-    if (percent != null && upper == null && lower == null) return `${text}（允差 ±${Math.abs(percent)}%）`;
-    if (upper == null && lower == null) return text;
-    if (upper != null && lower != null && upper >= 0 && upper === -lower) return `${text}（允差 ±${upper} N）`;
-    const signed = (v) => `${v > 0 ? "+" : ""}${v}`;
-    return `${text}（允差 ${[upper, lower].filter((v) => v != null).map(signed).join("/")} N）`;
   }
   function endConditionValue(field, value) {
     // Mirror generation_contract normalization, including legacy Chinese values.
@@ -252,11 +311,6 @@
         fields: !ids.length && ["surface_roughness", "roughness"].includes(item.type) ? ["surface_roughness_ra"] : [], requirement_ids: ids,
         ...(!ids.length && ["surface_roughness", "roughness"].includes(item.type) ? { source_key: "auto:roughness" } : {}) };
     };
-    const loadSource = point => {
-      const original = (review.spring_parameters?.load_points || []).find(item => String(item.label || "").trim() === String(point.label || "").trim());
-      return { automatic: true, fields: [`load_points.${point.label}`], load_point_ids: original?.load_point_id ? [original.load_point_id] : [],
-        source_key: `auto:load:${original?.load_point_id || point.label}` };
-    };
     const append = (line, scope, source = {}, requirementKind = null) => {
       if (typeof CompanySurfaceMapping !== "undefined" && convertedSources.has(JSON.stringify([CompanySurfaceMapping.sourceKey(line), CompanySurfaceMapping.scopeKey(scope)]))) return;
       if (roughnessMatches({ content: line, application_scope: scope }, roughness)) return;
@@ -295,21 +349,6 @@
       if (pureMaterialNote(body)) continue;
       if (["surface_roughness", "roughness"].includes(item.type) && body) append(roughnessLine(TechnicalRequirementEquivalence.format(item)), item.application_scope, sourceFor(item));
       else remaining.push(item);
-    }
-    const hb = confirmedSolidHeight(review), points = (generation.load_points || []).filter((p) => p && typeof p === "object");
-    const solid = points.filter((p) => solidLabel(p.label)), fb = solid.length === 1 ? number(solid[0].force?.value) : null;
-    const fbHeight = solid.length === 1 ? number(solid[0].height?.value) : null, fbText = fb != null && fb >= 0 ? forceText(solid[0]) : null;
-    if (hb != null && fbText != null && fbHeight != null && Math.abs(hb - fbHeight) <= 1e-9) append(`当弹簧压并至高度 Hb = ${textNumber(hb)} mm 时，对应压并载荷 Fb = ${fbText}。`, null, { ...loadSource(solid[0]), source_key: "auto:solid_combined", fields: ["solid_height", ...loadSource(solid[0]).fields] });
-    else {
-      if (hb != null) append(`压并高度：Hb = ${textNumber(hb)} mm。`, null, { automatic: true, fields: ["solid_height"], source_key: "auto:solid_height" });
-      if (fbText != null) append(`压并载荷：Fb = ${fbText}${hb != null && fbHeight != null ? `（载荷测试高度 ${textNumber(fbHeight)} mm）` : ""}。`, null, { ...loadSource(solid[0]), fields: ["solid_height", ...loadSource(solid[0]).fields] });
-    }
-    for (const point of points) {
-      if (solidLabel(point.label)) continue;
-      const height = number(point.height?.value), force = number(point.force?.value), label = String(point.label || "").trim();
-      if (height == null || height <= 0 || force == null || force < 0) continue;
-      const match = label.match(/^[Ff](\d+)$/);
-      append(match ? `当弹簧工作高度 H${match[1]} = ${textNumber(height)} mm 时，对应工作载荷 ${label} = ${forceText(point)}。` : `载荷点 ${label}：高度 ${textNumber(height)} mm，力值 ${forceText(point)}。`, null, loadSource(point));
     }
     const requirementKeys = new Set();
     for (const item of remaining) {
@@ -394,26 +433,38 @@
     if (modelParameters["是否并紧"] === 0) delete modelParameters["有效圈数n"];
     const flattening = parameters.flattening;
     if (flattening?.confirmation_source === "human_confirmed" && Number.isInteger(flattening.value) && [0, 1].includes(flattening.value)) modelParameters["是否制扁"] = flattening.value;
-    const tolerances = modelParametersTolerance(review);
+    const load = loadFields(packageData.generation_parameters?.load_points || []);
+    if (load.issues.length) throw new Error(load.issues[0].reason);
+    const tolerances = { ...modelParametersTolerance(review), ...load.tolerances };
     return {
       ...(packageData.generation_settings ? { DrawingModel: packageData.generation_settings.drawing_model, Username: packageData.generation_settings.username,
         ...(Object.hasOwn(packageData.generation_settings, "typeface") ? { typeface: packageData.generation_settings.typeface } : {}) } : {}),
       ...(Object.hasOwn(packageData.source || {}, "material_code") ? {materialCode: packageData.source.material_code || null} : {}),
       modelParameters,
       ...(Object.keys(tolerances).length ? { modelParametersTolerance: tolerances } : {}),
+      ...load.fields,
       customProperties: { "旋向": handedness(parameterValue(parameters.handedness)) },
       technicalRequirements, extraProperties: extra, titleBlockProperties: titleBlock,
     };
   }
   function exportLoadPoint(point) {
+    if (point.tolerance_input_draft || point.force_tolerance_status === "uncertain") return null;
     const height = number(point.height), force = number(point.force), hFactor = lengthUnits[String(point.height_unit || "mm").trim().toLowerCase()], fFactor = forceUnits[String(point.force_unit || "N").trim().toLowerCase()];
     if (height == null || force == null || height <= 0 || force < 0 || hFactor == null || fFactor == null || !Number.isFinite(height * hFactor) || !Number.isFinite(force * fFactor)) return null;
-    const tolerance = (value) => number(value) == null || !Number.isFinite(Number(value) * fFactor) ? null : Number(value) * fFactor || 0;
-    const hasAbsolute = point.load_tolerance_upper != null || point.load_tolerance_lower != null;
-    const percent = hasAbsolute ? null : point.load_tolerance_percent ?? point.force_tolerance_percent;
-    return { label: String(point.label || "").trim().replace(/\s+/g, " "), height: { value: rounded(height * hFactor, 3), unit: "mm" },
-      force: { value: rounded(force * fFactor, 3), unit: "N", tolerance_upper: tolerance(point.load_tolerance_upper), tolerance_lower: tolerance(point.load_tolerance_lower), ...(percent != null ? { tolerance_percent: number(percent) } : {}) }, confirmation_source: "human_confirmed" };
+    const value = ToleranceValues.validateValue(ToleranceValues.read(point, true));
+    if (!value.ok) return null;
+    const scale = (value, factor) => value == null || !Number.isFinite(value * factor) ? null : value * factor || 0;
+    return { label: pointLabel(point.label),
+      ...(pointLabel(point.height_label) ? { height_label: pointLabel(point.height_label) } : {}),
+      ...(["working", "solid", "unknown"].includes(point.load_role) ? { load_role: point.load_role } : {}),
+      height: { value: height * hFactor, unit: "mm",
+        ...(point.height_tolerance_upper != null ? { tolerance_upper: number(point.height_tolerance_upper) } : {}),
+        ...(point.height_tolerance_lower != null ? { tolerance_lower: number(point.height_tolerance_lower) } : {}) },
+      force: { value: force * fFactor, unit: "N", tolerance_upper: scale(value.upper, fFactor), tolerance_lower: scale(value.lower, fFactor),
+        ...(value.percent != null ? { tolerance_percent: value.percent } : {}),
+        ...(value.percentUpper != null ? { tolerance_percent_upper: value.percentUpper, tolerance_percent_lower: value.percentLower } : {}) },
+      confirmation_source: "human_confirmed" };
   }
   globalThis.SolidWorksExport = { buildPreview, technicalText, technicalProjection, automaticMatches, outputBasis, refreshDeletions, deletionFor,
-    exportLoadPoint, toleranceIssues, standaloneRoughness, confirmedRoughness, roughnessMatches, currentRoughness, canPromoteRoughness };
+    exportLoadPoint, loadFields, toleranceIssues, standaloneRoughness, confirmedRoughness, roughnessMatches, currentRoughness, canPromoteRoughness };
 })();

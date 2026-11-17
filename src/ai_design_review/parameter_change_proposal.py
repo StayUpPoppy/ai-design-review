@@ -19,6 +19,7 @@ from .end_conditions import (
 from .generation_contract import apply_generation_defaults
 from .generation_readiness import assess_generation_readiness
 from .load_points import (
+    clear_load_force_percent_tolerance,
     canonical_load_point_label,
     ensure_load_point_ids,
     load_point_confirmation_key,
@@ -862,6 +863,8 @@ def _resolve_load_point_actions(
 
 def _confirmed_load_point(current: dict[str, Any], *, point_id: str, label: str, action: dict[str, Any]) -> dict[str, Any]:
     item = deepcopy(current)
+    if any(field in action for field in ("load_tolerance_upper", "load_tolerance_lower")):
+        clear_load_force_percent_tolerance(item)
     for field in ("height", "force", "load_tolerance_upper", "load_tolerance_lower"):
         if field in action:
             value = _number(action.get(field))
@@ -1335,6 +1338,7 @@ def _apply_action(review: dict[str, Any], action: dict[str, Any], *, confirmatio
             after = _action_tolerance(action, before)
             point["load_tolerance_upper"] = after["upper"]
             point["load_tolerance_lower"] = after["lower"]
+            clear_load_force_percent_tolerance(point)
         else:
             before = point.get(field)
             after = action.get("proposed_value")

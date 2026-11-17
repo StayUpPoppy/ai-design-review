@@ -1,7 +1,9 @@
 /* Order-scoped drafts: opening/cancelling never mutates engineering values. */
 (() => {
-  const { number, esc, text, signed, empty, validate, read, equals, preview } = ToleranceValues;
+  const { number, esc, text, signed, empty, validate, validatePercentPair, read, equals, preview } = ToleranceValues;
   const isLoad = kind => kind === "load" || kind === "load-create";
+  const isPair = mode => mode === "pair" || mode === "percent-pair";
+  const isPercent = mode => mode === "percent" || mode === "percent-pair";
   const pencil = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg>';
   class Controller {
     constructor(config) { this.config = config; this.drafts = new Map(); this.bindings = new WeakMap(); }
@@ -11,8 +13,9 @@
     basis(r, kind) { return JSON.stringify([r.liveNominal ? null : r.nominal, r.unit, read(r.item, isLoad(kind)), r.item.tolerance_input_draft ?? null, Boolean(r.pending)]); }
     seed(kind, target, r) {
       const value = read(r.item, isLoad(kind));
-      const mode = value.percent != null ? "percent" : value.upper == null && value.lower == null || number(value.upper) >= 0 && number(value.upper) === -number(value.lower) ? "symmetric" : "pair";
-      const d = { kind, target, mode, magnitude: text(value.percent ?? (mode === "symmetric" ? value.upper : null)), upper: text(value.upper), lower: text(value.lower), clear: false, notice: "", needsInput: Boolean(r.pending), basis: this.basis(r, kind) };
+      const mode = value.percentUpper != null || value.percentLower != null ? "percent-pair"
+        : value.percent != null ? "percent" : value.upper == null && value.lower == null || number(value.upper) >= 0 && number(value.upper) === -number(value.lower) ? "symmetric" : "pair";
+      const d = { kind, target, mode, magnitude: text(value.percent ?? (mode === "symmetric" ? value.upper : null)), upper: text(value.percentUpper ?? value.upper), lower: text(value.percentLower ?? value.lower), clear: false, notice: "", needsInput: Boolean(r.pending), basis: this.basis(r, kind) };
       if (r.item.tolerance_input_draft) { d.magnitude = r.item.tolerance_input_draft; d.mode = "symmetric"; }
       d.initial = JSON.stringify([d.mode, d.magnitude, d.upper, d.lower, d.clear]);
       return d;
@@ -50,6 +53,7 @@
     }
     result(d = this.current()) {
       if (d.clear) return validate(null, null);
+      if (d.mode === "percent-pair") return validatePercentPair(d.upper, d.lower);
       if (d.mode === "pair") return d.needsInput && empty(d.upper) && empty(d.lower)
         ? { ok: false, error: "请填写上下偏差，或点击清除公差。" } : validate(d.upper, d.lower);
       if (empty(d.magnitude)) return d.needsInput ? { ok: false, error: "请填写公差幅值，或点击清除公差。" } : validate(null, null);
@@ -98,12 +102,13 @@
     const v = controller.result(d), error = controller.error(d, r, v);
     const rangeLabel = r.quantity || (isLoad(d.kind) ? "力值" : "尺寸");
     const nominalLabel = r.quantity || (isLoad(d.kind) ? "力值" : "数值");
-    const modes = [["symmetric", "对称公差"], ["pair", "上下偏差"], ...(isLoad(d.kind) ? [["percent", "百分比"]] : [])];
+    const modes = [["symmetric", "对称公差"], ["pair", "上下偏差"], ...(isLoad(d.kind) ? [["percent", "百分比"], ["percent-pair", "百分比上下偏差"]] : [])];
+    const unit = isPercent(d.mode) ? "%" : r.unit;
     return `<div class="tolerance-editor" data-tolerance-editor data-tolerance-kind="${d.kind}" data-tolerance-target="${esc(d.target)}">
-      <div class="tolerance-editor-heading"><strong data-tolerance-label>编辑公差 · ${esc(r.label)}</strong><span>单位：${esc(d.mode === "percent" ? "%" : r.unit || "无量纲")}</span></div>
+      <div class="tolerance-editor-heading"><strong data-tolerance-label>编辑公差 · ${esc(r.label)}</strong><span>单位：${esc(unit || "无量纲")}</span></div>
       <div class="tolerance-editor-modes" role="group" aria-label="公差类型">${modes.map(([mode, label]) => `<button type="button" data-tolerance-action="mode" data-tolerance-mode="${mode}" aria-pressed="${mode === d.mode}">${label}</button>`).join("")}</div>
-      <div class="tolerance-editor-fields">${d.mode === "pair" ? `<label>上偏差${r.unit ? `（${esc(r.unit)}）` : ""}<input data-tolerance-input="upper" inputmode="decimal" autocomplete="off" value="${esc(d.upper)}" placeholder="例如：+0.1"></label><label>下偏差${r.unit ? `（${esc(r.unit)}）` : ""}<input data-tolerance-input="lower" inputmode="decimal" autocomplete="off" value="${esc(d.lower)}" placeholder="例如：-0.2"></label>` : `<label>${d.mode === "percent" ? "公差百分比（%）" : "公差幅值"}<span class="tolerance-magnitude">±<input data-tolerance-input="magnitude" inputmode="decimal" autocomplete="off" value="${esc(d.magnitude)}" placeholder="例如：0.1">${esc(d.mode === "percent" ? "%" : r.unit)}</span></label>`}</div>
-      <small class="tolerance-editor-help">${d.mode === "pair" ? "支持正、负偏差；单边公差请将另一侧填 0。" : "只填写非负数，无需输入 ± 符号。"}</small>
+      <div class="tolerance-editor-fields">${isPair(d.mode) ? `<label>上偏差${unit ? `（${esc(unit)}）` : ""}<input data-tolerance-input="upper" inputmode="decimal" autocomplete="off" value="${esc(d.upper)}" placeholder="例如：+0.1"></label><label>下偏差${unit ? `（${esc(unit)}）` : ""}<input data-tolerance-input="lower" inputmode="decimal" autocomplete="off" value="${esc(d.lower)}" placeholder="例如：-0.2"></label>` : `<label>${d.mode === "percent" ? "公差百分比（%）" : "公差幅值"}<span class="tolerance-magnitude">±<input data-tolerance-input="magnitude" inputmode="decimal" autocomplete="off" value="${esc(d.magnitude)}" placeholder="例如：0.1">${esc(unit)}</span></label>`}</div>
+      <small class="tolerance-editor-help">${isPair(d.mode) ? "单边公差请将另一侧填 0。" : "只填写非负数，无需输入 ± 符号。"}</small>
       <p class="tolerance-editor-error" data-tolerance-error role="status">${esc(error || d.notice)}</p>
       <div class="tolerance-editor-footer"><div class="tolerance-editor-preview" aria-live="polite"><small>${rangeLabel}范围（按公差计算）</small><strong data-tolerance-preview>${esc(preview(v, r.nominal, r.unit))}</strong><small data-tolerance-nominal>当前${nominalLabel}：${esc(text(r.nominal))} ${esc(r.unit)}</small></div><div class="tolerance-editor-actions"><button type="button" class="secondary-action" data-tolerance-action="clear">清除公差</button><button type="button" class="secondary-action" data-tolerance-action="cancel">取消</button><button type="button" data-tolerance-action="save"${error || controller.config.busy() ? " disabled" : ""}>保存公差</button></div></div>
     </div>`;
@@ -128,10 +133,14 @@
       if (action === 'clear') { Object.assign(d, { magnitude: '', upper: '', lower: '', clear: true, notice: '', needsInput: false }); c.config.render(); c.focus(); }
       if (action === 'mode') {
         const value = c.result(d), mode = button.dataset.toleranceMode;
-        if (mode === 'pair' && empty(d.upper) && empty(d.lower) && value.ok && value.upper != null) { d.upper = signed(value.upper); d.lower = signed(value.lower); }
+        if (mode === d.mode) return;
+        const upper = value.ok ? isPercent(mode) ? value.percentUpper ?? value.percent : value.upper : null;
+        const lower = value.ok ? isPercent(mode) ? value.percentLower ?? (value.percent == null ? null : -value.percent) : value.lower : null;
+        d.upper = upper == null ? '' : signed(upper);
+        d.lower = lower == null ? '' : signed(lower);
+        d.magnitude = upper != null && upper === -lower ? text(upper) : '';
         d.mode = mode; d.clear = false; d.notice = '';
-        if (mode === 'pair') d.needsInput = empty(d.upper) && empty(d.lower) && value.percent != null;
-        if (mode !== 'pair') { d.magnitude = value.ok && (mode === 'percent' ? value.percent != null : value.upper != null && value.upper === -value.lower) ? text(mode === 'percent' ? value.percent : value.upper) : ''; d.needsInput = empty(d.magnitude); }
+        d.needsInput = isPair(mode) ? empty(d.upper) && empty(d.lower) : empty(d.magnitude);
         c.config.render(); c.focus();
       }
     });

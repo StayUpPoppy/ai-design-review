@@ -37,20 +37,20 @@ def shared_cases():
 
     base = fixture()
     initial = add("baseline", base)
-    assert len(initial["entries"]) == 7
+    assert len(initial["entries"]) == 3
     for entry in initial["entries"]:
         review = deepcopy(base)
         review["technical_output_deletions"] = [deletion(entry)]
         before = deepcopy(review["spring_parameters"])
         projection = add("delete_" + entry["source_key"], review)
         assert entry["source_key"] not in [item["source_key"] for item in projection["entries"]]
-        assert len(projection["entries"]) == 6 and review["spring_parameters"] == before
+        assert len(projection["entries"]) == 2 and review["spring_parameters"] == before
     review = deepcopy(base)
     review["technical_output_deletions"] = [deletion(entry) for entry in initial["entries"]]
     assert add("delete_all", review)["text"] == ""
 
     for key, field, value in [("auto:handedness", "handedness", "left"), ("auto:coils", "total_coils", 4.5),
-                              ("auto:end", "end_grinding", "两端不磨削"), ("auto:solid_height", "solid_height", 7)]:
+                              ("auto:end", "end_grinding", "两端不磨削")]:
         entry = next(item for item in initial["entries"] if item["source_key"] == key)
         review = deepcopy(base)
         review["technical_output_deletions"] = [deletion(entry)]
@@ -69,18 +69,11 @@ def shared_cases():
         review["spring_parameters"][field]["need_human_review"] = False
         assert key in [item["source_key"] for item in add("changed_confirmed_" + key, review)["entries"]]
 
-    for change, value in [("label", "P1"), ("force", 20), ("height", 15), ("load_tolerance_percent", 5)]:
-        review = deepcopy(base)
-        point = review["spring_parameters"]["load_points"][0]
-        entry = next(item for item in initial["entries"] if point["load_point_id"] in item["load_point_ids"])
-        review["technical_output_deletions"] = [deletion(entry)]
-        review["spring_parameters"]["load_points"].reverse()
-        refresh_technical_output_deletions(review)
-        assert review["technical_output_deletions"], "reorder preserves stable point association"
-        point[change] = value
-        refresh_technical_output_deletions(review)
-        assert not review["technical_output_deletions"]
-        add("load_" + change, review)
+    review = deepcopy(base)
+    content = "压并高度 Hb = 6.3 mm，载荷测试点 F1 需复测。"
+    review["technical_requirements"] = [{"requirement_id": "load-note", "type": "other", "content": content, "need_human_review": False}]
+    entry = next(item for item in add("original_load_note", review)["entries"] if item["body"] == content)
+    assert not entry["automatic"] and entry["requirement_ids"] == ["load-note"]
 
     for auto in initial["entries"][:3]:
         review = deepcopy(base)

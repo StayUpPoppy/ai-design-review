@@ -297,7 +297,7 @@ def run():
         if complete_contract:
             GenerationParameterPackageV2.model_validate(package)
         preview = package["solidworks_preview"]
-        assert list(preview) == [*(["materialCode"] if "material_code" in package.get("source", {}) else []), "modelParameters", *(["modelParametersTolerance"] if "modelParametersTolerance" in preview else []), "customProperties", "technicalRequirements", "extraProperties", "titleBlockProperties"]
+        assert list(preview) == [*(["materialCode"] if "material_code" in package.get("source", {}) else []), "modelParameters", *(["modelParametersTolerance"] if "modelParametersTolerance" in preview else []), *(["modelHeightPoints", "modelForcePoints"] if "modelHeightPoints" in preview else []), "customProperties", "technicalRequirements", "extraProperties", "titleBlockProperties"]
         command = build_solidworks_command("1000000099", package, review)
         model = command["models"][0]
         assert {k: model[k] for k in preview} == preview
@@ -327,7 +327,7 @@ def run():
             assert "客户图号" not in title
         assert review["drawing_summary"] == original_review["drawing_summary"]
         if "expected_tolerances" in case:
-            assert preview.get("modelParametersTolerance") == case["expected_tolerances"], (case["name"], preview)
+            assert {key: value for key, value in preview.get("modelParametersTolerance", {}).items() if key in {"外径", "内径", "自由高度", "中径"}} == (case["expected_tolerances"] or {}), (case["name"], preview)
             assert title.get("垂直度A") == case["expected_perpendicularity"], (case["name"], title)
             for field in ("outer_diameter", "inner_diameter", "free_length", "mean_diameter", "perpendicularity"):
                 assert review["spring_parameters"].get(field) == original_review["spring_parameters"].get(field), (case["name"], field)
@@ -347,13 +347,13 @@ def run():
         assert length["unit"] == "mm"
         assert extra.get("L") == (round(length["value"], 4) if length["value"] is not None else None)
         if case["name"] == "legacy_mixed_load":
-            assert "+0.1/-0.2 N" in notes and "F8 = 20 N（允差 ±10%）" not in notes
+            assert preview["modelParametersTolerance"]["F8"] == "+0.1N-0.2N"
         if case["name"] == "tiny_asymmetric_load":
-            assert "+0.000012345/-2.3e-8 N" in notes
+            assert "+0.000012345N-2.3e-8N" in preview["modelParametersTolerance"].values()
         if case["name"] == "micro_asymmetric_load":
-            assert "+0.000001/-0.000002 N" in notes
+            assert "+0.000001N-0.000002N" in preview["modelParametersTolerance"].values()
         if case["name"] == "tiny_percent_load":
-            assert "±0.000001%" in notes
+            assert "±0.000001%" in preview["modelParametersTolerance"].values()
         assert notes.startswith("1.旋向：右。\n"), (case["name"], notes)
         if case["end_note"]:
             assert notes.splitlines()[2] == "3." + case["end_note"], (case["name"], notes)
@@ -368,9 +368,12 @@ def run():
         assert "不应导出的" not in notes
         assert "材料SUS304 不锈钢，表面喷丸处理。" in notes
         assert "300℃，20min。" in notes and "中性盐雾72小时。" in notes
-        assert "F1 = 13.2 N（允差 ±10%）" in notes
-        assert "F2 = 18.9 N（允差 +1/-0.5 N）" in notes
-        assert "F3 = 0 N" in notes
+        assert preview["modelParametersTolerance"]["F1"] == "±10%"
+        assert preview["modelParametersTolerance"]["F2"] == "+1N-0.5N"
+        assert all(token not in notes for token in ("工作载荷 F1", "工作载荷 F2", "工作载荷 F3", "Hb =", "Fb ="))
+        assert preview["modelHeightPoints"]["H1"] == 14.284
+        assert preview["modelForcePoints"]["F3"] == 0
+        assert "Fb" not in preview["modelForcePoints"] and "Hb" not in preview["modelHeightPoints"]
         assert "材料：SUS304。" not in notes and "材料：SUS304 不锈钢。" not in notes
         assert notes.count("旋向：右。") == 1 and "绕制方向：" not in notes
         name = case["name"]
@@ -394,7 +397,6 @@ def run():
             assert "每端磨300°" in notes and "去除毛刺" in notes and "备用弹簧" in notes
         if name == "book_baseline":
             assert extra == {"P'": 2.9314, "C": 14, "τb": 451.2669, "L": 318.3461}, extra
-            assert "Hb = 6.3 mm" in notes and "Fb =" not in notes
             assert title == {"材料": "SUS304", "重量": 0.00642403, "表面粗糙度Ra": 12.5}
         if name == "material_pending":
             assert title == {"重量": 0.00642403, "表面粗糙度Ra": 12.5}, "Valid weight and Ra are independent of material text confirmation"
@@ -437,17 +439,10 @@ def run():
             assert "τb" not in extra, (name, extra)
         if name in {"fb_pending", "fb_invalid", "fb_ambiguous"}:
             assert "Fb =" not in notes, (name, notes)
-        if name == "fb_matching":
-            assert "Hb = 6.3 mm 时，对应压并载荷 Fb = 25 N" in notes
-        if name == "fb_mismatching":
-            assert "压并高度：Hb = 6.3 mm" in notes and "载荷测试高度 7 mm" in notes
-            assert "对应压并载荷" not in notes
         if name == "fb_zero":
-            assert extra["τb"] == 0 and "Fb = 0 N" in notes
+            assert extra["τb"] == 0
         if name == "fb_without_material":
             assert "P'" not in extra and extra["τb"] > 0
-        if name == "units":
-            assert "Hb = 6.3 mm 时，对应压并载荷 Fb = 25 N（允差 ±0.2 N）" in notes, notes
         if name == "unsupported_load_unit":
             assert assess_generation_readiness(review)["status"] == "needs_confirmation"
             assert "Fb =" not in notes
@@ -522,19 +517,54 @@ def run():
         changed = deepcopy(outputs[0]["review"])
         changed["spring_parameters"].update(outer_diameter=parameter(28.8,"mm",tolerance_upper=invalid,tolerance_lower=-1),perpendicularity=parameter(invalid,"mm"))
         projected = build_solidworks_preview(deepcopy(outputs[0]["package"]), changed)
-        assert "modelParametersTolerance" not in projected and "垂直度A" not in projected["titleBlockProperties"]
+        assert "外径" not in projected["modelParametersTolerance"] and "垂直度A" not in projected["titleBlockProperties"]
     # Frozen requests do not acquire new properties from a newer live review.
     from ai_design_review.generation_service import stable_payload_hash
     frozen = deepcopy(outputs[0]["package"])
+    for key in ("modelHeightPoints", "modelForcePoints", "modelParametersTolerance"):
+        frozen["solidworks_preview"].pop(key)
+    frozen["solidworks_preview"]["technicalRequirements"]["技术要求"] += "\n7.当弹簧工作高度 H1 = 14.284 mm 时，对应工作载荷 F1 = 13.2 N。"
     live = deepcopy(outputs[0]["review"])
     live["spring_parameters"].update(outer_diameter=parameter(28.8,"mm",tolerance_upper=1.5,tolerance_lower=-1.5),perpendicularity=parameter(.01,"mm"))
     old = build_solidworks_command("1000000010",frozen,live)["models"][0]
     assert "modelParametersTolerance" not in old and "垂直度A" not in old["titleBlockProperties"]
+    assert "modelHeightPoints" not in old and "modelForcePoints" not in old
+    assert "工作载荷 F1" in old["technicalRequirements"]["技术要求"]
     new = build_generation_parameter_package(live)
-    assert new["solidworks_preview"]["modelParametersTolerance"] == {"外径":1.5}
+    assert new["solidworks_preview"]["modelParametersTolerance"]["外径"] == 1.5
     assert stable_payload_hash(frozen) != stable_payload_hash(new)
     GenerationParameterPackageV2.model_validate(new)
+    load_point_contract()
     return outputs
+
+
+def load_point_contract():
+    review = base_review()
+    points = review["spring_parameters"]["load_points"]
+    points[0].update(label="P1", height_label="H4", height_tolerance_upper=0.1, height_tolerance_lower=-0.1)
+    points[1].update(label="W1", height_label="H4", height=points[0]["height"],
+                     height_tolerance_upper=0.1, height_tolerance_lower=-0.1)
+    points[2].update(label="F4", load_tolerance_percent_upper=0, load_tolerance_percent_lower=-5)
+    points.extend([
+        {"label": "F9", "height": 8, "force": 90, "load_role": "solid", "need_human_review": False},
+        {"label": "Fb", "height_label": "Hb", "height": 6, "force": 95, "need_human_review": False},
+        {"label": "F8", "height": 9, "force": 80, "need_human_review": True},
+    ])
+    preview = build_generation_parameter_package(review)["solidworks_preview"]
+    assert preview["modelHeightPoints"] == {"H4": 14.284, "H1": 10}
+    assert preview["modelForcePoints"] == {"P1": 13.2, "W1": 18.9, "F4": 0}
+    assert preview["modelParametersTolerance"] == {"H4": .1, "P1": "±10%", "W1": "+1N-0.5N", "F4": "+0%-5%"}
+    points[1]["height_tolerance_lower"] = -.2
+    pending = assess_generation_readiness(review)["pending_fields"]
+    assert any(issue["field"] == "load_points.W1" and "H4" in issue["reason"] for issue in pending)
+    points[1]["height_label"] = "H6"
+    assert build_generation_parameter_package(review)["solidworks_preview"]["modelParametersTolerance"]["H6"] == [.1, .2]
+    points[2].pop("load_tolerance_percent_lower")
+    pending = assess_generation_readiness(review)["pending_fields"]
+    assert any(issue["field"] == "load_points.F4" and "力值公差" in issue["reason"] for issue in pending)
+    review["spring_parameters"]["load_points"] = points[3:]
+    preview = build_generation_parameter_package(review)["solidworks_preview"]
+    assert not any(key in preview for key in ("modelHeightPoints", "modelForcePoints", "modelParametersTolerance"))
 
 
 def label_cases():

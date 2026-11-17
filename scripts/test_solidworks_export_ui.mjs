@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 const python = process.env.DESIGN_TEST_PYTHON || ".venv/Scripts/python.exe";
 const cases = JSON.parse(execFileSync(python, ["scripts/test_solidworks_export.py", "--json"], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }));
 const context = vm.createContext({ structuredClone });
-for (const file of ["frontend/compression-design-checks.js", "frontend/technical-requirement-equivalence.js", "frontend/solidworks-export.js"]) vm.runInContext(fs.readFileSync(file, "utf8"), context);
+for (const file of ["frontend/tolerance-values.js", "frontend/compression-design-checks.js", "frontend/technical-requirement-equivalence.js", "frontend/solidworks-export.js"]) vm.runInContext(fs.readFileSync(file, "utf8"), context);
 const labelCases = JSON.parse(execFileSync(python, ["scripts/test_solidworks_export.py", "--label-json"], { encoding: "utf8" }));
 for (const sample of labelCases) {
   const original = structuredClone(sample.review), generation = structuredClone(sample.package.generation_parameters);
@@ -62,11 +62,7 @@ for (const [text, scope, expected] of [
   ["旋向：右旋。", "备用弹簧", false], ["两端并紧磨平，每端磨300°。", undefined, false],
   ["有效圈数：2 圈，端面去毛刺。", undefined, false], ["材料：SUS304。", undefined, false],
 ]) assert.equal(context.SolidWorksExport.automaticMatches(baselineProjection, { type:"other",content:text,application_scope:scope }, catalog).length > 0, expected, text);
-const loadNote = baselineProjection.entries.find(entry => entry.automatic && entry.body.includes("工作载荷 F1"));
-assert.ok(loadNote.fields.includes("load_points.F1"));
-assert.equal(context.SolidWorksExport.automaticMatches(baselineProjection, {type:"other",content:loadNote.body}, catalog).length, 1);
-assert.equal(context.SolidWorksExport.automaticMatches(baselineProjection, {type:"other",content:loadNote.body.replace("F1", "P1")}, catalog).length, 0);
-assert.equal(context.SolidWorksExport.automaticMatches(baselineProjection, {type:"other",content:loadNote.body.replace("±10%", "±11%")}, catalog).length, 0);
+assert.ok(baselineProjection.entries.every(entry => !/^auto:(?:load|solid)/.test(entry.source_key)));
 assert.equal(baselineProjection.entries.slice(0,3).every(entry => entry.automatic), true);
 const originalCalculate = context.CompressionDesignChecks.calculate;
 const base = cases[0];
@@ -107,7 +103,7 @@ for (const value of [NaN, Infinity, -Infinity, true, {}, []]) {
   invalid.spring_parameters.outer_diameter = { value:28.8, unit:"mm", need_human_review:false, tolerance_upper:value, tolerance_lower:-1 };
   invalid.spring_parameters.perpendicularity = { value, unit:"mm", need_human_review:false };
   const projected = context.SolidWorksExport.buildPreview(structuredClone(base.package), invalid, catalog);
-  assert.equal(projected.modelParametersTolerance, undefined);
+  assert.equal(projected.modelParametersTolerance?.["外径"], undefined);
   assert.equal(projected.titleBlockProperties["垂直度A"], undefined);
 }
 console.log(`PASS: ${cases.length} shared SW cases match Python and JavaScript exactly`);

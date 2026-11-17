@@ -141,7 +141,7 @@ def run():
     package = build_generation_parameter_package(review)
     GenerationParameterPackageV2.model_validate(package)
     text = package["solidworks_preview"]["technicalRequirements"]["技术要求"]
-    assert len(text.splitlines()) == 12, text
+    assert len(text.splitlines()) == 9, text
     assert package["solidworks_preview"]["titleBlockProperties"]["表面粗糙度Ra"] == 12.5
     assert "粗糙度" not in text
     assert len(review["technical_requirements"]) == 9 and len(package["generation_parameters"]["technical_requirements"]) == 10
@@ -167,8 +167,8 @@ def run():
     original_hard = deepcopy(hard["technical_requirements"])
     hard_package = build_generation_parameter_package(hard)
     hard_notes = hard_package["solidworks_preview"]["technicalRequirements"]["技术要求"]
-    assert len(hard_notes.splitlines()) == 7 and hard_notes.count("HRC45-50") == 1, hard_notes
-    assert "6.HRC45-50" in hard_notes
+    assert len(hard_notes.splitlines()) == 5 and hard_notes.count("HRC45-50") == 1, hard_notes
+    assert "4.HRC45-50" in hard_notes
     assert hard["technical_requirements"] == original_hard and len(original_hard) == 3
     legacy_hard = {"generation_parameters": {"technical_requirements_text": "技术要求\n8.硬度要求：硬度 HRC45-50\n10.硬度要求：HRC45~50"}}
     assert build_solidworks_technical_text(legacy_hard, {}) == "1.HRC45-50"
@@ -195,7 +195,7 @@ def run():
     for item in confirmed_eight["technical_requirements"]:
         item["need_human_review"] = False
     eight_package = build_generation_parameter_package(confirmed_eight)
-    assert len(eight_package["solidworks_preview"]["technicalRequirements"]["技术要求"].splitlines()) == 14
+    assert len(eight_package["solidworks_preview"]["technicalRequirements"]["技术要求"].splitlines()) == 11
     return {"prefixes": prefixes, "pairs": rows, "review": order2_review(), "package": package, "merged": merged,
             "hardness_review": hard, "hardness_package": hard_package, "eight_review": eight, "eight_package": eight_package, "eight_pending_package": build_generation_parameter_package(eight)}
 

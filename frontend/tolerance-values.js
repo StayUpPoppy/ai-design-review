@@ -20,12 +20,22 @@
     if (u < l) return { ok: false, error: "上偏差不能小于下偏差，请核对正负号。" };
     return { ok: true, upper: u, lower: l, percent: null };
   }
+  function validatePercentPair(upper, lower) {
+    if (empty(upper) || empty(lower)) return { ok: false, error: "请填写上下百分比偏差；单边公差请将另一侧明确填 0。" };
+    const u = number(upper), l = number(lower);
+    if (u == null || l == null || u < 0 || l > 0) return { ok: false, error: "上百分比偏差须为非负数，下百分比偏差须为非正数。" };
+    return { ok: true, upper: null, lower: null, percent: null, percentUpper: u, percentLower: l };
+  }
   function parse(value, { load = false, unit = "" } = {}) {
     let input = String(value ?? "").normalize("NFKC").trim().replace(/−/g, "-");
     const normalizedUnit = String(unit).normalize("NFKC");
     if (unit && input.toLowerCase().endsWith(normalizedUnit.toLowerCase())) input = input.slice(0, -normalizedUnit.length).trim();
     if (!input) return validate(null, null);
-    if (load && input.endsWith("%")) return validate(null, null, input.slice(0, -1).replace(/^±\s*/, ""));
+    if (load && input.includes("%")) {
+      const pair = input.match(/^\s*([^%/]+)%\s*(?:\/\s*)?([^%/]+)%$/);
+      if (pair) return validatePercentPair(pair[1], pair[2]);
+      return input.endsWith("%") ? validate(null, null, input.slice(0, -1).replace(/^±\s*/, "")) : validatePercentPair(null, null);
+    }
     if (input.startsWith("±")) {
       const magnitude = number(input.slice(1).trim());
       return magnitude != null && magnitude >= 0 ? validate(magnitude, -magnitude) : { ok: false, error: "对称公差幅值必须是非负数，例如 ±0.1。" };
@@ -37,25 +47,37 @@
     const upper = item?.[load ? "load_tolerance_upper" : "tolerance_upper"] ?? null;
     const lower = item?.[load ? "load_tolerance_lower" : "tolerance_lower"] ?? null;
     const percent = load && upper == null && lower == null ? item?.load_tolerance_percent ?? item?.force_tolerance_percent ?? null : null;
-    return { upper, lower, percent };
+    const percentUpper = load ? item?.load_tolerance_percent_upper : null;
+    const percentLower = load ? item?.load_tolerance_percent_lower : null;
+    return { upper, lower, percent, ...(percentUpper != null || percentLower != null ? { percentUpper, percentLower } : {}) };
+  }
+  function validateValue(value) {
+    if (value.percentUpper == null && value.percentLower == null) return validate(value.upper, value.lower, value.percent);
+    if ([value.upper, value.lower, value.percent].some(value => value != null)) return { ok: false, error: "请选择一种力值公差格式。" };
+    return validatePercentPair(value.percentUpper, value.percentLower);
   }
   function format(value) {
+    if (value.percentUpper != null || value.percentLower != null) {
+      return `${value.percentUpper == null ? "" : signed(Number(value.percentUpper)) + "%"}/${value.percentLower == null ? "" : signed(Number(value.percentLower)) + "%"}`;
+    }
     if (value.percent != null) return `±${text(value.percent)}%`;
     if (value.upper == null && value.lower == null) return "";
     if (value.upper != null && value.lower != null && Number(value.upper) >= 0 && Number(value.upper) === -Number(value.lower)) return `±${text(Number(value.upper))}`;
     return `${value.upper == null ? "" : signed(Number(value.upper))}/${value.lower == null ? "" : signed(Number(value.lower))}`;
   }
-  const equals = (a, b) => ["upper", "lower", "percent"].every(k => a[k] == null && b[k] == null || a[k] != null && b[k] != null && number(a[k]) === number(b[k]));
+  const equals = (a, b) => ["upper", "lower", "percent", "percentUpper", "percentLower"].every(k => a[k] == null && b[k] == null || a[k] != null && b[k] != null && number(a[k]) === number(b[k]));
   const pretty = value => String(Number(value.toPrecision(12)) || 0);
   function preview(value, nominal, unit) {
     if (!value.ok) return "请填写有效公差后查看范围";
-    if (value.upper == null && value.lower == null && value.percent == null) return "未设置公差";
+    if (["upper", "lower", "percent", "percentUpper", "percentLower"].every(key => value[key] == null)) return "未设置公差";
     const base = number(nominal);
     if (base == null) return "补齐有效名义值后显示允许范围";
-    const upper = value.percent != null ? Math.abs(base) * value.percent / 100 : value.upper;
-    const lower = value.percent != null ? -Math.abs(base) * value.percent / 100 : value.lower;
+    const upperPercent = value.percentUpper ?? value.percent;
+    const lowerPercent = value.percentLower ?? (value.percent == null ? null : -value.percent);
+    const upper = upperPercent != null ? Math.abs(base) * (upperPercent / 100) : value.upper;
+    const lower = lowerPercent != null ? Math.abs(base) * (lowerPercent / 100) : value.lower;
     if (![base + lower, base + upper].every(Number.isFinite)) return "数值超出可计算范围，请核对";
     return `${pretty(base + lower)} ～ ${pretty(base + upper)}${unit ? ` ${unit}` : ""}`;
   }
-  globalThis.ToleranceValues = { number, esc, text, signed, empty, validate, parse, read, format, equals, preview };
+  globalThis.ToleranceValues = { number, esc, text, signed, empty, validate, validateValue, validatePercentPair, parse, read, format, equals, preview };
 })();

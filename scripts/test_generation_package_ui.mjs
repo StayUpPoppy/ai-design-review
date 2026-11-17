@@ -61,6 +61,7 @@ vm.runInContext(fs.readFileSync("frontend/diameter-role-candidates.js", "utf8"),
 vm.runInContext(appSource.slice(appSource.indexOf("const Flattening ="), appSource.indexOf("const COMPRESSION_CORE_PARAMETER_FIELDS")), context);
 vm.runInContext(fs.readFileSync(new URL("../frontend/compression-design-checks.js", import.meta.url), "utf8"), context);
 vm.runInContext(fs.readFileSync(new URL("../frontend/technical-requirement-equivalence.js", import.meta.url), "utf8"), context);
+vm.runInContext(fs.readFileSync(new URL("../frontend/tolerance-values.js", import.meta.url), "utf8"), context);
 vm.runInContext(fs.readFileSync(new URL("../frontend/solidworks-export.js", import.meta.url), "utf8"), context);
 translationTestHelpers(context);
 vm.runInContext(appSource.slice(appSource.indexOf("function pendingDiameterRoles("), appSource.indexOf("function diameterRoleGroupState(")), context);
@@ -105,7 +106,9 @@ assert.equal(packageData.generation_parameters.spring_parameters.end_coils_close
 assert.equal(packageData.solidworks_preview.modelParameters["有效圈数n"], 10);
 assert.equal(packageData.solidworks_preview.modelParameters["是否磨平"], 1);
 assert.equal(packageData.solidworks_preview.modelParameters["工作高度H1"], undefined);
-assert.ok(packageData.solidworks_preview.technicalRequirements["技术要求"].includes("H1 = 25 mm"));
+assert.equal(packageData.solidworks_preview.modelHeightPoints.H1, 25);
+assert.equal(packageData.solidworks_preview.modelForcePoints.F1, 100);
+assert.ok(!packageData.solidworks_preview.technicalRequirements["技术要求"].includes("H1 = 25 mm"));
 assert.equal(packageData.solidworks_preview.modelParameters["工作高度H2"], undefined);
 assert.equal(packageData.solidworks_preview.TaskId, undefined);
 assert.equal(packageData.generation_parameters.spring_parameters.material.value, "SUS304 raw");

@@ -8,8 +8,9 @@ from decimal import Decimal
 from typing import Any
 
 from .generation_contract import generation_source_item, handedness_label, normalize_generation_value
+from .load_points import canonical_load_point_label, normalize_load_point_label
 from .material_catalog import material_catalog_display_value
-from .standardizers.calculation_state import number as strict_number, parameter_current, solid_height_kind
+from .standardizers.calculation_state import number as strict_number, parameter_current
 from .standardizers.design_checks import LENGTH_UNITS, calculate_design_checks
 from .surface_roughness import confirmed_surface_roughness, surface_roughness_matches
 from .technical_output_deletions import technical_output_basis, technical_output_is_deleted
@@ -202,6 +203,96 @@ def _model_parameters_tolerance(review: dict[str, Any]) -> dict[str, float | lis
     return result
 
 
+def solidworks_load_fields(points: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Project confirmed metric points into SW's flat, numbered drawing fields."""
+    working = [point for point in points if isinstance(point, dict) and point.get("confirmation_source") == "human_confirmed"
+               and point.get("load_role") != "solid"
+               and not _solid_label(point.get("label"))
+               and canonical_load_point_label(point.get("height_label")) != "hb"]
+    reserved = {label for label, _ in TOLERANCE_FIELDS}
+    forces: dict[str, float] = {}
+    heights: dict[str, float] = {}
+    tolerances: dict[str, Any] = {}
+    issues: list[dict[str, str]] = []
+    force_keys = {canonical_load_point_label(point["label"]) for point in working}
+    names = [normalize_load_point_label(point.get("height_label")) for point in working]
+    occupied = force_keys | reserved | {canonical_load_point_label(name) for name in names if name}
+
+    for index, point in enumerate(working):
+        suffix = re.search(r"[0-9]+$", point["label"])
+        candidate = f"H{suffix[0]}" if suffix else "H" if len(working) == 1 else ""
+        if not names[index] and candidate and candidate.casefold() not in occupied:
+            names[index] = candidate
+            occupied.add(candidate.casefold())
+    next_index = 1
+    for index, name in enumerate(names):
+        if name:
+            continue
+        while f"h{next_index}" in occupied:
+            next_index += 1
+        names[index] = f"H{next_index}"
+        occupied.add(names[index].casefold())
+
+    height_keys: dict[str, str] = {}
+    seen_forces: set[str] = set()
+    for point, height_label in zip(working, names):
+        force_label = point["label"]
+        force_key = canonical_load_point_label(force_label)
+        height_key = canonical_load_point_label(height_label)
+
+        def issue(reason: str) -> None:
+            issues.append({"field": f"load_points.{force_label}", "label": f"载荷测试点 {force_label}", "reason": reason})
+
+        if force_key in seen_forces or force_key in reserved:
+            issue(f"力值编号“{force_label}”重复或与尺寸字段同名，请修改编号。")
+            continue
+        seen_forces.add(force_key)
+        if height_key in force_keys or height_key in reserved:
+            issue(f"高度编号“{height_label}”与力值编号或尺寸字段同名，请修改编号。")
+            continue
+        height, force = point["height"], point["force"]
+        upper, lower = height.get("tolerance_upper"), height.get("tolerance_lower")
+        height_tolerance = None
+        if upper is not None and lower is not None:
+            if upper < 0 or lower > 0:
+                issue(f"高度“{height_label}”的上下偏差同方向，SW 幅值数组无法表达，请核对公差。")
+                continue
+            height_tolerance = upper if upper == -lower else [abs(upper), abs(lower)]
+        if existing := height_keys.get(height_key):
+            if heights[existing] != height["value"] or tolerances.get(existing) != height_tolerance:
+                issue(f"高度编号“{height_label}”的数值或公差不一致，请核对或修改编号。")
+                continue
+        else:
+            height_keys[height_key] = height_label
+            heights[height_label] = height["value"]
+            if height_tolerance is not None:
+                tolerances[height_label] = height_tolerance
+        forces[force_label] = force["value"]
+        if force_tolerance := _sw_force_tolerance(force):
+            tolerances[force_label] = force_tolerance
+
+    fields = {"modelHeightPoints": heights, "modelForcePoints": forces} if forces else {}
+    return {**fields, **({"modelParametersTolerance": tolerances} if tolerances else {})}, issues
+
+
+def _sw_force_tolerance(force: dict[str, Any]) -> str | None:
+    upper, lower = force.get("tolerance_upper"), force.get("tolerance_lower")
+    unit = "N"
+    if upper is None and lower is None:
+        unit = "%"
+        percent = force.get("tolerance_percent")
+        if percent is not None:
+            return f"±{_tolerance_number(percent)}%"
+        upper, lower = force.get("tolerance_percent_upper"), force.get("tolerance_percent_lower")
+    if upper is None or lower is None:
+        return None
+    if upper >= 0 and upper == -lower:
+        return f"±{_tolerance_number(upper)}{unit}"
+    upper_sign = "-" if upper < 0 else "+"
+    lower_sign = "+" if lower > 0 else "-"
+    return f"{upper_sign}{_tolerance_number(abs(upper))}{unit}{lower_sign}{_tolerance_number(abs(lower))}{unit}"
+
+
 def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
     """Recalculate authoritative inputs and freeze their calculation basis."""
     checks = calculate_design_checks(review.get("spring_parameters") or {}, review.get("spring_features") or {})
@@ -236,12 +327,16 @@ def build_solidworks_preview(parameter_package: dict[str, Any], review: dict[str
     if roughness is not None:
         title_block["表面粗糙度Ra"] = roughness["value"]
     settings = parameter_package.get("generation_settings")
-    tolerances = _model_parameters_tolerance(review)
+    load_fields, issues = solidworks_load_fields((parameter_package.get("generation_parameters") or {}).get("load_points") or [])
+    if issues:
+        raise ValueError(issues[0]["reason"])
+    tolerances = {**_model_parameters_tolerance(review), **load_fields.pop("modelParametersTolerance", {})}
     return {**({"DrawingModel": settings["drawing_model"], "Username": settings["username"],
                 **({"typeface": settings["typeface"]} if "typeface" in settings else {})} if settings else {}),
             **({"materialCode": parameter_package["source"].get("material_code") or None} if "material_code" in (parameter_package.get("source") or {}) else {}),
             "modelParameters": build_solidworks_model_parameters(parameter_package, review),
             **({"modelParametersTolerance": tolerances} if tolerances else {}),
+            **load_fields,
             "customProperties": {"旋向": handedness_label(_parameter_value(parameters.get("handedness")))},
             "technicalRequirements": technical_requirements,
             "extraProperties": extra, "titleBlockProperties": title_block}
@@ -268,13 +363,6 @@ def build_solidworks_technical_projection(parameter_package: dict[str, Any], rev
         rough = not ids and item.get("type") in {"surface_roughness", "roughness"}
         return {"automatic": rough, "fields": ["surface_roughness_ra"] if rough else [], "requirement_ids": ids,
                 **({"source_key": "auto:roughness"} if rough else {})}
-
-    def load_source(point: dict[str, Any]) -> dict[str, Any]:
-        original = next((item for item in (review.get("spring_parameters") or {}).get("load_points") or []
-                         if str(item.get("label") or "").strip() == str(point.get("label") or "").strip()), {})
-        point_id = original.get("load_point_id")
-        return {"automatic": True, "fields": [f"load_points.{point.get('label')}"], "load_point_ids": [point_id] if point_id else [],
-                "source_key": f"auto:load:{point_id or point.get('label')}"}
 
     def append(line: str, scope: Any = None, requirement_kind: str | None = None, *, source: dict[str, Any] | None = None) -> None:
         if (surface_source_key(line), surface_scope_key(scope)) in converted_sources:
@@ -330,33 +418,6 @@ def build_solidworks_technical_projection(parameter_package: dict[str, Any], rev
             append(_roughness_line(format_technical_requirement(item)), item.get("application_scope"), source=source_for(item))
         else:
             remaining.append(item)
-    hb = _confirmed_solid_height(review)
-    points = [point for point in generation.get("load_points") or [] if isinstance(point, dict)]
-    solid = [point for point in points if _solid_label(point.get("label"))]
-    fb = _number((solid[0].get("force") or {}).get("value")) if len(solid) == 1 else None
-    fb_height = _number((solid[0].get("height") or {}).get("value")) if len(solid) == 1 else None
-    fb_text = _force_text(solid[0]) if fb is not None and fb >= 0 else None
-    if hb is not None and fb_text is not None and fb_height is not None and math.isclose(hb, fb_height, rel_tol=0, abs_tol=1e-9):
-        append(f"当弹簧压并至高度 Hb = {_text_number(hb)} mm 时，对应压并载荷 Fb = {fb_text}。", source={**load_source(solid[0]), "source_key": "auto:solid_combined", "fields": ["solid_height", *load_source(solid[0])["fields"]]})
-    else:
-        if hb is not None:
-            append(f"压并高度：Hb = {_text_number(hb)} mm。", source={"automatic": True, "fields": ["solid_height"], "source_key": "auto:solid_height"})
-        if fb_text is not None:
-            suffix = f"（载荷测试高度 {_text_number(fb_height)} mm）" if hb is not None and fb_height is not None else ""
-            append(f"压并载荷：Fb = {fb_text}{suffix}。", source={**load_source(solid[0]), "fields": ["solid_height", *load_source(solid[0])["fields"]]})
-    for point in points:
-        if _solid_label(point.get("label")):
-            continue
-        height = _number((point.get("height") or {}).get("value"))
-        force = _number((point.get("force") or {}).get("value"))
-        if height is None or height <= 0 or force is None or force < 0:
-            continue
-        label = str(point.get("label") or "").strip()
-        match = re.fullmatch(r"[Ff](\d+)", label)
-        if match:
-            append(f"当弹簧工作高度 H{match[1]} = {_text_number(height)} mm 时，对应工作载荷 {label} = {_force_text(point)}。", source=load_source(point))
-        else:
-            append(f"载荷点 {label}：高度 {_text_number(height)} mm，力值 {_force_text(point)}。", source=load_source(point))
     # Only whole equivalent sentences are removed; composite/conflicting notes survive.
     requirement_keys: set[tuple[str, str, str]] = set()
     for item in remaining:
@@ -462,41 +523,8 @@ def _confirmed_end_note(exported: dict[str, Any], review: dict[str, Any]) -> str
     }[tuple(values)]
 
 
-def _confirmed_solid_height(review: dict[str, Any]) -> float | None:
-    item = (review.get("spring_parameters") or {}).get("solid_height")
-    if not isinstance(item, dict) or item.get("need_human_review") is not False:
-        return None
-    if not parameter_current(review.get("spring_parameters") or {}, "solid_height") or item.get("formula_recommendation_stale") or solid_height_kind(item) not in {"input_height", "nominal_estimate"}:
-        return None
-    value = _number(item.get("value"))
-    factor = LENGTH_UNITS.get(str(item.get("unit") or "mm").strip().lower())
-    normalized = value * factor if value is not None and factor is not None else None
-    free = (review.get("spring_parameters") or {}).get("free_length") or {}
-    free_value, free_factor = _number(free.get("value")), LENGTH_UNITS.get(str(free.get("unit") or "mm").strip().lower())
-    if free_value is not None and free_factor is not None and normalized is not None and normalized >= free_value * free_factor:
-        return None
-    return normalized if normalized is not None and math.isfinite(normalized) and normalized > 0 else None
-
-
 def _solid_label(value: Any) -> bool:
     return re.sub(r"[\s_]", "", str(value or "")).casefold() in SOLID_LABELS
-
-
-def _force_text(point: dict[str, Any]) -> str:
-    force = point.get("force") or {}
-    text = f"{_text_number(force['value'])} N"
-    percent = _number(force.get("tolerance_percent"))
-    upper, lower = (_number(force.get(key)) for key in ("tolerance_upper", "tolerance_lower"))
-    if percent is not None and upper is None and lower is None:
-        return text + f"（允差 ±{_tolerance_number(abs(percent))}%）"
-    if upper is None and lower is None:
-        return text
-    if upper is not None and lower is not None and upper >= 0 and upper == -lower:
-        return text + f"（允差 ±{_tolerance_number(upper)} N）"
-    def signed(number: float) -> str:
-        return ("+" if number > 0 else "") + _tolerance_number(number)
-    tolerance = "/".join(signed(number) for number in (upper, lower) if number is not None)
-    return text + f"（允差 {tolerance} N）"
 
 
 def _content(item: dict[str, Any]) -> str:
@@ -542,10 +570,6 @@ def _number(value: Any) -> float | None:
 def _rounded(number: float, digits: int) -> int | float:
     number = round(number, digits)
     return int(number) if number.is_integer() else number
-
-
-def _text_number(value: Any) -> str:
-    return str(_rounded(float(value), 4))
 
 
 def _tolerance_number(value: float) -> str:

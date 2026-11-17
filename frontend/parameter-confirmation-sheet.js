@@ -22,15 +22,15 @@
   function printLogoUrl(logoData) {
     // An intrinsic 38mm canvas scales the original PNG without changing its
     // pixels. Foreground page content also prints with backgrounds disabled.
-    return `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="38mm" height="12mm" viewBox="0 0 380 120"><image width="380" height="120" preserveAspectRatio="xMinYMid meet" href="${logoData}"/></svg>`)}`;
+    return `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="46mm" height="15mm" viewBox="0 0 460 150"><image width="460" height="150" preserveAspectRatio="xMinYMid meet" href="${logoData}"/></svg>`)}`;
   }
   function printHeaderCss(logoData) {
     // Native page-margin boxes repeat on the final fragment too. Negative
     // fixed-position offsets can omit the header on short final pages.
     return `@page {
-      @top-left { content: url("${printLogoUrl(logoData)}"); width: 42mm; margin-top: 6mm; margin-bottom: 4mm; vertical-align: middle; border-bottom: 1px solid #aab3bf; }
+      @top-left { content: url("${printLogoUrl(logoData)}"); width: 48mm; margin-top: 6mm; margin-bottom: 4mm; vertical-align: middle; border-bottom: 1px solid #aab3bf; }
       @top-center { content: "弹簧参数确认单"; margin-top: 6mm; margin-bottom: 4mm; vertical-align: middle; color: #172033; font: 700 14pt "Microsoft YaHei", "Segoe UI", Arial, sans-serif; border-bottom: 1px solid #aab3bf; }
-      @top-right { content: ""; width: 42mm; margin-top: 6mm; margin-bottom: 4mm; border-bottom: 1px solid #aab3bf; }
+      @top-right { content: ""; width: 48mm; margin-top: 6mm; margin-bottom: 4mm; border-bottom: 1px solid #aab3bf; }
     }`;
   }
   const empty = value => value == null || typeof value === "string" && !value.trim();
@@ -40,6 +40,10 @@
     if (item.tolerance_input_draft) return String(item.tolerance_input_draft);
     const percent = item.load_tolerance_percent ?? item.force_tolerance_percent;
     const upper = item[load ? "load_tolerance_upper" : "tolerance_upper"], lower = item[load ? "load_tolerance_lower" : "tolerance_lower"];
+    if (load && empty(upper) && empty(lower) && (!empty(item.load_tolerance_percent_upper) || !empty(item.load_tolerance_percent_lower))) {
+      const signedPercent = value => empty(value) ? "未注明" : `${Number(value) > 0 ? "+" : ""}${value}%`;
+      return `${signedPercent(item.load_tolerance_percent_upper)} / ${signedPercent(item.load_tolerance_percent_lower)}`;
+    }
     if (load && empty(upper) && empty(lower) && !empty(percent)) return `±${percent}%`;
     if (empty(upper) && empty(lower)) return "—";
     if (!empty(upper) && !empty(lower) && Number(upper) === -Number(lower) && Number(upper) >= 0) return `±${upper}`;
@@ -144,15 +148,15 @@
     return new Set(selected == null ? valid : [...selected].filter(id => valid.has(id)));
   }
   const PRINT_CSS = `
-    @page { size: A4 portrait; margin: 24mm 12mm 12mm; }
+    @page { size: A4 portrait; margin: 26mm 12mm 12mm; }
     * { box-sizing: border-box; }
     html { color-scheme: light; }
     body { margin: 0; color: #172033; background: #e9edf3; font: 9.5pt/1.3 "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
     .sheet-wrap { margin: 16px auto; }
     .sheet { width: 210mm; min-height: 297mm; padding: 6mm 12mm 12mm; background: white; transform-origin: top left; }
     .report-content { display: flow-root; }
-    .brand-header { display: grid; grid-template-columns: 42mm minmax(0, 1fr) 42mm; align-items: center; height: 14mm; margin-bottom: 4mm; border-bottom: 1px solid #aab3bf; }
-    .brand-header img { display: block; width: 38mm; height: auto; max-height: 12mm; object-fit: contain; }
+    .brand-header { display: grid; grid-template-columns: 48mm minmax(0, 1fr) 48mm; align-items: center; height: 14mm; margin-bottom: 4mm; border-bottom: 1px solid #aab3bf; }
+    .brand-header img { display: block; width: 46mm; height: auto; max-height: 15mm; object-fit: contain; }
     .brand-header h1 { margin: 0; text-align: center; white-space: nowrap; font-size: 14pt; font-weight: 700; line-height: 1.2; }
     h2 { margin: 3mm 0 1.5mm; font-size: 10.5pt; line-height: 1.3; break-after: avoid; }
     h3 { margin: 2mm 0 1mm; font-size: 9.5pt; break-after: avoid; }

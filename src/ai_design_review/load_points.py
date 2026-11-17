@@ -20,6 +20,31 @@ def canonical_load_point_label(value: Any) -> str:
     return normalize_load_point_label(value).casefold()
 
 
+def clear_load_force_percent_tolerance(item: dict[str, Any]) -> None:
+    for key in ("load_tolerance_percent", "force_tolerance_percent", "load_tolerance_percent_upper", "load_tolerance_percent_lower"):
+        item.pop(key, None)
+
+
+def load_force_tolerance_is_valid(item: dict[str, Any]) -> bool:
+    upper = item.get("load_tolerance_upper")
+    lower = item.get("load_tolerance_lower")
+    percent_upper = item.get("load_tolerance_percent_upper")
+    percent_lower = item.get("load_tolerance_percent_lower")
+    if percent_upper is not None or percent_lower is not None:
+        pu, pl = number(percent_upper), number(percent_lower)
+        return (upper is None and lower is None
+                and item.get("load_tolerance_percent") is None and item.get("force_tolerance_percent") is None
+                and pu is not None and pl is not None and pu >= 0 >= pl)
+    if upper is not None or lower is not None:
+        u, l = number(upper), number(lower)
+        return u is not None and l is not None and u >= l
+    percent = item.get("load_tolerance_percent")
+    if percent is None:
+        percent = item.get("force_tolerance_percent")
+    parsed = number(percent)
+    return percent is None or parsed is not None and parsed >= 0
+
+
 def load_point_confirmation_key(load_point_id: str) -> str:
     return f"load_point_{load_point_id}"
 
@@ -45,6 +70,7 @@ def load_point_is_confirmed(item: Any) -> bool:
         and not item.get("load_force_conflict")
         and not item.get("tolerance_input_draft")
         and item.get("force_tolerance_status") != "uncertain"
+        and load_force_tolerance_is_valid(item)
         and _height_tolerance_is_valid(item)
     )
 
@@ -76,7 +102,7 @@ def load_point_snapshot(item: dict[str, Any]) -> dict[str, Any]:
         "load_tolerance_upper": item.get("load_tolerance_upper"),
         "load_tolerance_lower": item.get("load_tolerance_lower"),
         **({"height_relation": relation_snapshot(item)} if item.get("height_relation") else {}),
-        **{k:item[k] for k in ("load_tolerance_percent", "force_tolerance_percent", "force_tolerance_status", "load_relation_conflict", "load_height_conflict", "load_force_conflict") if k in item},
+        **{k:item[k] for k in ("load_tolerance_percent", "force_tolerance_percent", "load_tolerance_percent_upper", "load_tolerance_percent_lower", "force_tolerance_status", "load_relation_conflict", "load_height_conflict", "load_force_conflict") if k in item},
         "need_human_review": bool(item.get("need_human_review", True)),
     }
 

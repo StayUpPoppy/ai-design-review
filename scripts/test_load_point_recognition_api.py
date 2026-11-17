@@ -55,7 +55,7 @@ def main():
             assert (saved_point["height_tolerance_upper"], saved_point["height_tolerance_lower"]) == (2, -1)
             saved_point["need_human_review"] = False
             exported = build_generation_parameter_package(reopened)["generation_parameters"]["load_points"][0]
-            assert exported["height"] == {"value": 30, "unit": "mm"}
+            assert exported["height"] == {"value": 30, "unit": "mm", "tolerance_upper": 2, "tolerance_lower": -1}
             assert (exported["force"]["tolerance_upper"], exported["force"]["tolerance_lower"]) == (1, -0.5)
             saved_point["height_tolerance_input_draft"] = "±5%"
             assert build_generation_parameter_package(reopened)["generation_parameters"]["load_points"] == []
