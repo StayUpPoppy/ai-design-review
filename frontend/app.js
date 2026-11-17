@@ -104,7 +104,7 @@ function openLoadPointCreateDraft(candidateId = "", values = {}) {
     if (candidateId && existing.candidateId !== candidateId) existing.error = "请先添加或取消当前新增草稿，再核对另一候选。";
     return existing;
   }
-  const draft = { id: createAuditEventId(), candidateId, label: "", height: "", force: "", heightToleranceText: "", toleranceText: "", error: "", ...values };
+  const draft = { id: createAuditEventId(), candidateId, label: "", heightLabel: "", height: "", force: "", heightToleranceText: "", toleranceText: "", error: "", ...values };
   (state.loadPointCreateDrafts ||= new Map()).set(owner, draft);
   return draft;
 }
@@ -1717,11 +1717,14 @@ function refreshParameterPersistenceControls(fields = null) {
     if (param) syncConfirmationControl(row, param, { kind: "parameter", field, review: state.review });
     if (field === "surface_roughness_ra" && param) syncSurfaceRoughnessReferenceRow(row, param);
   });
+  const loadPoints = state.review.spring_parameters?.load_points || [];
+  const heightLabels = SolidWorksExport.loadHeightLabels(loadPoints);
   document.querySelectorAll('.load-point[data-kind="load_point"][data-load-point-id]').forEach((row) => {
-    const point = state.review.spring_parameters?.load_points?.find((item) => item.load_point_id === row.dataset.loadPointId);
+    const point = loadPoints.find((item) => item.load_point_id === row.dataset.loadPointId);
     if (!point) return;
     syncConfirmationControl(row, point, { kind: "load_point", field: loadPointField(point), review: state.review });
     syncLoadPointRenameControls(row, point);
+    syncLoadPointCaptions(row, point, heightLabels.get(point));
   });
   refreshLoadPointSummaries();
   refreshReasonablenessSuggestionControls(fields);
@@ -5199,7 +5202,9 @@ function renderParameterTableHtml(review) {
     const meta = getFieldMeta(field, review);
     return parameterRowHtml(field, params[field] || blankParam(meta.unit), meta);
   });
-  const loadPointRows = (params.load_points || []).map((point, index) => loadPointRowHtml(point, index, review));
+  const loadPoints = params.load_points || [];
+  const heightLabels = SolidWorksExport.loadHeightLabels(loadPoints);
+  const loadPointRows = loadPoints.map((point, index) => loadPointRowHtml(point, index, review, heightLabels.get(point)));
   const totalRows = parameterRows.length + loadPointRows.length;
   return `
     <section class="review-block parameter-review-section">
@@ -6197,15 +6202,25 @@ function loadHeightToleranceControl({ kind, target, role, unit, label, value, er
     </div>`;
 }
 
-function loadPointRowHtml(point, index, review = state.review) {
+function loadPointCaptions(point, label, heightNumber = point.height_label) {
+  const caption = (number, unitLabel) => {
+    const prefix = number ? `${number} · ` : "";
+    return { unit: unitLabel.unit, text: `${prefix}${unitLabel.text}`, html: `${escapeHtml(prefix)}${parameterUnitLabelHtml(unitLabel)}` };
+  };
+  return {
+    height: caption(heightNumber, parameterUnitLabel("height", "高度", { unit: point.height_unit }, { unit: "mm" })),
+    force: caption(label, parameterUnitLabel("force", "力值", { unit: point.force_unit }, { unit: "N" })),
+  };
+}
+
+function loadPointRowHtml(point, index, review = state.review, heightNumber) {
   const canonical = point;
   point = engineeringPoint(point, review);
   const label = point.label || `F${index + 1}`;
   const tolerance = loadPointToleranceDisplay(point, label, review, true);
   const diagnostic = standardizationReport(review).diagnostics.find(item => item.target_field === `load_points.${label}.force`);
   const reasonablenessSeverity = reasonablenessSeverityForField(review, `load_points.${label}`);
-  const heightLabel = parameterUnitLabel("height", "高度", { unit: point.height_unit }, { unit: "mm" });
-  const forceLabel = parameterUnitLabel("force", "力值", { unit: point.force_unit }, { unit: "N" });
+  const { height: heightLabel, force: forceLabel } = loadPointCaptions(point, label, heightNumber);
   const toleranceLabel = `${label}力值公差（绝对公差单位：${forceLabel.unit}；百分比公差：%）`;
   const target = String(point.load_point_id || label);
   const heightTolerance = readLoadHeightTolerance(point);
@@ -6225,16 +6240,16 @@ function loadPointRowHtml(point, index, review = state.review) {
         </div>
       </div>
       <label class="data-input-cell data-primary">
-        <span class="load-point-field-label">${point.height_label ? `${escapeHtml(point.height_label)} · ` : ""}${parameterUnitLabelHtml(heightLabel)}</span>
-        <input data-role="height" aria-label="${escapeHtml(`${point.height_label || label}${heightLabel.text}`)}" value="${escapeHtml(formatEngineeringNumber(point.height))}">
+        <span class="load-point-field-label">${heightLabel.html}</span>
+        <input data-role="height" aria-label="${escapeHtml(heightLabel.text)}" value="${escapeHtml(formatEngineeringNumber(point.height))}">
         <small data-role="height-relation-note">${escapeHtml(point.height_relation ? loadHeightRelationNote(point) : "")}</small>
         ${canonical.unit_pending_fields?.includes("height") ? '<small>原图高度单位待核对，请核实后手填。</small>' : ""}
       </label>
       ${loadHeightToleranceControl({ kind: "load-height", target, role: "height-tolerance", unit: heightLabel.unit,
         label, value: point.height_tolerance_input_draft ?? formatEngineeringTolerance(heightTolerance), error: loadHeightToleranceError(point) })}
       <label class="data-input-cell data-secondary">
-        <span class="load-point-field-label">${point.height_label ? `${escapeHtml(label)} · ` : ""}${parameterUnitLabelHtml(forceLabel)}</span>
-        <input data-role="force" aria-label="${escapeHtml(`${label}${forceLabel.text}`)}" value="${escapeHtml(formatEngineeringNumber(point.force))}">
+        <span class="load-point-field-label">${forceLabel.html}</span>
+        <input data-role="force" aria-label="${escapeHtml(forceLabel.text)}" value="${escapeHtml(formatEngineeringNumber(point.force))}">
         ${point.load_force_conflict ? `<small data-role="force-conflict-note">${escapeHtml(`力值待核对${point.force_alternatives?.length ? `（${point.force_alternatives.map(formatEngineeringNumber).join(" / ")} ${forceLabel.unit}）` : ""}`)}</small>` : ""}
         ${canonical.unit_pending_fields?.includes("force") ? '<small>原图力值单位待核对，请核实后手填。</small>' : ""}
       </label>
@@ -6277,7 +6292,8 @@ function renderLoadPointSectionHtml(review, rows) {
         </div>
       ` : ""}
       <form class="load-point-create" data-kind="load_point_create" data-create-draft-id="${escapeHtml(creation?.id || "")}"${creation?.candidateId ? ` data-candidate-id="${escapeHtml(creation.candidateId)}"` : ""}${creation ? "" : " hidden"}>
-        <label class="load-create-label"><span class="load-point-field-label">编号</span><input data-role="new-load-label" placeholder="例如：F1" value="${escapeHtml(creation?.label || "")}"></label>
+        <label class="load-create-label"><span class="load-point-field-label">力值编号</span><input data-role="new-load-label" placeholder="例如：F1" value="${escapeHtml(creation?.label || "")}"></label>
+        <label class="load-create-height-label"><span class="load-point-field-label">高度编号（可选）</span><input data-role="new-load-height-label" placeholder="留空时自动编号" value="${escapeHtml(creation?.heightLabel || "")}"></label>
         <label class="data-primary"><span class="load-point-field-label">${parameterUnitLabelHtml(parameterUnitLabel("height", "高度", {}, { unit: heightUnit }))}</span><input data-role="new-load-height" inputmode="decimal" value="${escapeHtml(loadPointDraftView(creation, "height", true))}"></label>
         ${loadHeightToleranceControl({ kind: "load-height-create", target: creation?.id, role: "new-load-height-tolerance", unit: heightUnit,
           label: "新增载荷", value: loadPointDraftView(creation, "heightToleranceText", true), optional: true })}
@@ -7015,8 +7031,18 @@ function assessGenerationReadiness(review) {
   applyGenerationDefaults(review);
   ensureLoadPointIds(review);
   const parameters = review.spring_parameters || {};
+  const ends = generationSourceParameter(parameters, "end_coils_closed");
+  const activeOptional = (ends?.need_human_review === false || ends?.confirmation_source === "human_confirmed")
+    && generationContractState(parameters, "end_coils_closed") === "confirmed"
+    && generationContractValue("end_coils_closed", ends.value) === 0;
+  const ignoreActiveDraft = activeOptional && ["missing", "pending"].includes(generationContractState(parameters, "active_coils"));
   const reasonableness = review.parameter_reasonableness || {};
   const reasonablenessStale = Boolean(review.parameter_reasonableness_stale);
+  const blockedIssues = (reasonableness.issues || []).filter(issue => issue?.severity === "blocked");
+  const relevantBlockedIssues = blockedIssues.filter(issue => !ignoreActiveDraft
+    || !["SPRING-GEO-ACTIVE_COILS", "SPRING-GEO-COIL-COUNT"].includes(issue.rule_id));
+  const reasonablenessBlocked = !reasonablenessStale && reasonableness.status === "blocked"
+    && (!blockedIssues.length || relevantBlockedIssues.length > 0);
   const missing = [];
   const pending = [];
   const warnings = [];
@@ -7027,6 +7053,8 @@ function assessGenerationReadiness(review) {
   if (review.diameter_linkage?.status === "invalid") contractIssues.push(generationIssue(review.diameter_linkage.driver_field, review.diameter_linkage.reason || "三径联动条件无效，请核对。"));
   COMPRESSION_GENERATION_CORE_FIELDS.forEach((field) => {
     const state = generationContractState(parameters, field);
+    const optional = field === "active_coils" && activeOptional;
+    if (optional && ["missing", "pending"].includes(state)) return;
     if (state === "missing") missing.push(generationIssue(field, "缺少重新生图所需的核心参数。"));
     else if (state === "pending") pending.push(generationIssue(field, "参数已有值，但仍需人工确认。"));
     else if (state === "invalid") {
@@ -7036,7 +7064,7 @@ function assessGenerationReadiness(review) {
         contractIssues.push(generationIssue(field, error.message || String(error)));
       }
     }
-    else confirmed += 1;
+    else if (!optional) confirmed += 1;
   });
   const flatteningWarning = Flattening.warning(parameters.flattening);
   if (flatteningWarning) warnings.push(generationIssue("flattening", flatteningWarning, "是否制扁"));
@@ -7125,7 +7153,7 @@ function assessGenerationReadiness(review) {
     }
   });
   pending.push(...SolidWorksExport.loadFields(confirmedLoadPoints).issues);
-  const status = (!reasonablenessStale && reasonableness.status === "blocked") || contractIssues.length
+  const status = reasonablenessBlocked || contractIssues.length
     ? "blocked"
     : missing.length ? "needs_input" : pending.length ? "needs_confirmation" : warnings.length ? "ready_with_warnings" : "ready";
   const summary = status === "blocked"
@@ -7144,7 +7172,7 @@ function assessGenerationReadiness(review) {
     pending_fields: dedupeGenerationIssues(pending),
     warnings: dedupeGenerationIssues(warnings),
     confirmed_core_count: confirmed,
-    core_field_count: COMPRESSION_GENERATION_CORE_FIELDS.length,
+    core_field_count: COMPRESSION_GENERATION_CORE_FIELDS.length - Number(activeOptional),
     defaulted_fields: review.generation_defaulted_fields || [],
     parameter_reasonableness: reasonableness,
     blocking_reasonableness: contractIssues,
@@ -8475,14 +8503,18 @@ function syncLoadPointRenameControls(row, point) {
   const status = editor.querySelector('[data-role="rename-status"]');
   status.textContent = draft?.error || (saving ? "正在保存编号…" : "");
   status.classList.toggle("failed", Boolean(draft?.error));
-  const heightLabel = parameterUnitLabel("height", "高度", { unit: point.height_unit }, { unit: "mm" });
-  const forceLabel = parameterUnitLabel("force", "力值", { unit: point.force_unit }, { unit: "N" });
-  const heightField = row.querySelector('[data-role="height"]');
-  heightField?.setAttribute("aria-label", `${point.height_label || label}${heightLabel.text}`);
-  const heightCaption = heightField?.closest("label")?.querySelector(".load-point-field-label");
-  if (heightCaption) heightCaption.innerHTML = `${point.height_label ? `${escapeHtml(point.height_label)} · ` : ""}${parameterUnitLabelHtml(heightLabel)}`;
-  row.querySelector('[data-role="force"]')?.setAttribute("aria-label", `${label}${forceLabel.text}`);
-  row.querySelector('[data-role="load-tolerance"]')?.setAttribute("aria-label", `${label}公差（绝对公差单位：${forceLabel.unit}；百分比公差：%）`);
+}
+
+function syncLoadPointCaptions(row, point, heightNumber) {
+  const label = point.label || `F${Number(row.dataset.index) + 1}`;
+  const captions = loadPointCaptions(engineeringPoint(point, state.review), label, heightNumber);
+  for (const [field, caption] of Object.entries(captions)) {
+    const input = row.querySelector(`[data-role="${field}"]`);
+    input?.setAttribute("aria-label", caption.text);
+    const element = input?.closest("label")?.querySelector(".load-point-field-label");
+    if (element && element.textContent !== caption.text) element.innerHTML = caption.html;
+  }
+  row.querySelector('[data-role="load-tolerance"]')?.setAttribute("aria-label", `${label}力值公差（绝对公差单位：${captions.force.unit}；百分比公差：%）`);
 }
 
 function bindLoadPointRename(row, point, review, messageId, root, changed) {
@@ -9450,7 +9482,7 @@ function formatCompactNumber(value) {
 function bindLoadPointCreateForm(root, review, messageId, editorIsCurrent) {
   const form = root.querySelector('[data-kind="load_point_create"]');
   if (!form) return null;
-  const fields = { label: "new-load-label", height: "new-load-height", heightToleranceText: "new-load-height-tolerance",
+  const fields = { label: "new-load-label", heightLabel: "new-load-height-label", height: "new-load-height", heightToleranceText: "new-load-height-tolerance",
     force: "new-load-force", toleranceText: "new-load-tolerance" };
   const current = () => editorIsCurrent() && !reviewReadOnly() && loadPointCreateDraft(review)?.id === form.dataset.createDraftId;
   const error = message => {
@@ -9469,14 +9501,15 @@ function bindLoadPointCreateForm(root, review, messageId, editorIsCurrent) {
   });
   for (const [field, role] of Object.entries(fields)) {
     const input = form.querySelector(`[data-role="${role}"]`);
-    if (field !== "label") {
+    const isLabel = field === "label" || field === "heightLabel";
+    if (!isLabel) {
       bindEngineeringInputPrecision(input, () => loadPointDraftView(loadPointCreateDraft(), field),
         () => loadPointDraftView(loadPointCreateDraft(), field, true));
     }
     const update = () => {
       if (!current()) return;
       const draft = loadPointCreateDraft();
-      if (field === "label") draft.label = input.value;
+      if (isLabel) draft[field] = input.value;
       else error(updateLoadPointDraft(draft, field, input.value));
       getToleranceEditor()?.sync(root);
     };
@@ -9490,23 +9523,24 @@ function bindLoadPointCreateForm(root, review, messageId, editorIsCurrent) {
     if (draft.candidateId && candidate?.status !== "pending") { error("该候选已处理，请取消当前新增草稿后重新核对。"); return; }
     ensureLoadPointIds(review);
     const label = normalizeLoadPointLabel(draft.label), height = Number(draft.height);
+    const heightLabel = normalizeLoadPointLabel(draft.heightLabel);
     const force = draft.force.trim() ? Number(draft.force) : null;
     const tolerance = ToleranceValues.parse(draft.toleranceText, { load: true, unit: "N" });
     const heightTolerance = ToleranceValues.parse(draft.heightToleranceText, { unit: "mm" });
-    if (!label) { error("请填写唯一的测试点编号，例如 F1。"); return; }
-    if (isDuplicateLoadPointLabel(review, label)) { error(`测试点编号“${label}”已经存在。`); return; }
+    if (!label) { error("请填写唯一的力值编号，例如 F1。"); return; }
+    if (isDuplicateLoadPointLabel(review, label)) { error(`力值编号“${label}”已经存在。`); return; }
     if (!Number.isFinite(height) || height <= 0 || force != null && (!Number.isFinite(force) || force < 0)) { error("高度必须大于 0，力值不能为负数。"); return; }
     if (!tolerance.ok || draft.invalidFields?.toleranceText) { error(tolerance.error || "力值公差格式有误。"); return; }
     if (!heightTolerance.ok || draft.invalidFields?.heightToleranceText) { error(heightTolerance.error || "高度公差格式有误。"); return; }
     const point = {
       load_point_id: createLoadPointId(review), label, height, height_unit: "mm", force, force_unit: "N",
+      ...(heightLabel ? { height_label: heightLabel } : {}),
       source: ["human_added"], evidence: "人工新增载荷测试点", confidence: 1, need_human_review: true,
     };
     if (candidate) {
       point.evidence = candidate.evidence || "人工核对载荷候选";
       point.source_context = structuredClone(candidate.source_context || {});
       point.recognition_candidate_id = candidate.candidate_id;
-      if (draft.heightLabel) point.height_label = draft.heightLabel;
     }
     applyManualLoadTolerance(point, tolerance);
     applyLoadHeightTolerance(point, heightTolerance);

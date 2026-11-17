@@ -390,7 +390,17 @@ def run():
             assert notes.count("每端磨270°") == 1 and notes.count("每端磨300°") == 1
         if name == "end_open_active_pending":
             readiness = assess_generation_readiness(review)
-            assert readiness["status"] == "needs_confirmation", readiness
+            assert readiness["confirmed_core_count"] == readiness["core_field_count"] == 7
+            assert not any(issue["field"] == "active_coils" for issue in readiness["pending_fields"])
+            GenerationParameterPackageV2.model_validate(package)
+            closed_snapshot = deepcopy(package)
+            closed_snapshot["generation_parameters"]["spring_parameters"]["end_coils_closed"]["value"] = 1
+            try:
+                GenerationParameterPackageV2.model_validate(closed_snapshot)
+            except ValueError as exc:
+                assert "有效圈数" in str(exc)
+            else:
+                raise AssertionError("Closed-end V2 packages must include active coils")
         if name == "end_open_pending":
             assert preview["modelParameters"]["是否并紧"] is None and "有效圈数n" in preview["modelParameters"]
         if name == "end_different_conditions":

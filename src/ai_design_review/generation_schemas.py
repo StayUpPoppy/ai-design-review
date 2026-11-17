@@ -198,7 +198,12 @@ class GenerationParameterPackageV1(BaseModel):
 
 
 class CompressionSpringGenerationInputsV2(CompressionSpringGenerationInputsV1):
-    """V2 keeps every V1 geometry input and adds optional material/flattening properties."""
+    """V2 allows open-end jobs to omit active coils."""
+
+    active_coils: GenerationPositiveCoilParameter | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+        description="有效圈数为正数且不得大于总圈数；已确认两端不并紧时可省略。",
+    )
 
     material: GenerationMaterialParameter | None = Field(
         default=None,
@@ -210,10 +215,19 @@ class CompressionSpringGenerationInputsV2(CompressionSpringGenerationInputsV1):
         description="可选制扁工艺。仅人工确认的整数0（不制扁）/1（制扁）发送；单位及公差为空。缺失或未确认不阻止生图且不向SW输出。",
     )
 
+    @model_validator(mode="after")
+    def validate_active_coils(self) -> CompressionSpringGenerationInputsV2:
+        if self.active_coils is None:
+            if self.end_coils_closed.value != 0:
+                raise ValueError("两端并紧时需要填写并确认有效圈数。")
+        elif self.active_coils.value > self.total_coils.value:
+            raise ValueError("有效圈数不能大于总圈数。")
+        return self
+
 
 class GenerationParametersV2(GenerationParametersV1):
     spring_parameters: CompressionSpringGenerationInputsV2 = Field(
-        description="SolidWorks 的八个必填建模字段，以及可选的材料、是否制扁字段。"
+        description="七个必填字段、并紧时必填的有效圈数，以及可选的材料、是否制扁字段。"
     )
     technical_requirements_text: str = Field(
         default="",
@@ -224,7 +238,7 @@ class GenerationParametersV2(GenerationParametersV1):
 
 class GenerationExportPolicyV2(BaseModel):
     parameter_filter: Literal["frozen_compression_inputs_v2_human_confirmed_only"] = Field(
-        description="V2 固定参数白名单策略：八个必填建模字段加可选已确认材料。"
+        description="V2 固定参数白名单策略，已确认两端不并紧时允许省略有效圈数。"
     )
     readiness_is_advisory: bool = Field(description="参数包可导出但创建任务仍必须通过服务端就绪检查。")
 

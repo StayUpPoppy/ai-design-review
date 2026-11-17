@@ -171,9 +171,9 @@ SolidWorks 通过 `POST /api/solidworks/status` 回调 `generating_3d`、`genera
 
 状态回调在联调阶段不使用应用层鉴权，**只能对可信内网开放**。Docker Nginx 会按 `SOLIDWORKS_CALLBACK_ALLOWED_CIDR` 限制来源；默认示例为 `192.168.31.0/24`。如果直接部署 API，请在防火墙或反向代理配置同样的来源限制，绝不能将此接口暴露到公网。
 
-`spring_generation_parameters/v2` 是当前圆柱螺旋压缩弹簧的内部冻结参数包。`generation_parameters.spring_parameters` 固定包含 `wire_diameter`、`mean_diameter`、`free_length`、`total_coils`、`active_coils`、`handedness`、`end_grinding`、`end_coils_closed` 八个必填建模字段，并可选包含已人工确认的 `material` 和 `flattening`（是否制扁，整数0/1）；SolidWorks 使用中径与线径计算外径、内径，并使用材料值设置三维模型材料和二维图材料标注。材料缺失或待确认时任务仍可创建，但参数包会省略该字段并提示警告。中文技术要求同时提供结构化 `technical_requirements` 和内部 `technical_requirements_text`；最终成图文字以 `solidworks_preview.technicalRequirements.技术要求` 为准。中径缺失时优先由已确认的外径或内径与线径计算，无法计算时补入 23 mm 默认候选值并保持待人工确认；旋向没有默认值。Mock Worker 仍使用 `mock_solidworks_compression_v2` 能力，通过兼容 Worker API 运行。
+`spring_generation_parameters/v2` 是当前圆柱螺旋压缩弹簧的内部冻结参数包。`generation_parameters.spring_parameters` 固定包含 `wire_diameter`、`mean_diameter`、`free_length`、`total_coils`、`handedness`、`end_grinding`、`end_coils_closed` 七个必填建模字段。两端不并紧已确认时允许省略 `active_coils`，其余端部状态下有效圈数仍须填写并确认；参数包可选包含已人工确认的 `material` 和 `flattening`（是否制扁，整数0/1）；SolidWorks 使用中径与线径计算外径、内径，并使用材料值设置三维模型材料和二维图材料标注。材料缺失或待确认时任务仍可创建，但参数包会省略该字段并提示警告。中文技术要求同时提供结构化 `technical_requirements` 和内部 `technical_requirements_text`；最终成图文字以 `solidworks_preview.technicalRequirements.技术要求` 为准。中径缺失时优先由已确认的外径或内径与线径计算，无法计算时补入 23 mm 默认候选值并保持待人工确认；旋向没有默认值。Mock Worker 仍使用 `mock_solidworks_compression_v2` 能力，通过兼容 Worker API 运行。
 
-标准化是可选的审图辅助功能，不是创建生图任务的必备条件。八个建模字段、中文技术要求均已人工确认且参数合理性检查不存在阻断问题时，可以按当前参数直接生图；未选择标准、标准尚未确认、建议未处理或标准化结果过期只会产生 `ready_with_warnings` 提示。直接生图与标准化后生图均使用相同的 `generation_job.parameter_package` 冻结参数结构，未标准化时 `standard_context` 保持空值。
+标准化是可选的审图辅助功能，不是创建生图任务的必备条件。必填建模字段和中文技术要求均已人工确认且参数合理性检查不存在阻断问题时，可以按当前参数直接生图；未选择标准、标准尚未确认、建议未处理或标准化结果过期只会产生 `ready_with_warnings` 提示。直接生图与标准化后生图均使用相同的 `generation_job.parameter_package` 冻结参数结构，未标准化时 `standard_context` 保持空值。
 
 也可以显式传入候选识别结果：
 

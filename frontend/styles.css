@@ -1233,7 +1233,7 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-areas:
-    "label label"
+    "label height-label"
     "primary secondary"
     "height-tolerance tertiary";
   gap: 9px;
@@ -1249,6 +1249,7 @@ button:disabled {
 .load-point-create > label,
 .load-point-create-tolerance { min-width: 0; }
 .load-point-create > .load-create-label { grid-area: label; }
+.load-point-create > .load-create-height-label { grid-area: height-label; }
 .load-point-create > .data-primary { grid-area: primary; }
 .load-point-create > .data-secondary { grid-area: secondary; }
 .load-point-create > .load-point-create-tolerance { grid-area: tertiary; }
@@ -2572,7 +2573,16 @@ button:disabled {
 }
 
 @container load-point-section (width < 400px) {
-  .load-point-create,
+  .load-point-create {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "label"
+      "height-label"
+      "primary"
+      "height-tolerance"
+      "secondary"
+      "tertiary";
+  }
   .load-point-table > .data-row {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:

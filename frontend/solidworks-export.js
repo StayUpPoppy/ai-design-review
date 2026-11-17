@@ -69,6 +69,7 @@
   }
   const pointLabel = value => String(value || "").trim().replace(/\s+/g, " ");
   const pointKey = value => pointLabel(value).toLowerCase();
+  const reservedLoadPointKeys = new Set(toleranceFields.map(([label]) => label));
 
   function forceTolerance(force) {
     let { tolerance_upper: upper, tolerance_lower: lower } = force;
@@ -83,41 +84,50 @@
     return `${upper < 0 ? "-" : "+"}${Math.abs(upper)}${unit}${lower > 0 ? "+" : "-"}${Math.abs(lower)}${unit}`;
   }
 
-  function loadFields(points) {
-    const working = points.filter(point => point.confirmation_source === "human_confirmed"
-      && point.load_role !== "solid" && !solidLabel(point.label) && pointKey(point.height_label) !== "hb");
-    const reserved = new Set(toleranceFields.map(([label]) => label));
-    const forceKeys = new Set(working.map(point => pointKey(point.label)));
-    const names = working.map(point => pointLabel(point.height_label));
-    const occupied = new Set([...reserved, ...forceKeys, ...names.filter(Boolean).map(pointKey)]);
-    working.forEach((point, index) => {
-      const suffix = point.label.match(/[0-9]+$/);
-      const candidate = suffix ? `H${suffix[0]}` : working.length === 1 ? "H" : "";
-      if (!names[index] && candidate && !occupied.has(pointKey(candidate))) {
-        names[index] = candidate;
+  function loadHeightLabels(points) {
+    const names = new Map(points
+      .filter(point => pointLabel(point?.label) && point.load_role !== "solid"
+        && !solidLabel(point.label) && pointKey(point.height_label) !== "hb")
+      .map(point => [point, pointLabel(point.height_label)]));
+    const occupied = new Set(reservedLoadPointKeys);
+    for (const [point, name] of names) {
+      occupied.add(pointKey(point.label));
+      if (name) occupied.add(pointKey(name));
+    }
+    for (const [point, name] of names) {
+      if (name) continue;
+      const suffix = pointLabel(point.label).match(/[0-9]+$/);
+      const candidate = suffix ? `H${suffix[0]}` : names.size === 1 ? "H" : "";
+      if (candidate && !occupied.has(pointKey(candidate))) {
+        names.set(point, candidate);
         occupied.add(pointKey(candidate));
       }
-    });
+    }
     let next = 1;
-    names.forEach((name, index) => {
-      if (name) return;
+    for (const [point, name] of names) {
+      if (name) continue;
       while (occupied.has(`h${next}`)) next += 1;
-      names[index] = `H${next}`;
+      names.set(point, `H${next}`);
       occupied.add(`h${next}`);
-    });
+    }
+    return names;
+  }
 
+  function loadFields(points) {
+    const names = loadHeightLabels(points.filter(point => point.confirmation_source === "human_confirmed"));
+    const forceKeys = new Set(Array.from(names.keys(), point => pointKey(point.label)));
     const heights = new Map(), forces = new Map(), tolerances = new Map();
     const heightKeys = new Map(), seenForces = new Set(), issues = [];
-    working.forEach((point, index) => {
-      const { label, height, force } = point, heightLabel = names[index];
+    names.forEach((heightLabel, point) => {
+      const { label, height, force } = point;
       const forceKey = pointKey(label), heightKey = pointKey(heightLabel);
       const issue = reason => issues.push({ field: `load_points.${label}`, label: `载荷测试点 ${label}`, reason });
-      if (seenForces.has(forceKey) || reserved.has(forceKey)) {
+      if (seenForces.has(forceKey) || reservedLoadPointKeys.has(forceKey)) {
         issue(`力值编号“${label}”重复或与尺寸字段同名，请修改编号。`);
         return;
       }
       seenForces.add(forceKey);
-      if (forceKeys.has(heightKey) || reserved.has(heightKey)) {
+      if (forceKeys.has(heightKey) || reservedLoadPointKeys.has(heightKey)) {
         issue(`高度编号“${heightLabel}”与力值编号或尺寸字段同名，请修改编号。`);
         return;
       }
@@ -466,5 +476,5 @@
       confirmation_source: "human_confirmed" };
   }
   globalThis.SolidWorksExport = { buildPreview, technicalText, technicalProjection, automaticMatches, outputBasis, refreshDeletions, deletionFor,
-    exportLoadPoint, loadFields, toleranceIssues, standaloneRoughness, confirmedRoughness, roughnessMatches, currentRoughness, canPromoteRoughness };
+    exportLoadPoint, loadHeightLabels, loadFields, toleranceIssues, standaloneRoughness, confirmedRoughness, roughnessMatches, currentRoughness, canPromoteRoughness };
 })();

@@ -40,6 +40,7 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(new URL("../frontend/engineering-units.js", import.meta.url), "utf8"), context);
+vm.runInContext(fs.readFileSync(new URL("../frontend/solidworks-export.js", import.meta.url), "utf8"), context);
 vm.runInContext(block("let engineeringDisplay", "function changeEngineeringDisplay"), context);
 vm.runInContext(block("function parameterDisplayUnit", "function surfaceRoughnessCandidatesHtml"), context);
 vm.runInContext(block("function parameterValueControlHtml", "function normalizeHandednessValue"), context);
@@ -99,13 +100,14 @@ for (const point of [
   { load_point_id: "two", label: "F2", height: 1.8, force: 3, height_unit: "cm", force_unit: "kN", display_tolerance: "±10%", tolerance_basis: "图纸依据", need_human_review: true },
 ]) {
   const before = JSON.stringify(point);
-  const html = context.loadPointRowHtml(point, 0);
+  const heightNumber = context.SolidWorksExport.loadHeightLabels([point]).get(point);
+  const html = context.loadPointRowHtml(point, 0, context.state.review, heightNumber);
   const heightUnit = point.height_unit || "mm", forceUnit = point.force_unit || "N";
   assert.ok(html.includes(`高度<span class="parameter-label-unit">（${heightUnit}）</span>`));
   assert.ok(html.includes(`力值<span class="parameter-label-unit">（${forceUnit}）</span>`));
   assert.match(html, new RegExp(`<strong title="${point.label}">${point.label}</strong>`));
-  assert.ok(html.includes(`aria-label="${point.label}高度（${heightUnit}）"`));
-  assert.ok(html.includes(`aria-label="${point.label}力值（${forceUnit}）"`));
+  assert.ok(html.includes(`aria-label="${heightNumber} · 高度（${heightUnit}）"`));
+  assert.ok(html.includes(`aria-label="${point.label} · 力值（${forceUnit}）"`));
   assert.ok(html.includes(`value="${point.display_tolerance}"`));
   assert.ok(html.includes(`绝对公差单位与力值一致（${forceUnit}）`));
   assert.equal(JSON.stringify(point), before);

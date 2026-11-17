@@ -14,7 +14,7 @@ base.spring_parameters.load_points.push({
   need_human_review:true,height_tolerance_status:'uncertain',
 });
 base.load_point_diagnostics = [1,2].map(i=>({candidate_id:`candidate-${i}`,status:'pending',reason:'候选验收',evidence:'原始候选依据',
-  original_candidate:{reported_units:{height_unit:'cm',force_unit:'kN'},value:{label:`F${29+i}`,height:.5,height_unit:'cm',force:.02,force_unit:'kN',load_tolerance_upper:.001,load_tolerance_lower:-.002}}}));
+  original_candidate:{reported_units:{height_unit:'cm',force_unit:'kN'},value:{label:`F${29+i}`,height_label:`H${29+i}`,height:.5,height_unit:'cm',force:.02,force_unit:'kN',load_tolerance_upper:.001,load_tolerance_lower:-.002}}}));
 const models = new Map(['a','b'].map(id=>[id,{review:structuredClone(base),revision:1}]));
 const catalog = JSON.parse(fs.readFileSync('config/compression_material_catalog.json','utf8'));
 const front=path.resolve('frontend'), server=http.createServer((req,res)=>{
@@ -177,12 +177,14 @@ try {
   assert.equal(await field('label').inputValue(),'F22');assert.match(await form.locator('[data-role="load-point-create-error"]').innerText(),/先添加或取消/);
   await cancel();await candidate(1).click();
   assert.deepEqual(await Promise.all([field('label').inputValue(),field('height').inputValue(),field('force').inputValue()]),['F30','5','20']);
+  assert.equal(await field('height-label').inputValue(),'H30');
   assert.equal(await field('height-tolerance').inputValue(),'');
   await field('height-tolerance').fill('+0.2/0');
   await edit();await mode('pair');assert.equal(Number(await upper().inputValue()),1);assert.equal(Number(await lower().inputValue()),-2);
   assert.equal(await editor.locator('[data-tolerance-preview]').innerText(),'18 ～ 21 N');await action('save').click();
   await candidate(2).click();assert.equal(await field('label').inputValue(),'F30');
   await add();p=await point('F30');assert.equal(p.recognition_candidate_id,'candidate-1');assert.equal(p.evidence,'原始候选依据');
+  assert.equal(p.height_label,'H30');
   assert.deepEqual([p.load_tolerance_upper,p.load_tolerance_lower],[1,-2]);
   assert.deepEqual([p.height,p.height_tolerance_upper,p.height_tolerance_lower],[5,.2,0]);
   assert.equal(await page.evaluate(()=>state.review.load_point_diagnostics[0].status),'promoted');
@@ -221,6 +223,8 @@ try {
   p=await point('F70'); assert.deepEqual([p.load_tolerance_percent_upper,p.load_tolerance_percent_lower,p.need_human_review],[0,-5,true]);
   await row('F70').locator('[data-role="confirm"]').click(); await flush();
   assert.equal(await page.evaluate(()=> makeGenerationParameterPackage().solidworks_preview.modelParametersTolerance.F70),'+0%-5%');
+  assert.equal((await point('F70')).height_label,undefined);
+  assert.equal(await page.evaluate(()=> makeGenerationParameterPackage().solidworks_preview.modelHeightPoints.H70),20);
   await row('F70').locator('[data-role="rename-load-point"]').click();
   await row('F70').locator('[data-role="height-label"]').fill('H71');
   await row('F70').locator('[data-role="save-load-label"]').click(); await flush();
@@ -229,6 +233,25 @@ try {
   await panel.locator('[data-tolerance-action="clear"]').click();
   await panel.locator('[data-tolerance-action="save"]').click(); await flush();
   assert.equal((await point('F70')).load_tolerance_percent_lower,undefined);
+  await fresh('P1','100');
+  await field('height-label').fill(' H3 ');
+  await field('height-tolerance').fill('±0.3'); await field('tolerance').fill('±2');
+  await add(); await row('P1').locator('[data-role="confirm"]').click(); await flush();
+  await page.reload(); await page.waitForFunction(()=>state.identityReady&&state.materialCatalog.status==='ready'); await open();
+  assert.equal((await point('P1')).height_label,'H3');
+  assert.match(await row('P1').locator('.data-primary .load-point-field-label').innerText(),/^H3 · 高度/);
+  const labeledPreview = await page.evaluate(()=>makeGenerationParameterPackage().solidworks_preview);
+  assert.equal(labeledPreview.modelHeightPoints.H3,20);
+  assert.equal(labeledPreview.modelForcePoints.P1,100);
+  assert.equal(labeledPreview.modelParametersTolerance.H3,.3);
+  assert.equal(labeledPreview.modelParametersTolerance.P1,'±2N');
+  await fresh('P2','101'); await field('height-label').fill('H3'); await field('height-tolerance').fill('±0.3');
+  await add(); await row('P2').locator('[data-role="confirm"]').click(); await flush();
+  assert.equal(await page.evaluate(()=>makeGenerationParameterPackage().solidworks_preview.modelHeightPoints.H3),20);
+  await fresh('P3','102'); await field('height-label').fill('H3'); await field('height').fill('21');
+  await add(); await row('P3').locator('[data-role="confirm"]').click(); await flush();
+  const conflict = await page.evaluate(()=>assessGenerationReadiness(state.review).pending_fields.find(item=>item.field==='load_points.P3'));
+  assert.match(conflict.reason,/H3.*不一致/);
   await fresh('FX','20');await edit();await mode('pair');await upper().fill('+0.1');await lower().fill('-0.2');
   fs.mkdirSync('outputs/load-point-create-qa',{recursive:true});
   for(const [name,pane] of [['wide',760],['sidebar',460],['narrow',340]]){
@@ -237,17 +260,70 @@ try {
     const m=await form.evaluate(form=>{
       const box=n=>n.getBoundingClientRect(),all=[...form.querySelectorAll('[data-role^="new-load-"]')],edit=form.querySelector('.tolerance-editor');
       const ordered = ['height','height-tolerance','force','tolerance'].map(name=>box(form.querySelector(`[data-role="new-load-${name}"]`)));
+      const [forceLabel,heightLabel] = ['label','height-label'].map(name=>box(form.querySelector(`[data-role="new-load-${name}"]`)));
       return {width:form.clientWidth,columns:getComputedStyle(form).gridTemplateColumns.split(' ').length,overflow:form.scrollWidth>form.clientWidth+1,
         editorFits:box(edit).width<=form.clientWidth,inputsFit:all.every(input=>box(input).x>=box(form).x&&box(input).right<=box(form).right),
         preview:edit.querySelector('[data-tolerance-preview]').textContent,
         equalToleranceHeights: Math.abs(ordered[1].height-ordered[3].height)<1,
         paired: Math.abs(ordered[0].x-ordered[1].x)<1 && Math.abs(ordered[2].x-ordered[3].x)<1,
-        stacked: ordered.every((rect,index)=>!index || rect.top>=ordered[index-1].bottom-1)};
+        stacked: ordered.every((rect,index)=>!index || rect.top>=ordered[index-1].bottom-1),
+        labelsAlign: heightLabel.top===forceLabel.top && heightLabel.left>forceLabel.left,
+        labelsStack: heightLabel.top>=forceLabel.bottom};
     });
     assert.equal(m.columns,name==='narrow'?1:2);assert.equal(m.overflow,false);assert.equal(m.editorFits,true);assert.equal(m.inputsFit,true);assert.equal(m.preview,'19.8 ～ 20.1 N');
     assert.equal(m.paired,true);assert.equal(m.stacked,name==='narrow');assert.equal(m.equalToleranceHeights,true);
+    assert.equal(m.labelsAlign,name!=='narrow'); assert.equal(m.labelsStack,name==='narrow');
     if(!process.env.SKIP_UI_QA_SCREENSHOTS)await page.screenshot({path:`outputs/load-point-create-qa/${name}.png`});
   }
   await cancel();assert.deepEqual(errors,[]);
-  console.log('PASS: new-load tolerance modes, live range, isolated drafts, keyboard, invalid-input blocking, candidate units, add/confirm, retry/reopen and wide/narrow layout; mocked API only');
+
+  models.get('b').review.spring_parameters.load_points = [];
+  await page.reload(); await page.waitForFunction(()=>state.identityReady&&state.materialCatalog.status==='ready'); await open('b');
+  const captions = async (force, height) => {
+    assert.equal(await row(force).locator('.data-primary .load-point-field-label').textContent(), `${height} · 高度（mm）`);
+    assert.equal(await row(force).locator('.data-secondary .load-point-field-label').textContent(), `${force} · 力值（N）`);
+  };
+  const rename = async (force, newForce, height) => {
+    await row(force).locator('[data-role="rename-load-point"]').click();
+    await row(force).locator('[data-role="label"]').fill(newForce);
+    await row(force).locator('[data-role="height-label"]').fill(height);
+    await row(force).locator('[data-role="save-load-label"]').click();
+    await flush();
+    await row(newForce).locator('[data-role="rename-editor"]').waitFor({state:'hidden'});
+  };
+  await fresh('P','100'); await add(); await captions('P','H');
+  assert.equal((await point('P')).height_label,undefined);
+  await fresh('F4','150'); await field('height').fill('19'); await add(); await captions('F4','H4');
+  await fresh('P4','200'); await field('height').fill('18'); await add(); await captions('P4','H2');
+  await captions('P','H1');
+  await row('F4').locator('[data-role="rename-load-point"]').click();
+  assert.equal(await row('F4').locator('[data-role="height-label"]').inputValue(),'');
+  await row('F4').locator('[data-role="label"]').fill('P6');
+  await row('F4').locator('[data-role="height-label"]').fill('H8');
+  await captions('F4','H4');
+  await row('F4').locator('[data-role="cancel-load-label"]').click();
+  await captions('F4','H4');
+  await rename('F4','P6','');
+  await captions('P6','H6'); await captions('P4','H4');
+  await rename('P6','F4','H8');
+  await captions('F4','H8'); await captions('P4','H4');
+  assert.equal((await point('F4')).height_label,'H8');
+  await rename('F4','F4','');
+  await captions('F4','H4'); await captions('P4','H2');
+  for (const label of ['P','F4','P4']) {
+    await row(label).locator('[data-role="confirm"]').click(); await flush();
+    assert.equal((await point(label)).height_label,undefined);
+  }
+  const pointPreview = () => page.evaluate(()=>makeGenerationParameterPackage().solidworks_preview);
+  const preview = await pointPreview();
+  assert.deepEqual(preview.modelHeightPoints,{H1:20,H4:19,H2:18});
+  assert.deepEqual(preview.modelForcePoints,{P:100,F4:150,P4:200});
+  await row('F4').locator('[data-role="delete-load-point"]').click(); await flush();
+  await captions('P4','H4');
+  await page.reload(); await page.waitForFunction(()=>state.identityReady&&state.materialCatalog.status==='ready'); await open('b');
+  await captions('P','H1'); await captions('P4','H4');
+  assert.equal((await point('P4')).height_label,undefined);
+  assert.deepEqual((await pointPreview()).modelHeightPoints,{H1:20,H4:18});
+  assert.deepEqual(errors,[]);
+  console.log('PASS: new-load tolerances and layout, automatic and explicit caption numbering, rename/cancel/clear/delete/reopen, and SW preview parity; mocked API only');
 } finally {await browser.close();await new Promise(resolve=>server.close(resolve));}

@@ -111,6 +111,61 @@ def create_request(key: str) -> dict[str, object]:
     }
 
 
+def assert_open_end_generation(client, repository, submissions) -> None:
+    template = api.GenerationStore(repository).ensure_mock_template(enabled=True)
+    assert "active_coils" in template["required_fields"], "Exercise an existing template with the old required list"
+    scenarios = (
+        ("missing", "两端不并紧", False, None, False, True),
+        ("pending", "两端不并紧", False, 10.5, True, True),
+        ("valid", "两端不并紧", False, 6.5, False, True),
+        ("zero", "两端不并紧", False, 0, False, False),
+        ("over-total", "两端不并紧", False, 9.25, False, False),
+        ("closed", "两端并紧", False, None, False, False),
+        ("unconfirmed", "两端不并紧", True, None, False, False),
+    )
+    for name, end_type, end_pending, active, active_pending, can_generate in scenarios:
+        review_id = f"active-coils-{name}"
+        review = ready_review()
+        params = review["spring_parameters"]
+        params["end_type"] = {**parameter(end_type), "need_human_review": end_pending}
+        if active is None:
+            params.pop("active_coils")
+        else:
+            params["active_coils"] = {**parameter(active, "圈"), "need_human_review": active_pending}
+        repository.create_review(review_id, review, owner=OWNER)
+        endpoint = f"/api/reviews/{review_id}"
+        readiness = client.get(endpoint + "/generation-readiness").json()["generation_readiness"]
+        assert readiness["core_field_count"] == (7 if end_type == "两端不并紧" and not end_pending else 8), readiness
+        if not can_generate:
+            issues = readiness["missing_fields"] + readiness["pending_fields"] + readiness["blocking_reasonableness"]
+            assert any(issue.get("field") == "active_coils" or "active_coils" in issue.get("fields", []) for issue in issues), readiness
+            denied = client.post(endpoint + "/generation-jobs", json=create_request(review_id))
+            assert denied.status_code == 409, denied.text
+            continue
+        assert readiness["status"] in {"ready", "ready_with_warnings"}, readiness
+        assert readiness["confirmed_core_count"] == 7
+        exported = client.get(endpoint + "/generation-package")
+        assert exported.status_code == 200, exported.text
+        package = exported.json()["parameter_package"]
+        assert ("active_coils" in package["generation_parameters"]["spring_parameters"]) == (name == "valid")
+        assert "有效圈数n" not in package["solidworks_preview"]["modelParameters"]
+        for template_code in ("solidworks/compression-spring", "mock/compression-spring"):
+            match = client.post(endpoint + "/generation-template-match", json={"template_code": template_code})
+            assert match.status_code == 200 and match.json()["template_match"]["status"] == "selected", match.text
+            before = len(submissions)
+            result = client.post(endpoint + "/generation-jobs", json={
+                **create_request(f"{review_id}-{template_code}"), "template_code": template_code,
+            })
+            assert result.status_code == 202, result.text
+            if template_code.startswith("solidworks/"):
+                assert len(submissions) == before + 1
+                model = submissions[-1]["payload"]["models"][0]
+                assert model["modelParameters"]["是否并紧"] == 0
+                assert "有效圈数n" not in model["modelParameters"]
+            else:
+                assert len(submissions) == before
+
+
 def assert_optional_solidworks_fields_are_explicit_null() -> None:
     payload = build_solidworks_command(
         "1000000000",
@@ -181,9 +236,10 @@ def main(*, contract_only: bool = False) -> None:
         repository.create_schema_for_testing()
         review = ready_review()
         points = review["spring_parameters"]["load_points"]
-        points[1].update(label="P1", height_tolerance_upper=.1, height_tolerance_lower=-.2,
+        points[1].update(label="P1", height_label="H3", height_tolerance_upper=.1, height_tolerance_lower=-.2,
                          load_tolerance_percent_upper=10, load_tolerance_percent_lower=-5)
         points[2].update(label="W2", height_label="H9", load_tolerance_upper=10, load_tolerance_lower=0)
+        points.append({"label": "F3", "height": 34, "force": 2200, "need_human_review": False})
         repository.create_review("review-solidworks-push", review, owner=OWNER)
         original_repository = api.REVIEW_PERSISTENCE
         original_run_root = api.API_RUN_ROOT
@@ -251,9 +307,9 @@ def main(*, contract_only: bool = False) -> None:
                     exported.json()["parameter_package"]["solidworks_preview"]["technicalRequirements"]["技术要求"]
                     == model["technicalRequirements"]["技术要求"]
                 )
-                assert model["modelHeightPoints"] == {"H1": 38, "H9": 43}
-                assert model["modelForcePoints"] == {"P1": 2000, "W2": 2100}
-                assert model["modelParametersTolerance"] == {"H1": [.1, .2], "P1": "+10%-5%", "W2": "+10N-0N"}
+                assert model["modelHeightPoints"] == {"H3": 38, "H9": 43, "H1": 34}
+                assert model["modelForcePoints"] == {"P1": 2000, "W2": 2100, "F3": 2200}
+                assert model["modelParametersTolerance"] == {"H3": [.1, .2], "P1": "+10%-5%", "W2": "+10N-0N"}
                 for key in ("modelHeightPoints", "modelForcePoints", "modelParametersTolerance"):
                     assert exported.json()["parameter_package"]["solidworks_preview"][key] == model[key]
                 assert model["customProperties"] == {"旋向": "左旋"}
@@ -285,7 +341,9 @@ def main(*, contract_only: bool = False) -> None:
                 assert exported.json()["parameter_package"]["solidworks_preview"]["titleBlockProperties"] == title
                 if contract_only:
                     assert job["execution_options"]["solidworks_payload"] == submissions[-1]["payload"]
+                    assert_open_end_generation(client, repository, submissions)
                     print("PASS: captured SW POST includes point values and tolerances, excludes Hb/Fb and matches the frozen preview")
+                    print("PASS: seven/eight core inputs, confirmed invalid active coils, and both open-end generation templates")
                     return
                 assert "surface_roughness_ra" not in model["modelParameters"]
                 assert job["execution_options"]["solidworks_payload"] == payload

@@ -151,6 +151,14 @@ def generation_parameter_state(parameters: dict[str, Any], field: str) -> str:
     return "confirmed"
 
 
+def has_confirmed_open_ends(parameters: dict[str, Any]) -> bool:
+    item = generation_source_item(parameters, "end_coils_closed")
+    if not item or generation_parameter_state(parameters, "end_coils_closed") != "confirmed":
+        return False
+    confirmed = item.get("need_human_review") is False or item.get("confirmation_source") == "human_confirmed"
+    return confirmed and normalize_generation_value("end_coils_closed", item["value"]) == 0
+
+
 def normalize_generation_value(field: str, value: Any) -> float | int | str:
     if field == "flattening":
         normalized = flattening.normalize(value)
@@ -253,14 +261,18 @@ def export_generation_parameters(parameters: dict[str, Any]) -> dict[str, dict[s
 def validate_generation_parameters(parameters: dict[str, Any]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     normalized: dict[str, float | int | str] = {}
+    optional_active = has_confirmed_open_ends(parameters)
     for field in COMPRESSION_GENERATION_INPUT_FIELDS:
+        if field == "active_coils" and optional_active and generation_parameter_state(parameters, field) == "pending":
+            continue
         item = generation_source_item(parameters, field)
         if item is None or item.get("need_human_review") or item.get("unit_pending"):
             continue
         try:
             normalized[field] = normalize_generation_value(field, item.get("value"))
         except ValueError as exc:
-            issues.append(_contract_issue(field, str(exc)))
+            reason = "有效圈数必须为大于 0 的数值。" if field == "active_coils" else str(exc)
+            issues.append(_contract_issue(field, reason))
 
     wire = normalized.get("wire_diameter")
     mean = normalized.get("mean_diameter")
@@ -268,7 +280,7 @@ def validate_generation_parameters(parameters: dict[str, Any]) -> list[dict[str,
         issues.append(_contract_issue("mean_diameter", "中径必须大于线径，确保计算内径大于零。"))
     total = normalized.get("total_coils")
     active = normalized.get("active_coils")
-    if isinstance(total, int) and isinstance(active, int) and active > total:
+    if isinstance(total, (int, float)) and isinstance(active, (int, float)) and active > total:
         issues.append(_contract_issue("active_coils", "有效圈数不能大于总圈数。"))
     return issues
 

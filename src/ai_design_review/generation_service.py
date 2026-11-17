@@ -4,6 +4,8 @@ import hashlib
 import json
 from typing import Any
 
+from .generation_contract import has_confirmed_open_ends
+
 
 READY_STATUSES = {"ready", "ready_with_warnings"}
 DEFAULT_ARTIFACT_TYPES = ["sldprt", "slddrw", "pdf", "png"]
@@ -33,13 +35,15 @@ def match_generation_template(
         field: item.get("value") if isinstance(item, dict) else item
         for field, item in parameters.items()
     }
+    active_optional = spring_type == "compression_spring" and has_confirmed_open_ends(parameters)
     candidates: list[dict[str, Any]] = []
     for template in templates:
         if not template.get("enabled") or template.get("drawing_type") != spring_type:
             continue
         if requested_code and template.get("template_code") != requested_code:
             continue
-        missing = [field for field in template.get("required_fields") or [] if values.get(field) in (None, "")]
+        missing = [field for field in template.get("required_fields") or []
+                   if (field != "active_coils" or not active_optional) and values.get(field) in (None, "")]
         if missing:
             continue
         matched, specificity = _rules_match(values, template.get("match_rules") or {})

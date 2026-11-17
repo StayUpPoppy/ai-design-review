@@ -12,6 +12,7 @@ from .generation_contract import (
     apply_generation_defaults,
     export_generation_parameters,
     generation_parameter_state,
+    has_confirmed_open_ends,
     generation_source_item,
     validate_generation_parameters,
 )
@@ -62,14 +63,21 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
     refresh_load_heights(review)
     refresh_technical_output_deletions(review)
     parameters = review.get("spring_parameters") or {}
+    active_optional = has_confirmed_open_ends(parameters)
+    required_fields = [
+        field for field in COMPRESSION_GENERATION_INPUT_FIELDS if field != "active_coils" or not active_optional
+    ]
+    ignore_active_draft = active_optional and generation_parameter_state(parameters, "active_coils") in {"missing", "pending"}
     # Generation export is a release boundary, so always recalculate instead of
     # trusting a diagnostic that may predate an external/manual parameter edit.
     reasonableness = assess_parameter_reasonableness(review)
     blocking_reasonableness = [
         item for item in reasonableness.get("issues", [])
         if isinstance(item, dict) and item.get("severity") == "blocked"
+        and not (ignore_active_draft and item.get("rule_id") in {"SPRING-GEO-ACTIVE_COILS", "SPRING-GEO-COIL-COUNT"})
     ]
-    blocking_reasonableness.extend(validate_generation_parameters(parameters))
+    contract_issues = validate_generation_parameters(parameters)
+    blocking_reasonableness.extend(contract_issues)
     tolerance_issues = solidworks_tolerance_issues(review)
     blocking_reasonableness.extend(tolerance_issues)
     from .diameter_evidence import REASON, has_pending_roles
@@ -84,7 +92,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
         if (parameters.get(field) or {}).get("diameter_tolerance_pending"):
             pending.append(_field_issue(field, "公差待核对，请对照原图填写或清除公差。"))
 
-    for field in COMPRESSION_GENERATION_INPUT_FIELDS:
+    for field in required_fields:
         state = generation_parameter_state(parameters, field)
         if state == "missing":
             missing.append(_field_issue(field, "缺少重新生图所需的核心参数。"))
@@ -109,7 +117,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
 
     if blocking_reasonableness:
         status = "blocked"
-        summary = REASON if unresolved_diameter else tolerance_issues[0]["reason"] if tolerance_issues else reasonableness.get("summary") or "存在无法直接采用的参数矛盾。"
+        summary = REASON if unresolved_diameter else tolerance_issues[0]["reason"] if tolerance_issues else contract_issues[0]["reason"] if contract_issues else reasonableness.get("summary") or "存在无法直接采用的参数矛盾。"
     elif missing:
         status = "needs_input"
         summary = f"还缺少 {len(missing)} 项生成必填信息。"
@@ -130,7 +138,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
         "pending_fields": pending,
         "warnings": warnings,
         "confirmed_core_count": confirmed_count,
-        "core_field_count": len(COMPRESSION_GENERATION_INPUT_FIELDS),
+        "core_field_count": len(required_fields),
         "defaulted_fields": defaulted_fields,
         "parameter_reasonableness": reasonableness,
         "blocking_reasonableness": blocking_reasonableness,
