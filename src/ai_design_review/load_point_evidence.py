@@ -696,6 +696,7 @@ def raster_pages(job_dir, review, *, raw_payloads=None, allow_ocr=False, warning
             if diameter_geometry:
                 result[-1]["diameter_raster"] = (mask, scale)
                 result[-1]["source_document_id"] = document["source_document_id"]
+                result[-1]["end_view_cache_dir"] = str(pool / "end_view_geometry_v1")
     return result
 
 
@@ -835,7 +836,8 @@ def _diameter_pages(pages, vectors):
             ratio = vector["height"] / raster["height"]
             mask, scale = raster["diameter_raster"]
             vector = {**vector, "wire_sections": [[v * ratio for v in section] for section in raster["wire_sections"]],
-                      "diameter_raster": (mask, scale / ratio), "source_document_id": raster["source_document_id"]}
+                      "diameter_raster": (mask, scale / ratio), "source_document_id": raster["source_document_id"],
+                      "end_view_cache_dir": raster.get("end_view_cache_dir")}
         merged.append(vector)
     return merged
 

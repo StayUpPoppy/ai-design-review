@@ -19,7 +19,7 @@ def pixels(image: Image.Image):
 
 def check(path: Path) -> list[Image.Image]:
     reader = PdfReader(path)
-    if path.stem in {"normal", "few-rfi", "compact"}:
+    if path.stem in {"normal", "few-rfi", "compact", "formula-check"}:
         assert len(reader.pages) == 1, (path.name, "ordinary reports must fit one A4 page")
     else:
         assert len(reader.pages) > 1, "Long fixture must exercise real pagination"
@@ -29,6 +29,16 @@ def check(path: Path) -> list[Image.Image]:
     assert "RFI-" not in combined and "紧凑异常示例" not in combined
     assert "客户签字 / 盖章" in combined
     assert "设计校核结果" not in combined and "理论刚度" not in combined
+    if path.stem in {"formula-check", "formula-check-long"}:
+        compact_text = "".join(combined.replace("弹簧参数确认单", "").split())
+        assert "当前：节距：24.11mm" in compact_text
+        assert compact_text.count("原值节距24.11mm与端部公式参考值24.2973mm不一致") == 1
+        assert compact_text.count("公式结果仅供核对，请确认端部结构及公式适用性") == 1
+        assert "端部形式：两端并紧" in compact_text and "支承圈数（单端）：1圈" in compact_text
+        assert compact_text.count("客户回复：") == 1 and "FORMULA-CHECK" not in compact_text
+        if path.stem.endswith("-long"):
+            assert "长条款开始：" in compact_text and "长条款结束。" in compact_text
+            assert compact_text.count("镀层厚度≥15μm，先除氢后检验；不得漏镀。") == 180
     if path.stem in {"confirmation-sheet", "confirmation-sheet-no-background"}:
         assert "高度20±2mm" in "".join(combined.split()), (path.name, "abnormal load lost its height tolerance")
     if path.stem in {"normal", "few-rfi", "compact", "long"}:
@@ -74,7 +84,8 @@ def check(path: Path) -> list[Image.Image]:
         assert blue > 100, (path.name, index, "logo missing, cropped or misplaced")
         dark = sum(value < 180 for value in pixels(logo.convert("L")))
         assert dark > 100, (path.name, index, "monochrome logo illegible")
-        gap = image.crop(tuple(round(v * mm) for v in (12, 21, 198, 23)))
+        # The current 26 mm top margin places the header rule at 22 mm.
+        gap = image.crop(tuple(round(v * mm) for v in (12, 23, 198, 25)))
         assert sum(min(pixel) < 220 for pixel in pixels(gap)) < 5, (path.name, index, "header overlaps body")
         headers.append(image.crop((0, 0, image.width, round(36 * mm))))
         if index == 1:

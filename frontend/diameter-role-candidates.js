@@ -1,6 +1,6 @@
 /* Read-only provenance filtering, including saved candidates from older rules. */
 (function (root) {
-  const VERSION = "diameter-candidates/v4";
+  const VERSION = "diameter-candidates/v5";
   const number = "(?:\\d+(?:\\.\\d+)?|\\.\\d+)", mark = "[φΦϕøØ⌀]";
   const derivation = /推算|推导|计算|换算|\b(?:derived|calculated|inferred|computed)\b|(?:外径|内径|中径|线径).{0,24}(?:减去|减|加上|乘以|除以)|(?:外径|内径|中径|线径|\bD[oim]?\b|\bd\b)\s*[-+−×*÷/]\s*(?:外径|内径|中径|线径|\bD[oim]?\b|\bd\b)/i;
   const drawing = /图中|图纸|原图|标注|marked|drawing/i;

@@ -140,6 +140,80 @@ try {
   assert.match(healthy.sections.find(section=>section.id==='requirements').rows[0].content,/Ra12.5，不制扁/);
   assert.equal(healthy.sections.find(section=>section.id==='requirements').rows[1].content,'表面处理：镀锌五彩');
   assert.equal(healthy.sections.find(section=>section.id==='loads').rows[0].height,'32 mm');
+  const formulaCheck=await page.evaluate(async()=>{
+    const review=structuredClone(window.detachedSheetReview), params=review.spring_parameters;
+    for(const [field,value]of Object.entries({wire_diameter:3.5,outer_diameter:68,inner_diameter:61,mean_diameter:64.5,free_length:230,total_coils:11.25,active_coils:9.25,support_coils:1}))params[field].value=value;
+    params.pitch={value:24.11,unit:'mm',source:['qwen_vision'],need_human_review:false,confirmation_snapshot:{value:24.11},
+      formula_check_warning:'原值节距24.11 mm与端部公式补算24.2973 mm不一致，请核对端部结构及公式适用性'};
+    params.load_points=[];
+    const context={review,identity:state.identity,revision:1,jobId:null,editSerial:0,navigation:1,scope:'formula-sheet-test',supported:true};
+    const before=JSON.stringify(review), model=await buildConfirmationSheetSnapshot(context);
+    const resolved=structuredClone(context);
+    resolved.review.spring_parameters.pitch.value=CompressionDesignChecks.calculatePitch(params,review.spring_features).value;
+    const resolvedModel=await buildConfirmationSheetSnapshot(resolved);
+    const missing=structuredClone(context);delete missing.review.spring_parameters.end_grinding;
+    const missingModel=await buildConfirmationSheetSnapshot(missing);
+    const stale=structuredClone(context);stale.review.spring_parameters.free_length.derived_value_stale=true;
+    const staleModel=await buildConfirmationSheetSnapshot(stale);
+    const imperial=structuredClone(context);Object.assign(imperial.review.spring_parameters.pitch,{value:24.11/25.4,unit:'in'});
+    const imperialModel=await buildConfirmationSheetSnapshot(imperial);
+    const formulaRows=model=>model.sections.find(section=>section.id==='issues').rows.flatMap(group=>group.items).filter(row=>row.kind==='formula');
+    window.formulaSheetContext=context;
+    window.formulaSheetService=ParameterConfirmationSheet.create({context:()=>window.formulaSheetContext,
+      save:()=>{throw new Error('formula preview must not save');},build:buildConfirmationSheetSnapshot,message:()=>{}});
+    return {model,unchanged:JSON.stringify(review)===before,resolved:formulaRows(resolvedModel),missing:formulaRows(missingModel),
+      stale:formulaRows(staleModel),imperial:formulaRows(imperialModel)};
+  });
+  const formulaRows=formulaCheck.model.sections.find(section=>section.id==='issues').rows.flatMap(group=>group.items).filter(row=>row.kind==='formula');
+  assert.equal(formulaRows.length,1,'a real pitch mismatch survives both the diagnostic filter and report projection');
+  assert.equal(formulaRows[0].ref,'公式核对');
+  assert.match(formulaRows[0].current,/24.11 mm；端部形式：两端并紧；支承圈数（单端）：1 圈/);
+  assert.match(formulaRows[0].messages.join('；'),/24.2973 mm/);
+  assert.match(formulaRows[0].messages.join('；'),/公式结果仅供核对，请确认端部结构及公式适用性/);
+  assert.deepEqual(formulaCheck.resolved,[],'a stored warning disappears when current values agree');
+  assert.deepEqual(formulaCheck.missing,[],'a stored warning is omitted when the formula cannot be evaluated');
+  assert.deepEqual(formulaCheck.stale,[],'stale calculation inputs do not become customer facts');
+  assert.equal(formulaCheck.imperial.length,1,'comparison uses physical values in the same unit');
+  assert.match(formulaCheck.imperial[0].current,/ in/);
+  assert.equal(formulaCheck.unchanged,true);
+  assert.equal(formulaCheck.model.sections.find(section=>section.id==='parameters').rows.length,9);
+  await page.evaluate(()=>window.formulaSheetService.open());
+  await page.waitForFunction(()=>!document.querySelector('[data-sheet-action="print"]').disabled);
+  const formulaChoice=dialog.locator('input[data-sheet-id="formula:FORMULA-CHECK:pitch"]');
+  assert.equal(await formulaChoice.locator('xpath=ancestor::fieldset').locator('legend').innerText(),'待客户澄清事项');
+  const formulaText=await frame().locator('body').innerText();
+  assert.match(formulaText,/24.2973 mm/);assert.equal(formulaText.split('公式结果仅供核对').length-1,1);
+  assert.equal(await frame().locator('[data-report-row="formula:FORMULA-CHECK:pitch"] .issue-reply').count(),1);
+  await formulaChoice.uncheck();await page.waitForFunction(()=>!document.querySelector('[data-sheet-action="print"]').disabled);
+  assert.doesNotMatch(await frame().locator('body').innerText(),/24.2973/);
+  await page.evaluate(()=>{window.formulaSheetContext.review.spring_parameters.pitch.value=(230-1.5*3.5)/9.25;window.formulaSheetContext.editSerial++;});
+  await dialog.locator('[data-sheet-action="refresh"]').click();await page.waitForFunction(()=>!document.querySelector('[data-sheet-action="print"]').disabled);
+  assert.equal(await formulaChoice.count(),0);
+  await page.evaluate(()=>{window.formulaSheetContext.review.spring_parameters.pitch.value=24.11;window.formulaSheetContext.editSerial++;});
+  await dialog.locator('[data-sheet-action="refresh"]').click();await page.waitForFunction(()=>!document.querySelector('[data-sheet-action="print"]').disabled);
+  assert.equal(await formulaChoice.isChecked(),false,'formula choices survive disappearance and refresh');
+  await formulaChoice.check();await page.waitForFunction(()=>!document.querySelector('[data-sheet-action="print"]').disabled);
+  await page.screenshot({path:path.join(out,'formula-desktop.png')});
+  await page.setViewportSize({width:390,height:844});
+  await page.screenshot({path:path.join(out,'formula-mobile.png')});
+  assert.equal(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1),true);
+  assert.equal(await frame().locator('.issue-reply').evaluateAll(rows=>rows.every(row=>row.scrollWidth<=row.clientWidth+1)),true);
+  await page.setViewportSize({width:1440,height:1000});
+  const formulaPrint=await browser.newPage();
+  for(const name of ['formula-check','formula-check-long']){
+    if(name.endsWith('-long')){
+      await page.evaluate(()=>{window.formulaSheetContext.review.technical_requirements.push({requirement_id:'formula-long',type:'other',
+        content:'长条款开始：'+'镀层厚度≥15 μm，先除氢后检验；不得漏镀。'.repeat(180)+'长条款结束。'});window.formulaSheetContext.editSerial++;});
+      await dialog.locator('[data-sheet-action="refresh"]').click();await page.waitForFunction(()=>!document.querySelector('[data-sheet-action="print"]').disabled);
+    }
+    const html=await page.locator('.confirmation-sheet-preview iframe').evaluate(el=>el.contentDocument.documentElement.outerHTML);
+    await formulaPrint.setContent(html);
+    await formulaPrint.evaluate(()=>Promise.all([document.fonts.ready,...[...document.images].map(img=>img.decode())]));
+    await formulaPrint.pdf({path:path.join(out,`${name}.pdf`),preferCSSPageSize:true,printBackground:true});
+    fs.writeFileSync(path.join(out,`${name}.html`),html);
+  }
+  await formulaPrint.close();await dialog.locator('[data-sheet-action="back"]').click();
+  assert.equal(await snapshot(),before);assert.equal(writes,count,'formula reporting and printing do not write or confirm');
   const tolerancedHeight=await page.evaluate(async()=>{
     const review=structuredClone(window.detachedSheetReview), point=review.spring_parameters.load_points[0];
     Object.assign(point,{height_unit:'cm',height:3.2,height_tolerance_upper:2,height_tolerance_lower:-2});
@@ -200,7 +274,7 @@ try {
     review.conflicts=[{field:'load_points.F1.force',values:[0,20],need_human_review:true}];
     review.parameter_reasonableness={issues:[{severity:'blocked',category:'geometry',fields:['end_type'],message:'隐藏字段诊断'},
       {severity:'needs_input',category:'missing_context',fields:['active_coils'],message:'缺少计算条件'},
-      {severity:'warning',rule_id:'FORMULA-CHECK',fields:['total_coils'],message:'未采用公式建议'}]};
+      {severity:'warning',rule_id:'FORMULA-CANDIDATE-total_coils',fields:['total_coils'],message:'未采用公式建议'}]};
     const before=JSON.stringify(review),model=await buildConfirmationSheetSnapshot({review,identity:state.identity,revision:1,jobId:'a'});
     return {model,unchanged:JSON.stringify(review)===before};
   });
@@ -253,7 +327,7 @@ try {
     return { width: parseFloat(getComputedStyle(img).width), height: parseFloat(getComputedStyle(img).height),
       naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, centered: Math.abs((rect.left + rect.right - text.left - text.right) / 2) < 1 };
   });
-  assert.ok(Math.abs(brand.width - 38 * 96 / 25.4) < .1);
+  assert.ok(Math.abs(brand.width - 46 * 96 / 25.4) < .1);
   assert.ok(Math.abs(brand.width / brand.height - brand.naturalWidth / brand.naturalHeight) < .01, 'original aspect ratio');
   assert.equal(brand.centered, true, 'title stays centered on the sheet');
   await frame().getByText('弹簧参数确认单', { exact: true }).waitFor();

@@ -57,6 +57,9 @@
   function reportableIssue(issue) {
     if (issue?.customer_report === false) return false;
     if (issue?.customer_report === true) return true;
+    if (issue?.rule_id === 'FORMULA-CHECK' && !['missing_context', 'standard_scope'].includes(issue?.category)) {
+      return ['blocked', 'warning', 'needs_input'].includes(issue?.severity) && !empty(issue.message);
+    }
     // These describe internal formula/standardization availability, not a drawing error.
     if (['missing_context', 'standard_scope'].includes(issue?.category) || /^(FORMULA|GBT.*SCOPE)/.test(issue?.rule_id || '')) return false;
     return ['blocked', 'warning', 'needs_input'].includes(issue?.severity) &&
@@ -89,6 +92,11 @@
       ...(data.parameters || []).filter(row => parameterFields.includes(row.field)).map(row => ({ ...row, kind: 'parameter', number: parameterNumbers[row.field], required: row.required ?? defaultRequired.has(row.field) })),
       ...(data.loads || []).map((row, index) => ({ ...row, kind: 'load', number: row.number ?? index + 1 })),
       ...(data.requirements || []).map((row, index) => ({ ...row, kind: 'technical', number: row.number ?? index + 1 })),
+      // Formula-only fields stay out of the final parameter table and are
+      // selectable only while their current mismatch is present.
+      ...Array.from(new Map((data.formulaChecks || []).filter(row => !parameterFields.includes(row.field) &&
+        issues.some(issue => issue.rule_id === 'FORMULA-CHECK' && issue.fields?.[0] === row.field))
+        .map(row => [row.field, { ...row, kind: 'formula' }])).values()),
     ].map(row => ({ ...row, current: row.current || (row.kind === 'load' ? `高度 ${row.height}；力值 ${row.force}${row.tolerance && row.tolerance !== '—' ? `；公差 ${row.tolerance}` : ''}` : row.current), ref: rowRef(row), reasons: uniqueMessages(row.customer_issues || []), questions: [] }));
     const present = [];
     for (const row of items) {
@@ -141,7 +149,7 @@
     return { ...data.info, notice: data.notice || '', sections };
   }
   function rowRef(row) {
-    return row.kind === 'parameter' ? `参数${row.number}` : row.kind === 'load' ? `载荷点${row.label || row.number}` : `要求${row.number}`;
+    return row.kind === 'formula' ? '公式核对' : row.kind === 'parameter' ? `参数${row.number}` : row.kind === 'load' ? `载荷点${row.label || row.number}` : `要求${row.number}`;
   }
   function effectiveSelection(model, selected) {
     const valid = new Set(selectionRows(model).map(row => row.id));

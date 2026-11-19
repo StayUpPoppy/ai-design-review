@@ -22,7 +22,15 @@
 
 原图标注与模型推导解释分开保存。模型说明同时提及线径或“推算”时，不再整条删除原图直径；模型纯推导记录保存在`dimension_evidence`及可选的`diameter_role_evidence.model_derived_candidates`，不进入三径融合。可靠的轴向端面尺寸退出直径候选，保留长度依据。实际核验只接受本地OCR执行结果或PDF原文，不把模型自带的文字框当独立证据。
 
-外径漏项补核优先复用同页的 PDF 文字层和带坐标 OCR。表格按栏名、符号、数值、单位匹配同一行。图形标注结合尺寸线核对后置 `O.D.`，需要时每页追加一批局部 OCR，分别读取名义值、类型和上下偏差。环规说明保留在技术要求中。已可靠填入的尺寸和能定位的核对卡片直接沿用。
+外径漏项补核优先复用同页的 PDF 文字层和带坐标 OCR。表格按栏名、符号、数值、单位匹配同一行。图形标注结合尺寸线核对后置 `O.D.`，需要时每页追加一批局部 OCR，分别读取名义值、类型和上下偏差。环规说明保留在技术要求中。已可靠填入的尺寸直接沿用；未处理的核对卡片可由新版端视图规则继续核验。
+
+`diameter-role/v4`增加圆丝圆柱压簧的端视图核验。文字和原有侧视图证据已唯一确定角色时直接沿用；其余已定位标注用本地 OpenCV 圆检测、轮廓拟合及圆弧支持核对同一视图的两个同心圆。两侧尺寸界线分别到达同一外圆或内圆的相对切点后，归入外径或内径，并保留待确认状态。端视图可位于页面任意位置，支持横竖尺寸线与局部缺口圆弧。中径继续按明确文字或已有钢丝中心依据核验，其他缺失直径由现有三径公式补齐。
+
+端视图证据沿用`diameter_role_evidence`，记录`geometry.method=end_view_circles`、原页坐标下的圆心、内外圆半径、两侧接触点、尺寸线和归一化视图区域。图形距离仅用于类型判断，名义值和偏差取原文。PDF文字层在同一标注明确给出成对偏差时优先使用完整原文，另存`tolerance_evidence`供追溯。名义值和类型已核实而公差残缺或有效读数冲突时，保留直径，公差留空并沿用“公差待核对”入口。
+
+多个同心圆、多个可匹配视图、界线未同时接触同一圆或视图跨规格区域时继续显示类型核对卡片及具体原因。环规、检验套筒说明不进入端视图角色判定。几何缓存按原文件标识、栅格尺寸、页码、区域、尺寸界线和规则版本隔离，使用原订单共享OCR目录中的`end_view_geometry_v1`，同时记录核验耗时与缓存命中。核验过程使用本地OpenCV和已有文字证据。
+
+后台本地核验升级为`review-local/v6-end-view-diameters`。旧订单打开后由现有异步任务核验未处理卡片，读取接口继续返回现有修订。归位成功后，原卡片以`resolved_candidate`归档到参数的核验依据中，保留候选ID和原始读数，并退出待处理列表。现有修订、任务租约和审计保护后台保存；人工值、主动清空、已确认参数及已选择或忽略的卡片受到保护。
 
 名义值及类型清楚、公差读数未核实时，保留直径和原图读数，公差留空并标记待核对。填写有效偏差或在公差编辑器中明确清除后，可以单项或批量确认。旧单通过后台复核漏项，沿用原有版本和修订保护。部署时重建 API、Worker，浏览器按 Ctrl+F5 刷新。无需数据库迁移。
 
@@ -47,11 +55,15 @@ node scripts/test_diameter_linkage_ui.mjs
 .venv/Scripts/python.exe scripts/test_diameter_drawing_no_api.py
 node scripts/test_diameter_drawing_no_browser.mjs
 .venv/Scripts/python.exe -m unittest scripts.test_simplified_diameter_evidence scripts.test_diameter_role_evidence
+.venv/Scripts/python.exe -m unittest scripts.test_end_view_diameters
 .venv/Scripts/python.exe scripts/test_diameter_candidate_actions.py
 node scripts/test_diameter_candidate_actions_ui.mjs
 # 仅对已复制到临时目录的本地响应、原图及OCR缓存执行，禁止指向真实订单目录：
 .venv/Scripts/python.exe scripts/replay_simplified_diameters.py tmp/simplified-diameter
+.venv/Scripts/python.exe scripts/replay_end_view_diameters.py tmp/end-view-diameter
 ```
+
+端视图原图回放包含`F01P10203`的外径`68 ±1.94 mm`及`F01P10171`的外径`39.29 +0/-0.76 mm`。使用复制的原PDF、Qwen响应及OCR缓存检查新上传流程、历史未处理卡片、重复打开及已人工选择记录；完整缓存回放新增Qwen和OCR调用均为0。
 
 共享样例覆盖三个方向、主控切换、线径变化、来源保护的调整、确认撤销、同值依赖变化、非法几何、单位和精度反推。API测试使用临时SQLite和模拟SW，覆盖保存重开、修订冲突、图号字符串和冻结任务。浏览器使用模拟接口，验证即时联动、焦点、保存失败重试、整组冲突、跨订单晚到回执及桌面/窄面板。截图在忽略目录 `outputs/diameter-drawing-no-qa/`，不调用云端识别或真实生产生图。
 
@@ -64,3 +76,11 @@ node scripts/test_diameter_candidate_actions_ui.mjs
 扩大检查时，`test_drawing_annotations_api.py`在旧标注字段断言处失败，`test_api_documentation.py`在旧SW技术要求说明断言处失败；两处均在未修改的HEAD副本复现同样失败。设计检测器缺少HTML解析依赖，降级检查仅报告既有侧边强调线和布局动画；已查看本次桌面/窄屏截图，不宣称完成全站设计或无障碍审计。本地API/Worker镜像已重建，原PostgreSQL及审图卷复用，前端版本资源和健康接口验证正常。
 
 本次桌面与390px窄面板使用模拟订单检查，输入框保留原位置，联动不替换正在输入的控件。机械界面检查因本机缺少HTML解析模块降级为正则检查；报告的既有侧边强调线及侧栏尺寸动画不在本次修改范围，不作为本次新增问题，也不宣称完成全站无障碍审计。
+
+### 2026-11-19 端视图核验验证
+
+34项端视图、原侧视图及简化画法测试通过。两张目标原PDF及缓存通过新上传路径、历史补核和保存重开回放，新增Qwen、OCR调用均为0；11张正常原图的完整离线回放通过。后台读取、任务租约、修订冲突和人工值保护回归通过，读取P95为150.8 ms。模拟SW请求及浏览器直径编辑、忽略、重试和保存回归通过。
+
+本机API与Worker已重建，`F01P10203`和未处理的`F01P10171`样本通过现有Worker完成落库，外径及公差与预期一致，保持待人工确认，原候选ID随证据归档。浏览器使用落库快照和模拟接口验证两条订单重开后的三径、公差和卡片状态。
+
+扩大回归时，`test_diameter_candidate_actions.py`有3项既有失败：两项载荷点ID自动补齐后的快照断言及一项不完整来源证据的推导判定断言。这3项已在修改前HEAD代码的隔离副本复现。

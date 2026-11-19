@@ -4977,22 +4977,50 @@ async function buildConfirmationSheetSnapshot(context) {
       number: index + 1, label: TECH_LABELS[normalizeTechnicalRequirementType(item.type)] || '技术要求',
       content, current: content || '未注明', customer_issues: [...new Set(problems)] };
   });
+  const formulaChecks = [...new Set(issues.filter(issue => issue.rule_id === 'FORMULA-CHECK').map(issue => issue.fields[0]))]
+    .filter(field => !ParameterConfirmationSheet.parameterFields.includes(field)).map(field => {
+      const item = params[field] || {}, meta = getFieldMeta(field, review);
+      const context = ['end_type', 'support_coils'].flatMap(key => {
+        const value = params[key];
+        if (value?.value == null || String(value.value).trim() === '' || confirmationSheetStaleValue(value) || confirmationSheetProvisionalDefault(params, key)) return [];
+        const label = getFieldMeta(key, review).label, unit = parameterUnitLabel(key, label, value, getFieldMeta(key, review)).unit;
+        return [`${label}：${valueText(value.value, unit)}`];
+      });
+      const unit = parameterUnitLabel(field, meta.label, item, meta).unit;
+      return { id: `formula:FORMULA-CHECK:${field}`, field, label: meta.label, value: item.value, unit,
+        current: [valueText(item.value, unit), ...context].join('；') };
+    });
   const summary = review.drawing_summary || {};
-  return ParameterConfirmationSheet.buildModel({ parameters, loads, requirements, issues, notice: [...new Set(notices)].join(' '),
+  return ParameterConfirmationSheet.buildModel({ parameters, loads, requirements, formulaChecks, issues, notice: [...new Set(notices)].join(' '),
     info: { drawingName: summary.drawing_name || '', drawingNo: summary.drawing_no || '', variant: review.multi_spec_origin?.code || (review.multi_spec_origin?.order ? `规格${review.multi_spec_origin.order}` : ''),
       preparer: context.identity?.real_name?.trim() || context.identity?.username || '', date: new Date().toLocaleDateString('zh-CN'), local: !context.jobId } });
 }
 
 function confirmationSheetIssues(review) {
   return (review.parameter_reasonableness?.issues || []).filter(issue => ParameterConfirmationSheet.reportableIssue(issue))
+    .map(issue => issue.rule_id === 'FORMULA-CHECK' ? confirmationSheetFormulaIssue(review, issue) : issue).filter(Boolean)
     .filter(issue => !(issue.fields || []).some(field => {
       const item = review.spring_parameters?.[String(field).split('.')[0]];
       if (!item || Array.isArray(item)) return false;
       return confirmationSheetStaleValue(item) || confirmationSheetProvisionalDefault(review.spring_parameters, String(field).split('.')[0]);
     }))
-    .map(issue => ({ ...issue, customer_question: issue.rule_id === 'SPRING-GEO-COIL-COUNT' ? '请确认总圈数与有效圈数的正确数值。' : String(issue.customer_question || '').replace(/^请客户/, '请'), fields: (issue.fields || []).filter(field => ParameterConfirmationSheet.parameterFields.includes(String(field).split('.')[0])
+    .map(issue => ({ ...issue, customer_question: issue.rule_id === 'SPRING-GEO-COIL-COUNT' ? '请确认总圈数与有效圈数的正确数值。' : String(issue.customer_question || '').replace(/^请客户/, '请'), fields: (issue.fields || []).filter(field => issue.rule_id === 'FORMULA-CHECK' || ParameterConfirmationSheet.parameterFields.includes(String(field).split('.')[0])
       || field === 'load_points' || String(field).startsWith('load_points.') || field === 'technical_requirements' || String(field).startsWith('technical_requirements.')) }))
     .filter(issue => issue.fields.length);
+}
+
+function confirmationSheetFormulaIssue(review, issue) {
+  // Recheck the existing pitch warning against current inputs without applying
+  // any formula values or reopening confirmations on the review.
+  const params = review.spring_parameters || {}, field = issue.fields?.[0], item = params[field];
+  if (field !== 'pitch' || !item || item.formula_calculation_kind === 'pitch' || confirmationSheetStaleValue(item) || confirmationSheetProvisionalDefault(params, field)) return null;
+  const current = EngineeringUnits.annotationBaseValue({ ...item, unit: item.unit || 'mm' }, 'length');
+  const calculation = CompressionDesignChecks.calculatePitch(params, review.spring_features || {});
+  if (current == null || current <= 0 || calculation.value == null || Math.abs(current - calculation.value) <= 1e-4 ||
+      calculation.source_fields.some(key => confirmationSheetStaleValue(params[key]) || confirmationSheetProvisionalDefault(params, key))) return null;
+  return { ...issue, fields: [field],
+    message: `原值节距${current} mm与端部公式参考值${Number(calculation.value.toFixed(4))} mm不一致。`,
+    customer_question: '公式结果仅供核对，请确认端部结构及公式适用性。' };
 }
 
 function confirmationSheetHumanValue(item) {

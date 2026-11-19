@@ -15,8 +15,8 @@ SOURCE = "original_diameter_role"
 CANDIDATE = "diameter_role_candidate"
 PENDING = "diameter_role_candidates"
 INFERENCE = "diameter_model_inference"
-VERSION = "diameter-role/v3"
-ROLE_STATE_VERSION = "diameter-candidates/v4"
+VERSION = "diameter-role/v4"
+ROLE_STATE_VERSION = "diameter-candidates/v5"
 REASON = "直径类型待核对。请选择内径、中径或外径。"
 LABELS = {
     "inner_diameter": r"内径|內徑|内直径|inner\s+diameter|inside\s+diameter|\bI\.?D\.?",
@@ -283,11 +283,12 @@ def _dimension_roles(text, page, region):
     # section, and the sections must lie on opposite sides of the spring axis.
     sections = [s for s in page.get("wire_sections", [])
                 if _in_region({"x": s[0] / page["width"], "y": s[1] / page["height"], "width": 0, "height": 0}, region)]
-    results, simplified = [], []
+    results, simplified, unresolved = [], [], []
     for axis, dimension in _witness_dimensions(text, page):
         w, h = text["bbox"][2] - text["bbox"][0], text["bbox"][3] - text["bbox"][1]
         if (axis == 1 and w > 1.45 * h) or (axis == 0 and h > 1.45 * w):
             continue
+        unresolved.append((axis, dimension))
         original = _roles_for_witness(axis, dimension, page, sections, region)
         from .simplified_diameter_geometry import repeated_coil_boundaries
         key = (axis, *(round(dimension[k], 3) for k in ("a", "b", "cross")), json.dumps(region, sort_keys=True))
@@ -313,10 +314,24 @@ def _dimension_roles(text, page, region):
             results.extend(original)
     # Keep the legacy successful paths. Adjacent nested dimensions may both be
     # near one OCR box; use its nearest baseline for the new arc-only path.
-    if results or not simplified:
+    if results:
         return results
-    closest = min(item[0] for item in simplified)
-    return [(field, geometry) for distance, field, geometry in simplified if distance <= closest + page.get("epsilon", 1)*.5]
+    if simplified:
+        closest = min(item[0] for item in simplified)
+        return [(field, geometry) for distance, field, geometry in simplified if distance <= closest + page.get("epsilon", 1)*.5]
+    if re.search(r"环规|量规|检验套筒|\bring\s+g(?:a|au)ge\b|\b(?:gage|gauge|inspection\s+sleeve)\b", text["text"], re.I):
+        return []
+    from .end_view_diameter_geometry import end_view_boundaries
+    end_views = []
+    for axis, dimension in unresolved:
+        matches, reason = end_view_boundaries(axis, dimension, page, region)
+        if reason:
+            text["diameter_geometry_reason"] = reason
+        end_views.extend(matches)
+    if len({tuple(round(v, 1) for v in geometry["center"]) for _, geometry in end_views}) > 1:
+        text["diameter_geometry_reason"] = "尺寸标注附近存在多个端视图，请核对对应位置。"
+        return []
+    return end_views
 
 
 def _roles_for_witness(axis, dimension, page, sections, region):
@@ -597,6 +612,14 @@ def _observations(candidate, pages, region):
                            "dimensions": dimensions,
                            "offsets": {key: sorted(values) for key, values in tolerance.items()},
                            "offset_quality": max(offset_quality, 2 if len(printed_offsets) == 2 else 0)}
+            if any(evidence.get("method") == "end_view_circles" for _, evidence in geometry):
+                paired = all(len(tolerance.get(key, ())) == 1 for key in ("tolerance_upper", "tolerance_lower"))
+                if paired and page.get("source") == "pdf_text_layer":
+                    observation["offset_quality"] = 3
+                    observation["tolerance_evidence"] = [{"source": "pdf_text", "page": page["page"],
+                        "position": box, "text": content, "offsets": deepcopy(observation["offsets"])}]
+            if text.get("diameter_geometry_reason") and not geometry:
+                observation["geometry_reason"] = text["diameter_geometry_reason"]
             if corrected_mark:
                 observation["normalized_text"] = corrected
             overlap = next((o for o in found if _same_observation(o, observation)), None)
@@ -636,6 +659,7 @@ def _merge_observation(prior, observation):
     if observation["offset_quality"] > prior["offset_quality"]:
         prior["offsets"] = {}
         prior["offset_quality"] = observation["offset_quality"]
+        prior["tolerance_evidence"] = deepcopy(observation.get("tolerance_evidence", []))
     if observation["offset_quality"] == prior["offset_quality"]:
         for key, values in observation["offsets"].items():
             prior["offsets"][key] = sorted(set(prior["offsets"].get(key, [])) | set(values))
@@ -755,6 +779,8 @@ def resolve_diameter_roles(candidates, pages=(), *, region=None):
                   "同页有多处相同数值，无法确定标注位置。" if len(observations) > 1 else
                   "原图证据指向多个直径类型。" if len(roles) > 1 else
                   "尺寸线两端尚未唯一对应弹簧边界。")
+        if observation and observation.get("geometry_reason") and not role:
+            reason = observation["geometry_reason"]
         if ambiguous_mark:
             inferences.append(deepcopy(candidate))
             continue
@@ -789,14 +815,21 @@ def resolve_diameter_roles(candidates, pages=(), *, region=None):
         if role and len(wires) == 1 and _inconsistent_simple_dimensions(observation, role, next(iter(wires)), verified, record.get("unit")):
             role, reason = None, "同一视图的直径标注与线径关系不一致，请核对原图。"
         upper, lower = offsets.get("tolerance_upper"), offsets.get("tolerance_lower")
+        end_view = bool(observation and any(g.get("method") == "end_view_circles" for g in observation.get("geometry", [])))
         if any(len(values) > 1 for values in offsets.values()) or upper and lower and min(upper) < max(lower):
             record["diameter_role_evidence"]["tolerance_options"] = {k: sorted(v) for k, v in offsets.items()}
-            role, reason = None, "同一原图标注的公差证据存在冲突。"
             record.update(tolerance_upper=None, tolerance_lower=None)
+            if end_view and role:
+                record["diameter_tolerance_pending"] = True
+            else:
+                role, reason = None, "同一原图标注的公差证据存在冲突。"
         elif observation:
             record.update({key: next(iter(offsets.get(key, ())), None)
                            for key in ("tolerance_upper", "tolerance_lower")})
+            if end_view and (upper or lower or any(candidate.get(k) is not None for k in ("tolerance_upper", "tolerance_lower"))) and not (upper and lower):
+                record.update(tolerance_upper=None, tolerance_lower=None, diameter_tolerance_pending=True)
         if role:
+            record.pop("reason", None)
             output.append({**record, "field": role, "source": SOURCE, "confidence": .99, "need_human_review": True})
             continue
         identity = [record.get(k) for k in ("page", "position", "value", "unit", "tolerance_upper", "tolerance_lower")]
@@ -961,7 +994,8 @@ def reconcile_diameter_review(review, job_dir, *, allow_callout_ocr=False):
     saved=review.get(PENDING) or []
     pending=[item for item in saved if not item.get("selected_field") and not item.get("ignored")]
     parameters=review.get("spring_parameters") or {}
-    if review.get("drawing_summary",{}).get("spring_type")!="compression_spring" or not parameters:
+    from .diameter_linkage import supported
+    if not supported(review) or not parameters:
         return
     from .engineering_units import apply_drawing_units, metric_item, page_length_units
     from .standardizers.calculation_state import human_override
@@ -970,7 +1004,7 @@ def reconcile_diameter_review(review, job_dir, *, allow_callout_ocr=False):
     if origin and not region:
         return
     from .engines.qwen_vision_adapter import qwen_payload_to_candidates
-    from .load_point_evidence import _pdf_pages, _read_json, raster_pages
+    from .load_point_evidence import _diameter_pages, _pdf_pages, _read_json, raster_pages
     from pathlib import Path
     job_dir=Path(job_dir)
     cached_payloads = _read_json(job_dir/"candidates.json").get("raw_payloads") or {}
@@ -996,8 +1030,8 @@ def reconcile_diameter_review(review, job_dir, *, allow_callout_ocr=False):
     source=next((p for p in (job_dir/"inputs").glob("*.pdf")),None)
     if source:
         stat=source.stat()
-        pages=[*pages,*_pdf_pages(str(source.resolve()),stat.st_size,stat.st_mtime_ns,
-                                 max([p["page"] for p in pages],default=1))]
+        pages=_diameter_pages(raster,_pdf_pages(str(source.resolve()),stat.st_size,stat.st_mtime_ns,
+                                               max([p["page"] for p in pages],default=1)))
     if not pages:
         return
     scoped = apply_drawing_units(seeds, cached_payloads, pages)
@@ -1032,11 +1066,10 @@ def reconcile_diameter_review(review, job_dir, *, allow_callout_ocr=False):
             continue
         item = metric_item(item, "outer_diameter")
         previous=next((p for p in retained if not p.get("selected_field") and not p.get("ignored") and same_mark(item,p)),None)
-        if previous and original_observation(previous):
-            continue
         if field==CANDIDATE:
             if previous:
-                retained[retained.index(previous)]={**item,"candidate_id":previous["candidate_id"]}
+                if not original_observation(previous) or (previous.get("diameter_role_evidence") or {}).get("version") != VERSION:
+                    retained[retained.index(previous)]={**item,"candidate_id":previous["candidate_id"]}
             elif not any(same_mark(item,p) for p in retained):
                 retained.append(item)
             continue
@@ -1048,10 +1081,12 @@ def reconcile_diameter_review(review, job_dir, *, allow_callout_ocr=False):
         protected=current.get("need_human_review") is False or any(str(s).startswith(("human","manual")) for s in sources)
         writable=(current.get("value") in (None,"") or "formula_calculation" in sources) and field not in protected_fields
         if writable and not protected:
+            if previous:
+                item["diameter_role_evidence"]["resolved_candidate"] = deepcopy(previous)
             parameters[field]={k:deepcopy(item[k]) for k in ("value","unit","page","position","evidence","confidence","tolerance_upper","tolerance_lower","diameter_role_evidence","engineering_source","unit_pending","diameter_tolerance_pending") if k in item}
             parameters[field].update(source=[SOURCE],need_human_review=True,status="need_review")
             changed=True
-        if previous and previous in retained and not original_observation(previous) and (writable and not protected or same_mark(current,item)):
+        if previous and previous in retained and writable and not protected:
             retained.remove(previous)
     review[PENDING]=retained
     if changed:

@@ -38,13 +38,40 @@ omitted.calculations=[{id:'calculation:stress',value:999}];
 omitted.suggestions=[{field:'wire_diameter',value:88}];
 omitted.issues=[{fields:['end_type'],severity:'blocked',category:'geometry',message:'隐藏字段专属异常'},
  {fields:['active_coils'],severity:'needs_input',category:'missing_context',message:'缺少公式条件'},
- {fields:['wire_diameter'],severity:'warning',rule_id:'FORMULA-CHECK',category:'geometry',message:'内部公式差异'},
+ {fields:['wire_diameter'],severity:'warning',rule_id:'FORMULA-DIAMETER-WIRE',category:'geometry',message:'未采用的公式建议'},
  {fields:['total_coils'],severity:'warning',category:'standard_scope',message:'未采用的标准化范围'}];
 omitted.notice='内部检查暂不可用';
 const projected=api.buildModel(omitted),projectedHtml=render(projected);
 assert.equal(projected.sections[3].rows.length,0);
 assert.doesNotMatch(projectedHtml,/隐藏-|隐藏字段|缺少公式|内部公式|标准化范围|内部检查暂不可用|calculation:/);
 assert.equal(projected.notice,'内部检查暂不可用');
+const formula=fixture();
+formula.formulaChecks=[{id:'formula:FORMULA-CHECK:pitch',field:'pitch',label:'节距',value:24.11,unit:'mm',
+ current:'24.11 mm；端部形式：两端并紧；支承圈数（单端）：1 圈'}];
+const formulaIssue={rule_id:'FORMULA-CHECK',severity:'warning',fields:['pitch'],
+ message:'原值节距24.11 mm与端部公式参考值24.2973 mm不一致。',
+ customer_question:'公式结果仅供核对，请确认端部结构及公式适用性。'};
+formula.issues=[formulaIssue,structuredClone(formulaIssue)];
+formula.formulaChecks.push(structuredClone(formula.formulaChecks[0]));
+const formulaBefore=JSON.stringify(formula),formulaModel=api.buildModel(formula),formulaHtml=render(formulaModel);
+assert.equal(JSON.stringify(formula),formulaBefore,'reporting formula checks preserves its inputs');
+assert.equal(formulaModel.sections[0].rows.length,9,'formula checks never widen the final parameter table');
+assert.equal(formulaModel.sections[3].rows.length,1);
+assert.equal(formulaModel.sections[3].rows[0].items.length,1,'the same rule and field appear once');
+assert.equal(formulaModel.sections[3].rows[0].items[0].ref,'公式核对');
+assert.match(formulaHtml,/当前：节距：24.11 mm；端部形式：两端并紧；支承圈数（单端）：1 圈/);
+assert.equal((formulaHtml.match(/24.2973/g)||[]).length,1);
+assert.equal((formulaHtml.match(/公式结果仅供核对/g)||[]).length,1);
+assert.equal((formulaHtml.match(/class="issue-reply"/g)||[]).length,1);
+const formulaSelected=new Set(api.selectionRows(formulaModel).map(row=>row.id));
+formulaSelected.delete('formula:FORMULA-CHECK:pitch');
+assert.doesNotMatch(render(formulaModel,formulaSelected),/24.2973|待客户澄清事项/);
+for(const issues of [[],[{...formulaIssue,category:'missing_context'}],[{...formulaIssue,category:'standard_scope'}],
+ [{...formulaIssue,rule_id:'FORMULA-CANDIDATE-pitch'}],[{...formulaIssue,customer_report:false}]]){
+ const noMismatch=api.buildModel({...formula,issues});
+ assert.equal(noMismatch.sections[3].rows.length,0);
+ assert.equal(api.selectionRows(noMismatch).some(row=>row.field==='pitch'),false,'no orphan formula-only choice');
+}
 const missing=fixture();missing.parameters.find(p=>p.field==='wire_diameter').value=null;
 missing.parameters.find(p=>p.field==='mean_diameter').value=null;
 const missingModel=api.buildModel(missing),issue=missingModel.sections[3].rows[0];
