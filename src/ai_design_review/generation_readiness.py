@@ -40,7 +40,7 @@ from .technical_requirements import (
 from .technical_translation import translation_blocks_export
 
 
-def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
+def assess_generation_readiness(review: dict[str, Any], *, target: str = "solidworks") -> dict[str, Any]:
     """Check whether confirmed review data can be safely handed to a drawing generator."""
     from .engineering_units import metric_review
     metric_review(review)
@@ -78,7 +78,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
     ]
     contract_issues = validate_generation_parameters(parameters)
     blocking_reasonableness.extend(contract_issues)
-    tolerance_issues = solidworks_tolerance_issues(review)
+    tolerance_issues = solidworks_tolerance_issues(review) if target == "solidworks" else []
     blocking_reasonableness.extend(tolerance_issues)
     from .diameter_evidence import REASON, has_pending_roles
     unresolved_diameter = has_pending_roles(review)
@@ -113,7 +113,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
 
     _append_standardization_warnings(review, warnings)
     _append_technical_requirement_state(review, pending, warnings)
-    _append_load_point_state(review, pending)
+    _append_load_point_state(review, pending, target=target)
 
     if blocking_reasonableness:
         status = "blocked"
@@ -145,7 +145,7 @@ def assess_generation_readiness(review: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_generation_parameter_package(review: dict[str, Any], *, identity: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_generation_parameter_package(review: dict[str, Any], *, identity: dict[str, Any] | None = None, target: str = "solidworks") -> dict[str, Any]:
     """Build a compact drawing package from the fields the reviewer has confirmed."""
     from .engineering_units import metric_review
     ensure_surface_roughness_parameter(review)
@@ -209,10 +209,11 @@ def build_generation_parameter_package(review: dict[str, Any], *, identity: dict
         },
         "derived_parameters": _export_derived_parameters(review, parameters),
     }
-    settings = resolve_generation_settings(review, identity)
-    if settings is not None:
-        package["generation_settings"] = settings
-    package["solidworks_preview"] = build_solidworks_preview(package, review)
+    if target == "solidworks":
+        settings = resolve_generation_settings(review, identity)
+        if settings is not None:
+            package["generation_settings"] = settings
+        package["solidworks_preview"] = build_solidworks_preview(package, review)
     return package
 
 
@@ -322,7 +323,7 @@ def _technical_requirement_is_confirmed(item: Any) -> bool:
     )
 
 
-def _append_load_point_state(review: dict[str, Any], pending: list[dict[str, Any]]) -> None:
+def _append_load_point_state(review: dict[str, Any], pending: list[dict[str, Any]], *, target: str = "solidworks") -> None:
     parameters = review.get("spring_parameters") or {}
     seen: set[str] = set()
     exportable: list[dict[str, Any]] = []
@@ -356,8 +357,9 @@ def _append_load_point_state(review: dict[str, Any], pending: list[dict[str, Any
         if point_id:
             issue["load_point_id"] = point_id
         pending.append(issue)
-    _, issues = solidworks_load_fields(exportable)
-    pending.extend({**issue, "load_point_id": point_ids[issue["field"]]} for issue in issues)
+    if target == "solidworks":
+        _, issues = solidworks_load_fields(exportable)
+        pending.extend({**issue, "load_point_id": point_ids[issue["field"]]} for issue in issues)
 
 
 def _parameter_state(parameters: dict[str, Any], field: str) -> str:

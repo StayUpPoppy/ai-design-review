@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from ai_design_review.review_persistence import Base, database_url_from_env  # noqa: E402
+from ai_design_review import template_pdf_store  # noqa: E402,F401
 
 
 config = context.config

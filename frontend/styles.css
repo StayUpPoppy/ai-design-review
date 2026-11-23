@@ -6809,3 +6809,27 @@ button.technical-output-link:focus-visible { outline: 2px solid var(--accent); o
 
 .review-load-notice { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 8; max-width: calc(100% - 24px); display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: #2452cb; font-size: 13px; }
 .review-load-notice[hidden] { display: none; }
+.template-pdf-panel { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border, #d9e1eb); }
+.template-pdf-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.template-pdf-heading h3 { margin: 0; font-size: 15px; }
+.template-pdf-heading span, .template-pdf-note, .template-pdf-empty { color: #526176; font-size: 12px; line-height: 1.65; }
+.template-pdf-note { margin: 8px 0; }
+.template-pdf-status { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.template-pdf-issues { padding-left: 20px; color: #8c3b13; font-size: 12px; line-height: 1.7; }
+.template-pdf-warnings { padding-left: 20px; color: #526176; font-size: 12px; line-height: 1.7; }
+.template-pdf-error { color: #a52c24; font-size: 13px; overflow-wrap: anywhere; }
+.template-pdf-actions, .template-pdf-file-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.template-pdf-panel button { min-height: 34px; }
+.template-pdf-actions .primary-action { background: #166534; border-color: #166534; color: #fff; }
+.template-pdf-actions .primary-action:disabled { background: #e4e9f1; border-color: #d5deea; color: #526176; }
+.template-pdf-history { margin-top: 16px; font-size: 13px; }
+.template-pdf-history summary { cursor: pointer; padding: 6px 0; }
+.template-pdf-history ul { list-style: none; margin: 6px 0 0; padding: 0; }
+.template-pdf-history li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid #e4e9f0; }
+.template-pdf-history li > div:first-child { min-width: 0; }
+.template-pdf-history strong { display: block; overflow-wrap: anywhere; }
+.template-pdf-history li span { display: block; margin-top: 4px; color: #526176; font-size: 12px; }
+.template-pdf-panel button:focus-visible, .template-pdf-history summary:focus-visible { outline: 2px solid #2455c6; outline-offset: 3px; }
+.template-pdf-dialog .generation-pdf-shell > header > div { min-width: 0; overflow-wrap: anywhere; }
+.template-pdf-dialog .generation-pdf-shell > header button { flex-shrink: 0; width: auto; min-width: 64px; height: 36px; padding: 0 12px; border-radius: 6px; font-size: 14px; white-space: nowrap; }
+@media (max-width: 600px) { .template-pdf-history li { align-items: flex-start; flex-direction: column; } }

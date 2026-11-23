@@ -45,7 +45,7 @@ try {
         if(conflictPatch){conflictPatch=false;order.revision++;order.review.drawing_summary.drawing_name="服务器保留名称";return route.fulfill({status:409,json:{detail:"模拟版本冲突"}});}
         order.review=input.review;body={review_revision:++order.revision,events:(input.events||[]).map(event=>({...event,sync_status:"saved"}))};
       }else if(!action) body={...order.review,job_id:id,review_revision:order.revision,image_url:""};
-      else if(action==="generation-package"){
+      else if(action==="template-pdf-readiness"){
         const revision=order.revision, review=structuredClone(order.review), text=serverText, wrongRevision=invalidRevision;invalidRevision=false;
         packages.push({id,revision});
         if(holdPackage){holdPackage=false;await new Promise(resolve=>{releasePackage=resolve;});}
@@ -53,7 +53,7 @@ try {
         const parameterPackage=await page.evaluate(review=>makeGenerationParameterPackage(review),review);
         if(text!==null) parameterPackage.solidworks_preview.technicalRequirements["技术要求"]=text;
         body={review_id:id,review_revision:wrongRevision ? revision-1 : revision,parameter_package:parameterPackage,
-          ...(text===null ? {technical_requirements_projection:await page.evaluate(review=>technicalOutputPreviewModel(review),review)} : {})};
+          technical_requirements_projection:text===null ? await page.evaluate(review=>technicalOutputPreviewModel(review),review) : {text}};
       }else if(action==="generation-readiness") body={review_id:id,review_revision:order.revision,generation_readiness:{status:order.readinessStatus || "ready",warnings:[],missing_fields:[],pending_fields:[],confirmed_core_count:8,core_field_count:8}};
       else if(action==="generation-jobs") {if(request.method()==="POST") generationPosts++;body={generation_jobs:[],generation_queue_available:false};}
       else if(action==="reasonableness") body={parameter_reasonableness:{status:"ok",issues:[],suggestions:[]}};
@@ -78,8 +78,8 @@ try {
   await page.waitForFunction(()=>state.identityReady);
   await open();await checked();
   assert.equal(await shown(),await expected());
-  assert.equal(await preview.locator("li").count(),7,"Empty source list still exposes all eligible automatic notes");
-  assert.equal(await preview.locator(".technical-output-auto").count(),7);
+  assert.equal(await preview.locator("li").count(),3,"Direction, coil counts and end conditions are automatic notes; dimensions and loads remain drawing fields");
+  assert.equal(await preview.locator(".technical-output-auto").count(),3);
   assert.equal(await preview.locator("textarea,input,select").count(),0);
   assert.equal(await page.locator('.generation-readiness-block [data-kind="technical_output_preview"]').count(),0);
   const before=await readonlySnapshot(), beforePatches=patches;

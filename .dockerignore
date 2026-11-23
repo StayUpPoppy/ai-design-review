@@ -8,3 +8,5 @@ outputs
 tmp
 tmp_pdf_pages
 node_modules
+.local-assets
+output

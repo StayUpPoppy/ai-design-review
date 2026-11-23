@@ -6628,6 +6628,11 @@ function generationCreationAvailable(review, readiness) {
 }
 
 function renderGenerationReadinessHtml(review) {
+  globalThis.TemplatePdf?.configure({
+    context: () => ({reviewId:state.lastJob?.job_id,revision:state.lastJob?.review_revision,scope:historyRecognitionScope(),navigation:state.reviewNavigationSerial,edit:state.reviewEditSerial,readOnly:reviewReadOnly()}),
+    request:apiFetch,save:()=>flushReviewPersistence({throwOnError:true}),
+    hasPending:()=>Boolean(state.pendingReviewAuditEvents.length || state.reviewPersistenceSaving || state.reviewDraftFields.size),
+  });
   const serverState = review === state.review ? state.generationReadiness : null;
   const readiness = serverState?.generation_readiness || assessGenerationReadiness(review);
   const isPersistedReview = Boolean(state.lastJob?.job_id && review === state.review);
@@ -6660,6 +6665,7 @@ function renderGenerationReadinessHtml(review) {
           : "本地导入数据可通过AI对话导出参数包；生成图纸需要服务器审图记录。"}</small>
         <button type="button" class="primary-action" data-action="create-generation-job" ${canGenerate && !state.generationBusy ? "" : "disabled"}>${state.generationBusy ? "处理中…" : "生成图纸"}</button>
       </div>
+      ${review === state.review ? globalThis.TemplatePdf?.html() || "" : ""}
       ${renderGenerationJobsHtml(review)}
     </section>
   `;
@@ -6693,7 +6699,7 @@ function renderGenerationSettingsHtml(review) {
   const settings = GenerationSettings.values(review, state.identity);
   const error = GenerationSettings.error(settings);
   return `<div class="generation-settings" data-kind="generation-settings">
-    <strong>生图设置</strong>
+    <strong>SW 生图设置</strong>
     <div class="generation-settings-fields">
       <label>图纸版式<select data-generation-setting="drawing_model" ${state.generationBusy ? "disabled" : ""}><option value="X型" ${settings.drawing_model === "X型" ? "selected" : ""}>横版</option><option value="Y型" ${settings.drawing_model === "Y型" ? "selected" : ""}>竖版</option></select></label>
       <label>图纸字体<select data-generation-setting="typeface" ${state.generationBusy ? "disabled" : ""}>${GenerationSettings.typefaces.map(font => `<option value="${font}" ${settings.typeface === font ? "selected" : ""}>${font}</option>`).join("")}</select></label>
@@ -13846,6 +13852,7 @@ function generationApiError(payload, fallback) {
 }
 
 function resetGenerationState() {
+  globalThis.TemplatePdf?.reset();
   state.generationLoadRequest = null;
   state.generationExportOperation = null;
   Object.keys(state.generationPollers).forEach(stopTrackingGenerationJob);

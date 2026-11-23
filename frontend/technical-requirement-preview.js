@@ -48,11 +48,10 @@
     if (cache.size > 40) for (const [oldKey, value] of cache) { if (cache.size <= 32) break; if (value.status !== "loading") cache.delete(oldKey); }
     (async () => {
       try {
-        const response = await options.request(`/api/reviews/${encodeURIComponent(context.jobId)}/generation-package`, { signal: AbortSignal.timeout(15000) });
+        const response = await options.request(`/api/reviews/${encodeURIComponent(context.jobId)}/template-pdf-readiness`, { signal: AbortSignal.timeout(15000) });
         const payload = await response.json();
         if (!current(record, context)) { if (cache.get(key) === entry) cache.delete(key); return; }
-        const preview = payload.parameter_package?.solidworks_preview;
-        const text = preview?.technicalRequirements?.["技术要求"] ?? preview?.extraProperties?.["技术要求"];
+        const text = payload.technical_requirements_projection?.text;
         if (!response.ok || payload.review_id !== context.jobId || payload.review_revision !== context.revision || typeof text !== "string") throw new Error("preview unavailable");
         entry.status = "ready"; entry.text = text;
         const projection = payload.technical_requirements_projection;

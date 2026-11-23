@@ -52,6 +52,12 @@ tmp_pdf_pages/
 *.iges
 *.igs
 
+# Local DWG template conversion artifacts
+/output/templates/35-9-13/
+/output/templates/35-9-13-模板包.zip
+/tmp/dwg_template/
+/.local-assets/template-pdf/
+
 # OS files
 .DS_Store
 Thumbs.db

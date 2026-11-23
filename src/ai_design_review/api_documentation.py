@@ -46,6 +46,7 @@ API_DESCRIPTION = """
 
 
 OPENAPI_TAGS = [
+    {"name": "模板 PDF", "description": "固定 SVG 模板出图、独立就绪校验与订单 PDF 历史。"},
     {"name": "系统状态", "description": "服务入口、健康检查和运行环境诊断。"},
     {"name": "会话与示例", "description": "当前云平台身份和本地示例文件。"},
     {"name": "标准知识库", "description": "按标准号、弹簧类型和目标字段检索标准知识。"},
@@ -73,6 +74,10 @@ def _operation(tag: str, summary: str, description: str) -> dict[str, str]:
 
 
 OPERATION_DOCS: dict[tuple[str, str], dict[str, str]] = {
+    ("GET", "/api/reviews/{job_id}/template-pdf-readiness"): _operation("模板 PDF", "检查模板 PDF 出图条件", "返回当前审图修订、模板资源状态、独立的PDF就绪状态及最终成图技术要求投影。沿用核心参数确认规则，不要求SW版式、字体或姓名。"),
+    ("POST", "/api/reviews/{job_id}/template-pdfs"): _operation("模板 PDF", "生成并保存模板 PDF", "按expected_review_revision冻结已保存参数，使用idempotency_key防止重复出图。同步生成单页A4矢量PDF并保存独立订单历史；版本冲突、参数未确认、载荷超限及文字溢出返回明确错误。"),
+    ("GET", "/api/reviews/{job_id}/template-pdfs"): _operation("模板 PDF", "查询订单模板 PDF 历史", "按当前登录用户查询该订单成功生成的模板PDF记录。历史快照不随后续审图修改而变化。"),
+    ("GET", "/api/template-pdfs/{pdf_id}/file"): _operation("模板 PDF", "预览或下载模板 PDF", "按当前登录用户隔离文件访问，inline=true用于浏览器预览。既有文件下载不依赖模板资源是否仍已配置。"),
     ("GET", "/api/reviews/{source_id}/variants"): _operation("审图管理", "读取多规格核对清单", "返回来源修订、按原顺序排列的候选、区域证据、问题及已创建子记录；不调用模型，不修改参数。来源仅供核对，不能编辑或生图。"),
     ("POST", "/api/reviews/{source_id}/variants/create-reviews"): _operation("审图管理", "创建所选规格的独立审图记录", "variant_ids选择1至50种规格，expected_source_revision校验来源修订，idempotency_key保证重试不重复建单。同键不同选择返回409；事务内整批创建，已有规格返回原ID。已删除规格不因原键重试恢复。子记录独立确认、保存和生图，不重新调用模型。"),
     ("GET", "/api/surface-treatment-catalog"): _operation("审图管理", "获取公司表面处理目录", "按当前云平台身份返回无备注版公司目录的版本及49项稳定ID、名称；只读，不调用模型、不修改审图。每条要求关联一个公司类型，复合工艺取原顺序第一项、正文完整保留；关联原代号仅在识别来源展示，不再独立确认及输出。content为唯一成图正文，主动未指定保留正文；新任务冻结结果，历史请求不变。"),

@@ -4101,3 +4101,9 @@ def _generation_http_error(exc: PersistenceError) -> HTTPException:
     if "not found" in message.lower():
         return HTTPException(status_code=404, detail={"code": "generation_resource_not_found", "message": message})
     return HTTPException(status_code=409, detail={"code": "generation_conflict", "message": message})
+
+
+from .template_pdf_api import register_template_pdf_routes  # noqa: E402
+
+register_template_pdf_routes(app, repository=lambda: REVIEW_PERSISTENCE,
+    load_review=_load_generation_review, job_dir=_job_dir, require_identity=require_identity)
