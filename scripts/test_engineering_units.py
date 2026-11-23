@@ -2,13 +2,28 @@ import unittest
 from copy import deepcopy
 
 from ai_design_review.diameter_evidence import original_observation
-from ai_design_review.engineering_units import apply_drawing_units, metric_review, metric_text, page_length_units
+from ai_design_review.engineering_units import apply_drawing_units, metric_load, metric_review, metric_text, page_length_units
 from ai_design_review.generation_readiness import build_generation_parameter_package
 from ai_design_review.load_height_relations import model_load_relation
 from ai_design_review.standardizers.design_checks import calculate_design_checks
 
 
 class EngineeringUnitsTest(unittest.TestCase):
+    def test_height_deviations_convert_with_nominal_and_confirmation(self):
+        for unit,upper,lower in [('cm',.2,-.1),('in',.508,-.254)]:
+            with self.subTest(unit=unit):
+                point={'height':1,'height_unit':unit,'height_tolerance_upper':.02,'height_tolerance_lower':-.01,
+                       'force':2,'force_unit':'N','load_tolerance_percent':10,'need_human_review':False}
+                point['confirmation_snapshot']={'kind':'load_point',**deepcopy(point)}
+                converted=metric_load(point)
+                self.assertEqual((converted['height_tolerance_upper'],converted['height_tolerance_lower']),(upper,lower))
+                self.assertEqual(converted['height_unit'],'mm')
+                self.assertEqual(converted['confirmation_snapshot']['height_tolerance_upper'],upper)
+                self.assertEqual(converted['engineering_source']['height_tolerance_upper'],.02)
+                self.assertEqual(converted['load_tolerance_percent'],10)
+                self.assertFalse(converted['need_human_review'])
+                self.assertEqual(metric_load(converted),converted)
+
     def test_unit_scope_excludes_water_column_and_honors_explicit_dimensions(self):
         payload = {"ocr": {"texts": [
             {"text": "SIZE: 2 IN W.C. TO 4 IN W.C.", "page": 1},

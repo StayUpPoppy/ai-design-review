@@ -4081,7 +4081,7 @@ function renderParameterReasonablenessHtml(review) {
         <div class="reasonableness-section-head"><strong>需要处理</strong><span>${issues.length} 项</span></div>
         <div class="parameter-reasonableness-list">
           ${issues.map((item, index) => {
-            const fields = Array.isArray(item.fields) ? item.fields.filter(Boolean) : [];
+            const fields = Array.isArray(item.fields) ? item.fields.filter(canFocusGenerationIssue) : [];
             const target = fields[0] || "";
             return `
               <article class="parameter-reasonableness-item ${escapeHtml(item.severity || "warning")}"${item.category === "standardization" ? ' data-standardization-issue' : ""}>
@@ -4279,7 +4279,7 @@ function renderStaleStandardizationSuggestionDetails(items, review = state.revie
                 <dd>${escapeHtml(detail.basis)}</dd>
               </div>
             </dl>
-            <button type="button" class="secondary-action" data-role="focus-reasonableness-field" data-field="${escapeHtml(detail.target_field)}">${detail.is_load_point ? "定位载荷点" : "定位参数"}</button>
+            ${canFocusGenerationIssue(detail.target_field) ? `<button type="button" class="secondary-action" data-role="focus-reasonableness-field" data-field="${escapeHtml(detail.target_field)}">${detail.is_load_point ? "定位载荷点" : "定位参数"}</button>` : ""}
           </article>
         `).join("")}
       </div>
@@ -5907,10 +5907,15 @@ function getParameterFields(params, review) {
 
 function getEditorParameterFieldGroups(params, review) {
   const groups = getParameterFieldGroups(params, review);
-  if (!isCompressionSpringReview(review)) return { core: groups.core.filter(field => field !== "standard_no"), advanced: groups.advanced.filter(field => field !== "standard_no") };
-  const settings = new Set(["standard_no", "accuracy_grade"]);
-  return { core: ["material", ...groups.core.filter(field => field !== "material" && !settings.has(field))],
-    advanced: groups.advanced.filter(field => !settings.has(field)) };
+  const visible = field => field !== "standard_no" && !isHiddenEditorParameterField(field);
+  if (!isCompressionSpringReview(review)) return { core: groups.core.filter(visible), advanced: groups.advanced.filter(visible) };
+  return { core: ["material", ...groups.core.filter(field => field !== "material" && field !== "accuracy_grade" && visible(field))],
+    advanced: groups.advanced.filter(field => field !== "accuracy_grade" && visible(field)) };
+}
+
+function isHiddenEditorParameterField(field) {
+  // Presentation only: preserve recognition, stored confirmations and SW export.
+  return String(field || "").split(".")[0] === "flattening";
 }
 
 function getParameterFieldGroups(params, review) {
@@ -6918,7 +6923,7 @@ function renderGenerationReadinessIssues(title, issues, kind) {
 
 function canFocusGenerationIssue(field) {
   const target = String(field || "");
-  return Boolean(target);
+  return Boolean(target) && !isHiddenEditorParameterField(target);
 }
 
 function generationSourceParameter(parameters, field) {
@@ -7549,7 +7554,7 @@ function renderGenerationPackageExportIssuesHtml(title, items, kind, turnIndex) 
           return `
             <div>
               <span><b>${escapeHtml(label || "提示")}</b>${escapeHtml(generationPackageExportIssueText(issue))}</span>
-              ${field ? `<button type="button" class="secondary-action" data-role="focus-generation-package-issue" data-turn-index="${turnIndex}" data-field="${escapeHtml(field)}">去处理</button>` : ""}
+              ${canFocusGenerationIssue(field) ? `<button type="button" class="secondary-action" data-role="focus-generation-package-issue" data-turn-index="${turnIndex}" data-field="${escapeHtml(field)}">去处理</button>` : ""}
             </div>
           `;
         }).join("")}
@@ -11405,7 +11410,7 @@ function afterCompareOverlayLayout(callback) {
 
 function focusMissingStandardizationField(field, messageId = state.activeReviewMessageId, options = {}) {
   const target = String(field || "").trim();
-  if (!target || !state.review) return;
+  if (!target || !state.review || isHiddenEditorParameterField(target)) return;
   if (messageId) activateReviewContext(messageId);
   if (["standardization", "standard_no", "standard_selection", "accuracy_grade"].includes(target) && isCompressionSpringReview(state.review)) {
     state.compareTab = "parameters";
@@ -12883,7 +12888,7 @@ function renderWorkbenchIssueHtml(item) {
         <span>${escapeHtml(item?.message || item?.explanation || "请核对当前参数。")}</span>
         ${item?.customer_question ? `<small>建议：${escapeHtml(item.customer_question)}</small>` : ""}
       </div>
-      ${field ? `<button type="button" class="secondary-action" data-action="focus-workbench-field" data-field="${escapeHtml(field)}">去处理</button>` : ""}
+      ${canFocusGenerationIssue(field) ? `<button type="button" class="secondary-action" data-action="focus-workbench-field" data-field="${escapeHtml(field)}">去处理</button>` : ""}
     </article>
   `;
 }

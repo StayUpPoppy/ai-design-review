@@ -101,7 +101,7 @@ def metric_load(point):
     result = point.copy()
     raw = {}
     pending = set(point.get("unit_pending_fields") or [])
-    for name, kind, other in (("height", "length", ()), ("force", "force", ("load_tolerance_upper", "load_tolerance_lower")),
+    for name, kind, other in (("height", "length", ("height_tolerance_upper", "height_tolerance_lower")), ("force", "force", ("load_tolerance_upper", "load_tolerance_lower")),
                               ("deflection", "length", ())):
         key = name + "_unit"
         unit = point.get(key)

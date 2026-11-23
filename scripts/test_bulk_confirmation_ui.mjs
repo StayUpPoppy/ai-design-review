@@ -141,8 +141,9 @@ const context = {
   },
 };
 vm.createContext(context);
+for (const file of ["tolerance-values", "load-height-relations"]) vm.runInContext(fs.readFileSync(`frontend/${file}.js`, "utf8"), context);
 vm.runInContext(appSource.slice(appSource.indexOf("function scaleLoadHeightTolerance"), appSource.indexOf("function toleranceTarget")), context);
-vm.runInContext(appSource.slice(appSource.indexOf("function isValidLoadPoint"), appSource.indexOf("function isDuplicateLoadPointLabel")), context);
+vm.runInContext(appSource.slice(appSource.indexOf("function loadForceToleranceError"), appSource.indexOf("function isDuplicateLoadPointLabel")), context);
 vm.runInContext(appSource.slice(appSource.indexOf("const Flattening ="), appSource.indexOf("const COMPRESSION_CORE_PARAMETER_FIELDS")), context);
 vm.runInContext(appSource.slice(appSource.indexOf("function getEditorParameterFieldGroups"), appSource.indexOf("function getParameterFieldGroups")), context);
 vm.runInContext(appSource.slice(appSource.indexOf("function hasAdvancedParameterValue"), appSource.indexOf("const DEFAULT_CANDIDATE_NOTICE")), context);
@@ -228,7 +229,7 @@ assert.equal(plan.skipped.some((item) => item.field === "load_points.F2" && item
 assert.equal(plan.skipped.find((item) => item.field === "load_points.F2")?.kind, "load_point");
 assert.equal(plan.skipped.find((item) => item.field === "load_points.F2")?.load_point_id, "loadpt-test-2");
 assert.equal(plan.skipped.some((item) => item.field === "load_points.F3" && item.reason.includes("阻断问题")), true);
-assert.equal(plan.skipped.some((item) => item.field === "technical_requirements.3" && item.reason.includes("尚未明确匹配")), true);
+assert.equal(plan.skipped.some((item) => item.field === "technical_requirements.3" && item.reason.includes("明确表面处理")), true);
 context.state.review = review;
 const result = context.confirmSafeRecognizedFields(plan);
 assert.equal(result.count, 9);
@@ -362,7 +363,10 @@ const focusContext = {
   isFiniteReviewNumber(value) { return Number.isFinite(Number(value)); },
 };
 vm.createContext(focusContext);
+focusContext.isHiddenEditorParameterField = context.isHiddenEditorParameterField;
 vm.runInContext(appSource.slice(focusStart, focusEnd), focusContext);
+focusContext.focusMissingStandardizationField("flattening", "message-1", { highlight: true });
+assert.equal(focusContext.renderCount, 0, "hidden fields cannot reopen the editor or move focus");
 focusContext.focusMissingStandardizationField("solid_height", "message-1", { highlight: true });
 assert.equal(focusContext.state.compareTab, "parameters");
 assert.equal(focusContext.renderCount, 1);
@@ -430,16 +434,17 @@ assert.ok(warningReview.technical_requirements.every((item) => item.need_human_r
 
 console.log("bulk confirmation UI test passed");
 
-// Flattening alone may batch-confirm a system default; invalid/conflicting values are skipped.
+// Hidden flattening values cannot be confirmed by the visible bulk action.
 for (const value of [0, 1]) {
   const optional = { spring_parameters: { flattening: pending(value, { source: ["solidworks_protocol_default"], default_source: "flattening-default/v1" }),
     free_length: pending(45, { source: ["solidworks_protocol_default"], default_source: "v2" }) }, technical_requirements: [] };
   const plan = context.buildSafeConfirmationPlan(optional);
-  assert.ok(plan.items.some(item => item.field === "flattening"));
+  assert.ok(!plan.items.some(item => item.field === "flattening"));
+  assert.ok(!plan.skipped.some(item => item.field === "flattening"));
   assert.ok(!plan.items.some(item => item.field === "free_length"));
 }
 for (const item of [pending(2), pending(0, { flattening_conflict: true }), pending(1, { flattening_unverified: true }), pending(null)]) {
   const plan = context.buildSafeConfirmationPlan({ spring_parameters: { flattening: item }, technical_requirements: [] });
   assert.ok(!plan.items.some(entry => entry.field === "flattening"));
 }
-console.log("PASS flattening bulk eligibility: default/recognized/manual 0/1, conflicts and invalid values");
+console.log("PASS hidden flattening: 0/1 stay outside bulk confirmation and follow-up targets");

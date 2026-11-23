@@ -194,6 +194,7 @@ const navigation = { state: { review: {}, compareOpen: true, activeReviewMessage
   afterCompareOverlayLayout: (callback) => callback(), parseLoadPointTarget: () => null, highlightReviewTarget: () => {},
   compareOverlay: { querySelectorAll: () => [row], querySelector: () => standardBlock } };
 vm.createContext(navigation);
+vm.runInContext(appSource.slice(appSource.indexOf("function isHiddenEditorParameterField"), appSource.indexOf("function getParameterFieldGroups")), navigation);
 vm.runInContext(appSource.slice(focusStart, focusEnd), navigation);
 navigation.focusMissingStandardizationField("standard_no", null, { highlight: true, parameterRow: true });
 assert.equal(navigation.state.compareTab, "parameters");

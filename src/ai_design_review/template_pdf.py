@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 from functools import lru_cache
 from hashlib import sha256
 import json
@@ -13,25 +14,28 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from .generation_readiness import assess_generation_readiness, build_generation_parameter_package
-from .generation_contract import handedness_label
 from .engineering_units import metric_review
 from .solidworks import build_solidworks_technical_projection, _confirmed_optional_mm, _solid_label
 from .surface_roughness import confirmed_surface_roughness
 from .material_catalog import material_catalog_display_value
 from .standardizers.design_checks import calculate_design_checks
 from .standardizers.calculation_state import parameter_current
+from .template_pdf_text import TemplatePdfError, TextRun, VectorText, rotate_bounds
 
 NS = "http://www.w3.org/2000/svg"
 ET.register_namespace("", NS)
-
-
-class TemplatePdfError(ValueError):
-    def __init__(self, code: str, message: str, *, field: str = "template", issues: list | None = None):
-        super().__init__(message)
-        self.code, self.field, self.issues = code, field, issues or []
-
-    def detail(self):
-        return {"code": self.code, "message": str(self), "issues": self.issues or [{"field": self.field, "reason": str(self)}]}
+MAPPING_VERSION = 3
+DATA_SCHEMA = "template_pdf_parameters/v3"
+DATA_KEYS = frozenset("""
+    wire_diameter wire_diameter_tolerance outer_diameter outer_diameter_tolerance
+    free_length free_length_tolerance
+    height1 height2 solid_height load1 load2 solid_load load1_tolerance load2_tolerance
+    height1_tolerance height2_tolerance solid_height_tolerance solid_load_tolerance
+    pitch pitch_tolerance surface_roughness_ra perpendicularity
+    spring_rate spring_index solid_stress material product_name customer_code material_code weight_kg
+    technical_requirements designer_name
+    height1_label height2_label solid_height_label load1_label load2_label solid_load_label
+""".split())
 
 
 def resource_root() -> Path:
@@ -68,13 +72,17 @@ def resource_status() -> dict[str, Any]:
         return {"available": False, **exc.detail()}
 
 
-class Resources:
+class Resources(VectorText):
     def __init__(self, paths):
-        from fontTools.ttLib import TTFont
         self.svg = paths[0].read_bytes()
         self.manifest = json.loads(paths[1].read_text(encoding="utf-8"))
+        if self.manifest.get("mapping_version") != MAPPING_VERSION:
+            raise TemplatePdfError("template_pdf_resource_version_mismatch", "模板资源版本不匹配，请更新 35-9 模板资源包后重新出图。")
         self.fields = self.manifest["templates"][0]["fields"]
         self.keys = {item["key"] for item in self.fields}
+        self.keys.update(field[key] for field in self.fields for key in ("prefix_field", "tolerance_field") if field.get(key))
+        if self.keys != DATA_KEYS:
+            raise TemplatePdfError("template_pdf_resource_version_mismatch", "模板字段与当前程序不匹配，请更新 35-9 模板资源包后重新出图。")
         root = ET.fromstring(self.svg)
         if root.get("viewBox") != "0 0 210 297":
             raise ValueError("A4 template expected")
@@ -84,21 +92,12 @@ class Resources:
         nodes = {e.get("id") for e in group if e.get("data-field")}
         if len(nodes) != len(self.fields) or nodes != {f["id"] for f in self.fields}:
             raise ValueError("Field manifest and SVG do not match")
-        self.fonts = []
-        for path in paths[2:]:
-            font = TTFont(path, fontNumber=0)
-            self.fonts.append((font.getBestCmap(), font.getGlyphSet(), font["hmtx"].metrics, font["head"].unitsPerEm))
+        by_id = {node.get("id"): node for node in group}
+        if any(by_id[field["id"]].get("data-field") != field["key"] for field in self.fields):
+            raise ValueError("SVG field keys do not match the manifest")
+        super().__init__(paths[2:])
         self.version = sha256(b"".join(path.read_bytes() for path in paths)).hexdigest()
-
-    def glyph(self, character):
-        for cmap, glyphs, metrics, units in self.fonts:
-            name = cmap.get(ord(character))
-            if name is not None:
-                return glyphs[name], metrics[name][0], units, glyphs
-        raise TemplatePdfError("template_pdf_missing_glyph", f"图纸字体不支持字符“{character}”，请修改对应文字。", field="text")
-
-    def width(self, text):
-        return sum(self.glyph(c)[1] / self.glyph(c)[2] for c in text)
+        self.obstacles = self._drawing_segments()
 
     def lines(self, value, width):
         lines = []
@@ -115,72 +114,74 @@ class Resources:
             lines.append(line)
         return lines
 
-    def fill(self, values: dict[str, str], *, outline: bool = False) -> bytes:
-        from fontTools.pens.svgPathPen import SVGPathPen
-        from fontTools.pens.transformPen import TransformPen
-        from fontTools.pens.recordingPen import DecomposingRecordingPen
-        root = ET.fromstring(self.svg)
-        group = root.find(f"{{{NS}}}g[@id='dynamic-fields']")
-        nodes = {node.get("id"): node for node in group}
+    def _drawing_segments(self):
+        import pymupdf
+        segments = []
+        factor = 25.4/72
+        with pymupdf.open(stream=self.svg, filetype="svg") as source:
+            pdf = source.convert_to_pdf()
+        with pymupdf.open(stream=pdf, filetype="pdf") as document:
+            for drawing in document[0].get_drawings():
+                if drawing["rect"].y0*factor > 140:
+                    continue
+                for item in drawing["items"]:
+                    pairs = []
+                    if item[0] == "l":
+                        pairs = [(item[1], item[2])]
+                    elif item[0] == "re":
+                        rect = item[1]
+                        corners = [rect.top_left, rect.top_right, rect.bottom_right, rect.bottom_left, rect.top_left]
+                        pairs = list(zip(corners, corners[1:]))
+                    elif item[0] == "c":
+                        p0, p1, p2, p3 = item[1:]
+                        points = []
+                        for i in range(17):
+                            t = i/16
+                            coefficients = ((1-t)**3, 3*(1-t)**2*t, 3*(1-t)*t*t, t**3)
+                            points.append(pymupdf.Point(sum(c*p.x for c,p in zip(coefficients,(p0,p1,p2,p3))),
+                                                       sum(c*p.y for c,p in zip(coefficients,(p0,p1,p2,p3)))))
+                        pairs = list(zip(points, points[1:]))
+                    for start, end in pairs:
+                        if math.hypot(end.x-start.x,end.y-start.y)*factor >= .02:
+                            segments.append(((start.x*factor, start.y*factor), (end.x*factor, end.y*factor)))
+        return segments
+
+    def layout(self, values):
+        placements, occupied = [], []
         for field in self.fields:
             key = field["key"]
-            value = str(values.get(key, ""))
-            prefix = values.get(field.get("prefix_field", ""), "")
-            display = field["format"].format(value=value, prefix=prefix) if value else ""
-            for character in display.replace("\n", "").replace("\r", "") if field.get("multiline") else display:
-                try:
-                    self.glyph(character)
-                except TemplatePdfError as exc:
-                    raise TemplatePdfError(exc.code, f"{field['label']}：{exc}", field=key) from exc
-            size, limit = field["font_size_mm"], field["max_width_mm"]
-            if field.get("multiline"):
-                display = ("技术要求\n" + value) if value else "技术要求"
-                lines = self.lines(display, limit / size)
-                if len(lines) * field["line_height_mm"] > field["max_height_mm"]:
-                    raise TemplatePdfError("template_pdf_text_overflow", "技术要求超出图纸预留区域，请缩短内容后重新出图。", field=key)
-            else:
-                lines = [display]
-                width = self.width(display)
-                if width:
-                    size = min(size, limit / width)
-                if display and size < 2.0:
-                    raise TemplatePdfError("template_pdf_text_overflow", f"{field['label']}过长，无法在可读字号下完整显示，请缩短内容。", field=key)
-            node = nodes[field["id"]]
-            for child in list(node):
-                node.remove(child)
-            node.attrib.pop("data-default", None)
-            node.text = None
-            node.set("font-size", str(size))
-            baseline = field["y_mm"] + size * .82
-            if "vertical_center_mm" in field:
-                baseline = field["vertical_center_mm"] + size * field["baseline_offset_em"]
-            node.set("y", str(baseline))
-            if not outline:
-                if len(lines) == 1:
-                    node.text = lines[0]
+            try:
+                if field.get("multiline"):
+                    size = field["font_size_mm"]
+                    value = str(values.get(key, ""))
+                    lines = self.lines("技术要求"+("\n"+value if value else ""), field["max_width_mm"]/size)
+                    if len(lines)*field["line_height_mm"] > field["max_height_mm"]:
+                        raise TemplatePdfError("template_pdf_text_overflow", "技术要求超出图纸预留区域，请缩短内容后重新出图。", field=key)
+                    runs = [TextRun(line, field["x_mm"], field["y_mm"]+size*.82+i*field["line_height_mm"], size, "line") for i, line in enumerate(lines)]
                 else:
-                    for i, line in enumerate(lines):
-                        span = ET.SubElement(node, f"{{{NS}}}tspan", {"x": str(field["x_mm"]), "y": str(baseline + i * field["line_height_mm"])})
-                        span.text = line
-                continue
-            replacement = ET.Element(f"{{{NS}}}g", {"fill": field["color"], "data-field": key})
-            if node.get("transform"):
-                replacement.set("transform", node.get("transform"))
-            for i, line in enumerate(lines):
-                pen = SVGPathPen(None)
-                advance = 0
-                for character in line:
-                    glyph, step, units, glyphset = self.glyph(character)
-                    recording = DecomposingRecordingPen(glyphset)
-                    glyph.draw(recording)
-                    recording.replay(TransformPen(pen, (1/units, 0, 0, 1/units, advance, 0)))
-                    advance += step / units
-                offset = advance/2 if field["anchor"] == "middle" else advance if field["anchor"] == "end" else 0
-                x = field["x_mm"] - offset * size
-                y = baseline + i * field.get("line_height_mm", 0)
-                ET.SubElement(replacement, f"{{{NS}}}path", {"d": pen.getCommands(), "transform": f"translate({x} {y}) scale({size} {-size})"})
+                    runs = self.place(field, values, self.obstacles, occupied)
+                bounds = rotate_bounds(self.bounds(runs), field.get("rotation", 0), (field["x_mm"], field["y_mm"]))
+                if bounds and field.get("avoid_overlap"):
+                    occupied.append(bounds)
+                placements.append((field, runs, bounds))
+            except TemplatePdfError as exc:
+                if exc.code == "template_pdf_missing_glyph":
+                    raise TemplatePdfError(exc.code, f"{field['label']}：{exc}", field=key) from exc
+                raise
+        return placements
+
+    def fill(self, values: dict[str, str], *, outline: bool = False) -> bytes:
+        root = ET.fromstring(self.svg)
+        group = root.find(f"{{{NS}}}g[@id='dynamic-fields']")
+        for node in list(group):
             group.remove(node)
-            group.append(replacement)
+        for field, runs, bounds in self.layout(values):
+            attributes = {"id": field["id"], "data-field": field["key"], "fill": field["color"]}
+            if field.get("rotation"):
+                attributes["transform"] = f"rotate({field['rotation']} {field['x_mm']} {field['y_mm']})"
+            if bounds:
+                attributes["data-ink-bounds"] = " ".join(f"{value:.6f}" for value in bounds)
+            group.append(self.element(runs, attributes, outline=outline))
         return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
     def render(self, values) -> tuple[bytes, bytes]:
@@ -207,20 +208,41 @@ def number(value) -> str:
     return ""
 
 
+def weight_number(value) -> str:
+    """Round positive kg values to three decimals, preserving a tiny-value limit."""
+    if value is None or isinstance(value, bool):
+        return ""
+    try:
+        parsed = Decimal(str(value))
+        if not parsed.is_finite() or parsed <= 0:
+            return ""
+        with localcontext() as context:
+            context.prec = max(28, parsed.adjusted()+5)
+            rounded = parsed.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+        return format(rounded, "f").rstrip("0").rstrip(".") if rounded else "<0.001"
+    except (TypeError, ValueError, InvalidOperation):
+        return ""
+
+
 def tolerance(item, *, percent=False):
+    def text(value):
+        from .solidworks import _tolerance_number
+        return _tolerance_number(float(value))
     if percent:
         symmetric = item.get("tolerance_percent")
         if symmetric is not None:
-            return f"±{number(symmetric)}%"
+            return f"±{text(symmetric)}%" if isinstance(symmetric, (int, float)) and not isinstance(symmetric, bool) and math.isfinite(symmetric) and symmetric>=0 else ""
         upper, lower = item.get("tolerance_percent_upper"), item.get("tolerance_percent_lower")
     else:
         upper, lower = item.get("tolerance_upper"), item.get("tolerance_lower")
     if upper is None or lower is None:
         return ""
+    if any(isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) for value in (upper,lower)) or upper<lower:
+        return ""
     suffix = "%" if percent else ""
     if upper == -lower and upper >= 0:
-        return f"±{number(upper)}{suffix}"
-    return f"{'+' if upper>=0 else ''}{number(upper)}{suffix}/{'+' if lower>=0 else ''}{number(lower)}{suffix}"
+        return f"±{text(upper)}{suffix}"
+    return f"{'+' if upper>=0 else ''}{text(upper)}{suffix}/{'+' if lower>=0 else ''}{text(lower)}{suffix}"
 
 
 def build_snapshot(review: dict[str, Any]) -> dict[str, Any]:
@@ -238,44 +260,43 @@ def build_snapshot(review: dict[str, Any]) -> dict[str, Any]:
                                             if isinstance(item, dict) and item.get("need_human_review") is False]
     checks = calculate_design_checks(calculation_parameters, current.get("spring_features") or {})
     source = package["source"]
-    data = {key: "" for key in (
-        "wire_diameter", "wire_diameter_tolerance", "outer_diameter", "outer_diameter_tolerance", "free_length", "total_coils", "active_coils", "handedness", "height1", "height2", "solid_height", "load1", "load2", "solid_load", "load1_tolerance", "load2_tolerance", "pitch", "surface_roughness_ra", "roughness_limit", "perpendicularity", "perpendicularity_grade", "spring_rate", "spring_index", "material", "product_name", "part_number", "technical_requirements", "customer_name", "drawing_date", "designer_name", "height1_label", "height2_label", "solid_height_label", "load1_label", "load2_label", "solid_load_label")}
-    for key in ("wire_diameter", "free_length", "total_coils", "active_coils"):
+    data = dict.fromkeys(sorted(DATA_KEYS), "")
+    for key in ("wire_diameter", "free_length"):
         data[key] = number((parameters.get(key) or {}).get("value"))
     data["wire_diameter_tolerance"] = tolerance(parameters.get("wire_diameter") or {})
     data["free_length_tolerance"] = tolerance(parameters.get("free_length") or {})
-    for key in ("height1_tolerance", "height2_tolerance", "solid_height_tolerance", "solid_load_tolerance"):
-        data[key] = ""
     for key in ("outer_diameter", "pitch", "solid_height", "perpendicularity"):
         item = _confirmed_optional_mm(current.get("spring_parameters") or {}, key, allow_zero=key == "perpendicularity")
         if item:
             data[key] = number(item[1])
-            if key == "outer_diameter":
-                data["outer_diameter_tolerance"] = tolerance(item[0])
+            if key in {"outer_diameter", "pitch", "solid_height"}:
+                data[key+"_tolerance"] = tolerance(item[0])
     if not data["outer_diameter"]:
         mean, wire = (parameters.get("mean_diameter") or {}).get("value"), (parameters.get("wire_diameter") or {}).get("value")
         if mean is not None and wire is not None:
             data["outer_diameter"] = number(mean + wire)
     data["wire_diameter_tolerance"] = tolerance(parameters.get("wire_diameter") or {})
-    data["handedness"] = handedness_label((parameters.get("handedness") or {}).get("value")) if parameters.get("handedness") else ""
     material = (parameters.get("material") or {}).get("value")
     data["material"] = material_catalog_display_value(material) if isinstance(material, str) and material else ""
     data["product_name"] = source.get("drawing_name") or ""
-    data["part_number"] = source.get("material_code") or ""
+    data["customer_code"] = source.get("drawing_no") or ""
+    data["material_code"] = source.get("material_code") or ""
     settings = current.get("generation_settings") or {}
     data["designer_name"] = settings.get("username", "").strip() if isinstance(settings.get("username", ""), str) else ""
     data["technical_requirements"] = projection["text"]
     calculated_pitch = checks.get("pitch_calculation") or {}
     if not data["pitch"] and calculated_pitch.get("status") in {"calculated", "estimated"}:
         data["pitch"] = number(calculated_pitch.get("value"))
-    for field, metric in (("spring_rate", "theoretical_spring_rate"), ("spring_index", "spring_index"), ("solid_height", "nominal_solid_height")):
+    for field, metric in (("spring_rate", "theoretical_spring_rate"), ("spring_index", "spring_index"), ("solid_stress", "solid_stress"), ("solid_height", "nominal_solid_height")):
         result = checks["metrics"].get(metric) or {}
         if not data[field] and result.get("status") in {"calculated", "estimated"}:
             data[field] = number(result.get("value"))
+    mass = checks["metrics"].get("unit_mass") or {}
+    if mass.get("status") in {"calculated", "estimated"} and mass.get("unit") == "kg":
+        data["weight_kg"] = weight_number(mass.get("value"))
     roughness = confirmed_surface_roughness(current)
     if roughness:
         data["surface_roughness_ra"] = number(roughness["value"])
-        data["roughness_limit"] = "≤" + data["surface_roughness_ra"]
     points = package["generation_parameters"]["load_points"]
     solid, working, issues = [], [], []
     for point in points:
@@ -311,15 +332,17 @@ def build_snapshot(review: dict[str, Any]) -> dict[str, Any]:
         data[f"load{i}_tolerance"] = tolerance(point["force"], percent=True) or tolerance(point["force"])
         data[f"height{i}_tolerance"] = tolerance(point["height"])
     if solid:
+        previous_height = data["solid_height"]
+        previous_tolerance = data["solid_height_tolerance"]
         data["solid_height"] = number(solid[0]["height"]["value"])
         data["solid_load"] = number(solid[0]["force"]["value"])
         data["solid_load_label"] = solid[0]["label"]
         data["solid_height_label"] = solid[0].get("height_label") or "Hb"
-        data["solid_height_tolerance"] = tolerance(solid[0]["height"])
+        data["solid_height_tolerance"] = tolerance(solid[0]["height"]) or (previous_tolerance if previous_height == data["solid_height"] else "")
         data["solid_load_tolerance"] = tolerance(solid[0]["force"], percent=True) or tolerance(solid[0]["force"])
     elif data["solid_height"]:
         data["solid_height_label"] = "Hb"
-    return {"schema_version": "template_pdf_parameters/v1", "parameter_package": package, "technical_requirements_projection": projection,
+    return {"schema_version": DATA_SCHEMA, "parameter_package": package, "technical_requirements_projection": projection,
             "template_data": data, "calculation_snapshot": checks, "issues": issues}
 
 

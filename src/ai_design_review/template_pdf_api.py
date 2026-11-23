@@ -74,7 +74,7 @@ def register_template_pdf_routes(app, *, repository, load_review, job_dir, requi
         try:
             result, snapshot = readiness(review)
             if not result["resources"]["available"]:
-                raise HTTPException(503, detail={"code": "template_pdf_resources_missing", "message": result["resources"]["message"]})
+                raise HTTPException(503, detail={"code": result["resources"].get("code", "template_pdf_resources_missing"), "message": result["resources"]["message"]})
             if result["readiness"]["status"] not in ("ready", "ready_with_warnings"):
                 raise HTTPException(409, detail={"code": "template_pdf_not_ready", "message": result["readiness"]["summary"], "readiness": result["readiness"]})
             resource = resources()

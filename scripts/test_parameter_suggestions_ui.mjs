@@ -95,6 +95,8 @@ const context = {
   refreshReasonablenessSuggestionControls() {},
 };
 vm.createContext(context);
+vm.runInContext(extract("function isHiddenEditorParameterField", "function getParameterFieldGroups"), context);
+vm.runInContext(extract("function canFocusGenerationIssue", "function generationSourceParameter"), context);
 vm.runInContext(extract("function currentReasonablenessIssues", "function standardizationDiagnosticKey"), context);
 vm.runInContext(extract("function renderParameterReasonablenessHtml", "function reasonablenessSeverityLabel"), context);
 vm.runInContext(extract("function findReasonablenessSuggestion", "function animateStandardizationChatReply"), context);

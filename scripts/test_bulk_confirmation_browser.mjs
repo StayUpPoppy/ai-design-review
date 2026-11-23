@@ -33,9 +33,14 @@ function fixture(complete = false) {
       { load_point_id: "f2", label: "F2", height: complete ? 20 : null, height_unit: "mm", force: 42.56, force_unit: "N", need_human_review: true, source: ["qwen_vision"] },
     ],
   };
-  if (complete) review.spring_parameters.flattening = pending(1, null, { evidence: "图纸明确：两端制扁" });
+  if (complete) {
+    review.spring_parameters.flattening = pending(1, null, { evidence: "图纸明确：两端制扁", source: ["human_confirmed", "qwen_vision"],
+      need_human_review: false, confirmation_snapshot: { kind: "parameter", value: 1, tolerance_upper: null, tolerance_lower: null } });
+    review.manual_confirmations.flattening = { confirmed: true, value: 1, confirmed_at: "2026-11-20T01:00:00Z" };
+  }
   review.technical_requirements = [
     { requirement_id: "heat", type: "heat_treatment", content: "消除应力退火。", source: ["qwen_vision"], need_human_review: true },
+    { requirement_id: "flattening-note", type: "other", content: complete ? "两端制扁。" : "不制扁。", source: ["qwen_vision"], need_human_review: true },
     ...(complete ? [] : [{ requirement_id: "untranslated", type: "other", content: "Arbeitsweg (Hub) sh = 0.85 mm",
       original_content: "Arbeitsweg (Hub) sh = 0.85 mm", translation_status: "failed", translation_error: "模拟请求失败",
       source: ["qwen_vision"], need_human_review: true }]),
@@ -144,26 +149,21 @@ try {
       commonHasStandard: getParameterFieldGroups(review.spring_parameters, review).core.includes("standard_no"),
       printIncludesStandard: JSON.stringify(model).includes("标准号") };
   });
-  const flatteningRow = panel.locator('[data-kind="param"][data-field="flattening"]');
-  async function assertFlatteningPresentation() {
-    const number = flatteningRow.locator('.parameter-display-number');
-    assert.equal(await number.textContent(), "13");
-    assert.equal(await number.evaluate(element => element.tagName), "SPAN");
-    assert.equal(await number.evaluate(element => element.tabIndex), -1);
-    assert.equal(await flatteningRow.locator('[data-annotation-field], [data-flattening-warning], .parameter-default-candidate-note').count(), 0);
+  const untouchedFlattening = await page.evaluate(() => structuredClone(state.review.spring_parameters.flattening));
+  const historicalFlattening = structuredClone(orders.get("complete").review.spring_parameters.flattening);
+  const historicalConfirmation = structuredClone(orders.get("complete").review.manual_confirmations.flattening);
+  async function assertFlatteningHidden() {
+    assert.equal(await page.locator('[data-kind="param"][data-field="flattening"]').count(), 0, "hidden in every parameter surface");
+    assert.equal(await page.locator('button[data-field="flattening"], [data-role="focus-bulk-confirmation-target"][data-field="flattening"]').count(), 0);
     assert.equal(await page.evaluate(() => DrawingAnnotations.numberForField("flattening")), null);
     assert.equal(await page.locator('.annotation-bubble[data-annotation-id="flattening"]').count(), 0);
-    const styles = await page.evaluate(() => {
-      const keys = ["width", "height", "borderRadius", "borderColor", "backgroundColor", "color", "fontSize", "fontWeight"];
-      return ["end_grinding", "flattening"].map(field => {
-        const style = getComputedStyle(document.querySelector(`#compareOverlay [data-compare-panel="parameters"] [data-field="${field}"] .parameter-annotation-number`));
-        return Object.fromEntries(keys.map(key => [key, style[key]]));
-      });
-    });
-    assert.deepEqual(styles[1], styles[0], "Display-only 13 matches the existing blue circle");
+    assert.equal(await page.evaluate(() => buildSafeConfirmationPlan(state.review).items.some(item => item.field === "flattening")), false);
+    const count = await page.evaluate(() => buildSafeConfirmationPlan(state.review).items.length);
+    assert.equal(await panel.locator('[data-action="confirm-all-review-items"]').innerText(), `全部确认可确认项${count ? ` · ${count}` : ""}`);
+    assert.match(await panel.locator('[data-kind="technical"][data-requirement-id="flattening-note"] [data-role="content"]').inputValue(), /制扁/);
   }
   async function assertChoiceRows() {
-    for (const [field, number] of [["handedness", "10"], ["end_type", "11"], ["end_grinding", "12"], ["flattening", "13"]]) {
+    for (const [field, number] of [["handedness", "10"], ["end_type", "11"], ["end_grinding", "12"]]) {
       const row = panel.locator(`[data-kind="param"][data-field="${field}"]`);
       assert.equal(await row.locator('[data-role="tolerance"], .data-secondary, .tolerance-editor, .tolerance-edit-button').count(), 0);
       assert.equal(await row.locator('.parameter-field-label').allTextContents().then(labels => labels.includes("公差")), false);
@@ -175,19 +175,18 @@ try {
     }
     assert.match(await panel.locator('[data-field="handedness"] .data-label strong').innerText(), /旋向\s*\*/);
   }
-  assert.equal(await flatteningRow.locator('[data-role="value"]').inputValue(), "0");
-  assert.equal(await flatteningRow.locator('[data-role="tolerance"]').count(), 0);
-  await assertFlatteningPresentation();
+  await assertFlatteningHidden();
   await assertChoiceRows();
   const optionalBefore = await page.evaluate(async () => {
     const groups = getEditorParameterFieldGroups(state.review.spring_parameters, state.review);
     const model = await buildConfirmationSheetSnapshot(activeReviewContext());
-    return { afterGrinding: groups.core.indexOf("flattening") === groups.core.indexOf("end_grinding") + 1,
+    return { visible: [...groups.core, ...groups.advanced].includes("flattening"),
       confirmable: buildSafeConfirmationPlan(state.review).items.some(item => item.field === "flattening"),
       sheet: model.sections.find(section => section.id === "parameters").rows.find(item => item.field === "flattening"),
       exported: Object.hasOwn(makeGenerationParameterPackage().solidworks_preview.modelParameters, "是否制扁") };
   });
-  assert.ok(optionalBefore.afterGrinding && optionalBefore.confirmable);
+  assert.equal(optionalBefore.visible, false);
+  assert.equal(optionalBefore.confirmable, false);
   assert.equal(optionalBefore.sheet, undefined, "Optional process fields stay outside the customer report");
   assert.equal(optionalBefore.exported, false);
   assert.ok(displayCheck.commonHasStandard && !displayCheck.printIncludesStandard, "Editor template keeps standard while the customer report is filtered");
@@ -208,9 +207,9 @@ try {
   assert.equal(await panel.locator('[data-role="focus-bulk-confirmation-target"][data-kind]').count(), 0);
   assert.equal(await panel.locator('[data-role="focus-bulk-confirmation-target"][data-target-kind="technical"]').count(), 1);
   assert.equal(orders.get("partial").review.spring_parameters.flattening.value, 0);
-  assert.equal(orders.get("partial").review.spring_parameters.flattening.need_human_review, false);
-  await assertFlatteningPresentation();
-  assert.ok(mutations.flatMap(item => item.input.events).some(event => event.event_type === "safe_fields_confirmed" && event.metadata.fields.includes("flattening")));
+  assert.deepEqual(orders.get("partial").review.spring_parameters.flattening, untouchedFlattening);
+  await assertFlatteningHidden();
+  assert.ok(mutations.flatMap(item => item.input.events).filter(event => event.event_type === "safe_fields_confirmed").every(event => !event.metadata.fields.includes("flattening")));
   assert.equal(orders.get("partial").review.spring_parameters.material.value, "55CrSi");
   assert.equal(orders.get("partial").review.spring_parameters.material.need_human_review, false);
   assert.deepEqual(orders.get("partial").review.spring_parameters.standard_no, untouchedStandard, "Batch confirmation leaves hidden standard unchanged");
@@ -232,26 +231,18 @@ try {
   assert.equal(await loadRow("f2").locator('[data-role="height"]').inputValue(), "20");
   assert.ok(orders.get("partial").review.spring_parameters.load_points.every(point => point.need_human_review === false));
 
-  assert.equal(await flatteningRow.locator('[data-role="value"]').inputValue(), "0");
-  await assertFlatteningPresentation();
-  await flatteningRow.locator('[data-role="value"]').selectOption("1");
-  await saved();
-  assert.equal(await page.evaluate(() => state.review.spring_parameters.flattening.need_human_review), true);
+  await assertFlatteningHidden();
+  assert.deepEqual(await page.evaluate(() => state.review.spring_parameters.flattening), untouchedFlattening, "reopening preserves the pending value and source");
   assert.equal(await page.evaluate(() => Object.hasOwn(makeGenerationParameterPackage().solidworks_preview.modelParameters, "是否制扁")), false);
-  await assertFlatteningPresentation();
-  await flatteningRow.locator('[data-role="confirm"]').click(); await saved();
-  assert.equal(await page.evaluate(() => makeGenerationParameterPackage().solidworks_preview.modelParameters["是否制扁"]), 1);
-  await assertFlatteningPresentation();
-  await flatteningRow.locator('[data-role="value"]').selectOption("0"); await saved();
-  await panel.locator('[data-action="confirm-all-review-items"]').click(); await saved();
-  assert.equal(await page.evaluate(() => makeGenerationParameterPackage().solidworks_preview.modelParameters["是否制扁"]), 0);
-  await assertFlatteningPresentation();
 
   await open("complete"); await panel.locator('[data-action="confirm-all-review-items"]').click(); await saved(); await ready();
   assert.equal(await panel.locator('[data-role="focus-bulk-confirmation-target"][data-target-kind="load_point"]').count(), 0);
   assert.ok(orders.get("complete").review.spring_parameters.load_points.every(point => point.need_human_review === false));
   assert.equal(orders.get("complete").review.spring_parameters.flattening.value, 1);
-  assert.equal(orders.get("complete").review.spring_parameters.flattening.need_human_review, false);
+  assert.deepEqual(orders.get("complete").review.spring_parameters.flattening, historicalFlattening);
+  assert.deepEqual(orders.get("complete").review.manual_confirmations.flattening, historicalConfirmation);
+  assert.equal(await page.evaluate(() => makeGenerationParameterPackage().solidworks_preview.modelParameters["是否制扁"]), 1, "a hidden historical confirmed value still reaches SW");
+  await assertFlatteningHidden();
   const bulkCount = mutations.flatMap(item => item.input.events).filter(event => event.event_type === "safe_fields_confirmed").length;
   await panel.locator('[data-action="confirm-all-review-items"]').evaluate(button => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
   await page.evaluate(() => flushReviewPersistence()); await ready();
@@ -265,8 +256,8 @@ try {
   await viewerWorks(); failSave = false;
   await panel.locator('[data-action="retry-bulk-confirmation-save"]').click(); await saved();
   assert.equal(orders.get("failed").review.spring_parameters.material.need_human_review, false);
-  assert.equal(orders.get("failed").review.spring_parameters.flattening.need_human_review, false);
-  await assertFlatteningPresentation();
+  assert.equal(orders.get("failed").review.spring_parameters.flattening.need_human_review, true);
+  await assertFlatteningHidden();
 
   await open("slow"); await page.evaluate(() => flushReviewPersistence()); holdSave = true;
   await panel.locator('[data-action="confirm-all-review-items"]').click();
@@ -311,15 +302,15 @@ try {
   assert.equal(calls.filter(call => call.method === "POST" && (call.pathname === "/api/reviews"
     || call.pathname.endsWith("/generation-jobs") || call.pathname.endsWith("/translate") && call.mode !== "revalidate")).length,
   0, "Only local revalidation of old failures is allowed; no recognition, model translation or SW submission");
-  await flatteningRow.scrollIntoViewIfNeeded();
+  await panel.locator('[data-field="end_grinding"]').scrollIntoViewIfNeeded();
   fs.mkdirSync("outputs/load-graph-ui-qa", { recursive: true });
   await page.screenshot({ path: "outputs/load-graph-ui-qa/desktop.png", fullPage: false });
   await page.setViewportSize({ width: 390, height: 844 });
   await ready();
   assert.equal(await panel.locator('[data-kind="param"][data-field="standard_no"]').count(), 0);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  await flatteningRow.scrollIntoViewIfNeeded();
-  await assertFlatteningPresentation();
+  await panel.locator('[data-field="end_grinding"]').scrollIntoViewIfNeeded();
+  await assertFlatteningHidden();
   await assertChoiceRows();
   await page.screenshot({ path: "outputs/load-graph-ui-qa/mobile.png", fullPage: false });
   console.log("PASS bulk confirmation viewer: material selection, partial/complete loads, technical follow-ups, correct focus, save/reopen, failure/retry, slow responses, repeat click, malformed editors, viewer isolation and no cloud/SW calls");
